@@ -56,7 +56,11 @@ import {
   threadSendMode,
   ThreadTimelineView,
 } from "./thread-view.js";
-import { tuiHandoffCommand, tuiPickerCommand } from "./tui-handoff.js";
+import {
+  setTuiHandoffVisibility,
+  tuiHandoffCommand,
+  tuiPickerCommand,
+} from "./tui-handoff.js";
 import {
   ALL_WORKSPACES,
   groupThreadsByCwd,
@@ -301,13 +305,17 @@ app.innerHTML = `
       <div id="thread-list" class="thread-list"></div>
     </aside>
     <section class="content">
-      <div class="thread-header"><button id="back-to-sessions" class="back-to-sessions" type="button" aria-label="返回会话列表">←</button><div class="thread-heading"><p class="eyebrow">Codex session</p><h2 id="thread-title">选择一个会话</h2><small class="thread-cwd-line"><span>当前会话目录</span><code id="thread-cwd"></code></small></div><div class="thread-controls"><div class="codex-status"><span>Codex 状态</span><strong id="thread-state" class="pill idle" role="status" aria-live="polite">空闲</strong></div><div class="thread-actions"><button id="tui-handoff-button" class="ghost compact-action" type="button" title="在 SSH TUI 中继续这个会话" hidden>SSH 接力</button><button id="thread-settings-button" class="session-settings-action compact-action" type="button" hidden><span aria-hidden="true">⚙</span> 会话设置</button><button id="interrupt-turn" class="ghost danger-action compact-action" type="button" hidden>停止</button></div></div></div>
+      <div class="thread-header"><button id="back-to-sessions" class="back-to-sessions" type="button" aria-label="返回会话列表">←</button><div class="thread-heading"><p class="eyebrow">Codex session</p><h2 id="thread-title">选择一个会话</h2><small class="thread-cwd-line"><span>当前会话目录</span><code id="thread-cwd"></code></small></div><div class="thread-controls"><div class="codex-status"><span>Codex 状态</span><strong id="thread-state" class="pill idle" role="status" aria-live="polite">空闲</strong></div><div class="thread-actions"><button id="tui-handoff-button" class="ssh-handoff-action compact-action" type="button" title="通过 SSH 在官方 TUI 中继续同一个会话" hidden><span aria-hidden="true">›_</span> SSH 接力</button><button id="thread-settings-button" class="session-settings-action compact-action" type="button" hidden><span aria-hidden="true">⚙</span> 会话设置</button><button id="interrupt-turn" class="ghost danger-action compact-action" type="button" hidden>停止</button></div></div></div>
       <div id="thread-overview" class="thread-overview" hidden>
         <div class="thread-fact"><span>模型</span><strong id="thread-info-model">—</strong></div>
         <div class="thread-fact"><span>推理强度</span><strong id="thread-info-effort">—</strong></div>
         <div class="thread-fact"><span>权限</span><strong id="thread-info-permissions">—</strong></div>
         <div class="thread-fact context-usage"><span>上下文</span><strong id="thread-info-context">等待数据</strong><div class="context-meter" aria-hidden="true"><i id="thread-context-fill"></i></div><small id="thread-context-detail"></small></div>
       </div>
+      <aside id="ssh-handoff-banner" class="ssh-handoff-banner" aria-label="SSH 接力提示" hidden>
+        <div class="ssh-handoff-banner-copy"><span class="ssh-terminal-mark" aria-hidden="true">›_</span><div><strong>也可以通过 SSH 访问同一个会话</strong><span>登录运行 Codex 的 HPC 后，用 <code>ce tui</code> 继续；Web、SSH TUI 可随时切换，当前任务不会中断。</span></div></div>
+        <button id="ssh-handoff-banner-button" type="button">查看 SSH 接力方法 <span aria-hidden="true">→</span></button>
+      </aside>
       <div id="timeline" class="timeline"><div class="empty empty-session"><strong>从一个任务开始</strong><span>选择左侧会话，或者新建一个 Codex 会话。</span><button id="empty-new-session" class="primary">新建会话</button></div></div>
       <div class="composer">
         <div class="composer-shell">
@@ -418,10 +426,15 @@ app.innerHTML = `
   </dialog>
   <dialog id="tui-handoff-dialog" class="tui-handoff-dialog">
     <div>
-      <div class="dialog-heading"><div><p class="eyebrow">SSH handoff</p><h2>在终端继续当前会话</h2></div><button id="close-tui-handoff" class="icon-button" type="button" aria-label="关闭">×</button></div>
-      <p class="lede">SSH 登录运行 Codex 的宿主机后，可以直接进入这个会话，也可以打开恢复选择器自行选择。两种方式都连接长期 app-server，不会因界面切换中断任务。</p>
+      <div class="dialog-heading"><div><p class="eyebrow">SSH handoff</p><h2>通过 SSH 继续同一个会话</h2></div><button id="close-tui-handoff" class="icon-button" type="button" aria-label="关闭">×</button></div>
+      <p class="lede">不需要在 Web 中重新创建任务。像平时一样 SSH 登录运行 Codex 的 HPC，再执行下面的 <code>ce tui</code> 命令即可接管当前会话。</p>
+      <ol class="tui-handoff-steps">
+        <li><span>1</span><div><strong>SSH 登录 HPC</strong><small>使用你平时的 SSH 主机、用户名和认证方式。</small></div></li>
+        <li><span>2</span><div><strong>复制并运行接力命令</strong><small>推荐直接进入当前会话；也可以打开历史会话选择器。</small></div></li>
+        <li><span>3</span><div><strong>在官方 Codex TUI 中继续</strong><small>Web 可以关闭或稍后再打开，正在运行的任务不会因此停止。</small></div></li>
+      </ol>
       <div class="tui-handoff-option exact">
-        <div class="tui-option-heading"><strong>直接进入当前会话</strong><span>本次最准确</span></div>
+        <div class="tui-option-heading"><strong>推荐：直接进入当前会话</strong><span>复制后运行</span></div>
         <p>命令包含当前 thread ID，粘贴后直接进入，不经过选择器。</p>
         <div class="tui-command-row">
           <input id="tui-handoff-command" readonly spellcheck="false" aria-label="直接进入当前会话的 TUI 命令" />
@@ -535,6 +548,12 @@ const threadSettingsDialog = requiredElement<HTMLDialogElement>(
 );
 const tuiHandoffDialog =
   requiredElement<HTMLDialogElement>("tui-handoff-dialog");
+const tuiHandoffButton =
+  requiredElement<HTMLButtonElement>("tui-handoff-button");
+const tuiHandoffBanner = requiredElement<HTMLElement>("ssh-handoff-banner");
+const tuiHandoffBannerButton = requiredElement<HTMLButtonElement>(
+  "ssh-handoff-banner-button",
+);
 const tuiHandoffCommandOutput = requiredElement<HTMLInputElement>(
   "tui-handoff-command",
 );
@@ -707,7 +726,8 @@ requiredElement("interrupt-turn").addEventListener(
   "click",
   () => void interruptActiveTurn(),
 );
-requiredElement("tui-handoff-button").addEventListener("click", openTuiHandoff);
+tuiHandoffButton.addEventListener("click", openTuiHandoff);
+tuiHandoffBannerButton.addEventListener("click", openTuiHandoff);
 requiredElement("close-tui-handoff").addEventListener("click", () =>
   tuiHandoffDialog.close(),
 );
@@ -1156,6 +1176,10 @@ function openTuiHandoff(): void {
   tuiHandoffDialog.showModal();
   tuiHandoffCommandOutput.focus();
   tuiHandoffCommandOutput.select();
+}
+
+function setTuiHandoffVisible(visible: boolean): void {
+  setTuiHandoffVisibility([tuiHandoffButton, tuiHandoffBanner], visible);
 }
 
 async function copyTuiHandoffCommand(): Promise<void> {
@@ -2367,7 +2391,7 @@ function closeActiveThreadView(): void {
   requiredElement("thread-title").textContent = "选择一个会话";
   requiredElement("thread-cwd").textContent = "";
   requiredElement("thread-settings-button").hidden = true;
-  requiredElement("tui-handoff-button").hidden = true;
+  setTuiHandoffVisible(false);
   requiredElement("thread-overview").hidden = true;
   messageInput.disabled = true;
   sendMessage.disabled = true;
@@ -2431,7 +2455,7 @@ async function openThread(thread: ThreadSummary): Promise<void> {
   activeThreadTokenUsage = undefined;
   pendingRequestIds.clear();
   requiredElement("thread-settings-button").hidden = true;
-  requiredElement("tui-handoff-button").hidden = true;
+  setTuiHandoffVisible(false);
   requiredElement("thread-overview").hidden = true;
   lastRealtimeEventAt = Date.now();
   workspace.classList.add("thread-open");
@@ -2479,7 +2503,7 @@ async function openThread(thread: ThreadSummary): Promise<void> {
       approvalPolicy: detail.approvalPolicy,
       sandboxPolicy: detail.sandbox,
     };
-    requiredElement("tui-handoff-button").hidden = false;
+    setTuiHandoffVisible(true);
     requiredElement("thread-settings-button").hidden = false;
     renderThreadOverview();
     await renderQueuedMessages(thread.id, sequence);
@@ -2733,7 +2757,7 @@ async function startTask(): Promise<void> {
       approvalPolicy: started.approvalPolicy,
       sandboxPolicy: started.sandbox,
     };
-    requiredElement("tui-handoff-button").hidden = false;
+    setTuiHandoffVisible(true);
     requiredElement("thread-settings-button").hidden = false;
     activeThreadTokenUsage = undefined;
     renderThreadOverview();

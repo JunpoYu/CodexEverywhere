@@ -9,6 +9,10 @@ import {
   writeHostConfig,
   type HostConfig,
 } from "../host/config.js";
+import {
+  validateCodexNetworkConfig,
+  type CodexNetworkConfig,
+} from "../host/network.js";
 import type { HostPaths } from "../host/paths.js";
 
 export const SELF_PROVISION_HELPER_PATH =
@@ -22,6 +26,7 @@ export type UserSelfProvisioningGrant = {
   relayEndpoint: string;
   routeId: string;
   routeCapability: string;
+  defaultCodexNetwork?: CodexNetworkConfig;
 };
 
 export async function requestSelfProvisioningGrant(
@@ -73,6 +78,9 @@ export async function applySelfProvisioningGrant(
       routeCapability: grant.routeCapability,
     }),
     webAuthn: { origin: origin.origin, rpId: origin.hostname },
+    ...(config.network === undefined && grant.defaultCodexNetwork
+      ? { network: grant.defaultCodexNetwork }
+      : {}),
   };
   await writeHostConfig(paths, updated);
   return updated;
@@ -111,6 +119,9 @@ export function parseSelfProvisioningGrant(
   ) {
     throw new Error("Invalid self-provisioning grant");
   }
+  const defaultCodexNetwork = normalizeOptionalCodexNetworkConfig(
+    record.defaultCodexNetwork,
+  );
   return {
     version: 1,
     username: record.username,
@@ -119,6 +130,25 @@ export function parseSelfProvisioningGrant(
     relayEndpoint: relayEndpoint.toString(),
     routeId: record.routeId,
     routeCapability: record.routeCapability,
+    ...(defaultCodexNetwork ? { defaultCodexNetwork } : {}),
+  };
+}
+
+function normalizeOptionalCodexNetworkConfig(
+  value: unknown,
+): CodexNetworkConfig | undefined {
+  if (value === undefined) return undefined;
+  if (!validateCodexNetworkConfig(value)) {
+    throw new Error("Invalid self-provisioning grant");
+  }
+  if (value.mode === "direct") return { mode: "direct" };
+  return {
+    mode: "proxy",
+    httpsProxy: value.httpsProxy,
+    ...(value.httpProxy ? { httpProxy: value.httpProxy } : {}),
+    ...(value.allProxy ? { allProxy: value.allProxy } : {}),
+    ...(value.noProxy ? { noProxy: value.noProxy } : {}),
+    ...(value.caCertificate ? { caCertificate: value.caCertificate } : {}),
   };
 }
 

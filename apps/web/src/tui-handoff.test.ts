@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 
-import { tuiHandoffCommand, tuiPickerCommand } from "./tui-handoff.js";
+import {
+  setTuiHandoffVisibility,
+  tuiHandoffCommand,
+  tuiPickerCommand,
+} from "./tui-handoff.js";
 
 describe("TUI handoff command", () => {
   it("targets the exact Web thread and workspace", () => {
@@ -22,5 +26,18 @@ describe("TUI handoff command", () => {
     expect(tuiPickerCommand("/public/a user's project")).toBe(
       `ce tui '/public/a user'"'"'s project'`,
     );
+  });
+
+  it("keeps the prominent header and banner entry points in sync", () => {
+    const headerButton = { hidden: true };
+    const banner = { hidden: true };
+
+    setTuiHandoffVisibility([headerButton, banner], true);
+    expect(headerButton.hidden).toBe(false);
+    expect(banner.hidden).toBe(false);
+
+    setTuiHandoffVisibility([headerButton, banner], false);
+    expect(headerButton.hidden).toBe(true);
+    expect(banner.hidden).toBe(true);
   });
 });

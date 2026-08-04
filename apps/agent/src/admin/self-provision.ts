@@ -16,6 +16,10 @@ import {
   type HostProvisionerCredential,
 } from "@codex-everywhere/protocol/relay-capability";
 
+import {
+  validateCodexNetworkConfig,
+  type CodexNetworkConfig,
+} from "../host/network.js";
 import { inspectSshUnixAccount, type GetentRunner } from "./unix-accounts.js";
 
 export const INSTALLED_PROVISIONER_VERSION = 1 as const;
@@ -27,6 +31,7 @@ export type InstalledHostProvisioner = {
   origin: string;
   relayEndpoint: string;
   credential: HostProvisionerCredential;
+  defaultCodexNetwork?: CodexNetworkConfig;
 };
 
 export type SelfProvisioningGrant = {
@@ -37,6 +42,7 @@ export type SelfProvisioningGrant = {
   relayEndpoint: string;
   routeId: string;
   routeCapability: string;
+  defaultCodexNetwork?: CodexNetworkConfig;
 };
 
 export async function installHostProvisioner(
@@ -44,6 +50,7 @@ export async function installHostProvisioner(
     origin: string;
     relayEndpoint: string;
     credential: unknown;
+    defaultCodexNetwork?: unknown;
   },
   path = HOST_PROVISIONER_CONFIG_PATH,
 ): Promise<InstalledHostProvisioner> {
@@ -52,6 +59,7 @@ export async function installHostProvisioner(
     origin: input.origin,
     relayEndpoint: input.relayEndpoint,
     credential: input.credential,
+    defaultCodexNetwork: input.defaultCodexNetwork,
   });
   await writePrivateJson(path, installed);
   return installed;
@@ -62,6 +70,19 @@ export async function loadHostProvisioner(
 ): Promise<InstalledHostProvisioner> {
   const value: unknown = JSON.parse(await readFile(path, "utf8"));
   return validateInstalledHostProvisioner(value);
+}
+
+export async function setHostProvisionerDefaultCodexNetwork(
+  defaultCodexNetwork: unknown,
+  path = HOST_PROVISIONER_CONFIG_PATH,
+): Promise<InstalledHostProvisioner> {
+  const installed = await loadHostProvisioner(path);
+  const updated = validateInstalledHostProvisioner({
+    ...installed,
+    defaultCodexNetwork,
+  });
+  await writePrivateJson(path, updated);
+  return updated;
 }
 
 export async function issueSelfProvisioningGrant(
@@ -109,6 +130,9 @@ export async function issueSelfProvisioningGrant(
     relayEndpoint: installed.relayEndpoint,
     routeId: issued.payload.routeId,
     routeCapability: issued.capability,
+    ...(installed.defaultCodexNetwork
+      ? { defaultCodexNetwork: installed.defaultCodexNetwork }
+      : {}),
   };
 }
 
@@ -129,11 +153,33 @@ export function validateInstalledHostProvisioner(
   const origin = normalizeOrigin(record.origin);
   const relayEndpoint = normalizeRelayEndpoint(record.relayEndpoint);
   const credential = parseHostProvisionerCredential(record.credential);
+  const defaultCodexNetwork = normalizeOptionalCodexNetworkConfig(
+    record.defaultCodexNetwork,
+  );
   return {
     version: INSTALLED_PROVISIONER_VERSION,
     origin,
     relayEndpoint,
     credential,
+    ...(defaultCodexNetwork ? { defaultCodexNetwork } : {}),
+  };
+}
+
+function normalizeOptionalCodexNetworkConfig(
+  value: unknown,
+): CodexNetworkConfig | undefined {
+  if (value === undefined) return undefined;
+  if (!validateCodexNetworkConfig(value)) {
+    throw new Error("Invalid default Codex network configuration");
+  }
+  if (value.mode === "direct") return { mode: "direct" };
+  return {
+    mode: "proxy",
+    httpsProxy: value.httpsProxy,
+    ...(value.httpProxy ? { httpProxy: value.httpProxy } : {}),
+    ...(value.allProxy ? { allProxy: value.allProxy } : {}),
+    ...(value.noProxy ? { noProxy: value.noProxy } : {}),
+    ...(value.caCertificate ? { caCertificate: value.caCertificate } : {}),
   };
 }
 

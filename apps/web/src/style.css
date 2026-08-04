@@ -2287,7 +2287,7 @@ dialog::backdrop {
   height: 100%;
   min-height: 0;
   overflow: hidden;
-  grid-template-rows: 70px auto minmax(0, 1fr) auto;
+  grid-template-rows: 70px auto auto minmax(0, 1fr) auto;
   background:
     radial-gradient(circle at 74% 0, #f9eee8 0, transparent 22%), var(--canvas);
 }
@@ -2414,6 +2414,116 @@ dialog::backdrop {
   font-size: 11px;
 }
 
+.ssh-handoff-action {
+  color: #fff;
+  background: #256c4b;
+  border: 1px solid #1f5d40;
+  box-shadow: 0 2px 6px #1f5d4026;
+}
+
+.ssh-handoff-action:hover {
+  color: #fff;
+  background: #1f5d40;
+  border-color: #174a33;
+}
+
+.ssh-handoff-action > span {
+  margin-right: 3px;
+  font:
+    800 11px/1 ui-monospace,
+    SFMono-Regular,
+    Menlo,
+    monospace;
+}
+
+.ssh-handoff-banner {
+  display: flex;
+  min-width: 0;
+  gap: 18px;
+  align-items: center;
+  justify-content: space-between;
+  padding: 9px max(22px, calc((100% - 900px) / 2));
+  color: #2f4d3e;
+  background: linear-gradient(90deg, #eff8f2, #f6faf7);
+  border-bottom: 1px solid #cfe2d5;
+}
+
+.ssh-handoff-banner[hidden] {
+  display: none;
+}
+
+.ssh-handoff-banner-copy {
+  display: flex;
+  min-width: 0;
+  gap: 10px;
+  align-items: center;
+}
+
+.ssh-terminal-mark {
+  display: grid;
+  width: 32px;
+  height: 32px;
+  flex: 0 0 auto;
+  place-items: center;
+  color: #d9f5e4;
+  background: #245f43;
+  border-radius: 9px;
+  font:
+    800 12px/1 ui-monospace,
+    SFMono-Regular,
+    Menlo,
+    monospace;
+}
+
+.ssh-handoff-banner-copy > div {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.ssh-handoff-banner-copy strong {
+  color: #1e4934;
+  font-size: 11px;
+}
+
+.ssh-handoff-banner-copy div > span {
+  overflow: hidden;
+  color: #567061;
+  font-size: 9px;
+  line-height: 1.45;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ssh-handoff-banner-copy code {
+  padding: 1px 4px;
+  color: #28513d;
+  background: #fff;
+  border: 1px solid #cfe2d5;
+  border-radius: 4px;
+  font:
+    700 9px/1.4 ui-monospace,
+    SFMono-Regular,
+    Menlo,
+    monospace;
+}
+
+.ssh-handoff-banner > button {
+  min-height: 31px;
+  flex: 0 0 auto;
+  padding: 6px 11px;
+  color: #245f43;
+  background: #fff;
+  border: 1px solid #bcd5c5;
+  font-size: 10px;
+  font-weight: 750;
+}
+
+.ssh-handoff-banner > button:hover {
+  background: #e4f2e9;
+  border-color: #8fbaa0;
+}
+
 .thread-settings-dialog {
   width: min(620px, calc(100vw - 32px));
 }
@@ -2428,6 +2538,55 @@ dialog::backdrop {
   background: #fafafa;
   border: 1px solid var(--line);
   border-radius: 12px;
+}
+
+.tui-handoff-steps {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  margin: 16px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.tui-handoff-steps li {
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr);
+  gap: 8px;
+  align-items: start;
+  padding: 10px;
+  color: #5d6670;
+  background: #f7f8f9;
+  border: 1px solid #e1e4e8;
+  border-radius: 10px;
+}
+
+.tui-handoff-steps li > span {
+  display: grid;
+  width: 24px;
+  height: 24px;
+  place-items: center;
+  color: #fff;
+  background: #256c4b;
+  border-radius: 50%;
+  font-size: 9px;
+  font-weight: 800;
+}
+
+.tui-handoff-steps li > div {
+  display: grid;
+  gap: 3px;
+}
+
+.tui-handoff-steps strong {
+  color: #28313a;
+  font-size: 10px;
+}
+
+.tui-handoff-steps small {
+  color: #747b84;
+  font-size: 8px;
+  line-height: 1.5;
 }
 
 .tui-handoff-option.exact {
@@ -3198,7 +3357,7 @@ dialog::backdrop {
   }
 
   .content {
-    grid-template-rows: 76px auto minmax(0, 1fr) auto;
+    grid-template-rows: 76px auto auto minmax(0, 1fr) auto;
   }
 
   .thread-header {
@@ -3242,6 +3401,25 @@ dialog::backdrop {
   .thread-overview {
     gap: 18px;
     padding: 8px 12px;
+  }
+
+  .ssh-handoff-banner {
+    gap: 8px;
+    padding: 8px 12px;
+  }
+
+  .ssh-terminal-mark {
+    display: none;
+  }
+
+  .ssh-handoff-banner-copy div > span {
+    max-width: 48vw;
+  }
+
+  .ssh-handoff-banner > button {
+    padding-right: 9px;
+    padding-left: 9px;
+    font-size: 9px;
   }
 
   .thread-header h2 {
@@ -3302,6 +3480,10 @@ dialog::backdrop {
   }
 
   .tui-command-row {
+    grid-template-columns: 1fr;
+  }
+
+  .tui-handoff-steps {
     grid-template-columns: 1fr;
   }
 
@@ -3710,9 +3892,76 @@ dialog::backdrop {
   border-color: #754431;
 }
 
+:root[data-theme="dark"] .ssh-handoff-action {
+  color: #e9fff1;
+  background: #225d41;
+  border-color: #347a58;
+}
+
+:root[data-theme="dark"] .ssh-handoff-action:hover {
+  color: #fff;
+  background: #2b6f4e;
+  border-color: #45956c;
+}
+
+:root[data-theme="dark"] .ssh-handoff-banner {
+  color: #b3cbbd;
+  background: linear-gradient(90deg, #142019, #171d1a);
+  border-bottom-color: #284233;
+}
+
+:root[data-theme="dark"] .ssh-terminal-mark {
+  color: #b8f0ce;
+  background: #1f533a;
+}
+
+:root[data-theme="dark"] .ssh-handoff-banner-copy strong {
+  color: #a5e3be;
+}
+
+:root[data-theme="dark"] .ssh-handoff-banner-copy div > span {
+  color: #9bb3a5;
+}
+
+:root[data-theme="dark"] .ssh-handoff-banner-copy code {
+  color: #b7e8ca;
+  background: #0e1511;
+  border-color: #31513d;
+}
+
+:root[data-theme="dark"] .ssh-handoff-banner > button {
+  color: #9addb4;
+  background: #1a2b21;
+  border-color: #31513d;
+}
+
+:root[data-theme="dark"] .ssh-handoff-banner > button:hover {
+  background: #213a2b;
+  border-color: #47745a;
+}
+
 :root[data-theme="dark"] .tui-handoff-option {
   background: #171a20;
   border-color: var(--line);
+}
+
+:root[data-theme="dark"] .tui-handoff-steps li {
+  color: #aeb5bf;
+  background: #171a20;
+  border-color: var(--line);
+}
+
+:root[data-theme="dark"] .tui-handoff-steps li > span {
+  color: #dffff0;
+  background: #225d41;
+}
+
+:root[data-theme="dark"] .tui-handoff-steps strong {
+  color: #e2e5e9;
+}
+
+:root[data-theme="dark"] .tui-handoff-steps small {
+  color: #9da4ae;
 }
 
 :root[data-theme="dark"] .tui-handoff-option.exact {

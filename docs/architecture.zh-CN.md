@@ -135,14 +135,17 @@ ce-relay issue-provisioner --installation-id <installation-id> --expires-days 36
 ce admin install-provisioner \
   --origin https://codex.example.com \
   --relay-endpoint wss://codex.example.com/relay \
+  --default-codex-proxy http://127.0.0.1:7890 \
   --credential-stdin
 ```
+
+`--default-codex-proxy` 是可选的非秘密部署默认值。若集群在 Codex 宿主机上统一提供本地代理，provisioner 会在 self-provision grant 中携带该默认网络配置，普通用户进程只在自己的配置尚无网络选择时写入；它不会覆盖已有的 `direct` 或 `proxy` 选择。管理员以后可用 `ce admin set-provisioner-default-proxy <url>` 更新后续初始化的默认值而不接触 provisioner credential。命令行参数不得承载代理用户名或密码；带凭据的代理仍由用户通过 E2EE Web 设置写入。
 
 安装完成后，每位用户只需在自己的 SSH shell 执行 `ce device pair`。若该用户尚未初始化，`ce` 会无密码调用固定的 self-provision 辅助程序；辅助程序不接受目标用户名参数，只读取 sudo 提供的真实调用者身份，再通过 NSS 验证账号不是 root、具有登录 shell、home 是绝对路径且由该 UID 所有。root 进程只返回绑定该 Unix 用户的短时初始化资料，不写用户目录、不启动 Agent，也看不到设备配对资料；随后普通用户进程写入自己的 `~/.codex-everywhere`、安装自己的 crontab watchdog、启动自己的 Agent 并输出配对 JSON。用户不能用该入口为别人初始化。
 
 若公共 helper 或宿主机 provisioner 尚未安装，`ce device pair` 会明确提示管理员完成一次整机配置，不会留下半初始化状态。`ce admin bootstrap-user` 仍保留为迁移或应急工具，但不是正常准入流程。管理员将来可在本地控制面停用、移除或恢复用户；这些操作不改变 Linux/SSH 账号，也不能读取用户业务数据。
 
-首次初始化不是首页上的展开面板，而是一条独立的顺序流程。PWA 提供一键复制 `ce device pair` 初始化指令；用户在单独页面粘贴指令输出、注册 Passkey 并保存恢复码。建立 Web 身份后，PWA 自动进入宿主机初始化向导。未配置网络必须与用户明确选择的 `direct` 区分，不能用默认直连跳过选择；检测到已有 Codex 时也必须展示实际版本，再由用户确认继续：
+首次初始化不是首页上的展开面板，而是一条独立的顺序流程。PWA 提供一键复制 `ce device pair` 初始化指令；用户在单独页面粘贴指令输出、注册 Passkey 并保存恢复码。建立 Web 身份后，PWA 自动进入宿主机初始化向导。未配置网络必须与用户明确选择的 `direct` 区分，不能用隐式直连跳过选择；部署可以显式配置非秘密的宿主机代理默认值，此时该选择来自 provisioner 并可由用户随后修改。检测到已有 Codex 时也必须展示实际版本，再由用户确认继续：
 
 1. 用户选择 Codex 直接访问互联网，或填写 Codex 宿主机能够访问的 HTTP/HTTPS/SOCKS 代理。浏览器电脑上的 `127.0.0.1` 代理通常不能被 HPC 使用。代理输入框使用可见文本，方便用户核对完整 URL；代理通过 E2EE 通道提交，只保存在该用户的 `~/.codex-everywhere/config.json`，PWA 保存后立即清空输入，Relay 永远无法看到。状态接口只披露 `direct` 或 `proxy`，不回传代理 URL、用户名或密码。
 2. 若当前账号没有受支持的 Codex，Agent 使用现有 Node.js/npm 将与仓库 schema 匹配的官方 `@openai/codex@0.144.1` 安装到 `~/.local`，不使用 root，也不修改系统级 Node/npm。安装下载复用上一步的用户代理；不匹配的已有版本不会被直接用于 app-server。
@@ -362,7 +365,7 @@ ce tui /public/home/user/project --new
 
 Web Agent 和多个 TUI 分别连接同一个 app-server。app-server 原生广播 thread 事件和审批请求，并在客户端 resume 时重放未处理的服务器请求，因此第一阶段不实现额外 JSON-RPC multiplexer。
 
-Web 会话头提供“SSH 接力”入口，同时给出两条路径：包含当前 workspace 与 thread ID 的精确 `ce tui ... --thread ...` 命令可以直接进入当前会话；更短、可长期记住的 `ce tui <workspace>` 会打开官方恢复选择器，用户以后无需先打开 Web，即可从该目录的历史会话中选择要继续的会话。只有显式使用 `--new` 才新建会话。由于进入后的交互界面属于官方 Codex TUI，CodexEverywhere 不 fork 或修改其内部 UI；Web 接力弹窗和 `ce tui --help` / 启动提示必须明确说明退出语义：任务忙碌时输入 `/quit` 或 `/exit` 只关闭当前 TUI 客户端，宿主机上的活动 turn 继续运行；`Esc` 会中断活动 turn，不应作为“仅离开 TUI”的操作。SSH 终端失去响应时，可以在新行输入 `~.` 断开 SSH，活动 turn 仍由长期 app-server 承载。
+Web 会话头以高对比按钮提供“SSH 接力”入口，并在会话信息下方常驻展示“SSH 可访问同一会话、切换不会中断任务”的说明条；入口不能只隐藏在会话设置、弱提示或省略菜单中。接力弹窗先以“SSH 登录 HPC → 复制并运行命令 → 在官方 TUI 中继续”的步骤说明建立使用预期，再给出两条路径：包含当前 workspace 与 thread ID 的精确 `ce tui ... --thread ...` 命令可以直接进入当前会话；更短、可长期记住的 `ce tui <workspace>` 会打开官方恢复选择器，用户以后无需先打开 Web，即可从该目录的历史会话中选择要继续的会话。只有显式使用 `--new` 才新建会话。由于进入后的交互界面属于官方 Codex TUI，CodexEverywhere 不 fork 或修改其内部 UI；Web 接力弹窗和 `ce tui --help` / 启动提示必须明确说明退出语义：任务忙碌时输入 `/quit` 或 `/exit` 只关闭当前 TUI 客户端，宿主机上的活动 turn 继续运行；`Esc` 会中断活动 turn，不应作为“仅离开 TUI”的操作。SSH 终端失去响应时，可以在新行输入 `~.` 断开 SSH，活动 turn 仍由长期 app-server 承载。
 
 成功标准是：Web、TUI 或网络连接断开不会导致 thread ID、turn ID、Goal 或正在运行的命令发生变化；用户不需要猜测如何在不中断任务的前提下从 Web 接力到 TUI，或从 TUI 返回 Web。
 
@@ -400,7 +403,8 @@ ce agent init
 ce agent start|stop|status|ensure
 ce agent install-service
 ce admin inspect-user <username>
-ce admin install-provisioner --origin <https-origin> --relay-endpoint <wss-endpoint> --credential-stdin
+ce admin install-provisioner --origin <https-origin> --relay-endpoint <wss-endpoint> [--default-codex-proxy <url>] --credential-stdin
+ce admin set-provisioner-default-proxy <url>
 ce admin bootstrap-user <username> --origin <https-origin> --relay-endpoint <wss-endpoint> --capability-stdin
 ce transport direct|relay|status
 ce workspace add|remove|list
@@ -413,7 +417,7 @@ ce tui [directory]
 
 `ce transport direct` 配置宿主机的 HTTPS/WSS 入口；`ce transport relay` 配置 Relay URL 和自包含 route capability。两条命令分别更新自己的连接配置并保留另一条，二者同时存在时状态为 `hybrid`。`ce doctor` 至少检查：Node/Codex 版本、Codex 登录状态、目录权限、socket、tmux、crontab、当前 transport、workspace roots、密钥权限和 app-server 健康状态。
 
-`ce admin install-provisioner` 是管理员只需执行一次的宿主机自助初始化配置；内部的 `ce admin self-provision` 只能通过 root 所有的固定 sudo helper 调用，不是面向用户的命令。`ce admin bootstrap-user` 仅作为迁移和应急后备。`ce auth reset-recovery-codes` 是本机应急管理命令：它使旧恢复码失效并一次性输出一个新恢复码，不读取或重置 Linux、SSH、ChatGPT/Codex 凭据。Relay 包另外提供 `ce-relay serve`、`ce-relay issue-provisioner`、兼容命令 `ce-relay issue-route` 和 `ce-relay inspect-key`。这些命令只管理 Relay 自身服务密钥和自包含 credential/capability，不创建用户或节点记录。
+`ce admin install-provisioner` 是管理员只需执行一次的宿主机自助初始化配置；可选的 `--default-codex-proxy` 只为尚无网络选择的用户提供首次初始化默认值，`ce admin set-provisioner-default-proxy` 可在不重新输入 credential 的情况下更新它。内部的 `ce admin self-provision` 只能通过 root 所有的固定 sudo helper 调用，不是面向用户的命令。`ce admin bootstrap-user` 仅作为迁移和应急后备。`ce auth reset-recovery-codes` 是本机应急管理命令：它使旧恢复码失效并一次性输出一个新恢复码，不读取或重置 Linux、SSH、ChatGPT/Codex 凭据。Relay 包另外提供 `ce-relay serve`、`ce-relay issue-provisioner`、兼容命令 `ce-relay issue-route` 和 `ce-relay inspect-key`。这些命令只管理 Relay 自身服务密钥和自包含 credential/capability，不创建用户或节点记录。
 
 ## 9. 身份登录与端到端加密
 

@@ -9,7 +9,11 @@ import {
   issueProvisionedRouteCapability,
 } from "@codex-everywhere/protocol/relay-capability";
 
-import { readHostConfig } from "../host/config.js";
+import {
+  initializeHost,
+  readHostConfig,
+  writeHostConfig,
+} from "../host/config.js";
 import { resolveHostPaths } from "../host/paths.js";
 import {
   applySelfProvisioningGrant,
@@ -26,7 +30,13 @@ afterEach(async () => {
 describe("user self-service provisioning", () => {
   it("configures only the requesting Unix user's host state", async () => {
     const paths = await temporaryPaths();
-    const grant = selfProvisioningGrant("bob", 2025);
+    const grant = {
+      ...selfProvisioningGrant("bob", 2025),
+      defaultCodexNetwork: {
+        mode: "proxy" as const,
+        httpsProxy: "http://127.0.0.1:7890",
+      },
+    };
 
     await applySelfProvisioningGrant(paths, grant, {
       username: "bob",
@@ -43,6 +53,35 @@ describe("user self-service provisioning", () => {
         origin: "https://codex.example.com",
         rpId: "codex.example.com",
       },
+      network: {
+        mode: "proxy",
+        httpsProxy: "http://127.0.0.1:7890",
+      },
+    });
+  });
+
+  it("does not replace a user's existing network choice", async () => {
+    const paths = await temporaryPaths();
+    const existing = await initializeHost(paths);
+    await writeHostConfig(paths, {
+      ...existing,
+      network: { mode: "direct" },
+    });
+    const grant = {
+      ...selfProvisioningGrant("bob", 2025),
+      defaultCodexNetwork: {
+        mode: "proxy" as const,
+        httpsProxy: "http://127.0.0.1:7890",
+      },
+    };
+
+    await applySelfProvisioningGrant(paths, grant, {
+      username: "bob",
+      uid: 2025,
+    });
+
+    await expect(readHostConfig(paths)).resolves.toMatchObject({
+      network: { mode: "direct" },
     });
   });
 
