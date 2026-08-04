@@ -28,11 +28,13 @@ import {
   codexLoginEventAction,
   shouldRenderInThreadTimeline,
 } from "./event-routing.js";
+import { shouldDismissDialogFromBackdrop } from "./dialog-behavior.js";
 import {
   CODEX_INSTALL_STEP_COUNT,
   codexInstallProgressPresentation,
 } from "./install-progress.js";
 import {
+  devicePersistenceMode,
   rememberDeviceForLogin,
   type WebLoginMethod,
 } from "./login-preferences.js";
@@ -57,9 +59,11 @@ import {
 import { tuiHandoffCommand, tuiPickerCommand } from "./tui-handoff.js";
 import {
   ALL_WORKSPACES,
+  groupThreadsByCwd,
   threadsInWorkspace,
   workspaceContainsCwd,
   workspaceForCwd,
+  workspaceRelativeCwd,
 } from "./workspace-view.js";
 
 type ThreadSummary = {
@@ -119,6 +123,7 @@ let selectedWorkspaceScope: string | undefined;
 let workspaceRoots: string[] = [];
 let defaultWorkspaceRoot: string | undefined;
 let threadsCache: ThreadSummary[] = [];
+let savedHostsCache: SavedHost[] = [];
 let codexModels: Model[] = [];
 let provisionStatus: SetupStatus | undefined;
 let appServerRestartRequired = false;
@@ -139,6 +144,7 @@ let directoryBrowseState: WorkspaceBrowseResponse | undefined;
 let directoryBrowseSequence = 0;
 const pendingRequestIds = new Set<string>();
 const threadUnsubscribeOperations = new Map<string, Promise<void>>();
+const threadDirectoryOpenState = new Map<string, boolean>();
 let composerSubmitting = false;
 
 app.innerHTML = `
@@ -162,9 +168,9 @@ app.innerHTML = `
         <details id="alternative-login" class="alternative-login">
           <summary>使用专用密码或临时设备</summary>
           <label>CodexEverywhere 专用密码<input id="login-password-input" type="password" autocomplete="current-password" placeholder="不是 SSH 密码" /></label>
-          <label>设备名称<input id="device-name" value="我的浏览器" maxlength="128" /></label>
           <label class="checkbox"><input id="remember-device" type="checkbox" />记住这台设备</label>
-          <p class="privacy-note">专用密码默认以临时模式登录；只有勾选后才会在此浏览器保存设备密钥。</p>
+          <label id="device-name-field" hidden>设备名称<input id="device-name" value="我的浏览器" maxlength="128" /></label>
+          <p id="device-persistence-note" class="privacy-note">临时登录：不会保存设备密钥或设备名称。</p>
           <button id="login-password-button" class="secondary wide-action">使用专用密码登录</button>
           <div class="divider"><span>账户恢复</span></div>
           <label>恢复码<input id="login-recovery-input" autocomplete="one-time-code" spellcheck="false" placeholder="XXXXX-XXXXX-XXXXX-XXXXX" /></label>
@@ -330,7 +336,8 @@ app.innerHTML = `
       <label>新密码<input id="new-password" type="password" autocomplete="new-password" minlength="9" required /></label>
       <label>再次输入<input id="confirm-password" type="password" autocomplete="new-password" minlength="9" required /></label>
       <p id="password-error" class="error" role="alert"></p>
-      <div class="actions"><button type="submit" class="primary">保存密码</button><button id="cancel-password" type="button" class="ghost">取消</button></div>
+      <p id="password-status" class="step-state" role="status" aria-live="polite"></p>
+      <div class="actions"><button id="save-password" type="submit" class="primary">保存密码</button><button id="cancel-password" type="button" class="ghost">取消</button></div>
     </form>
   </dialog>
   <dialog id="recovery-dialog" class="recovery-dialog">
@@ -458,6 +465,10 @@ const loginRecoveryInput = requiredElement<HTMLInputElement>(
   "login-recovery-input",
 );
 const deviceName = requiredElement<HTMLInputElement>("device-name");
+const deviceNameField = requiredElement<HTMLElement>("device-name-field");
+const devicePersistenceNote = requiredElement<HTMLElement>(
+  "device-persistence-note",
+);
 const rememberDevice = requiredElement<HTMLInputElement>("remember-device");
 const pairingCommandOutput =
   requiredElement<HTMLInputElement>("pairing-command");
@@ -496,6 +507,16 @@ const copyCodexAuthPathButton = requiredElement<HTMLButtonElement>(
 const importCodexAuthButton =
   requiredElement<HTMLButtonElement>("import-codex-auth");
 const recoveryDialog = requiredElement<HTMLDialogElement>("recovery-dialog");
+const passwordDialog = requiredElement<HTMLDialogElement>("password-dialog");
+const passwordForm = requiredElement<HTMLFormElement>("password-form");
+const passwordInput = requiredElement<HTMLInputElement>("new-password");
+const passwordConfirmation =
+  requiredElement<HTMLInputElement>("confirm-password");
+const passwordError = requiredElement<HTMLElement>("password-error");
+const passwordStatus = requiredElement<HTMLElement>("password-status");
+const savePasswordButton = requiredElement<HTMLButtonElement>("save-password");
+const cancelPasswordButton =
+  requiredElement<HTMLButtonElement>("cancel-password");
 const recoveryCodeOutput = requiredElement<HTMLInputElement>(
   "recovery-code-output",
 );
@@ -557,8 +578,11 @@ requiredElement("login-recovery-button").addEventListener(
   "click",
   () => void recoverWebCredentials(),
 );
-requiredElement("set-password-button").addEventListener("click", () =>
-  requiredElement<HTMLDialogElement>("password-dialog").showModal(),
+rememberDevice.addEventListener("change", renderDevicePersistence);
+loginName.addEventListener("input", renderDevicePersistence);
+requiredElement("set-password-button").addEventListener(
+  "click",
+  openPasswordDialog,
 );
 requiredElement("add-passkey-button").addEventListener(
   "click",
@@ -579,13 +603,9 @@ requiredElement("close-recovery-dialog").addEventListener("click", () => {
 });
 recoveryDialog.addEventListener("cancel", (event) => event.preventDefault());
 recoveryCodeOutput.addEventListener("click", () => recoveryCodeOutput.select());
-requiredElement("cancel-password").addEventListener("click", () =>
-  requiredElement<HTMLDialogElement>("password-dialog").close(),
-);
-requiredElement<HTMLFormElement>("password-form").addEventListener(
-  "submit",
-  (event) => void savePassword(event),
-);
+cancelPasswordButton.addEventListener("click", closePasswordDialog);
+passwordDialog.addEventListener("cancel", (event) => event.preventDefault());
+passwordForm.addEventListener("submit", (event) => void savePassword(event));
 requiredElement("refresh-button").addEventListener(
   "click",
   () => void refresh(),
@@ -739,7 +759,7 @@ requiredElement<HTMLTextAreaElement>("new-prompt").addEventListener(
 );
 for (const dialog of document.querySelectorAll<HTMLDialogElement>("dialog")) {
   dialog.addEventListener("click", (event) => {
-    if (event.target === dialog && dialog.id !== "recovery-dialog")
+    if (event.target === dialog && shouldDismissDialogFromBackdrop(dialog.id))
       dialog.close();
   });
 }
@@ -799,6 +819,7 @@ requiredElement("copy-user-code").addEventListener(
 userCodeOutput.addEventListener("click", () => userCodeOutput.select());
 
 void renderSavedHosts();
+renderDevicePersistence();
 if (
   import.meta.env.DEV &&
   new URLSearchParams(window.location.search).get("preview") === "codex-login"
@@ -881,11 +902,12 @@ async function loginWithPasskey(): Promise<void> {
   setStatus("connecting", "正在查找 HPC Agent…");
   try {
     const host = await lookupHost(name);
+    const remember = shouldRememberDevice("passkey");
     await activate(
       await GatewayClient.loginWithPasskey(host, {
         loginName: name,
-        deviceName: deviceName.value.trim() || "临时浏览器",
-        rememberDevice: shouldRememberDevice("passkey"),
+        deviceName: loginDeviceName(host, remember, "临时浏览器"),
+        rememberDevice: remember,
       }),
     );
   } catch (error) {
@@ -905,12 +927,13 @@ async function loginWithPassword(): Promise<void> {
   setStatus("connecting", "正在查找 HPC Agent…");
   try {
     const host = await lookupHost(name);
+    const remember = shouldRememberDevice("password");
     await activate(
       await GatewayClient.loginWithPassword(host, {
         loginName: name,
         password,
-        deviceName: deviceName.value.trim() || "临时浏览器",
-        rememberDevice: shouldRememberDevice("password"),
+        deviceName: loginDeviceName(host, remember, "临时浏览器"),
+        rememberDevice: remember,
       }),
     );
   } catch (error) {
@@ -932,11 +955,12 @@ async function recoverWebCredentials(): Promise<void> {
   setStatus("connecting", "正在恢复 Web 身份…");
   try {
     const host = await lookupHost(name);
+    const remember = shouldRememberDevice("recovery");
     const result = await GatewayClient.recover(host, {
       loginName: name,
       recoveryCode,
-      deviceName: deviceName.value.trim() || "恢复设备",
-      rememberDevice: shouldRememberDevice("recovery"),
+      deviceName: loginDeviceName(host, remember, "恢复设备"),
+      rememberDevice: remember,
     });
     loginRecoveryInput.value = "";
     showRecoveryCodes(result.recoveryCodes);
@@ -954,6 +978,45 @@ function shouldRememberDevice(method: WebLoginMethod): boolean {
   });
 }
 
+function loginDeviceName(
+  host: Pick<HostDocument, "nodeId">,
+  remember: boolean,
+  temporaryName: string,
+): string {
+  if (!remember) return temporaryName;
+  const savedName = savedHostsCache
+    .find((saved) => saved.nodeId === host.nodeId)
+    ?.deviceName.trim();
+  return savedName || deviceName.value.trim() || "我的浏览器";
+}
+
+function renderDevicePersistence(): void {
+  const existing = savedDeviceForLoginName(loginName.value.trim());
+  const mode = devicePersistenceMode(
+    rememberDevice.checked,
+    existing?.deviceName,
+  );
+  deviceNameField.hidden = mode !== "new";
+  if (mode === "temporary") {
+    devicePersistenceNote.textContent =
+      "临时登录：不会保存设备密钥或设备名称。";
+    return;
+  }
+  if (mode === "existing") {
+    devicePersistenceNote.textContent = `此浏览器已有设备“${existing?.deviceName}”，将沿用原名称。`;
+    return;
+  }
+  devicePersistenceNote.textContent =
+    "登录成功后会在此浏览器保存设备密钥；设备名称用于以后识别它。";
+}
+
+function savedDeviceForLoginName(name: string): SavedHost | undefined {
+  if (!name) return undefined;
+  return savedHostsCache.find(
+    (host) => (host.loginName?.trim() || host.name.trim()) === name,
+  );
+}
+
 async function lookupHost(name: string) {
   const directEndpoint = directEndpointInput.value.trim();
   if (directEndpoint) return GatewayClient.discoverDirect(directEndpoint);
@@ -963,31 +1026,38 @@ async function lookupHost(name: string) {
 
 async function savePassword(event: SubmitEvent): Promise<void> {
   event.preventDefault();
-  const passwordError = requiredElement("password-error");
-  const password = requiredElement<HTMLInputElement>("new-password");
-  const confirmation = requiredElement<HTMLInputElement>("confirm-password");
   passwordError.textContent = "";
+  passwordStatus.textContent = "";
   if (!client) {
     passwordError.textContent = "请先登录";
     return;
   }
-  if (password.value.length < 9) {
+  if (passwordInput.value.length < 9) {
     passwordError.textContent = "密码至少需要 9 个字符";
     return;
   }
-  if (!/[A-Za-z]/u.test(password.value) || !/[0-9]/u.test(password.value)) {
+  if (
+    !/[A-Za-z]/u.test(passwordInput.value) ||
+    !/[0-9]/u.test(passwordInput.value)
+  ) {
     passwordError.textContent = "密码需要同时包含字母和数字";
     return;
   }
-  if (password.value !== confirmation.value) {
+  if (passwordInput.value !== passwordConfirmation.value) {
     passwordError.textContent = "两次输入的密码不一致";
     return;
   }
+  savePasswordButton.disabled = true;
+  savePasswordButton.textContent = "正在保存…";
+  cancelPasswordButton.disabled = true;
   try {
-    await client.setPassword(password.value);
-    password.value = "";
-    confirmation.value = "";
-    requiredElement<HTMLDialogElement>("password-dialog").close();
+    await client.setPassword(passwordInput.value);
+    passwordInput.value = "";
+    passwordConfirmation.value = "";
+    passwordStatus.textContent =
+      "专用密码设置成功。浏览器可能询问是否保存密码，你可以自行选择。";
+    savePasswordButton.hidden = true;
+    cancelPasswordButton.textContent = "完成";
     appendTimeline(
       "system",
       "密码已更新",
@@ -995,7 +1065,33 @@ async function savePassword(event: SubmitEvent): Promise<void> {
     );
   } catch (error) {
     passwordError.textContent = errorMessage(error);
+  } finally {
+    savePasswordButton.disabled = false;
+    if (!savePasswordButton.hidden) savePasswordButton.textContent = "保存密码";
+    cancelPasswordButton.disabled = false;
   }
+}
+
+function openPasswordDialog(): void {
+  resetPasswordDialog();
+  passwordDialog.showModal();
+  passwordInput.focus();
+}
+
+function closePasswordDialog(): void {
+  resetPasswordDialog();
+  passwordDialog.close();
+}
+
+function resetPasswordDialog(): void {
+  passwordForm.reset();
+  passwordError.textContent = "";
+  passwordStatus.textContent = "";
+  savePasswordButton.hidden = false;
+  savePasswordButton.disabled = false;
+  savePasswordButton.textContent = "保存密码";
+  cancelPasswordButton.disabled = false;
+  cancelPasswordButton.textContent = "取消";
 }
 
 async function addPasskey(): Promise<void> {
@@ -2190,23 +2286,49 @@ function renderThreads(threads: ThreadSummary[]): void {
     );
     return;
   }
-  const groups = new Map<string, ThreadSummary[]>();
-  for (const thread of visible) {
-    const group = groups.get(thread.cwd) ?? [];
-    group.push(thread);
-    groups.set(thread.cwd, group);
-  }
-  for (const [cwd, group] of groups) {
-    const groupHeading = document.createElement("div");
-    groupHeading.className = "thread-group-heading";
-    groupHeading.textContent = pathName(cwd);
-    groupHeading.title = cwd;
-    threadList.append(groupHeading);
-    for (const thread of group) renderThreadRow(thread);
-  }
+  const groups = groupThreadsByCwd(visible);
+  groups.forEach(({ cwd, threads: group }, index) => {
+    const details = document.createElement("details");
+    details.className = "thread-directory-group";
+    const containsActiveThread = group.some(
+      (thread) => thread.id === activeThreadId,
+    );
+    const remembered = threadDirectoryOpenState.get(cwd);
+    details.open =
+      Boolean(query) ||
+      containsActiveThread ||
+      (remembered ?? (groups.length === 1 || index === 0));
+    const summary = document.createElement("summary");
+    summary.className = "thread-directory-summary";
+    summary.title = cwd;
+    const label = document.createElement("span");
+    label.textContent = threadDirectoryLabel(cwd);
+    const count = document.createElement("span");
+    count.className = "thread-directory-count";
+    count.textContent = String(group.length);
+    summary.append(label, count);
+    const items = document.createElement("div");
+    items.className = "thread-directory-items";
+    for (const thread of group) renderThreadRow(thread, items);
+    details.append(summary, items);
+    details.addEventListener("toggle", () => {
+      if (!query) threadDirectoryOpenState.set(cwd, details.open);
+    });
+    threadList.append(details);
+  });
 }
 
-function renderThreadRow(thread: ThreadSummary): void {
+function threadDirectoryLabel(cwd: string): string {
+  const scope = selectedWorkspaceScope ?? ALL_WORKSPACES;
+  const root =
+    scope === ALL_WORKSPACES ? workspaceForCwd(workspaceRoots, cwd) : scope;
+  return root ? workspaceRelativeCwd(root, cwd) : cwd;
+}
+
+function renderThreadRow(
+  thread: ThreadSummary,
+  container: HTMLElement = threadList,
+): void {
   const button = document.createElement("button");
   button.className = `thread-item${thread.id === activeThreadId ? " active" : ""}`;
   const firstLine = document.createElement("span");
@@ -2222,7 +2344,7 @@ function renderThreadRow(thread: ThreadSummary): void {
   preview.textContent = thread.preview || thread.cwd;
   button.append(firstLine, preview);
   button.addEventListener("click", () => void openThread(thread));
-  threadList.append(button);
+  container.append(button);
 }
 
 function closeActiveThreadView(): void {
@@ -3155,6 +3277,8 @@ async function renderSavedHosts(): Promise<void> {
   const container = requiredElement("saved-hosts");
   const section = requiredElement("saved-section");
   const hosts = await listHosts();
+  savedHostsCache = hosts;
+  renderDevicePersistence();
   container.replaceChildren();
   section.hidden = hosts.length === 0;
   for (const host of hosts) {

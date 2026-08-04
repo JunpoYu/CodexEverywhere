@@ -2,9 +2,11 @@ import { describe, expect, it } from "vitest";
 
 import {
   ALL_WORKSPACES,
+  groupThreadsByCwd,
   threadsInWorkspace,
   workspaceContainsCwd,
   workspaceForCwd,
+  workspaceRelativeCwd,
 } from "./workspace-view.js";
 
 describe("workspace session scope", () => {
@@ -39,5 +41,39 @@ describe("workspace session scope", () => {
         "/public/home/user/project/packages/web",
       ),
     ).toBe("/public/home/user/project");
+  });
+
+  it("groups sessions by their actual working directory in activity order", () => {
+    expect(
+      groupThreadsByCwd([
+        { id: "web-new", cwd: "/project/apps/web" },
+        { id: "agent", cwd: "/project/apps/agent" },
+        { id: "web-old", cwd: "/project/apps/web" },
+      ]),
+    ).toEqual([
+      {
+        cwd: "/project/apps/web",
+        threads: [
+          { id: "web-new", cwd: "/project/apps/web" },
+          { id: "web-old", cwd: "/project/apps/web" },
+        ],
+      },
+      {
+        cwd: "/project/apps/agent",
+        threads: [{ id: "agent", cwd: "/project/apps/agent" }],
+      },
+    ]);
+  });
+
+  it("labels nested session directories relative to the selected scope", () => {
+    expect(
+      workspaceRelativeCwd(
+        "/public/home/user",
+        "/public/home/user/project/apps/web",
+      ),
+    ).toBe("project/apps/web");
+    expect(
+      workspaceRelativeCwd("/public/home/user/project", "/outside/project"),
+    ).toBe("/outside/project");
   });
 });
