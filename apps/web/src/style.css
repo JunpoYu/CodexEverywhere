@@ -2508,9 +2508,15 @@ dialog::backdrop {
     monospace;
 }
 
-.ssh-handoff-banner > button {
-  min-height: 31px;
+.ssh-handoff-banner-actions {
+  display: flex;
   flex: 0 0 auto;
+  gap: 6px;
+  align-items: center;
+}
+
+.ssh-handoff-banner-actions > button {
+  min-height: 31px;
   padding: 6px 11px;
   color: #245f43;
   background: #fff;
@@ -2519,9 +2525,22 @@ dialog::backdrop {
   font-weight: 750;
 }
 
-.ssh-handoff-banner > button:hover {
+.ssh-handoff-banner-actions > button:hover {
   background: #e4f2e9;
   border-color: #8fbaa0;
+}
+
+.ssh-handoff-banner-actions > .ssh-handoff-banner-dismiss {
+  color: #5f7568;
+  background: transparent;
+  border-color: transparent;
+  box-shadow: none;
+}
+
+.ssh-handoff-banner-actions > .ssh-handoff-banner-dismiss:hover {
+  color: #334b3d;
+  background: #e4f2e9;
+  border-color: transparent;
 }
 
 .thread-settings-dialog {
@@ -2727,6 +2746,36 @@ dialog::backdrop {
   flex: 0 0 auto;
   min-width: 90px;
   gap: 2px;
+}
+
+button.thread-fact {
+  padding: 0;
+  color: inherit;
+  background: transparent;
+  border: 0;
+  border-radius: 8px;
+  text-align: left;
+}
+
+.permission-fact {
+  position: sticky;
+  left: 0;
+  min-width: 210px;
+  padding: 6px 10px !important;
+  background: #fff4ee !important;
+  border: 1px solid #efc8b8 !important;
+  box-shadow: 0 2px 8px #79391b12;
+}
+
+.permission-fact:hover {
+  background: #ffede5 !important;
+  border-color: #d99478 !important;
+}
+
+.permission-fact > small {
+  color: #9a6049;
+  font-size: 8px;
+  font-weight: 650;
 }
 
 .thread-fact > span {
@@ -3062,6 +3111,60 @@ dialog::backdrop {
   box-shadow:
     0 12px 35px #15171a16,
     0 0 0 3px #e0643d10;
+}
+
+.slash-command-menu {
+  max-height: min(330px, 42vh);
+  padding: 6px;
+  overflow-y: auto;
+  border-bottom: 1px solid #eceef1;
+  overscroll-behavior: contain;
+}
+
+.slash-command-item {
+  width: 100%;
+  min-height: 42px;
+  padding: 8px 9px;
+  display: grid;
+  grid-template-columns: minmax(128px, 0.8fr) minmax(180px, 2fr) auto;
+  align-items: center;
+  gap: 10px;
+  color: #41454c;
+  text-align: left;
+  background: transparent;
+  border: 0;
+  border-radius: 9px;
+}
+
+.slash-command-item:hover,
+.slash-command-item.selected {
+  color: #202226;
+  background: #f2f3f5;
+}
+
+.slash-command-item code {
+  overflow: hidden;
+  color: #c44e2c;
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.slash-command-item span {
+  overflow: hidden;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.slash-command-item small {
+  padding: 2px 6px;
+  color: #858a93;
+  font-size: 9px;
+  line-height: 1.4;
+  background: #e9ebee;
+  border-radius: 999px;
+  white-space: nowrap;
 }
 
 .composer textarea {
@@ -3416,7 +3519,11 @@ dialog::backdrop {
     max-width: 48vw;
   }
 
-  .ssh-handoff-banner > button {
+  .ssh-handoff-banner-actions {
+    gap: 2px;
+  }
+
+  .ssh-handoff-banner-actions > button {
     padding-right: 9px;
     padding-left: 9px;
     font-size: 9px;
@@ -3449,6 +3556,19 @@ dialog::backdrop {
 
   .composer-footer {
     justify-content: flex-end;
+  }
+
+  .slash-command-menu {
+    max-height: min(290px, 38vh);
+  }
+
+  .slash-command-item {
+    grid-template-columns: minmax(110px, auto) 1fr;
+    gap: 7px;
+  }
+
+  .slash-command-item small {
+    display: none;
   }
 
   dialog {
@@ -3876,6 +3996,22 @@ dialog::backdrop {
   color: var(--ink);
 }
 
+:root[data-theme="dark"] .permission-fact {
+  color: var(--muted);
+  background: #30201b !important;
+  border-color: #563126 !important;
+  box-shadow: none;
+}
+
+:root[data-theme="dark"] .permission-fact:hover {
+  background: #3a251f !important;
+  border-color: #7c4636 !important;
+}
+
+:root[data-theme="dark"] .permission-fact > small {
+  color: #d7977d;
+}
+
 :root[data-theme="dark"] .context-meter {
   background: #343840;
 }
@@ -3929,15 +4065,31 @@ dialog::backdrop {
   border-color: #31513d;
 }
 
-:root[data-theme="dark"] .ssh-handoff-banner > button {
+:root[data-theme="dark"] .ssh-handoff-banner-actions > button {
   color: #9addb4;
   background: #1a2b21;
   border-color: #31513d;
 }
 
-:root[data-theme="dark"] .ssh-handoff-banner > button:hover {
+:root[data-theme="dark"] .ssh-handoff-banner-actions > button:hover {
   background: #213a2b;
   border-color: #47745a;
+}
+
+:root[data-theme="dark"]
+  .ssh-handoff-banner-actions
+  > .ssh-handoff-banner-dismiss {
+  color: #8fa99a;
+  background: transparent;
+  border-color: transparent;
+}
+
+:root[data-theme="dark"]
+  .ssh-handoff-banner-actions
+  > .ssh-handoff-banner-dismiss:hover {
+  color: #c4dccd;
+  background: #213a2b;
+  border-color: transparent;
 }
 
 :root[data-theme="dark"] .tui-handoff-option {
@@ -4109,6 +4261,29 @@ dialog::backdrop {
   box-shadow:
     0 10px 30px #0000004d,
     0 1px 5px #00000042;
+}
+
+:root[data-theme="dark"] .slash-command-menu {
+  border-color: #34373d;
+}
+
+:root[data-theme="dark"] .slash-command-item {
+  color: #c7cad0;
+}
+
+:root[data-theme="dark"] .slash-command-item:hover,
+:root[data-theme="dark"] .slash-command-item.selected {
+  color: #f2f3f5;
+  background: #2c2f34;
+}
+
+:root[data-theme="dark"] .slash-command-item code {
+  color: #f08b67;
+}
+
+:root[data-theme="dark"] .slash-command-item small {
+  color: #b5b9c0;
+  background: #3a3d43;
 }
 
 :root[data-theme="dark"] .queue-action:hover:not(:disabled) {

@@ -6,8 +6,16 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { CodexAppServerClient } from "./codex-app-server-client.js";
 import { CodexAppServerProcess } from "./codex-app-server-process.js";
+import {
+  startTuiPermissionProxy,
+  type TuiPermissionProxy,
+} from "./tui-permission-proxy.js";
 
-type ThreadStartResponse = { thread: { id: string } };
+type ThreadStartResponse = {
+  thread: { id: string };
+  approvalPolicy?: unknown;
+  sandbox?: { type: string };
+};
 type ThreadUnsubscribeResponse = {
   status: "notLoaded" | "notSubscribed" | "unsubscribed";
 };
@@ -61,7 +69,10 @@ async function connect(
   socketPath: string,
   name: string,
 ): Promise<CodexAppServerClient> {
-  const client = await CodexAppServerClient.connectUnix(socketPath, { name });
+  const client = await CodexAppServerClient.connectUnix(socketPath, {
+    name,
+    experimentalApi: true,
+  });
   clients.push(client);
   return client;
 }
@@ -97,6 +108,47 @@ describe("real Codex app-server contract", () => {
         },
       );
       expect(resumed.thread.id).toBe(threadId);
+      expect(resumed.approvalPolicy).toBe("never");
+      expect(resumed.sandbox?.type).toBe("dangerFullAccess");
+
+      const settingsNotificationA = clientA.waitForNotification(
+        (notification) =>
+          notification.method === "thread/settings/updated" &&
+          (notification.params as { threadId?: string }).threadId === threadId,
+      );
+      const settingsNotificationB = clientB.waitForNotification(
+        (notification) =>
+          notification.method === "thread/settings/updated" &&
+          (notification.params as { threadId?: string }).threadId === threadId,
+      );
+      await clientB.request("thread/settings/update", {
+        threadId,
+        approvalPolicy: "on-request",
+        sandboxPolicy: { type: "readOnly", networkAccess: false },
+      });
+      await expect(settingsNotificationA).resolves.toMatchObject({
+        params: {
+          threadSettings: {
+            approvalPolicy: "on-request",
+            sandboxPolicy: { type: "readOnly" },
+          },
+        },
+      });
+      await expect(settingsNotificationB).resolves.toMatchObject({
+        params: {
+          threadSettings: {
+            approvalPolicy: "on-request",
+            sandboxPolicy: { type: "readOnly" },
+          },
+        },
+      });
+
+      const settingsResumed = await clientA.request<ThreadStartResponse>(
+        "thread/resume",
+        { threadId },
+      );
+      expect(settingsResumed.approvalPolicy).toBe("on-request");
+      expect(settingsResumed.sandbox?.type).toBe("readOnly");
 
       const notificationA = clientA.waitForNotification(
         (notification) =>
@@ -143,6 +195,80 @@ describe("real Codex app-server contract", () => {
           .request("thread/delete", { threadId })
           .catch(() => undefined);
       }
+    }
+  });
+
+  it("keeps stored permissions when the official TUI resumes a thread", async () => {
+    const { socketPath, workspace } = await startServer();
+    const webClient = await connect(socketPath, "ce_permission_web");
+    let permissionProxy: TuiPermissionProxy | undefined;
+    let threadId: string | undefined;
+
+    try {
+      const started = await webClient.request<ThreadStartResponse>(
+        "thread/start",
+        {
+          cwd: workspace,
+          approvalPolicy: "never",
+          sandbox: "danger-full-access",
+          ephemeral: false,
+        },
+      );
+      threadId = started.thread.id;
+      await webClient.request("thread/name/set", {
+        threadId,
+        name: "Permission Inheritance Contract",
+      });
+      const tuiRuntime = await mkdtemp(join(tmpdir(), "ce-tui-runtime-"));
+      temporaryDirectories.push(tuiRuntime);
+      permissionProxy = await startTuiPermissionProxy({
+        upstreamSocketPath: socketPath,
+        runtimeDir: tuiRuntime,
+      });
+      const tuiClient = await connect(
+        permissionProxy.socketPath,
+        "ce_permission_tui",
+      );
+
+      const resumed = await tuiClient.request<ThreadStartResponse>(
+        "thread/resume",
+        {
+          threadId,
+          cwd: workspace,
+          approvalPolicy: "on-request",
+          approvalsReviewer: "user",
+          sandbox: "read-only",
+          permissions: "read-only",
+        },
+      );
+      expect(resumed.approvalPolicy).toBe("never");
+      expect(resumed.sandbox?.type).toBe("dangerFullAccess");
+
+      const explicitlyUpdated = webClient.waitForNotification(
+        (notification) =>
+          notification.method === "thread/settings/updated" &&
+          (notification.params as { threadId?: string }).threadId === threadId,
+      );
+      await tuiClient.request("thread/settings/update", {
+        threadId,
+        approvalPolicy: "on-request",
+        sandboxPolicy: { type: "readOnly", networkAccess: false },
+      });
+      await expect(explicitlyUpdated).resolves.toMatchObject({
+        params: {
+          threadSettings: {
+            approvalPolicy: "on-request",
+            sandboxPolicy: { type: "readOnly" },
+          },
+        },
+      });
+    } finally {
+      if (threadId !== undefined) {
+        await webClient
+          .request("thread/delete", { threadId })
+          .catch(() => undefined);
+      }
+      await permissionProxy?.close();
     }
   });
 

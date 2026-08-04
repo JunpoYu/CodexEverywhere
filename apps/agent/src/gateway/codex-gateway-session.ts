@@ -10,6 +10,7 @@ import {
 import type {
   ThreadListResponse,
   ThreadReadResponse,
+  ThreadForkResponse,
   ThreadResumeResponse,
   ThreadStartResponse,
   ThreadStatus,
@@ -74,7 +75,9 @@ export class CodexGatewaySession implements GatewaySession {
   static async connect(
     options: CodexGatewaySessionOptions,
   ): Promise<CodexGatewaySession> {
-    const client = await CodexAppServerClient.connectUnix(options.socketPath);
+    const client = await CodexAppServerClient.connectUnix(options.socketPath, {
+      experimentalApi: true,
+    });
     return new CodexGatewaySession(client, options);
   }
 
@@ -126,6 +129,25 @@ export class CodexGatewaySession implements GatewaySession {
         });
       case "codex/account/logout":
         return this.#client.request("account/logout", {});
+      case "account/rateLimits/read":
+      case "account/usage/read":
+        return this.#client.request(request.method, {});
+      case "skills/list": {
+        if (!Array.isArray(payload.cwds) || payload.cwds.length === 0)
+          throw new Error("skills/list requires at least one workspace cwd");
+        const cwds = payload.cwds;
+        const resolvedCwds = await Promise.all(
+          cwds.map(async (cwd) => {
+            if (typeof cwd !== "string")
+              throw new Error("skills/list requires string cwd values");
+            return this.#workspaces.resolve(cwd);
+          }),
+        );
+        return this.#client.request("skills/list", {
+          ...payload,
+          cwds: resolvedCwds,
+        });
+      }
       case "thread/list":
         return this.#listThreads(payload);
       case "thread/read":
@@ -159,12 +181,54 @@ export class CodexGatewaySession implements GatewaySession {
         await this.#authorizeThread(threadId);
         return this.#client.request(request.method, payload);
       }
+      case "thread/settings/update": {
+        const threadId = requiredString(payload, "threadId");
+        await this.#authorizeThread(threadId);
+        const update = { ...payload };
+        if (update.cwd !== undefined && update.cwd !== null) {
+          if (typeof update.cwd !== "string")
+            throw new Error("thread/settings/update cwd must be a string");
+          update.cwd = await this.#workspaces.resolve(update.cwd);
+        }
+        return this.#client.request(request.method, update);
+      }
       case "thread/delete": {
         const threadId = requiredString(payload, "threadId");
         await this.#authorizeThread(threadId);
         const result = await this.#client.request(request.method, payload);
         this.#authorizedThreads.delete(threadId);
         return result;
+      }
+      case "thread/fork": {
+        const threadId = requiredString(payload, "threadId");
+        await this.#authorizeThread(threadId);
+        const forkPayload = { ...payload };
+        if (forkPayload.cwd !== undefined && forkPayload.cwd !== null) {
+          if (typeof forkPayload.cwd !== "string")
+            throw new Error("thread/fork cwd must be a string");
+          forkPayload.cwd = await this.#workspaces.resolve(forkPayload.cwd);
+        }
+        const response = await this.#client.request<ThreadForkResponse>(
+          "thread/fork",
+          forkPayload,
+        );
+        await this.#workspaces.resolve(response.thread.cwd);
+        this.#authorizedThreads.add(response.thread.id);
+        return response;
+      }
+      case "thread/compact/start":
+      case "thread/goal/set":
+      case "thread/goal/get":
+      case "thread/goal/clear":
+      case "review/start": {
+        const threadId = requiredString(payload, "threadId");
+        await this.#ensureThreadLoaded(threadId);
+        return this.#client.request(request.method, payload);
+      }
+      case "mcpServerStatus/list": {
+        const threadId = optionalString(payload, "threadId");
+        if (threadId) await this.#authorizeThread(threadId);
+        return this.#client.request(request.method, payload);
       }
       case "turn/start":
       case "turn/steer":

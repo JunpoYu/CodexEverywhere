@@ -44,9 +44,11 @@ CodexEverywhere 的目标不是提供 Web Terminal，也不是替代 SSH、Slurm
 ## 核心能力
 
 - **真实 Codex 会话**：创建、恢复和实时查看 app-server thread；结构化显示回复、计划、命令、文件修改、MCP、subagent、审批和错误。
-- **Web / TUI 无缝接力**：会话页以高对比入口和常驻提示明确展示 SSH 接力；Web、`ce tui` 和其他官方 remote TUI 连接同一个 app-server，切换客户端不会中断活动任务。
+- **Codex 斜杠指令**：输入 `/` 即可按 Codex `0.144.1` 的官方顺序搜索、键盘或触控补全全部内置指令和别名；Web 等价操作调用 app-server 或现有界面，TUI/平台限定操作给出明确说明，未知指令不会被误发给模型。
+- **Web / TUI 无缝接力**：会话页以高对比入口和可永久隐藏的说明条展示 SSH 接力；Web、`ce tui` 和其他官方 remote TUI 连接同一个 app-server，切换客户端不会中断活动任务，也不会用新客户端的启动默认值覆盖会话创建时保存的权限。
 - **Queue 优先**：thread 忙碌时消息默认进入宿主机持久 Queue；每条排队消息可在活动 turn 结束前显式转为 Steer。
 - **多工作区管理**：登记允许的 workspace root、浏览子目录、筛选历史会话；范围包含多个子目录时，会话按实际工作目录折叠分组。创建会话时可选择模型、推理强度、sandbox 和审批策略。
+- **会话级权限**：对话页常驻显示 sandbox 与审批策略；创建时选择的权限由 app-server 保存并用于后续轮次，只有用户在 Web 或 TUI 中明确修改才会更新，已打开的客户端通过原生设置通知同步显示。
 - **多用户 Unix 隔离**：每个 Linux 用户拥有独立 Agent、app-server、`~/.codex`、Web 身份、工作区、会话和队列。
 - **自助初始化**：管理员完成一次公共安装后，符合 HPC SSH/NSS 策略的现有用户可运行 `ce device pair` 自行初始化。
 - **Codex 登录引导**：支持官方设备码流程，也支持用户本人经 E2EE 导入已有的 `~/.codex/auth.json`。
@@ -67,7 +69,7 @@ CodexEverywhere 的目标不是提供 Web Terminal，也不是替代 SSH、Slurm
 | Passkey、OPAQUE 专用密码与恢复码          | 可用             |
 | Web / 官方 TUI 接力                       | 可用             |
 | 多用户公共安装与 SSH 用户自助初始化       | 可用，仍属 Alpha |
-| thread 重命名、归档和删除                 | 计划中           |
+| 斜杠指令补全、重命名、归档和删除          | 可用             |
 | 文件上传、下载与完整 diff 浏览            | 计划中           |
 | Schedule、Web Push 与加密离线会话         | 计划中           |
 | 宿主机管理员停用、移除与恢复控制面        | 计划中           |
@@ -274,6 +276,8 @@ ce tui /absolute/path/to/project --new
 ```
 
 在 TUI 中输入 `/quit` 或 `/exit` 只会关闭当前 TUI 客户端，宿主机上的活动 turn 会继续运行。不要把 `Esc` 当成退出操作；它会中断当前任务。
+
+恢复已有会话时，`ce tui` 会让 app-server 中已经保存的会话权限优先于 TUI 进程自己的启动默认值。连接动作本身不会改权限；之后在 TUI 使用 `/permissions`，或在 Web 点击对话页的“会话权限”，仍会明确更新该会话后续轮次的默认权限，并同步到其他已打开客户端。`--new` 创建的新会话则使用 TUI 当次选择的权限。
 
 ## Monorepo 结构
 
