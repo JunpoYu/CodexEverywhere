@@ -44,7 +44,7 @@ CodexEverywhere 的目标不是提供 Web Terminal，也不是替代 SSH、Slurm
 ## 核心能力
 
 - **真实 Codex 会话**：创建、恢复和实时查看 app-server thread；结构化显示回复、计划、命令、文件修改、MCP、subagent、审批和错误。
-- **Web / TUI 无缝接力**：Web、`ce tui` 和其他官方 remote TUI 连接同一个 app-server，切换客户端不会中断活动任务。
+- **Web / TUI 无缝接力**：会话页以高对比入口和常驻提示明确展示 SSH 接力；Web、`ce tui` 和其他官方 remote TUI 连接同一个 app-server，切换客户端不会中断活动任务。
 - **Queue 优先**：thread 忙碌时消息默认进入宿主机持久 Queue；每条排队消息可在活动 turn 结束前显式转为 Steer。
 - **多工作区管理**：登记允许的 workspace root、浏览子目录、筛选历史会话；范围包含多个子目录时，会话按实际工作目录折叠分组。创建会话时可选择模型、推理强度、sandbox 和审批策略。
 - **多用户 Unix 隔离**：每个 Linux 用户拥有独立 Agent、app-server、`~/.codex`、Web 身份、工作区、会话和队列。
@@ -246,8 +246,11 @@ ce-relay issue-provisioner \
 ce admin install-provisioner \
   --origin https://codex.example.com \
   --relay-endpoint wss://relay.example.com/relay \
+  --default-codex-proxy http://127.0.0.1:7890 \
   --credential-stdin
 ```
+
+`--default-codex-proxy` 是可选的部署级默认值，适合宿主机提供本地代理的集群。它只在用户尚未选择 Codex 网络时写入首次初始化配置，不覆盖已有用户设置；用户之后仍可在 Web 的“Codex 网络”中切换。不要通过该命令行参数传递含用户名或密码的代理 URL；需要私密代理凭据时，应由用户在 E2EE Web 设置中自行配置。
 
 此后，符合现有 SSH 和 NSS 策略的普通用户可以直接执行：
 

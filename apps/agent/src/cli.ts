@@ -29,7 +29,10 @@ import { WorkspaceRegistry } from "./host/workspaces.js";
 import { isProcessAlive, readProcessRecord } from "./host/process-files.js";
 import { installWatchdog } from "./host/watchdog.js";
 import { runDoctor } from "./host/doctor.js";
-import { codexProcessEnvironment } from "./host/network.js";
+import {
+  codexProcessEnvironment,
+  createProxyNetworkConfig,
+} from "./host/network.js";
 import {
   runAgentService,
   startAgentService,
@@ -49,6 +52,7 @@ import {
 import {
   installHostProvisioner,
   issueSelfProvisioningGrant,
+  setHostProvisionerDefaultCodexNetwork,
 } from "./admin/self-provision.js";
 import {
   applySelfProvisioningGrant,
@@ -407,12 +411,17 @@ admin
     "--credential-stdin",
     "Read the host provisioner credential from standard input",
   )
+  .option(
+    "--default-codex-proxy <url>",
+    "Non-secret default proxy for newly initialized users",
+  )
   .description("Install one root-only credential for Unix-user self-service")
   .action(
     async (options: {
       origin: string;
       relayEndpoint: string;
       credentialStdin?: boolean;
+      defaultCodexProxy?: string;
     }) => {
       if (process.getuid?.() !== 0) {
         throw new Error("admin install-provisioner must run as root");
@@ -425,12 +434,34 @@ admin
         origin: options.origin,
         relayEndpoint: options.relayEndpoint,
         credential: JSON.parse(raw) as unknown,
+        ...(options.defaultCodexProxy
+          ? {
+              defaultCodexNetwork: createProxyNetworkConfig({
+                httpsProxy: options.defaultCodexProxy,
+              }),
+            }
+          : {}),
       });
       process.stdout.write(
         `Installed self-service provisioner for ${installed.credential.installationId}. Existing SSH users can now run: ce device pair\n`,
       );
     },
   );
+
+admin
+  .command("set-provisioner-default-proxy")
+  .argument("<url>", "Non-secret host-local HTTP/HTTPS proxy URL")
+  .description("Set the Codex proxy default for newly initialized users")
+  .action(async (url: string) => {
+    if (process.getuid?.() !== 0) {
+      throw new Error("admin set-provisioner-default-proxy must run as root");
+    }
+    const network = createProxyNetworkConfig({ httpsProxy: url });
+    await setHostProvisionerDefaultCodexNetwork(network);
+    process.stdout.write(
+      `Newly initialized users will default to Codex proxy ${network.mode === "proxy" ? network.httpsProxy : "direct"}.\n`,
+    );
+  });
 
 admin
   .command("self-provision", { hidden: true })

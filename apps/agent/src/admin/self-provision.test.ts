@@ -15,6 +15,7 @@ import {
   installHostProvisioner,
   issueSelfProvisioningGrant,
   loadHostProvisioner,
+  setHostProvisionerDefaultCodexNetwork,
 } from "./self-provision.js";
 
 const temporaryDirectories: string[] = [];
@@ -38,6 +39,10 @@ describe("host self-provisioner", () => {
         origin: "https://codex.example.com",
         relayEndpoint: "wss://codex.example.com/relay",
         credential,
+        defaultCodexNetwork: {
+          mode: "proxy",
+          httpsProxy: "http://127.0.0.1:7890",
+        },
       },
       configPath,
     );
@@ -45,6 +50,10 @@ describe("host self-provisioner", () => {
     expect((await stat(configPath)).mode & 0o777).toBe(0o600);
     await expect(loadHostProvisioner(configPath)).resolves.toMatchObject({
       credential: { installationId: "hpc-cluster-1" },
+      defaultCodexNetwork: {
+        mode: "proxy",
+        httpsProxy: "http://127.0.0.1:7890",
+      },
     });
 
     const uid = process.getuid?.() ?? 501;
@@ -61,10 +70,46 @@ describe("host self-provisioner", () => {
       uid,
       origin: "https://codex.example.com",
       relayEndpoint: "wss://codex.example.com/relay",
+      defaultCodexNetwork: {
+        mode: "proxy",
+        httpsProxy: "http://127.0.0.1:7890",
+      },
     });
     expect(routeCapabilityLoginId(verified, relayKey)).toBe(
       relayLoginId(relayKey, "bob"),
     );
+  });
+
+  it("updates the deployment default without replacing its credential", async () => {
+    const home = await temporaryDirectory();
+    const configPath = join(home, "etc", "provisioner.json");
+    const relayKey = generateRelaySigningKey();
+    const credential = issueHostProvisionerCredential(relayKey, {
+      installationId: "hpc-cluster-1",
+      expiresAt: new Date(Date.now() + 86_400_000),
+    });
+    await installHostProvisioner(
+      {
+        origin: "https://codex.example.com",
+        relayEndpoint: "wss://codex.example.com/relay",
+        credential,
+      },
+      configPath,
+    );
+
+    await setHostProvisionerDefaultCodexNetwork(
+      { mode: "proxy", httpsProxy: "http://127.0.0.1:7890" },
+      configPath,
+    );
+
+    await expect(loadHostProvisioner(configPath)).resolves.toMatchObject({
+      credential: { installationId: "hpc-cluster-1" },
+      defaultCodexNetwork: {
+        mode: "proxy",
+        httpsProxy: "http://127.0.0.1:7890",
+      },
+    });
+    expect((await stat(configPath)).mode & 0o777).toBe(0o600);
   });
 
   it("rejects a sudo identity that does not match NSS", async () => {
