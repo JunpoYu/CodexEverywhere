@@ -2160,6 +2160,67 @@ dialog::backdrop {
   letter-spacing: 0.09em;
 }
 
+.thread-directory-group {
+  margin: 2px 0 7px;
+}
+
+.thread-directory-summary {
+  display: grid;
+  grid-template-columns: 10px minmax(0, 1fr) auto;
+  gap: 7px;
+  align-items: center;
+  min-height: 31px;
+  padding: 7px 9px;
+  overflow: hidden;
+  color: #8d939d;
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 9px;
+  font-weight: 700;
+  list-style: none;
+}
+
+.thread-directory-summary::-webkit-details-marker {
+  display: none;
+}
+
+.thread-directory-summary::before {
+  color: #666c76;
+  content: "›";
+  font-size: 14px;
+  line-height: 1;
+  transition: transform 140ms ease;
+}
+
+.thread-directory-group[open] > .thread-directory-summary::before {
+  transform: rotate(90deg);
+}
+
+.thread-directory-summary:hover {
+  color: #d9dce1;
+  background: #202329;
+}
+
+.thread-directory-summary > span:first-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.thread-directory-count {
+  min-width: 21px;
+  padding: 2px 6px;
+  color: #8d939d;
+  background: #292d34;
+  border-radius: 99px;
+  font-size: 8px;
+  text-align: center;
+}
+
+.thread-directory-items {
+  padding-left: 4px;
+}
+
 .thread-item {
   position: relative;
   margin-bottom: 2px;

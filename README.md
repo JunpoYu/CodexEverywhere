@@ -46,11 +46,11 @@ CodexEverywhere 的目标不是提供 Web Terminal，也不是替代 SSH、Slurm
 - **真实 Codex 会话**：创建、恢复和实时查看 app-server thread；结构化显示回复、计划、命令、文件修改、MCP、subagent、审批和错误。
 - **Web / TUI 无缝接力**：Web、`ce tui` 和其他官方 remote TUI 连接同一个 app-server，切换客户端不会中断活动任务。
 - **Queue 优先**：thread 忙碌时消息默认进入宿主机持久 Queue；每条排队消息可在活动 turn 结束前显式转为 Steer。
-- **多工作区管理**：登记允许的 workspace root、浏览子目录、筛选历史会话，并在创建会话时选择模型、推理强度、sandbox 和审批策略。
+- **多工作区管理**：登记允许的 workspace root、浏览子目录、筛选历史会话；范围包含多个子目录时，会话按实际工作目录折叠分组。创建会话时可选择模型、推理强度、sandbox 和审批策略。
 - **多用户 Unix 隔离**：每个 Linux 用户拥有独立 Agent、app-server、`~/.codex`、Web 身份、工作区、会话和队列。
 - **自助初始化**：管理员完成一次公共安装后，符合 HPC SSH/NSS 策略的现有用户可运行 `ce device pair` 自行初始化。
 - **Codex 登录引导**：支持官方设备码流程，也支持用户本人经 E2EE 导入已有的 `~/.codex/auth.json`。
-- **Passkey 与专用密码**：Web 身份由 Codex 宿主机验证；CodexEverywhere 不收集、复用或验证 SSH 密码。
+- **Passkey 与专用密码**：Web 身份由 Codex 宿主机验证；CodexEverywhere 不收集、复用或验证 SSH 密码。专用密码默认临时登录，只有显式保存新设备时才需要设备名称；当前浏览器已有同一用户记录时沿用原名称。
 - **Direct 优先、Relay 回退**：浏览器可直连时使用 HTTPS/WSS Direct Gateway；不可达时通过可选无状态 Relay 转发 Noise 端到端密文。
 - **适配老旧 HPC**：首个目标环境是 CentOS 7、glibc 2.17、Node.js 20；用户服务兼容 tmux、crontab watchdog、PID 文件和文件锁。
 - **响应式 PWA**：支持桌面与移动端布局、浅色/深色模式、可安装应用外壳和临时设备模式。
