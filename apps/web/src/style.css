@@ -1529,8 +1529,58 @@ button {
   border-color: #e8b55b;
   background: #fffaf0;
 }
+.timeline-card.approval.submitting {
+  border-color: #d89928;
+  box-shadow: 0 0 0 3px #d8992814;
+}
+.timeline-card.approval.submission-error {
+  border-color: #d36a60;
+  background: #fff7f5;
+}
 .timeline-card.approval.answered {
   opacity: 0.65;
+}
+
+.timeline-card.approval .actions {
+  flex-wrap: wrap;
+}
+
+.approval-submit-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 20px;
+  color: #735f3a;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1.45;
+}
+
+.approval-submit-state.pending::before {
+  width: 12px;
+  height: 12px;
+  border: 2px solid #d8992852;
+  border-top-color: #b46d10;
+  border-radius: 50%;
+  content: "";
+  animation: rotate 650ms linear infinite;
+}
+
+.approval-submit-state.complete {
+  color: #287a4b;
+}
+
+.approval-submit-state.complete::before {
+  content: "✓";
+}
+
+.approval-submit-state.failure {
+  flex-basis: 100%;
+  color: #a52f28;
+}
+
+.approval-submit-state.failure::before {
+  content: "!";
 }
 
 .approval-summary {
@@ -4343,6 +4393,28 @@ button.thread-fact {
 :root[data-theme="dark"] .timeline-card.approval {
   background: #292315;
   border-color: #70592d;
+}
+
+:root[data-theme="dark"] .timeline-card.approval.submitting {
+  border-color: #a77b31;
+  box-shadow: 0 0 0 3px #a77b3126;
+}
+
+:root[data-theme="dark"] .timeline-card.approval.submission-error {
+  border-color: #84453f;
+  background: #2c1c1a;
+}
+
+:root[data-theme="dark"] .approval-submit-state {
+  color: #d7bc84;
+}
+
+:root[data-theme="dark"] .approval-submit-state.complete {
+  color: #72c997;
+}
+
+:root[data-theme="dark"] .approval-submit-state.failure {
+  color: #ef948b;
 }
 
 :root[data-theme="dark"] .timeline-card strong,

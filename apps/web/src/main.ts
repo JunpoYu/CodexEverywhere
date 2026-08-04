@@ -25,6 +25,7 @@ import {
   type HostDocument,
   type PairingDocument,
 } from "./gateway-client.js";
+import { ApprovalSubmissionTracker } from "./approval-submission.js";
 import {
   codexLoginEventAction,
   shouldRenderInThreadTimeline,
@@ -198,6 +199,7 @@ let directoryPickerTarget: "session" | "workspace" = "session";
 let directoryBrowseState: WorkspaceBrowseResponse | undefined;
 let directoryBrowseSequence = 0;
 const pendingRequestIds = new Set<string>();
+const approvalSubmissions = new ApprovalSubmissionTracker();
 const threadUnsubscribeOperations = new Map<string, Promise<void>>();
 const threadDirectoryOpenState = new Map<string, boolean>();
 let composerSubmitting = false;
@@ -1390,6 +1392,7 @@ async function activate(nextClient: GatewayClient): Promise<void> {
   activeThreadSettings = undefined;
   activeThreadTokenUsage = undefined;
   pendingRequestIds.clear();
+  approvalSubmissions.clear();
   client?.close();
   client = nextClient;
   appServerRestartRequired = false;
@@ -2520,6 +2523,7 @@ function closeActiveThreadView(): void {
   activeThreadSettings = undefined;
   activeThreadTokenUsage = undefined;
   pendingRequestIds.clear();
+  approvalSubmissions.clear();
   workspace.classList.remove("thread-open");
   requiredElement("thread-title").textContent = "选择一个会话";
   requiredElement("thread-cwd").textContent = "";
@@ -2587,6 +2591,7 @@ async function openThread(thread: ThreadSummary): Promise<void> {
   activeThreadSettings = undefined;
   activeThreadTokenUsage = undefined;
   pendingRequestIds.clear();
+  approvalSubmissions.clear();
   requiredElement("thread-settings-button").hidden = true;
   setTuiHandoffVisible(false);
   requiredElement("thread-overview").hidden = true;
@@ -3722,11 +3727,17 @@ function renderEvent(event: EventEnvelope): void {
     const payload = isRecord(event.payload) ? event.payload : {};
     const requestId = String(payload.requestId ?? payload.id ?? "");
     pendingRequestIds.delete(requestId);
+    const resolution = approvalSubmissions.resolve(requestId);
     const card = Array.from(
       timeline.querySelectorAll<HTMLElement>("[data-request-id]"),
     ).find((candidate) => candidate.dataset.requestId === requestId);
     if (card && !card.classList.contains("answered"))
-      markAnswered(card, "已由其他客户端处理");
+      markAnswered(
+        card,
+        resolution.wasSubmitting
+          ? (card.dataset.submissionResult ?? "已处理")
+          : "已由其他客户端处理",
+      );
     updatePendingApprovalState();
     return;
   }
@@ -3864,16 +3875,24 @@ async function answerApproval(
   accepted: boolean,
   card: HTMLElement,
 ): Promise<void> {
-  if (!client) return;
+  const currentClient = client;
+  if (!currentClient) return;
+  const requestId = String(payload.requestId);
+  if (!approvalSubmissions.begin(requestId)) return;
+  const resultText = accepted ? "已允许" : "已拒绝";
+  setApprovalSubmitting(
+    card,
+    accepted ? "正在提交允许，请勿重复点击…" : "正在提交拒绝，请勿重复点击…",
+    resultText,
+  );
   try {
-    const requestId = String(payload.requestId);
     if (!accepted && payload.method === "item/permissions/requestApproval") {
-      await client.request("codex/server-request/respond", {
+      await currentClient.request("codex/server-request/respond", {
         requestId,
         error: { code: -32_000, message: "Declined by user" },
       });
     } else {
-      await client.request("codex/server-request/respond", {
+      await currentClient.request("codex/server-request/respond", {
         requestId,
         result:
           payload.method === "item/permissions/requestApproval"
@@ -3883,11 +3902,20 @@ async function answerApproval(
               : { decision: accepted ? "accept" : "decline" },
       });
     }
-    markAnswered(card, accepted ? "已允许" : "已拒绝");
-    pendingRequestIds.delete(String(payload.requestId));
+    if (!approvalSubmissions.complete(requestId) || !card.isConnected) return;
+    markAnswered(card, resultText);
+    pendingRequestIds.delete(requestId);
     updatePendingApprovalState();
   } catch (error) {
-    appendTimeline("error", "审批失败", errorMessage(error));
+    const disposition = approvalSubmissions.fail(requestId, error);
+    if (disposition === "ignored" || !card.isConnected) return;
+    if (disposition === "already-handled") {
+      markAnswered(card, "已由其他客户端处理");
+      pendingRequestIds.delete(requestId);
+      updatePendingApprovalState();
+      return;
+    }
+    setApprovalSubmissionFailed(card, `提交失败：${errorMessage(error)}`);
   }
 }
 
@@ -3939,19 +3967,33 @@ function renderUserInput(payload: Record<string, unknown>): void {
   actions.className = "actions";
   const submit = button("提交回答", "primary");
   submit.addEventListener("click", async () => {
+    const currentClient = client;
+    if (!currentClient) return;
+    const requestId = String(payload.requestId);
+    if (!approvalSubmissions.begin(requestId)) return;
     const answers: Record<string, { answers: string[] }> = {};
     for (const [id, control] of controls)
       answers[id] = { answers: [control.value] };
+    setApprovalSubmitting(card, "正在提交回答，请勿重复点击…", "已提交回答");
     try {
-      await client?.request("codex/server-request/respond", {
-        requestId: payload.requestId,
+      await currentClient.request("codex/server-request/respond", {
+        requestId,
         result: { answers },
       });
+      if (!approvalSubmissions.complete(requestId) || !card.isConnected) return;
       markAnswered(card, "已提交回答");
-      pendingRequestIds.delete(String(payload.requestId));
+      pendingRequestIds.delete(requestId);
       updatePendingApprovalState();
     } catch (error) {
-      appendTimeline("error", "提交回答失败", errorMessage(error));
+      const disposition = approvalSubmissions.fail(requestId, error);
+      if (disposition === "ignored" || !card.isConnected) return;
+      if (disposition === "already-handled") {
+        markAnswered(card, "已由其他客户端处理");
+        pendingRequestIds.delete(requestId);
+        updatePendingApprovalState();
+        return;
+      }
+      setApprovalSubmissionFailed(card, `提交回答失败：${errorMessage(error)}`);
     }
   });
   actions.append(submit);
@@ -3981,14 +4023,62 @@ function permissionGrant(params: unknown): Record<string, unknown> {
 }
 
 function markAnswered(card: HTMLElement, text: string): void {
+  card.classList.remove("submitting", "submission-error");
   card.classList.add("answered");
-  card
-    .querySelector(".actions")
-    ?.replaceChildren(document.createTextNode(text));
+  card.removeAttribute("aria-busy");
+  const state = approvalSubmissionState(text, "complete");
+  card.querySelector(".actions")?.replaceChildren(state);
   for (const control of card.querySelectorAll<
-    HTMLInputElement | HTMLSelectElement
+    HTMLInputElement | HTMLSelectElement | HTMLButtonElement
   >("input, select, button"))
     control.disabled = true;
+  delete card.dataset.submissionResult;
+}
+
+function setApprovalSubmitting(
+  card: HTMLElement,
+  text: string,
+  resultText: string,
+): void {
+  card.classList.remove("submission-error");
+  card.classList.add("submitting");
+  card.setAttribute("aria-busy", "true");
+  card.dataset.submissionResult = resultText;
+  for (const control of card.querySelectorAll<
+    HTMLInputElement | HTMLSelectElement | HTMLButtonElement
+  >("input, select, button"))
+    control.disabled = true;
+  const actions = card.querySelector(".actions");
+  actions?.querySelector(".approval-submit-state")?.remove();
+  actions?.append(approvalSubmissionState(text, "pending"));
+}
+
+function setApprovalSubmissionFailed(card: HTMLElement, text: string): void {
+  card.classList.remove("submitting");
+  card.classList.add("submission-error");
+  card.removeAttribute("aria-busy");
+  for (const control of card.querySelectorAll<
+    HTMLInputElement | HTMLSelectElement | HTMLButtonElement
+  >("input, select, button"))
+    control.disabled = false;
+  const actions = card.querySelector(".actions");
+  actions?.querySelector(".approval-submit-state")?.remove();
+  actions?.append(approvalSubmissionState(`${text}，请重试。`, "failure"));
+}
+
+function approvalSubmissionState(
+  text: string,
+  state: "pending" | "complete" | "failure",
+): HTMLElement {
+  const element = document.createElement("span");
+  element.className = `approval-submit-state ${state}`;
+  element.setAttribute("role", state === "failure" ? "alert" : "status");
+  element.setAttribute(
+    "aria-live",
+    state === "failure" ? "assertive" : "polite",
+  );
+  element.textContent = text;
+  return element;
 }
 
 async function renderSavedHosts(): Promise<void> {
@@ -4346,6 +4436,7 @@ function updateThreadActivity(
   }
   if (event.type === "codex/turn/completed") {
     pendingRequestIds.clear();
+    approvalSubmissions.clear();
     activeTurnId = undefined;
     activeThreadStatus = { type: "idle" };
     setThreadActivity("completed", "已完成");
