@@ -6,9 +6,22 @@ updates:
     schedule:
       interval: weekly
     groups:
-      npm-dependencies:
+      npm-minor-and-patch:
         patterns:
           - "*"
+        update-types:
+          - minor
+          - patch
+    ignore:
+      # Commander 15 requires Node.js >=22.12, while the supported HPC
+      # runtime remains Node.js 20.
+      - dependency-name: commander
+        update-types:
+          - version-update:semver-major
+      # Keep compile-time Node APIs aligned with the supported runtime.
+      - dependency-name: "@types/node"
+        update-types:
+          - version-update:semver-major
 
   - package-ecosystem: github-actions
     directory: /
