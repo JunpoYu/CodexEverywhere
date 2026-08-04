@@ -1,0 +1,10 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": { "outDir": "dist", "rootDir": "src" },
+  "include": ["src/**/*.ts"],
+  "references": [
+    { "path": "../../packages/codex-app-server-schema" },
+    { "path": "../../packages/crypto" },
+    { "path": "../../packages/protocol" }
+  ]
+}

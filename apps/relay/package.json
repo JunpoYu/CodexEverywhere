@@ -1,0 +1,24 @@
+{
+  "name": "@codex-everywhere/relay",
+  "version": "0.3.0-alpha.1",
+  "private": true,
+  "license": "Apache-2.0",
+  "type": "module",
+  "bin": {
+    "ce-relay": "./dist/cli.js"
+  },
+  "scripts": {
+    "build": "tsc -b && chmod 755 dist/cli.js",
+    "clean": "rm -rf dist *.tsbuildinfo",
+    "dev": "tsx watch src/index.ts",
+    "typecheck": "tsc -b --pretty false"
+  },
+  "dependencies": {
+    "@codex-everywhere/protocol": "workspace:*",
+    "commander": "14.0.3",
+    "ws": "8.21.1"
+  },
+  "devDependencies": {
+    "@types/ws": "8.18.1"
+  }
+}

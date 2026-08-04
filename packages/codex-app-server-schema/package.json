@@ -1,0 +1,21 @@
+{
+  "name": "@codex-everywhere/codex-app-server-schema",
+  "version": "0.144.1",
+  "private": true,
+  "license": "Apache-2.0",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/generated/index.d.ts"
+    },
+    "./v2": {
+      "types": "./dist/generated/v2/index.d.ts"
+    }
+  },
+  "scripts": {
+    "build": "tsc -b",
+    "clean": "rm -rf dist *.tsbuildinfo",
+    "generate": "rm -rf src/generated && codex app-server generate-ts --out src/generated",
+    "typecheck": "tsc -b --pretty false"
+  }
+}

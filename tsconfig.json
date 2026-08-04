@@ -1,0 +1,12 @@
+{
+  "files": [],
+  "references": [
+    { "path": "packages/codex-app-server-schema" },
+    { "path": "packages/protocol" },
+    { "path": "packages/crypto" },
+    { "path": "packages/testing" },
+    { "path": "apps/agent" },
+    { "path": "apps/relay" },
+    { "path": "apps/web" }
+  ]
+}

@@ -1,0 +1,10 @@
+packages:
+  - apps/*
+  - packages/*
+
+overrides:
+  rollup: npm:@rollup/wasm-node@4.62.3
+  sodium-universal: npm:sodium-javascript@0.8.0
+
+allowBuilds:
+  esbuild: true

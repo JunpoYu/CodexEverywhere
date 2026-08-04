@@ -1,0 +1,95 @@
+import { mkdtemp, rm, stat } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, describe, expect, it } from "vitest";
+
+import {
+  generateRelaySigningKey,
+  issueHostProvisionerCredential,
+  relayLoginId,
+  routeCapabilityLoginId,
+  verifyRouteCapability,
+} from "@codex-everywhere/protocol/relay-capability";
+
+import {
+  installHostProvisioner,
+  issueSelfProvisioningGrant,
+  loadHostProvisioner,
+} from "./self-provision.js";
+
+const temporaryDirectories: string[] = [];
+afterEach(async () => {
+  await Promise.all(
+    temporaryDirectories.splice(0).map((path) => rm(path, { recursive: true })),
+  );
+});
+
+describe("host self-provisioner", () => {
+  it("installs one private host credential and issues for the sudo Unix user", async () => {
+    const home = await temporaryDirectory();
+    const configPath = join(home, "etc", "provisioner.json");
+    const relayKey = generateRelaySigningKey();
+    const credential = issueHostProvisionerCredential(relayKey, {
+      installationId: "hpc-cluster-1",
+      expiresAt: new Date(Date.now() + 86_400_000),
+    });
+    await installHostProvisioner(
+      {
+        origin: "https://codex.example.com",
+        relayEndpoint: "wss://codex.example.com/relay",
+        credential,
+      },
+      configPath,
+    );
+
+    expect((await stat(configPath)).mode & 0o777).toBe(0o600);
+    await expect(loadHostProvisioner(configPath)).resolves.toMatchObject({
+      credential: { installationId: "hpc-cluster-1" },
+    });
+
+    const uid = process.getuid?.() ?? 501;
+    const grant = await issueSelfProvisioningGrant({
+      env: { SUDO_USER: "bob", SUDO_UID: String(uid) },
+      configPath,
+      runGetent: async () =>
+        `bob:x:${uid}:${process.getgid?.() ?? 20}::${home}:/bin/bash\n`,
+    });
+    const verified = verifyRouteCapability(grant.routeCapability, relayKey);
+
+    expect(grant).toMatchObject({
+      username: "bob",
+      uid,
+      origin: "https://codex.example.com",
+      relayEndpoint: "wss://codex.example.com/relay",
+    });
+    expect(routeCapabilityLoginId(verified, relayKey)).toBe(
+      relayLoginId(relayKey, "bob"),
+    );
+  });
+
+  it("rejects a sudo identity that does not match NSS", async () => {
+    const home = await temporaryDirectory();
+    const uid = process.getuid?.() ?? 501;
+
+    await expect(
+      issueSelfProvisioningGrant({
+        env: { SUDO_USER: "bob", SUDO_UID: String(uid + 1) },
+        configPath: join(home, "missing.json"),
+        runGetent: async () =>
+          `bob:x:${uid}:${process.getgid?.() ?? 20}::${home}:/bin/bash\n`,
+      }),
+    ).rejects.toThrow("does not match");
+  });
+
+  it("cannot be invoked by an ordinary root shell without sudo identity", async () => {
+    await expect(issueSelfProvisioningGrant({ env: {} })).rejects.toThrow(
+      "installed sudo helper",
+    );
+  });
+});
+
+async function temporaryDirectory(): Promise<string> {
+  const path = await mkdtemp(join(tmpdir(), "ce-self-provision-test-"));
+  temporaryDirectories.push(path);
+  return path;
+}

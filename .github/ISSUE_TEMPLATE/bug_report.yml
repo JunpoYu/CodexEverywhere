@@ -1,0 +1,63 @@
+name: Bug report
+description: 报告可以稳定复现的错误
+title: "[Bug]: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        感谢报告。请移除日志、截图和配置中的用户名、主机名、路径、凭据、恢复码与配对材料。安全问题请按 SECURITY.md 私密报告。
+  - type: dropdown
+    id: component
+    attributes:
+      label: 组件
+      options:
+        - Agent / CLI
+        - Web / PWA
+        - Relay
+        - Protocol / Crypto
+        - Deployment / Documentation
+        - Unsure
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: 版本
+      description: Release、commit SHA 或分支名称
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: 环境
+      description: 操作系统、Node.js、pnpm、Codex 版本和连接方式；请匿名化部署信息
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: 复现步骤
+      description: 提供最小、可重复且不含敏感数据的步骤
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: 预期行为
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: 实际行为
+    validations:
+      required: true
+  - type: checkboxes
+    id: safety
+    attributes:
+      label: 敏感信息确认
+      options:
+        - label: 我已移除凭据、恢复码、配对材料、真实主机名、用户名和私有文件内容。
+          required: true

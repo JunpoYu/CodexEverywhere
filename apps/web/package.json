@@ -1,0 +1,21 @@
+{
+  "name": "@codex-everywhere/web",
+  "version": "0.3.0-alpha.1",
+  "private": true,
+  "license": "Apache-2.0",
+  "type": "module",
+  "scripts": {
+    "build": "tsc -b && vite build",
+    "clean": "rm -rf dist *.tsbuildinfo",
+    "dev": "vite",
+    "typecheck": "tsc -b --pretty false"
+  },
+  "dependencies": {
+    "@codex-everywhere/codex-app-server-schema": "workspace:*",
+    "@codex-everywhere/crypto": "workspace:*",
+    "@codex-everywhere/protocol": "workspace:*",
+    "@serenity-kit/opaque": "1.1.0",
+    "@simplewebauthn/browser": "13.2.2",
+    "vite": "^7.0.0"
+  }
+}

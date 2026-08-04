@@ -1,0 +1,25 @@
+{
+  "name": "@codex-everywhere/crypto",
+  "version": "0.3.0-alpha.1",
+  "private": true,
+  "license": "Apache-2.0",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -b",
+    "clean": "rm -rf dist *.tsbuildinfo",
+    "typecheck": "tsc -b --pretty false"
+  },
+  "dependencies": {
+    "b4a": "1.7.3",
+    "noise-handshake": "4.2.0"
+  },
+  "devDependencies": {
+    "@types/b4a": "1.6.5"
+  }
+}

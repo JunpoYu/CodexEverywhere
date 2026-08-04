@@ -1,0 +1,23 @@
+[Unit]
+Description=CodexEverywhere stateless ciphertext Relay
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=codex-relay
+Group=codex-relay
+Environment=CE_RELAY_HOME=/var/lib/codex-everywhere-relay
+ExecStart=/usr/local/bin/node /opt/codex-everywhere/relay/dist/cli.js serve --host 127.0.0.1 --port 7346
+Restart=on-failure
+RestartSec=2s
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/codex-everywhere-relay
+RestrictSUIDSGID=true
+LockPersonality=true
+
+[Install]
+WantedBy=multi-user.target

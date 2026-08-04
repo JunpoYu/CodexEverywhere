@@ -1,0 +1,522 @@
+import { randomUUID } from "node:crypto";
+import { EventEmitter } from "node:events";
+import { isAbsolute } from "node:path";
+
+import {
+  PROTOCOL_VERSION,
+  type EventEnvelope,
+  type RequestEnvelope,
+} from "@codex-everywhere/protocol";
+import type {
+  ThreadListResponse,
+  ThreadReadResponse,
+  ThreadResumeResponse,
+  ThreadStartResponse,
+  ThreadStatus,
+  TurnSteerResponse,
+} from "@codex-everywhere/codex-app-server-schema/v2";
+
+import { WorkspaceRegistry } from "../host/workspaces.js";
+import {
+  CodexAppServerClient,
+  type CodexNotification,
+  type CodexServerRequest,
+} from "../runtime/codex-app-server-client.js";
+import type { GatewaySession } from "./direct-gateway.js";
+import { QueueRegistry } from "../host/queue.js";
+import type {
+  QueueDispatcher,
+  QueueDispatcherEvent,
+} from "../runtime/queue-dispatcher.js";
+
+export type CodexGatewaySessionOptions = {
+  socketPath: string;
+  workspaces: WorkspaceRegistry;
+  nodeStatus(): Promise<unknown> | unknown;
+  queue: QueueRegistry;
+  queueDispatcher?: QueueDispatcher;
+};
+
+export class CodexGatewaySession implements GatewaySession {
+  readonly #client: CodexAppServerClient;
+  readonly #workspaces: WorkspaceRegistry;
+  readonly #nodeStatus: () => Promise<unknown> | unknown;
+  readonly #queue: QueueRegistry;
+  readonly #queueDispatcher: QueueDispatcher | undefined;
+  readonly #events = new EventEmitter<{ event: [EventEnvelope] }>();
+  readonly #serverRequests = new Map<string, CodexServerRequest>();
+  readonly #authorizedThreads = new Set<string>();
+  readonly #unsubscribeQueue: (() => void) | undefined;
+  #cursor = 0;
+
+  private constructor(
+    client: CodexAppServerClient,
+    options: CodexGatewaySessionOptions,
+  ) {
+    this.#client = client;
+    this.#workspaces = options.workspaces;
+    this.#nodeStatus = options.nodeStatus;
+    this.#queue = options.queue;
+    this.#queueDispatcher = options.queueDispatcher;
+    this.#unsubscribeQueue = options.queueDispatcher?.onEvent(
+      (event) => void this.#forwardQueueEvent(event),
+    );
+    client.on(
+      "notification",
+      (notification) => void this.#forwardNotification(notification),
+    );
+    client.on(
+      "serverRequest",
+      (request) => void this.#forwardServerRequest(request),
+    );
+  }
+
+  static async connect(
+    options: CodexGatewaySessionOptions,
+  ): Promise<CodexGatewaySession> {
+    const client = await CodexAppServerClient.connectUnix(options.socketPath);
+    return new CodexGatewaySession(client, options);
+  }
+
+  onEvent(listener: (event: EventEnvelope) => void): () => void {
+    this.#events.on("event", listener);
+    return () => this.#events.off("event", listener);
+  }
+
+  async request(request: RequestEnvelope): Promise<unknown> {
+    const payload = asRecord(request.payload);
+    switch (request.method) {
+      case "node/status":
+        return this.#nodeStatus();
+      case "workspace/list":
+        return this.#workspaces.profile();
+      case "workspace/browse": {
+        const path = optionalString(payload, "path");
+        if (path !== undefined) requireAbsoluteWorkspacePath(path);
+        return this.#workspaces.browse(path);
+      }
+      case "workspace/add": {
+        const path = requiredString(payload, "path");
+        requireAbsoluteWorkspacePath(path);
+        return this.#workspaces.add(path);
+      }
+      case "workspace/remove": {
+        const path = requiredString(payload, "path");
+        requireAbsoluteWorkspacePath(path);
+        const result = await this.#workspaces.remove(path);
+        this.#authorizedThreads.clear();
+        return result;
+      }
+      case "workspace/default/set": {
+        const path = requiredString(payload, "path");
+        requireAbsoluteWorkspacePath(path);
+        return this.#workspaces.setDefault(path);
+      }
+      case "model/list":
+        return this.#client.request("model/list", payload);
+      case "codex/account/read":
+        return this.#client.request("account/read", { refreshToken: false });
+      case "codex/account/login/start":
+        return this.#client.request("account/login/start", {
+          type: "chatgptDeviceCode",
+        });
+      case "codex/account/login/cancel":
+        return this.#client.request("account/login/cancel", {
+          loginId: requiredString(payload, "loginId"),
+        });
+      case "codex/account/logout":
+        return this.#client.request("account/logout", {});
+      case "thread/list":
+        return this.#listThreads(payload);
+      case "thread/read":
+        return this.#readAuthorizedThread(payload);
+      case "queue/list":
+        return this.#listQueue();
+      case "queue/add":
+        return this.#addQueueItem(payload);
+      case "queue/remove":
+        return this.#removeQueueItem(payload);
+      case "queue/steer":
+        return this.#steerQueueItem(payload);
+      case "thread/start": {
+        if (typeof payload.cwd !== "string")
+          throw new Error("thread/start requires cwd");
+        const cwd = await this.#workspaces.resolve(payload.cwd);
+        const response = await this.#client.request<ThreadStartResponse>(
+          "thread/start",
+          { ...payload, cwd },
+        );
+        await this.#workspaces.resolve(response.thread.cwd);
+        this.#authorizedThreads.add(response.thread.id);
+        return response;
+      }
+      case "thread/resume":
+      case "thread/unsubscribe":
+      case "thread/name/set":
+      case "thread/archive":
+      case "thread/unarchive": {
+        const threadId = requiredString(payload, "threadId");
+        await this.#authorizeThread(threadId);
+        return this.#client.request(request.method, payload);
+      }
+      case "thread/delete": {
+        const threadId = requiredString(payload, "threadId");
+        await this.#authorizeThread(threadId);
+        const result = await this.#client.request(request.method, payload);
+        this.#authorizedThreads.delete(threadId);
+        return result;
+      }
+      case "turn/start":
+      case "turn/steer":
+      case "turn/interrupt": {
+        const threadId = requiredString(payload, "threadId");
+        await this.#ensureThreadLoaded(threadId);
+        if (request.method !== "turn/interrupt") {
+          rejectLocalImageInput(payload.input);
+        }
+        return this.#client.request(request.method, payload);
+      }
+      case "codex/server-request/respond":
+        return this.#respondToServerRequest(payload);
+      default:
+        throw new Error(`Unsupported gateway method: ${request.method}`);
+    }
+  }
+
+  close(): Promise<void> {
+    this.#unsubscribeQueue?.();
+    this.#serverRequests.clear();
+    return this.#client.close();
+  }
+
+  async #listThreads(
+    payload: Record<string, unknown>,
+  ): Promise<ThreadListResponse> {
+    const response = await this.#client.request<ThreadListResponse>(
+      "thread/list",
+      payload,
+    );
+    const allowed = await Promise.all(
+      response.data.map(async (thread) => {
+        try {
+          await this.#workspaces.resolve(thread.cwd);
+          return thread;
+        } catch {
+          return undefined;
+        }
+      }),
+    );
+    return {
+      ...response,
+      data: allowed.filter(
+        (thread): thread is NonNullable<(typeof allowed)[number]> => {
+          if (!thread) return false;
+          this.#authorizedThreads.add(thread.id);
+          return true;
+        },
+      ),
+    };
+  }
+
+  async #readAuthorizedThread(
+    payload: Record<string, unknown>,
+  ): Promise<ThreadReadResponse> {
+    const response = await this.#client.request<ThreadReadResponse>(
+      "thread/read",
+      payload,
+    );
+    await this.#workspaces.resolve(response.thread.cwd);
+    this.#authorizedThreads.add(response.thread.id);
+    return response;
+  }
+
+  async #authorizeThread(threadId: string): Promise<ThreadReadResponse> {
+    return this.#readAuthorizedThread({ threadId, includeTurns: false });
+  }
+
+  async #ensureThreadLoaded(threadId: string): Promise<void> {
+    const current = await this.#authorizeThread(threadId);
+    if (!threadNeedsResume(current.thread.status)) return;
+    const resumed = await this.#client.request<ThreadResumeResponse>(
+      "thread/resume",
+      { threadId },
+    );
+    await this.#workspaces.resolve(resumed.thread.cwd);
+  }
+
+  async #listQueue(): Promise<{ items: unknown[] }> {
+    const items = await this.#queue.list();
+    const allowed = await Promise.all(
+      items.map(async (item) => {
+        try {
+          await this.#workspaces.resolve(item.workspacePath);
+          return item;
+        } catch {
+          return undefined;
+        }
+      }),
+    );
+    return { items: allowed.filter((item) => item !== undefined) };
+  }
+
+  async #addQueueItem(payload: Record<string, unknown>): Promise<unknown> {
+    const threadId = requiredString(payload, "threadId");
+    const thread = await this.#readAuthorizedThread({
+      threadId,
+      includeTurns: false,
+    });
+    const { threadId: _threadId, ...turnPayload } = payload;
+    if (!Array.isArray(turnPayload.input))
+      throw new Error("queue/add requires input");
+    rejectLocalImageInput(turnPayload.input);
+    const item = await this.#queue.add({
+      workspacePath: thread.thread.cwd,
+      threadId,
+      turnPayload,
+    });
+    void this.#queueDispatcher?.watchThread(threadId).catch(() => undefined);
+    return item;
+  }
+
+  async #removeQueueItem(
+    payload: Record<string, unknown>,
+  ): Promise<{ removed: boolean }> {
+    const id = requiredString(payload, "id");
+    const item = await this.#queue.get(id);
+    if (!item) return { removed: false };
+    await this.#workspaces.resolve(item.workspacePath);
+    return { removed: await this.#queue.remove(id) };
+  }
+
+  async #steerQueueItem(payload: Record<string, unknown>): Promise<unknown> {
+    const id = requiredString(payload, "id");
+    const expectedTurnId = requiredString(payload, "expectedTurnId");
+    const claim = await this.#queue.claimForSteer(id);
+    if (!claim) throw new Error("Queued message is no longer available");
+    try {
+      await this.#workspaces.resolve(claim.item.workspacePath);
+      await this.#ensureThreadLoaded(claim.item.threadId);
+      const input = claim.item.turnPayload.input;
+      if (!Array.isArray(input)) throw new Error("Queued message has no input");
+      const response = await this.#client.request<TurnSteerResponse>(
+        "turn/steer",
+        {
+          threadId: claim.item.threadId,
+          expectedTurnId,
+          input,
+          ...(typeof claim.item.turnPayload.clientUserMessageId === "string"
+            ? {
+                clientUserMessageId: claim.item.turnPayload.clientUserMessageId,
+              }
+            : {}),
+        },
+      );
+      await this.#queue.finish(claim.item.id);
+      if (this.#queueDispatcher) {
+        this.#queueDispatcher.notifySteered(claim.item.id, claim.item.threadId);
+      } else {
+        this.#emit("queue/steered", {
+          itemId: claim.item.id,
+          threadId: claim.item.threadId,
+        });
+      }
+      return { itemId: claim.item.id, turnId: response.turnId };
+    } catch (error) {
+      await this.#queue.restoreSteerClaim(claim.item.id, claim.previousStatus);
+      throw error;
+    }
+  }
+
+  async #drainQueue(threadId: string): Promise<void> {
+    const item = await this.#queue.claimNext(threadId);
+    if (!item) return;
+    try {
+      await this.#client.request("turn/start", {
+        ...item.turnPayload,
+        threadId,
+      });
+      await this.#queue.finish(item.id);
+      this.#emit("queue/started", { itemId: item.id, threadId });
+    } catch (error) {
+      await this.#queue.pause(item.id);
+      this.#emit("queue/paused", {
+        itemId: item.id,
+        threadId,
+        reason: error instanceof Error ? error.message : "Queue start failed",
+      });
+    }
+  }
+
+  #respondToServerRequest(payload: Record<string, unknown>): {
+    accepted: true;
+  } {
+    const requestId = requiredString(payload, "requestId");
+    const pending = this.#serverRequests.get(requestId);
+    if (!pending) {
+      const error = isRecord(payload.error)
+        ? {
+            code: safeErrorCode(payload.error.code),
+            message: String(payload.error.message ?? "Rejected by user"),
+          }
+        : undefined;
+      if (
+        this.#queueDispatcher?.respondToServerRequest({
+          requestId,
+          ...(error ? { error } : { result: payload.result }),
+        })
+      ) {
+        return { accepted: true };
+      }
+      throw new Error("Codex server request is no longer pending");
+    }
+    this.#serverRequests.delete(requestId);
+    if (isRecord(payload.error)) {
+      const message = String(payload.error.message ?? "Rejected by user");
+      pending.reject({
+        code: safeErrorCode(payload.error.code),
+        message,
+      });
+    } else {
+      pending.respond(payload.result);
+    }
+    return { accepted: true };
+  }
+
+  async #forwardNotification(notification: CodexNotification): Promise<void> {
+    const threadId = extractThreadId(notification.params);
+    if (threadId && !this.#authorizedThreads.has(threadId)) {
+      try {
+        await this.#authorizeThread(threadId);
+      } catch {
+        return;
+      }
+    }
+    this.#emit(`codex/${notification.method}`, notification.params);
+    if (
+      !this.#queueDispatcher &&
+      notification.method === "turn/completed" &&
+      turnCompletedSuccessfully(notification.params) &&
+      threadId
+    ) {
+      await this.#drainQueue(threadId);
+    } else if (
+      !this.#queueDispatcher &&
+      notification.method === "turn/completed" &&
+      threadId
+    ) {
+      const paused = await this.#queue.pausePending(threadId);
+      for (const item of paused) {
+        this.#emit("queue/paused", {
+          itemId: item.id,
+          threadId,
+          reason: "Previous turn did not complete successfully",
+        });
+      }
+    }
+  }
+
+  async #forwardServerRequest(request: CodexServerRequest): Promise<void> {
+    const threadId = extractThreadId(request.params);
+    if (!threadId) return;
+    if (!this.#authorizedThreads.has(threadId)) {
+      try {
+        await this.#authorizeThread(threadId);
+      } catch {
+        return;
+      }
+    }
+    const requestId = String(request.id);
+    this.#serverRequests.set(requestId, request);
+    this.#emit("codex/serverRequest", {
+      requestId,
+      method: request.method,
+      params: request.params,
+    });
+  }
+
+  async #forwardQueueEvent(event: QueueDispatcherEvent): Promise<void> {
+    const threadId =
+      extractThreadId(event.payload) ?? extractThreadId(event.payload.params);
+    if (threadId && !this.#authorizedThreads.has(threadId)) {
+      try {
+        await this.#authorizeThread(threadId);
+      } catch {
+        return;
+      }
+    }
+    this.#emit(event.type, event.payload);
+  }
+
+  #emit(type: string, payload: unknown): void {
+    const cursor = String(++this.#cursor);
+    this.#events.emit("event", {
+      version: PROTOCOL_VERSION,
+      eventId: randomUUID(),
+      cursor,
+      type,
+      payload,
+    });
+  }
+}
+
+function requireAbsoluteWorkspacePath(path: string): void {
+  if (!isAbsolute(path))
+    throw new Error(
+      "Workspace path must be an absolute path on the Codex host",
+    );
+}
+
+function asRecord(value: unknown): Record<string, unknown> {
+  if (!isRecord(value)) throw new Error("Request payload must be an object");
+  return value;
+}
+
+function requiredString(value: Record<string, unknown>, key: string): string {
+  if (typeof value[key] !== "string" || value[key].length === 0) {
+    throw new Error(`Request requires ${key}`);
+  }
+  return value[key];
+}
+
+function optionalString(
+  value: Record<string, unknown>,
+  key: string,
+): string | undefined {
+  if (value[key] === undefined) return undefined;
+  return requiredString(value, key);
+}
+
+function rejectLocalImageInput(value: unknown): void {
+  if (!Array.isArray(value)) return;
+  if (value.some((part) => isRecord(part) && part.type === "localImage")) {
+    throw new Error("Image attachments are not supported by the Web client");
+  }
+}
+
+function extractThreadId(value: unknown): string | undefined {
+  if (!isRecord(value)) return undefined;
+  if (typeof value.threadId === "string") return value.threadId;
+  if (isRecord(value.thread) && typeof value.thread.id === "string") {
+    return value.thread.id;
+  }
+  return undefined;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+function turnCompletedSuccessfully(value: unknown): boolean {
+  return (
+    isRecord(value) && isRecord(value.turn) && value.turn.status === "completed"
+  );
+}
+
+function safeErrorCode(value: unknown): number {
+  const code = Number(value);
+  return Number.isSafeInteger(code) ? code : -32_000;
+}
+
+export function threadNeedsResume(status: ThreadStatus): boolean {
+  return status.type === "notLoaded";
+}

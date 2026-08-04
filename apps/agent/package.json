@@ -1,0 +1,33 @@
+{
+  "name": "@codex-everywhere/agent",
+  "version": "0.3.0-alpha.1",
+  "private": true,
+  "license": "Apache-2.0",
+  "type": "module",
+  "bin": {
+    "ce": "./dist/cli.js"
+  },
+  "exports": {
+    ".": "./dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc -b && chmod 755 dist/cli.js",
+    "clean": "rm -rf dist *.tsbuildinfo",
+    "dev": "tsx watch src/cli.ts agent status",
+    "typecheck": "tsc -b --pretty false"
+  },
+  "dependencies": {
+    "@codex-everywhere/codex-app-server-schema": "workspace:*",
+    "@codex-everywhere/crypto": "workspace:*",
+    "@codex-everywhere/protocol": "workspace:*",
+    "@serenity-kit/opaque": "1.1.0",
+    "@simplewebauthn/server": "13.2.2",
+    "commander": "^14.0.0",
+    "sql.js": "1.14.1",
+    "ws": "8.21.1"
+  },
+  "devDependencies": {
+    "@types/sql.js": "^1.4.11",
+    "@types/ws": "^8.18.0"
+  }
+}
