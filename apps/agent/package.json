@@ -21,8 +21,8 @@
     "@codex-everywhere/crypto": "workspace:*",
     "@codex-everywhere/protocol": "workspace:*",
     "@serenity-kit/opaque": "1.1.0",
-    "@simplewebauthn/server": "13.2.2",
-    "commander": "^14.0.0",
+    "@simplewebauthn/server": "13.3.2",
+    "commander": "^15.0.0",
     "sql.js": "1.14.1",
     "ws": "8.21.1"
   },

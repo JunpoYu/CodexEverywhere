@@ -15,7 +15,7 @@
     "@codex-everywhere/crypto": "workspace:*",
     "@codex-everywhere/protocol": "workspace:*",
     "@serenity-kit/opaque": "1.1.0",
-    "@simplewebauthn/browser": "13.2.2",
-    "vite": "^7.0.0"
+    "@simplewebauthn/browser": "13.3.0",
+    "vite": "^8.2.0"
   }
 }

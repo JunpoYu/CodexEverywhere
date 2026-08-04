@@ -15,7 +15,7 @@
   },
   "dependencies": {
     "@codex-everywhere/protocol": "workspace:*",
-    "commander": "14.0.3",
+    "commander": "15.0.0",
     "ws": "8.21.1"
   },
   "devDependencies": {
