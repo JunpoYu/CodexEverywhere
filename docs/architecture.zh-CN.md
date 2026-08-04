@@ -34,6 +34,7 @@
 - 尚未选择会话时，会话时间线保持空白，不消费 app-server 通知；`configWarning`、`remoteControl/status/changed` 和账号状态等宿主机级事件即使在会话打开后也不作为原始 JSON 混入对话。MCP 启动失败使用不含 Transport 堆栈的结构化提示，并区分网络失败与需要重新授权；正常启动状态不写入时间线。当前 thread 的未知事件仍作为 generic event 显示，以保持协议向前兼容。
 - app-server 重启后，发送消息会自动将 `notLoaded` 的磁盘 thread 恢复到内存，不要求用户手动执行 `thread/resume`。
 - 日常工作区采用高密度会话侧栏、结构化时间线和固定底部输入器；提供加载骨架、状态动效、操作 Toast、输入失败恢复、移动端底部会话面板，以及 `Enter` 发送、`Shift+Enter` 换行、`Cmd/Ctrl+K` 搜索和 `Cmd/Ctrl+N` 新建会话。
+- 输入器以固定的 Codex `0.144.1` 官方发布清单注册全部默认斜杠指令及 `/pet`、`/clean` 别名。用户输入 `/` 时显示按官方顺序排列、可搜索且支持方向键、Tab、Enter 和触控的补全菜单；执行前在 Web 本地解析，绝不把未知指令、无效参数或忙碌期禁止执行的指令当作普通 prompt 或 Queue 消息。`/compact`、`/review`、`/rename`、`/new`、`/archive`、`/delete`、`/resume`、`/fork`、`/init`、`/goal`、`/skills`、`/mcp`、`/status`、`/usage`、`/copy`、`/theme`、`/logout` 等调用受限 app-server 方法或现有 Web 界面；依赖 TUI 本地状态、IDE、通用 Shell 或特定操作系统的指令仍被识别，并给出 SSH TUI 或平台限制说明。Web 网关不会为了 `/diff` 暴露任意命令执行接口。
 - 对话时间线是内容区内唯一的纵向滚动容器；会话头和输入器始终留在视口中，Codex 回复完成后自动滚动到最新消息。
 - 已完成初始化的用户登录后直接进入工作区；Codex 直连/代理配置位于设置菜单，修改前明确提示会中断活动 turn，保存后重启 app-server 并自动重新连接。
 - 会话头以高对比状态区根据 app-server 增量事件实时显示正在思考、回复、执行命令、修改文件、调用工具、等待操作、完成或异常，而不是只显示笼统的 active 状态；“会话设置”是带图标和强调色的一级操作，不能隐藏在弱提示或不明显的次级文字中。
@@ -44,13 +45,13 @@
 - 审批卡片按命令、网络、文件修改和额外权限显示人类可读摘要，不向普通用户倾倒协议 JSON；多个并发审批按 request id 独立跟踪，活动 thread 的快照修复不得移除尚待处理的审批卡，全部处理后立即退出等待状态。
 - 打开已有会话使用 `thread/resume` 而非只读 `thread/read`，确保当前浏览器连接订阅该 thread 的增量事件，并同时取得模型、推理强度、审批策略和 sandbox 设置。
 - PWA 切换会话或返回会话列表时调用 `thread/unsubscribe` 释放旧订阅；Agent 级 Queue 在队列耗尽或暂停后也释放自己的订阅。释放订阅不 interrupt 活动 turn，最后一个订阅者离开后由 app-server 自身的无订阅宽限期决定何时卸载内存状态，不另设 24 小时保留定时器或用户“卸载”按钮。
-- 已有会话可修改模型、推理强度、审批策略和文件/命令权限；PWA 通过原生 `thread/resume` configuration override 保存设置，由 app-server 用于后续 turn，活动 turn 不会被静默中断。
-- 会话页常驻展示当前模型、推理强度、审批与 sandbox 权限，以及 app-server 实时上报的当前上下文使用量、窗口大小和累计 token；设置弹窗必须适配窄屏和低高度视口并可完整滚动。
+- 已有会话可修改模型、推理强度、审批策略和文件/命令权限；PWA 通过固定 Codex 版本中显式启用的原生 `thread/settings/update` 保存设置，并用 `thread/settings/updated` 同步其他已订阅客户端。设置由 app-server 用于后续 turn，活动 turn 不会被静默中断。
+- 会话页把 sandbox 与审批策略作为首个高对比信息卡常驻展示，同时显示当前模型、推理强度，以及 app-server 实时上报的当前上下文使用量、窗口大小和累计 token；权限卡可直接进入设置，设置弹窗必须适配窄屏和低高度视口并可完整滚动。
 - Agent 级持久 Queue，不依赖浏览器连接推进；turn 正常完成后自动启动下一项，失败或中断时暂停，并保留 Queue 转 Steer 失败的原消息。
 - 写请求幂等、Agent/app-server 分离生命周期、官方 remote TUI 接力。
 - CentOS 7 友好的纯 WASM SQLite、PID/文件锁、tmux + crontab watchdog 和 `ce doctor`。
 
-以下能力仍属于后续版本，不应被误认为已经完成：宿主机管理员的停用/移除控制面与管理员恢复流程、thread 重命名/归档/删除、完整 Queue 编辑与排序管理、文件浏览与传输、Schedule、Web Push、加密离线对话缓存、二维码引导和完整生产部署自动化。一次性宿主机 provisioner 与用户自助初始化已经实现；当前 PWA 的 Service Worker 只缓存完整应用外壳，离线时不能操作 Codex。
+以下能力仍属于后续版本，不应被误认为已经完成：宿主机管理员的停用/移除控制面与管理员恢复流程、完整 Queue 编辑与排序管理、文件浏览与传输、Schedule、Web Push、加密离线对话缓存、二维码引导和完整生产部署自动化。一次性宿主机 provisioner、用户自助初始化，以及通过斜杠指令执行 thread 重命名/归档/删除已经实现；当前 PWA 的 Service Worker 只缓存完整应用外壳，离线时不能操作 Codex。
 
 ### 本地构建与验证
 
@@ -363,9 +364,9 @@ ce tui /public/home/user/project --new
      -C /public/home/user/project
    ```
 
-Web Agent 和多个 TUI 分别连接同一个 app-server。app-server 原生广播 thread 事件和审批请求，并在客户端 resume 时重放未处理的服务器请求，因此第一阶段不实现额外 JSON-RPC multiplexer。
+Web Agent 和多个 TUI 分别连接同一个 app-server。app-server 原生广播 thread、设置和审批事件，并在客户端 resume 时重放未处理的服务器请求。官方 TUI 在恢复 remote thread 时会携带当前 TUI 进程的审批与 sandbox 启动默认值；`ce tui` 因此只为该 TUI 进程建立一个用户私有的临时 Unix WebSocket 透传层，从每次 `thread/resume` 中移除这些隐式权限覆盖字段。它不保存会话状态、不改写其他方法，并在 TUI 退出后删除；后续显式 `/permissions` 使用的 `thread/settings/update` 原样通过。这样创建时已由 app-server 保存的会话权限优先，Web/TUI 连接动作不会互相覆盖，而明确修改仍由 app-server 作为唯一事实源广播。
 
-Web 会话头以高对比按钮提供“SSH 接力”入口，并在会话信息下方常驻展示“SSH 可访问同一会话、切换不会中断任务”的说明条；入口不能只隐藏在会话设置、弱提示或省略菜单中。接力弹窗先以“SSH 登录 HPC → 复制并运行命令 → 在官方 TUI 中继续”的步骤说明建立使用预期，再给出两条路径：包含当前 workspace 与 thread ID 的精确 `ce tui ... --thread ...` 命令可以直接进入当前会话；更短、可长期记住的 `ce tui <workspace>` 会打开官方恢复选择器，用户以后无需先打开 Web，即可从该目录的历史会话中选择要继续的会话。只有显式使用 `--new` 才新建会话。由于进入后的交互界面属于官方 Codex TUI，CodexEverywhere 不 fork 或修改其内部 UI；Web 接力弹窗和 `ce tui --help` / 启动提示必须明确说明退出语义：任务忙碌时输入 `/quit` 或 `/exit` 只关闭当前 TUI 客户端，宿主机上的活动 turn 继续运行；`Esc` 会中断活动 turn，不应作为“仅离开 TUI”的操作。SSH 终端失去响应时，可以在新行输入 `~.` 断开 SSH，活动 turn 仍由长期 app-server 承载。
+Web 会话头以高对比按钮提供“SSH 接力”入口，并在会话信息下方展示“SSH 可访问同一会话、切换不会中断任务”的说明条；用户可选择“不再提示”，该非敏感界面偏好只保存在当前浏览器，说明条永久隐藏后顶部接力按钮仍始终可用。入口不能只隐藏在会话设置、弱提示或省略菜单中。接力弹窗先以“SSH 登录 HPC → 复制并运行命令 → 在官方 TUI 中继续”的步骤说明建立使用预期，再给出两条路径：包含当前 workspace 与 thread ID 的精确 `ce tui ... --thread ...` 命令可以直接进入当前会话；更短、可长期记住的 `ce tui <workspace>` 会打开官方恢复选择器，用户以后无需先打开 Web，即可从该目录的历史会话中选择要继续的会话。只有显式使用 `--new` 才新建会话。由于进入后的交互界面属于官方 Codex TUI，CodexEverywhere 不 fork 或修改其内部 UI；Web 接力弹窗和 `ce tui --help` / 启动提示必须明确说明退出语义：任务忙碌时输入 `/quit` 或 `/exit` 只关闭当前 TUI 客户端，宿主机上的活动 turn 继续运行；`Esc` 会中断活动 turn，不应作为“仅离开 TUI”的操作。SSH 终端失去响应时，可以在新行输入 `~.` 断开 SSH，活动 turn 仍由长期 app-server 承载。
 
 成功标准是：Web、TUI 或网络连接断开不会导致 thread ID、turn ID、Goal 或正在运行的命令发生变化；用户不需要猜测如何在不中断任务的前提下从 Web 接力到 TUI，或从 TUI 返回 Web。
 

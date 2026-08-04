@@ -63,6 +63,8 @@ describe("CodexGatewaySession notifications", () => {
     let threadReads = 0;
     let steerPayload: Record<string, unknown> | undefined;
     let unsubscribePayload: Record<string, unknown> | undefined;
+    let initializePayload: Record<string, unknown> | undefined;
+    const slashMethodPayloads = new Map<string, unknown>();
     httpServer.on("upgrade", (request, socket, head) => {
       webSocketServer.handleUpgrade(request, socket, head, (webSocket) => {
         webSocketServer.emit("connection", webSocket, request);
@@ -73,6 +75,7 @@ describe("CodexGatewaySession notifications", () => {
       socket.on("message", (raw) => {
         const message = JSON.parse(raw.toString()) as Record<string, unknown>;
         if (message.method === "initialize") {
+          initializePayload = message.params as Record<string, unknown>;
           sendToClient?.({ id: message.id, result: {} });
         } else if (message.method === "thread/read") {
           threadReads += 1;
@@ -104,6 +107,35 @@ describe("CodexGatewaySession notifications", () => {
             id: message.id,
             result: { status: "unsubscribed" },
           });
+        } else if (message.method === "thread/fork") {
+          slashMethodPayloads.set(message.method, message.params);
+          sendToClient?.({
+            id: message.id,
+            result: {
+              thread: {
+                id: "thread-fork",
+                cwd: workspacePath,
+                status: { type: "idle" },
+                turns: [],
+              },
+            },
+          });
+        } else if (
+          [
+            "thread/compact/start",
+            "thread/goal/set",
+            "thread/goal/get",
+            "thread/goal/clear",
+            "review/start",
+            "skills/list",
+            "mcpServerStatus/list",
+            "account/rateLimits/read",
+            "account/usage/read",
+            "thread/settings/update",
+          ].includes(String(message.method))
+        ) {
+          slashMethodPayloads.set(String(message.method), message.params);
+          sendToClient?.({ id: message.id, result: {} });
         }
       });
     });
@@ -120,6 +152,9 @@ describe("CodexGatewaySession notifications", () => {
     });
     const events: EventEnvelope[] = [];
     session.onEvent((event) => events.push(event));
+    expect(initializePayload).toMatchObject({
+      capabilities: { experimentalApi: true },
+    });
     await session.request({
       version: PROTOCOL_VERSION,
       requestId: "read-1",
@@ -127,6 +162,46 @@ describe("CodexGatewaySession notifications", () => {
       method: "thread/read",
       payload: { threadId: "thread-1", includeTurns: true },
     });
+    await expect(
+      session.request({
+        version: PROTOCOL_VERSION,
+        requestId: "settings-1",
+        idempotencyKey: "settings-1",
+        method: "thread/settings/update",
+        payload: {
+          threadId: "thread-1",
+          approvalPolicy: "never",
+          sandboxPolicy: { type: "dangerFullAccess" },
+        },
+      }),
+    ).resolves.toEqual({});
+    expect(slashMethodPayloads.get("thread/settings/update")).toEqual({
+      threadId: "thread-1",
+      approvalPolicy: "never",
+      sandboxPolicy: { type: "dangerFullAccess" },
+    });
+    sendToClient?.({
+      method: "thread/settings/updated",
+      params: {
+        threadId: "thread-1",
+        threadSettings: {
+          approvalPolicy: "never",
+          sandboxPolicy: { type: "dangerFullAccess" },
+        },
+      },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(events.at(-1)).toMatchObject({
+      type: "codex/thread/settings/updated",
+      payload: {
+        threadId: "thread-1",
+        threadSettings: {
+          approvalPolicy: "never",
+          sandboxPolicy: { type: "dangerFullAccess" },
+        },
+      },
+    });
+    events.length = 0;
     await expect(
       session.request({
         version: PROTOCOL_VERSION,
@@ -154,7 +229,7 @@ describe("CodexGatewaySession notifications", () => {
     }
     await new Promise((resolve) => setTimeout(resolve, 20));
 
-    expect(threadReads).toBe(1);
+    expect(threadReads).toBe(2);
     expect(events.map((event) => event.payload)).toEqual([
       expect.objectContaining({ delta: "A" }),
       expect.objectContaining({ delta: "B" }),
@@ -221,6 +296,108 @@ describe("CodexGatewaySession notifications", () => {
       }),
     ).resolves.toEqual({ status: "unsubscribed" });
     expect(unsubscribePayload).toEqual({ threadId: "thread-1" });
+
+    for (const [index, method] of [
+      "thread/compact/start",
+      "thread/goal/set",
+      "thread/goal/get",
+      "thread/goal/clear",
+      "review/start",
+    ].entries()) {
+      await expect(
+        session.request({
+          version: PROTOCOL_VERSION,
+          requestId: `slash-${index}`,
+          idempotencyKey: `slash-${index}`,
+          method,
+          payload: { threadId: "thread-1" },
+        }),
+      ).resolves.toEqual({});
+      expect(slashMethodPayloads.get(method)).toEqual({
+        threadId: "thread-1",
+      });
+    }
+
+    await expect(
+      session.request({
+        version: PROTOCOL_VERSION,
+        requestId: "slash-fork",
+        idempotencyKey: "slash-fork",
+        method: "thread/fork",
+        payload: { threadId: "thread-1" },
+      }),
+    ).resolves.toMatchObject({ thread: { id: "thread-fork" } });
+
+    await expect(
+      session.request({
+        version: PROTOCOL_VERSION,
+        requestId: "slash-skills",
+        idempotencyKey: "slash-skills",
+        method: "skills/list",
+        payload: { cwds: [childWorkspacePath] },
+      }),
+    ).resolves.toEqual({});
+    expect(slashMethodPayloads.get("skills/list")).toEqual({
+      cwds: [await realpath(childWorkspacePath)],
+    });
+    await expect(
+      session.request({
+        version: PROTOCOL_VERSION,
+        requestId: "slash-skills-escape",
+        idempotencyKey: "slash-skills-escape",
+        method: "skills/list",
+        payload: { cwds: [directory] },
+      }),
+    ).rejects.toThrow("outside registered workspace roots");
+    await expect(
+      session.request({
+        version: PROTOCOL_VERSION,
+        requestId: "slash-skills-empty",
+        idempotencyKey: "slash-skills-empty",
+        method: "skills/list",
+        payload: { cwds: [] },
+      }),
+    ).rejects.toThrow("at least one workspace cwd");
+
+    await expect(
+      session.request({
+        version: PROTOCOL_VERSION,
+        requestId: "slash-fork-escape",
+        idempotencyKey: "slash-fork-escape",
+        method: "thread/fork",
+        payload: { threadId: "thread-1", cwd: directory },
+      }),
+    ).rejects.toThrow("outside registered workspace roots");
+
+    await expect(
+      session.request({
+        version: PROTOCOL_VERSION,
+        requestId: "slash-mcp",
+        idempotencyKey: "slash-mcp",
+        method: "mcpServerStatus/list",
+        payload: { threadId: "thread-1", detail: "toolsAndAuthOnly" },
+      }),
+    ).resolves.toEqual({});
+    expect(slashMethodPayloads.get("mcpServerStatus/list")).toEqual({
+      threadId: "thread-1",
+      detail: "toolsAndAuthOnly",
+    });
+
+    for (const [index, method] of [
+      "account/rateLimits/read",
+      "account/usage/read",
+    ].entries()) {
+      await expect(
+        session.request({
+          version: PROTOCOL_VERSION,
+          requestId: `slash-account-${index}`,
+          idempotencyKey: `slash-account-${index}`,
+          method,
+          payload: {},
+        }),
+      ).resolves.toEqual({});
+      expect(slashMethodPayloads.get(method)).toEqual({});
+    }
 
     await session.close();
     await new Promise<void>((resolve, reject) =>

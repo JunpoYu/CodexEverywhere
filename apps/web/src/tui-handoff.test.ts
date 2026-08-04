@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  dismissTuiHandoffHint,
+  isTuiHandoffHintDismissed,
   setTuiHandoffVisibility,
   tuiHandoffCommand,
   tuiPickerCommand,
@@ -28,7 +30,7 @@ describe("TUI handoff command", () => {
     );
   });
 
-  it("keeps the prominent header and banner entry points in sync", () => {
+  it("toggles the supplied handoff entry points", () => {
     const headerButton = { hidden: true };
     const banner = { hidden: true };
 
@@ -39,5 +41,31 @@ describe("TUI handoff command", () => {
     setTuiHandoffVisibility([headerButton, banner], false);
     expect(headerButton.hidden).toBe(true);
     expect(banner.hidden).toBe(true);
+  });
+
+  it("remembers when the explanatory banner should no longer appear", () => {
+    const values = new Map<string, string>();
+    const storage = {
+      getItem: (key: string) => values.get(key) ?? null,
+      setItem: (key: string, value: string) => values.set(key, value),
+    };
+
+    expect(isTuiHandoffHintDismissed(storage)).toBe(false);
+    dismissTuiHandoffHint(storage);
+    expect(isTuiHandoffHintDismissed(storage)).toBe(true);
+  });
+
+  it("keeps the hint usable when browser storage is unavailable", () => {
+    const storage = {
+      getItem: () => {
+        throw new Error("blocked");
+      },
+      setItem: () => {
+        throw new Error("blocked");
+      },
+    };
+
+    expect(isTuiHandoffHintDismissed(storage)).toBe(false);
+    expect(() => dismissTuiHandoffHint(storage)).not.toThrow();
   });
 });

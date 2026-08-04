@@ -44,6 +44,7 @@ import {
 } from "./runtime/app-server-supervisor.js";
 import { probeCodexInstallation } from "./runtime/codex-install.js";
 import { tuiArguments, tuiExitGuidance } from "./runtime/tui-launch.js";
+import { startTuiPermissionProxy } from "./runtime/tui-permission-proxy.js";
 import { inspectSshUnixAccount } from "./admin/unix-accounts.js";
 import {
   bootstrapUnixUser,
@@ -217,16 +218,26 @@ program
       const runtime = await currentCodexRuntime();
       await ensureAppServer(paths, runtime);
       process.stderr.write(`\n${tuiExitGuidance()}\n\n`);
-      process.exitCode = await runInteractive(
-        runtime.codexBinary,
-        tuiArguments({
-          socketPath: paths.appServerSocket,
-          workspacePath,
-          ...(options.thread ? { thread: options.thread } : {}),
-          newThread: options.new ?? false,
-        }),
-        runtime.env,
-      );
+      const permissionProxy = options.new
+        ? undefined
+        : await startTuiPermissionProxy({
+            upstreamSocketPath: paths.appServerSocket,
+            runtimeDir: paths.runtimeDir,
+          });
+      try {
+        process.exitCode = await runInteractive(
+          runtime.codexBinary,
+          tuiArguments({
+            socketPath: permissionProxy?.socketPath ?? paths.appServerSocket,
+            workspacePath,
+            ...(options.thread ? { thread: options.thread } : {}),
+            newThread: options.new ?? false,
+          }),
+          runtime.env,
+        );
+      } finally {
+        await permissionProxy?.close();
+      }
     },
   );
 

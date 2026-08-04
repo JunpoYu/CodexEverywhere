@@ -527,6 +527,11 @@ function isReadMethod(method: string): boolean {
     "model/list",
     "thread/list",
     "thread/read",
+    "thread/goal/get",
+    "skills/list",
+    "mcpServerStatus/list",
+    "account/rateLimits/read",
+    "account/usage/read",
   ]).has(method);
 }
 
