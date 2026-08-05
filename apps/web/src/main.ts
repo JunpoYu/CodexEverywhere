@@ -380,7 +380,7 @@ app.innerHTML = `
       <div id="timeline" class="timeline"><div class="empty empty-session"><strong>从一个任务开始</strong><span>选择左侧会话，或者新建一个 Codex 会话。</span><button id="empty-new-session" class="primary">新建会话</button></div></div>
       <button id="jump-to-latest" class="jump-to-latest" type="button" title="回到正在生成的最新回复" hidden><span aria-hidden="true">↓</span> 回到最新消息</button>
       <aside id="conversation-outline" class="conversation-outline" aria-label="对话大纲" hidden>
-        <header><div><strong>对话大纲</strong><small>按你的消息快速定位</small></div><span id="conversation-outline-count">0 条</span><button id="close-conversation-outline" class="icon-button" type="button" aria-label="关闭对话大纲">×</button></header>
+        <header><div><strong>对话大纲</strong><small>按你的消息快速定位</small></div><span id="conversation-outline-count">0 条</span><button id="close-conversation-outline" class="icon-button conversation-outline-dismiss" type="button" aria-label="关闭对话大纲" title="关闭对话大纲"></button></header>
         <nav id="conversation-outline-list" aria-label="你发送的消息"></nav>
       </aside>
       <div class="composer">

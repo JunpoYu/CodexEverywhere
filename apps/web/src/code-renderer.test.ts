@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   markdownToHtml,
+  messageSanitizerConfig,
   parseUnifiedDiff,
   unifiedDiffStats,
 } from "./code-renderer.js";
@@ -108,6 +109,29 @@ describe("message Markdown rendering", () => {
     expect(html).toContain("katex-display");
     expect(html).toContain("vlist-t");
     expect(html).toMatch(/style="[^"]*top:/u);
+  });
+
+  it("keeps the SVG primitives used by KaTeX radicals after sanitizing", () => {
+    const html = markdownToHtml(
+      [
+        "$$",
+        "\\mathrm{KGE}=1-\\sqrt{(r-1)^2+(\\alpha-1)^2+(\\beta-1)^2}",
+        "$$",
+      ].join("\n"),
+    );
+
+    expect(html).toContain("<svg");
+    expect(html).toContain("<path");
+    expect(messageSanitizerConfig.ADD_TAGS).toEqual(["svg", "path"]);
+    expect(messageSanitizerConfig.ADD_ATTR).toEqual(
+      expect.arrayContaining([
+        "width",
+        "height",
+        "viewBox",
+        "preserveAspectRatio",
+        "d",
+      ]),
+    );
   });
 
   it("supports bracket-style LaTeX delimiters", () => {

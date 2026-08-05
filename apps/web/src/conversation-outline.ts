@@ -22,6 +22,8 @@ export class ConversationOutlineView {
   readonly #list: HTMLElement;
   readonly #count: HTMLElement;
   readonly #toggle: HTMLButtonElement;
+  readonly #toggleHome: HTMLElement;
+  readonly #toggleAnchor: ChildNode | null;
   readonly #observer: MutationObserver;
   readonly #compactLayout = window.matchMedia("(max-width: 1180px)");
   #entries: OutlineEntry[] = [];
@@ -47,6 +49,8 @@ export class ConversationOutlineView {
     this.#list = list;
     this.#count = count;
     this.#toggle = toggle;
+    this.#toggleHome = toggle.parentElement ?? content;
+    this.#toggleAnchor = toggle.nextSibling;
     this.#observer = new MutationObserver((mutations) => {
       if (mutations.some(mutationTouchesUserMessage)) this.#scheduleSync();
     });
@@ -223,6 +227,7 @@ export class ConversationOutlineView {
 
   #renderVisibility(): void {
     const compact = this.#compactLayout.matches;
+    this.#placeToggle(compact);
     if (!this.#active || !compact) this.#panel.classList.remove("open");
     const panelExpanded = compact
       ? this.#panel.classList.contains("open")
@@ -240,6 +245,22 @@ export class ConversationOutlineView {
       expanded ? "收起对话大纲" : "展开对话大纲",
     );
     this.#toggle.title = expanded ? "收起对话大纲" : "展开对话大纲";
+  }
+
+  #placeToggle(compact: boolean): void {
+    if (compact) {
+      if (this.#toggle.parentElement !== this.#toggleHome) {
+        const anchor =
+          this.#toggleAnchor?.parentNode === this.#toggleHome
+            ? this.#toggleAnchor
+            : null;
+        this.#toggleHome.insertBefore(this.#toggle, anchor);
+      }
+      return;
+    }
+    if (this.#toggle.parentElement !== this.#content) {
+      this.#content.append(this.#toggle);
+    }
   }
 }
 

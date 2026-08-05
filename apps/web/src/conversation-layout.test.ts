@@ -24,17 +24,18 @@ describe("conversation layout contract", () => {
     expect(contract).toContain("grid-area: timeline;");
     expect(contract).toContain("grid-area: composer;");
     expect(contract).toContain("grid-area: outline;");
+    expect(contract).toMatch(/\.content\s*\{[^}]*position:\s*relative;/su);
     expect(contract).toMatch(
       /\.jump-to-latest\s*\{[^}]*grid-area:\s*timeline;[^}]*align-self:\s*end;/su,
     );
     expect(contract).toMatch(
-      /\.thread-outline-action:not\(\[hidden\]\)\s*\{[^}]*display:\s*inline-flex;/su,
+      /@media \(min-width: 1181px\)[\s\S]*\.content:not\(\.outline-available\)\s*>\s*\.thread-outline-action:not\(\[hidden\]\)\s*\{[^}]*position:\s*absolute;[^}]*right:\s*0;[^}]*display:\s*inline-flex;/su,
     );
     expect(contract).toMatch(
-      /\.conversation-outline\s*>\s*header\s+\.icon-button\s*\{[^}]*display:\s*none;/su,
+      /\.conversation-outline\s*>\s*header\s+\.icon-button\s*\{[^}]*display:\s*grid;/su,
     );
     expect(contract).toMatch(
-      /@media \(max-width: 1180px\)[\s\S]*\.conversation-outline\s*>\s*header\s+\.icon-button\s*\{[^}]*display:\s*grid;/su,
+      /@media \(max-width: 1180px\)[\s\S]*\.thread-outline-action:not\(\[hidden\]\)\s*\{[^}]*display:\s*inline-flex;/su,
     );
   });
 });

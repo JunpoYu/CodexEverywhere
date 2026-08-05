@@ -1,5 +1,5 @@
 import { katex } from "@mdit/plugin-katex";
-import DOMPurify from "dompurify";
+import DOMPurify, { type Config } from "dompurify";
 import MarkdownIt from "markdown-it";
 
 const markdown = new MarkdownIt({
@@ -20,6 +20,16 @@ markdown.renderer.rules.image = (tokens, index) => {
   const alt = markdown.utils.escapeHtml(tokens[index]?.content || "图片");
   return `<span class="markdown-image-placeholder">🖼 ${alt}</span>`;
 };
+
+// KaTeX uses a small inline SVG to draw stretchy radicals. Raw Markdown HTML
+// remains disabled and KaTeX trust remains false, so keep this exception
+// limited to the tags and attributes emitted by KaTeX's radical renderer.
+export const messageSanitizerConfig = {
+  RETURN_DOM_FRAGMENT: true,
+  USE_PROFILES: { html: true, mathMl: true },
+  ADD_TAGS: ["svg", "path"],
+  ADD_ATTR: ["xmlns", "width", "height", "viewBox", "preserveAspectRatio", "d"],
+} satisfies Config;
 
 export type UnifiedDiffLine = {
   type: "header" | "meta" | "hunk" | "addition" | "deletion" | "context";
@@ -119,10 +129,10 @@ export function renderMessageContent(
   container: HTMLElement,
   text: string,
 ): void {
-  const fragment = DOMPurify.sanitize(markdownToHtml(text), {
-    RETURN_DOM_FRAGMENT: true,
-    USE_PROFILES: { html: true, mathMl: true },
-  });
+  const fragment = DOMPurify.sanitize(
+    markdownToHtml(text),
+    messageSanitizerConfig,
+  );
   container.replaceChildren(fragment);
   container.classList.add("rich-message");
   for (const display of Array.from(

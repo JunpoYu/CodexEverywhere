@@ -5804,6 +5804,7 @@ button.thread-fact {
 
 /* Keep optional thread chrome from changing timeline/composer placement. */
 .content {
+  position: relative;
   grid-template-areas:
     "thread-header"
     "thread-overview"
@@ -5899,10 +5900,6 @@ button.thread-fact {
   border: 1px solid #dcdee2;
 }
 
-.thread-outline-action:not([hidden]) {
-  display: inline-flex;
-}
-
 .thread-outline-action[aria-expanded="true"] {
   color: #8b351b;
   background: #fff4ee;
@@ -5970,13 +5967,20 @@ button.thread-fact {
 }
 
 .conversation-outline > header .icon-button {
-  display: none;
+  display: grid;
   width: 28px;
   height: 28px;
   padding: 0;
+  place-items: center;
   color: #747a83;
   background: transparent;
   font-size: 18px;
+}
+
+.conversation-outline-dismiss::before {
+  content: "›";
+  font-size: 20px;
+  line-height: 1;
 }
 
 .conversation-outline nav {
@@ -6136,6 +6140,32 @@ button.thread-fact {
   background: #332816;
 }
 
+@media (min-width: 1181px) {
+  .content:not(.outline-available) > .thread-outline-action:not([hidden]) {
+    position: absolute;
+    z-index: 8;
+    top: 50%;
+    right: 0;
+    width: 36px;
+    min-height: 76px;
+    padding: 8px 6px;
+    display: inline-flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    border-right: 0;
+    border-radius: 10px 0 0 10px;
+    box-shadow: -7px 0 20px #252a3112;
+    transform: translateY(-50%);
+    writing-mode: vertical-rl;
+  }
+
+  .content:not(.outline-available) > .thread-outline-action > span {
+    writing-mode: horizontal-tb;
+  }
+}
+
 @media (max-width: 1180px) {
   .content.outline-available {
     grid-template-columns: minmax(0, 1fr);
@@ -6145,6 +6175,10 @@ button.thread-fact {
       "ssh-handoff"
       "timeline"
       "composer";
+  }
+
+  .thread-outline-action:not([hidden]) {
+    display: inline-flex;
   }
 
   .conversation-outline {
@@ -6168,9 +6202,8 @@ button.thread-fact {
     transform: translateX(0);
   }
 
-  .conversation-outline > header .icon-button {
-    display: grid;
-    place-items: center;
+  .conversation-outline-dismiss::before {
+    content: "×";
   }
 }
 
