@@ -8,8 +8,7 @@ import { promisify } from "node:util";
 import type { CodexInstallProgressPhase } from "@codex-everywhere/protocol";
 
 const execFileAsync = promisify(execFile);
-export const SUPPORTED_CODEX_CLI_VERSION = "0.144.1";
-const CODEX_NPM_SPEC = `@openai/codex@${SUPPORTED_CODEX_CLI_VERSION}`;
+export const CODEX_NPM_SPEC = "@openai/codex@latest";
 
 export type CodexInstallation = {
   installed: boolean;
@@ -43,7 +42,7 @@ export async function probeCodexInstallation(
         timeoutMs: 10_000,
       });
       const version = stdout.trim();
-      if (codexCliVersion(version) === SUPPORTED_CODEX_CLI_VERSION) {
+      if (codexCliVersion(version)) {
         return { installed: true, binary, version };
       }
     } catch {
@@ -80,16 +79,26 @@ export async function installCodexForCurrentUser(
   );
 
   options.onProgress?.("verifying");
-  const installation = await probeCodexInstallation({ userHome, env, run });
-  if (!installation.installed) {
+  const binary = join(prefix, "bin", "codex");
+  let version: string | undefined;
+  try {
+    version = (
+      await run(binary, ["--version"], { env, timeoutMs: 10_000 })
+    ).stdout.trim();
+  } catch {
+    // The generic PATH fallback must not make a failed managed update succeed.
+  }
+  if (!version || !codexCliVersion(version)) {
     throw new Error("Codex installation completed but codex is not executable");
   }
   options.onProgress?.("completed");
-  return installation;
+  return { installed: true, binary, version };
 }
 
 export function codexCliVersion(output: string): string | undefined {
-  return output.match(/(?:^|\s)(\d+\.\d+\.\d+)(?:\s|$)/u)?.[1];
+  return output.match(
+    /(?:^|\s)codex-cli\s+(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?)(?:\s|$)/iu,
+  )?.[1];
 }
 
 async function runCommand(

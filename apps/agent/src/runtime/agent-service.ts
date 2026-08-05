@@ -38,8 +38,10 @@ import { HostSetupService } from "./host-setup-service.js";
 import { probeCodexInstallation } from "./codex-install.js";
 import { CodexAppServerClient } from "./codex-app-server-client.js";
 import { QueueDispatcher } from "./queue-dispatcher.js";
+import { assertUserAccessEnabled } from "../admin/access-policy.js";
 
 export async function runAgentService(paths: HostPaths): Promise<void> {
+  await assertUserAccessEnabled();
   const config = await initializeHost(paths);
   if (config.transport.mode === "unconfigured")
     throw new Error(
@@ -188,6 +190,7 @@ export async function startAgentService(
   paths: HostPaths,
   cliEntryPoint: string,
 ): Promise<{ started: boolean; pid: number }> {
+  await assertUserAccessEnabled();
   const existing = await readProcessRecord(paths.agentPidFile);
   if (existing && isProcessAlive(existing.pid)) {
     return { started: false, pid: existing.pid };

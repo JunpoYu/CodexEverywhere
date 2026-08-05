@@ -8,6 +8,12 @@ import type {
 } from "@codex-everywhere/codex-app-server-schema/v2";
 import type { EventEnvelope } from "@codex-everywhere/protocol";
 
+import {
+  renderMessageContent,
+  renderUnifiedDiff,
+  unifiedDiffStats,
+} from "./code-renderer.js";
+
 export type ThreadItemPresentation = {
   kind: string;
   title: string;
@@ -198,6 +204,36 @@ export function describeThreadItem(
   };
 }
 
+export function fileChangeKindLabel(change: FileUpdateChange): string {
+  switch (change.kind.type) {
+    case "add":
+      return "新增";
+    case "delete":
+      return "删除";
+    case "update":
+      return change.kind.move_path ? "移动并修改" : "修改";
+  }
+  return "修改";
+}
+
+export function fileChangeItemFromPatchUpdate(
+  payload: unknown,
+): Extract<ThreadItem, { type: "fileChange" }> | undefined {
+  if (
+    !isRecord(payload) ||
+    typeof payload.itemId !== "string" ||
+    !Array.isArray(payload.changes) ||
+    !payload.changes.every(isFileUpdateChange)
+  )
+    return undefined;
+  return {
+    type: "fileChange",
+    id: payload.itemId,
+    changes: payload.changes,
+    status: "inProgress",
+  };
+}
+
 function localImageNameFromPath(path: string): string {
   const leaf = path.split(/[\\/]/u).at(-1) ?? "图片";
   return leaf.replace(/^[0-9a-f-]{36}-/iu, "") || "图片";
@@ -359,6 +395,20 @@ export class ThreadTimelineView {
       }
     }
 
+    const patchUpdate = fileChangeItemFromPatchUpdate(payload);
+    if (event.type === "codex/item/fileChange/patchUpdated" && patchUpdate) {
+      this.#upsertItem(patchUpdate);
+      this.scrollToEnd(true);
+      return true;
+    }
+
+    if (event.type === "codex/turn/diff/updated") {
+      // This aggregate changes repeatedly and is not a timeline item. The
+      // authoritative, per-file UI is driven by fileChange item lifecycle and
+      // patchUpdated notifications.
+      return true;
+    }
+
     if (event.type === "codex/turn/completed" && isTurn(payload.turn)) {
       for (const item of payload.turn.items) this.#upsertItem(item);
       if (payload.turn.error) {
@@ -458,10 +508,22 @@ export class ThreadTimelineView {
       card.append(heading, body);
       this.#container.append(card);
     }
-    const target = card.querySelector<HTMLElement>(
+    let target = card.querySelector<HTMLElement>(
       ".stream-target, .message-text, pre",
     );
-    if (target) target.textContent = `${target.textContent ?? ""}${delta}`;
+    if (!target && kind === "tool") {
+      target = document.createElement("pre");
+      target.className = "stream-target command-output";
+      card.append(target);
+    }
+    if (!target) return;
+    const next = `${card.dataset.rawText ?? target.textContent ?? ""}${delta}`;
+    card.dataset.rawText = next;
+    if (kind === "agent" || kind === "plan") {
+      renderMessageContent(target, next);
+    } else {
+      target.textContent = next;
+    }
   }
 
   #findItem(itemId: string): HTMLElement | undefined {
@@ -506,13 +568,44 @@ export class ThreadTimelineView {
     }
 
     if (item.type === "fileChange") {
+      card.classList.add("file-change-card");
+      if (item.changes.length === 0) {
+        const pending = document.createElement("div");
+        pending.className = "file-change-pending";
+        pending.textContent = "正在准备文件差异…";
+        card.append(pending);
+      }
       for (const change of item.changes) {
         const details = document.createElement("details");
+        details.className = "file-change-details";
+        details.open = item.changes.length === 1;
         const summary = document.createElement("summary");
-        summary.textContent = `${String(change.kind)} · ${change.path}`;
-        const diff = document.createElement("pre");
-        diff.className = "diff-text";
-        diff.textContent = change.diff;
+        const kind = document.createElement("span");
+        kind.className = `file-change-kind file-change-${change.kind.type}`;
+        kind.textContent = fileChangeKindLabel(change);
+        const path = document.createElement("code");
+        path.className = "file-change-path";
+        path.textContent = change.path;
+        const stats = unifiedDiffStats(change.diff);
+        const size = document.createElement("span");
+        size.className = "file-change-stats";
+        const additions = document.createElement("span");
+        additions.className = "diff-stat-addition";
+        additions.textContent = `+${String(stats.additions)}`;
+        const deletions = document.createElement("span");
+        deletions.className = "diff-stat-deletion";
+        deletions.textContent = `−${String(stats.deletions)}`;
+        size.append(additions, deletions);
+        summary.append(kind, path, size);
+        if (change.kind.type === "update" && change.kind.move_path) {
+          const moved = document.createElement("div");
+          moved.className = "file-change-move";
+          moved.textContent = `移动到 ${change.kind.move_path}`;
+          details.append(summary, moved, renderUnifiedDiff(change.diff));
+          card.append(details);
+          continue;
+        }
+        const diff = renderUnifiedDiff(change.diff);
         details.append(summary, diff);
         card.append(details);
       }
@@ -521,7 +614,12 @@ export class ThreadTimelineView {
 
     const body = document.createElement("div");
     body.className = "message-text stream-target";
-    body.textContent = presentation.summary;
+    if (item.type === "agentMessage" || item.type === "plan") {
+      card.dataset.rawText = presentation.summary;
+      renderMessageContent(body, presentation.summary);
+    } else {
+      body.textContent = presentation.summary;
+    }
     card.append(body);
     return card;
   }
@@ -568,6 +666,21 @@ function isThreadItem(value: unknown): value is ThreadItem {
     isRecord(value) &&
     typeof value.type === "string" &&
     typeof value.id === "string"
+  );
+}
+
+function isFileUpdateChange(value: unknown): value is FileUpdateChange {
+  if (
+    !isRecord(value) ||
+    typeof value.path !== "string" ||
+    typeof value.diff !== "string" ||
+    !isRecord(value.kind)
+  )
+    return false;
+  if (value.kind.type === "add" || value.kind.type === "delete") return true;
+  return (
+    value.kind.type === "update" &&
+    (value.kind.move_path === null || typeof value.kind.move_path === "string")
   );
 }
 

@@ -46,16 +46,24 @@ export function renderWatchdogScript(
   const sessionName = `codex-everywhere-${process.getuid?.() ?? "user"}`;
   const logPath = join(paths.logsDir, "agent.log");
   const watchdogLock = `${scriptPath}.lock`;
+  const disabledMarker = `/etc/codex-everywhere-access/${process.getuid?.() ?? "unknown"}.disabled`;
   return `#!/bin/sh
 set -eu
 SESSION=${shellQuote(sessionName)}
 LOG=${shellQuote(logPath)}
 LOCK=${shellQuote(watchdogLock)}
 TMUX=${shellQuote(tmuxPath)}
+DISABLED=${shellQuote(disabledMarker)}
 if ! mkdir "$LOCK" 2>/dev/null; then
   exit 0
 fi
 trap 'rmdir "$LOCK"' EXIT HUP INT TERM
+if [ -f "$DISABLED" ]; then
+  if "$TMUX" has-session -t "$SESSION" 2>/dev/null; then
+    "$TMUX" kill-session -t "$SESSION" || true
+  fi
+  exit 0
+fi
 if [ -f "$LOG" ] && [ "$(wc -c < "$LOG")" -gt 10485760 ]; then
   if "$TMUX" has-session -t "$SESSION" 2>/dev/null; then
     "$TMUX" send-keys -t "$SESSION" C-c || true

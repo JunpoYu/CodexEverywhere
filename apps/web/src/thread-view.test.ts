@@ -3,6 +3,8 @@ import { describe, expect, it } from "vitest";
 
 import {
   describeThreadItem,
+  fileChangeItemFromPatchUpdate,
+  fileChangeKindLabel,
   isReasoningEventType,
   isVisibleThreadItem,
   mcpServerStartupNotice,
@@ -107,6 +109,52 @@ describe("describeThreadItem", () => {
     );
     expect(isReasoningEventType("codex/item/reasoning/textDelta")).toBe(true);
     expect(isReasoningEventType("codex/item/agentMessage/delta")).toBe(false);
+  });
+
+  it("renders structured file change kinds instead of object coercion", () => {
+    expect(
+      fileChangeKindLabel({
+        path: "src/new.ts",
+        kind: { type: "add" },
+        diff: "",
+      }),
+    ).toBe("新增");
+    expect(
+      fileChangeKindLabel({
+        path: "src/old.ts",
+        kind: { type: "update", move_path: "src/new.ts" },
+        diff: "",
+      }),
+    ).toBe("移动并修改");
+  });
+
+  it("turns patchUpdated payloads into live file-change items", () => {
+    expect(
+      fileChangeItemFromPatchUpdate({
+        itemId: "file-1",
+        changes: [
+          {
+            path: "src/app.ts",
+            kind: { type: "update", move_path: null },
+            diff: "@@ -1 +1 @@\n-old\n+new",
+          },
+        ],
+      }),
+    ).toEqual({
+      type: "fileChange",
+      id: "file-1",
+      changes: [
+        {
+          path: "src/app.ts",
+          kind: { type: "update", move_path: null },
+          diff: "@@ -1 +1 @@\n-old\n+new",
+        },
+      ],
+      status: "inProgress",
+    });
+    expect(
+      fileChangeItemFromPatchUpdate({ itemId: "file-1", changes: [{}] }),
+    ).toBeUndefined();
   });
 });
 

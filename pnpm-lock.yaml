@@ -88,15 +88,31 @@ importers:
       "@codex-everywhere/protocol":
         specifier: workspace:*
         version: link:../../packages/protocol
+      "@mdit/plugin-katex":
+        specifier: 0.24.0
+        version: 0.24.0(markdown-it@14.3.0)
       "@serenity-kit/opaque":
         specifier: 1.1.0
         version: 1.1.0
       "@simplewebauthn/browser":
         specifier: 13.2.2
         version: 13.2.2
+      dompurify:
+        specifier: ^3.4.13
+        version: 3.4.13
+      katex:
+        specifier: ^0.18.1
+        version: 0.18.1
+      markdown-it:
+        specifier: ^14.3.0
+        version: 14.3.0
       vite:
         specifier: ^7.0.0
         version: 7.3.6(@types/node@20.19.43)(tsx@4.23.1)
+    devDependencies:
+      "@types/markdown-it":
+        specifier: ^14.1.2
+        version: 14.1.2
 
   packages/codex-app-server-schema: {}
 
@@ -370,6 +386,42 @@ packages:
         integrity: sha512-llBRm4dT4Z89aRsm6u2oEZ8tfwL/2l6BwpZ7JcyieouniDECM5AqNgr/y08zalEIvW3RSK4upYyybDcmjXqAow==,
       }
 
+  "@mdit/helper@0.22.1":
+    resolution:
+      {
+        integrity: sha512-lDpajcdAk84aYCNAM/Mi3djw38DJq7ocLw5VOSMu/u2YKX3/OD37a6Qb59in8Uyp4SiAbQoSHa8px6hgHEpB5g==,
+      }
+    engines: { node: ">= 18" }
+    peerDependencies:
+      markdown-it: ^14.1.0
+    peerDependenciesMeta:
+      markdown-it:
+        optional: true
+
+  "@mdit/plugin-katex@0.24.0":
+    resolution:
+      {
+        integrity: sha512-4GDbtmGQ1dMTFSDHXwkz5deSR726kVVn8AjCYMpfKJ14PIn6nqX+43tzcgW0QkBI9MiWKmPtMqzAjqXOe/0JJA==,
+      }
+    engines: { node: ">= 18" }
+    peerDependencies:
+      markdown-it: ^14.1.0
+    peerDependenciesMeta:
+      markdown-it:
+        optional: true
+
+  "@mdit/plugin-tex@0.23.0":
+    resolution:
+      {
+        integrity: sha512-oiNlqzpa4S/6rGm5Ht5IvpzvVsDmm1kF95oxKR0ZQmkeMeSXJLVrYgxmMvt8Oj0D+/F5WJ4mYCD+kXDaLxI0gg==,
+      }
+    engines: { node: ">= 18" }
+    peerDependencies:
+      markdown-it: ^14.1.0
+    peerDependenciesMeta:
+      markdown-it:
+        optional: true
+
   "@peculiar/asn1-android@2.8.0":
     resolution:
       {
@@ -513,6 +565,24 @@ packages:
         integrity: sha512-GhdPgy1el4/ImP05X05Uw4cw2/M93BCUmnEvWZNStlCzEKME4Fkk+YpoA5OiHNQmoS7Cafb8Xa3Pya8m1Qrzeg==,
       }
 
+  "@types/linkify-it@5.0.0":
+    resolution:
+      {
+        integrity: sha512-sVDA58zAw4eWAffKOaQH5/5j3XeayukzDk+ewSsnv3p4yJEZHCCzMDiZM8e0OUrRvmpGZ85jf4yDHkHsgBNr9Q==,
+      }
+
+  "@types/markdown-it@14.1.2":
+    resolution:
+      {
+        integrity: sha512-promo4eFwuiW+TfGxhi+0x3czqTYJkG8qB17ZUJiVF10Xm7NLVRSLUsfRTU/6h1e24VvRnXCx+hG7li58lkzog==,
+      }
+
+  "@types/mdurl@2.0.0":
+    resolution:
+      {
+        integrity: sha512-RGdgjQUZba5p6QEFAVx2OGb8rQDL/cPRG7GiedRzMcJ1tYnUANBncjbSB1NRGwbvjcPeikRABz2nshyPk1bhWg==,
+      }
+
   "@types/node@20.19.43":
     resolution:
       {
@@ -523,6 +593,12 @@ packages:
     resolution:
       {
         integrity: sha512-QXIx38p2ZThJaK9vP5ZdqdlRe1FG9I8SmCZOS7FHfB/2qPAjZwkL7/vlfPg6N/oWHuuOaGg/P/IRwfP2W0kWVQ==,
+      }
+
+  "@types/trusted-types@2.0.7":
+    resolution:
+      {
+        integrity: sha512-ScaPdn1dQczgbl0QFTeTOmVHFULt394XJgOQNoyVhZ6r2vLnMLJfBPd53SB52T/3G36VI1/g2MZaX0cwDuXsfw==,
       }
 
   "@types/ws@8.18.1":
@@ -579,6 +655,12 @@ packages:
     resolution:
       {
         integrity: sha512-fy9am/HWxbaGt/Sawrp90vt6Y6jQwf1RX77cz3uwoJwJVMli/e1IEwRPnMNJ7vKfPTwo0diXifkpPvwH9v7nGA==,
+      }
+
+  argparse@2.0.1:
+    resolution:
+      {
+        integrity: sha512-8+9WqebbFzpX9OR+Wa6O29asIogeRMzcGtAINdpMHHyAg10f05aSFVBbcEqGf/PXw1EjAZ+q2/bEBg3DvurK3Q==,
       }
 
   asn1js@3.0.10:
@@ -638,11 +720,31 @@ packages:
       }
     engines: { node: ">=20" }
 
+  commander@8.3.0:
+    resolution:
+      {
+        integrity: sha512-OkTL9umf+He2DZkUq8f8J9of7yL6RJKI24dVITBmNfZBmri9zYZQrKkuXiKhyfPSu8tUhnVBB1iKXevvnlR4Ww==,
+      }
+    engines: { node: ">= 12" }
+
   convert-source-map@2.0.0:
     resolution:
       {
         integrity: sha512-Kvp459HrV2FEJ1CAsi1Ku+MY3kasH19TFykTz2xWmMeq6bk2NU3XXvfJ+Q61m0xktWwt+1HSYf3JZsTms3aRJg==,
       }
+
+  dompurify@3.4.13:
+    resolution:
+      {
+        integrity: sha512-2vmYIoqjze2d+kakP8S/nS5shfsl587kzwEjcGlTdiksUVgFHnFCsLYDVj/JNqJVOQZGSYBTmuycv0PodwmnMQ==,
+      }
+
+  entities@4.5.0:
+    resolution:
+      {
+        integrity: sha512-V0hjH4dGPh9Ao5p0MoRY6BVqtwCjhz6vI5LT8AJ55H+4g9/4vbHx1I54fS0XuclLhDHArPQCiMjDxjaL8fPxhw==,
+      }
+    engines: { node: ">=0.12" }
 
   es-module-lexer@2.3.1:
     resolution:
@@ -691,10 +793,43 @@ packages:
     engines: { node: ^8.16.0 || ^10.6.0 || >=11.0.0 }
     os: [darwin]
 
+  katex@0.16.47:
+    resolution:
+      {
+        integrity: sha512-Eeo8Ys1doU1z+x8AZsPpQu+p/QcZBI5PeOo7QGQdy2x2m0MU/hYagBbGOmXwr5KVbEfVuWv9LpnQWeehogurjg==,
+      }
+    hasBin: true
+
+  katex@0.18.1:
+    resolution:
+      {
+        integrity: sha512-Td8GCYSxDAoMhHOlKmCFMJ/hz5qlAAb71n66Dryw9nfCVfumLo7nhuotbvKom/XPADmrYC3O5QR71EPq4DarJQ==,
+      }
+    hasBin: true
+
+  linkify-it@5.0.2:
+    resolution:
+      {
+        integrity: sha512-ONTm2jCMAVZjgQa/Fy1kScXsuOoF5NPTsoFBdE1KVIZ2vAh/r9+Bqo+0jINCBYnavTPQZz38QzFTme79ENoN3Q==,
+      }
+
   magic-string@0.30.21:
     resolution:
       {
         integrity: sha512-vd2F4YUyEXKGcLHoq+TEyCjxueSeHnFxyyjNp80yg0XV4vUhnDer/lvvlqM/arB5bXQN5K2/3oinyCRyx8T2CQ==,
+      }
+
+  markdown-it@14.3.0:
+    resolution:
+      {
+        integrity: sha512-RCEsPjR+sr0x+AuYp601tKTkgFG4YEPLCzHST3cQ/fhlJkqAkz1L2/Qbp1j9qw5SBwQHFBoW8+hoN5xssOF0Tw==,
+      }
+    hasBin: true
+
+  mdurl@2.1.0:
+    resolution:
+      {
+        integrity: sha512-1+HBaOx0zi/dQWht8rNv9MYf9qqpqL/kxI0hXImU6Y547zM6Sni8BQibt7ifgMcYtQg41ao3Ivd6cnSM86inpg==,
       }
 
   nanoassert@2.0.0:
@@ -757,6 +892,13 @@ packages:
       }
     engines: { node: ">=14" }
     hasBin: true
+
+  punycode.js@2.3.1:
+    resolution:
+      {
+        integrity: sha512-uxFIHU0YlHYhDQtV4R9J6a52SLx28BCjT+4ieh7IGbgwVJWO+km431c4yRlREUAsAmt/uMjQUyQHNEPf0M39CA==,
+      }
+    engines: { node: ">=6" }
 
   pvtsutils@1.3.6:
     resolution:
@@ -905,6 +1047,12 @@ packages:
       }
     engines: { node: ">=14.17" }
     hasBin: true
+
+  uc.micro@2.1.0:
+    resolution:
+      {
+        integrity: sha512-ARDJmphmdvUk6Glw7y9DQ2bFkKBHwQHLi2lsaH6PPmz/Ka9sFOBsBluozhDltWmnv9u/cF6Rt87znRTPV+yp/A==,
+      }
 
   undici-types@6.21.0:
     resolution:
@@ -1113,6 +1261,27 @@ snapshots:
 
   "@levischuck/tiny-cbor@0.2.11": {}
 
+  "@mdit/helper@0.22.1(markdown-it@14.3.0)":
+    dependencies:
+      "@types/markdown-it": 14.1.2
+    optionalDependencies:
+      markdown-it: 14.3.0
+
+  "@mdit/plugin-katex@0.24.0(markdown-it@14.3.0)":
+    dependencies:
+      "@mdit/helper": 0.22.1(markdown-it@14.3.0)
+      "@mdit/plugin-tex": 0.23.0(markdown-it@14.3.0)
+      "@types/markdown-it": 14.1.2
+      katex: 0.16.47
+    optionalDependencies:
+      markdown-it: 14.3.0
+
+  "@mdit/plugin-tex@0.23.0(markdown-it@14.3.0)":
+    dependencies:
+      "@types/markdown-it": 14.1.2
+    optionalDependencies:
+      markdown-it: 14.3.0
+
   "@peculiar/asn1-android@2.8.0":
     dependencies:
       "@peculiar/asn1-schema": 2.8.0
@@ -1251,6 +1420,15 @@ snapshots:
 
   "@types/estree@1.0.9": {}
 
+  "@types/linkify-it@5.0.0": {}
+
+  "@types/markdown-it@14.1.2":
+    dependencies:
+      "@types/linkify-it": 5.0.0
+      "@types/mdurl": 2.0.0
+
+  "@types/mdurl@2.0.0": {}
+
   "@types/node@20.19.43":
     dependencies:
       undici-types: 6.21.0
@@ -1259,6 +1437,9 @@ snapshots:
     dependencies:
       "@types/emscripten": 1.41.5
       "@types/node": 20.19.43
+
+  "@types/trusted-types@2.0.7":
+    optional: true
 
   "@types/ws@8.18.1":
     dependencies:
@@ -1305,6 +1486,8 @@ snapshots:
       convert-source-map: 2.0.0
       tinyrainbow: 3.1.1
 
+  argparse@2.0.1: {}
+
   asn1js@3.0.10:
     dependencies:
       pvtsutils: 1.3.6
@@ -1337,7 +1520,15 @@ snapshots:
 
   commander@14.0.3: {}
 
+  commander@8.3.0: {}
+
   convert-source-map@2.0.0: {}
+
+  dompurify@3.4.13:
+    optionalDependencies:
+      "@types/trusted-types": 2.0.7
+
+  entities@4.5.0: {}
 
   es-module-lexer@2.3.1: {}
 
@@ -1383,9 +1574,32 @@ snapshots:
   fsevents@2.3.3:
     optional: true
 
+  katex@0.16.47:
+    dependencies:
+      commander: 8.3.0
+
+  katex@0.18.1:
+    dependencies:
+      commander: 8.3.0
+
+  linkify-it@5.0.2:
+    dependencies:
+      uc.micro: 2.1.0
+
   magic-string@0.30.21:
     dependencies:
       "@jridgewell/sourcemap-codec": 1.5.5
+
+  markdown-it@14.3.0:
+    dependencies:
+      argparse: 2.0.1
+      entities: 4.5.0
+      linkify-it: 5.0.2
+      mdurl: 2.1.0
+      punycode.js: 2.3.1
+      uc.micro: 2.1.0
+
+  mdurl@2.1.0: {}
 
   nanoassert@2.0.0: {}
 
@@ -1414,6 +1628,8 @@ snapshots:
       source-map-js: 1.2.1
 
   prettier@3.9.6: {}
+
+  punycode.js@2.3.1: {}
 
   pvtsutils@1.3.6:
     dependencies:
@@ -1503,6 +1719,8 @@ snapshots:
       tslib: 1.14.1
 
   typescript@5.9.3: {}
+
+  uc.micro@2.1.0: {}
 
   undici-types@6.21.0: {}
 

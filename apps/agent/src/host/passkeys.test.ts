@@ -145,4 +145,54 @@ describe("PasskeyRegistry recovery codes", () => {
     });
     await store.close();
   });
+
+  it("exchanges a short-lived administrator handoff once and invalidates old recovery codes", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "ce-admin-recovery-"));
+    temporaryDirectories.push(directory);
+    const store = await HostStateStore.open(join(directory, "state.sqlite"));
+    const registry = new PasskeyRegistry(store, {
+      origin: "https://codex.example",
+      rpId: "codex.example",
+      userName: "alice",
+      nodeId: "node-1",
+    });
+    const [oldCode] = await registry.rotateRecoveryCodes();
+    const ticket = await registry.issueAdminRecoveryTicket("host-admin");
+    await expect(registry.verifyRecoveryCode(oldCode!)).rejects.toThrow();
+    const authorization = await registry.authorizeRecovery(ticket.handoffCode);
+    expect(authorization.kind).toBe("admin-ticket");
+    vi.mocked(verifyRegistrationResponse).mockResolvedValue({
+      verified: true,
+      registrationInfo: {
+        credential: {
+          id: "recovered-passkey",
+          publicKey: new Uint8Array(32),
+          counter: 0,
+          transports: [],
+        },
+        credentialDeviceType: "singleDevice",
+        credentialBackedUp: false,
+        credentialType: "public-key",
+        attestationObject: new Uint8Array(),
+        origin: "https://codex.example",
+        rpID: "codex.example",
+        aaguid: "00000000-0000-0000-0000-000000000000",
+        userVerified: true,
+        fmt: "none",
+      },
+    });
+    await registry.verifyRegistration(
+      {} as RegistrationResponseJSON,
+      "challenge",
+      {
+        replaceExisting: true,
+        issueRecoveryCodes: true,
+        recoveryAuthorization: authorization,
+      },
+    );
+    await expect(
+      registry.authorizeRecovery(ticket.handoffCode),
+    ).rejects.toThrow("invalid");
+    await store.close();
+  });
 });

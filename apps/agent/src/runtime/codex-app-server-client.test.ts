@@ -98,6 +98,22 @@ describe("CodexAppServerClient", () => {
     } satisfies Partial<CodexRpcError>);
   });
 
+  it("times out one request without closing the app-server connection", async () => {
+    const { client } = await createHarness((message, send) => {
+      if (message.method === "initialize") send({ id: message.id, result: {} });
+      if (message.method === "thread/read") {
+        send({ id: message.id, result: { thread: { id: "thread-1" } } });
+      }
+    });
+
+    await expect(
+      client.request("thread/list", {}, { timeoutMs: 10 }),
+    ).rejects.toThrow("Timed out waiting for Codex app-server response");
+    await expect(
+      client.request("thread/read", { threadId: "thread-1" }),
+    ).resolves.toMatchObject({ thread: { id: "thread-1" } });
+  });
+
   it("emits notifications and responds to server requests", async () => {
     let sendToClient: ((message: unknown) => void) | undefined;
     const responses: Record<string, unknown>[] = [];

@@ -26,6 +26,7 @@ const decoder = new TextDecoder();
 
 export type PairingDocument = {
   version: 1;
+  principal?: "user" | "host-admin";
   transport: "direct" | "relay";
   endpoint: string;
   directEndpoint?: string;
@@ -43,6 +44,7 @@ export type PairingDocument = {
 
 export type RelayHostDocument = {
   version: 1;
+  principal?: "user" | "host-admin";
   transport: "relay";
   endpoint: string;
   directEndpoint?: string;
@@ -55,6 +57,7 @@ export type RelayHostDocument = {
 
 export type DirectHostDocument = {
   version: 1;
+  principal?: "user";
   transport: "direct";
   endpoint: string;
   relayEndpoint?: string;
@@ -116,6 +119,7 @@ export class GatewayClient {
     const deviceKeys = generateStaticKeyPair();
     const host: SavedHost = {
       id: document.nodeId,
+      kind: document.principal === "host-admin" ? "admin" : "user",
       name: document.loginName ?? document.nodeId,
       ...(document.loginName ? { loginName: document.loginName } : {}),
       endpoint: document.endpoint,
@@ -158,6 +162,7 @@ export class GatewayClient {
   static async lookupRelay(
     endpoint: string,
     loginName: string,
+    principal: "user" | "host-admin" = "user",
   ): Promise<RelayHostDocument> {
     const socket = new WebSocket(endpoint);
     await socketOpened(socket);
@@ -168,13 +173,17 @@ export class GatewayClient {
           type: "relay/lookup",
           version: 1,
           loginName,
+          principal,
         }),
       );
       const value: unknown = JSON.parse(await response);
       if (!isRelayProfile(value))
         throw new Error("Relay 返回了无效的宿主机资料");
+      if ((value.principal ?? "user") !== principal)
+        throw new Error("Relay 返回了错误的身份域");
       return {
         version: 1,
+        principal,
         transport: "relay",
         endpoint,
         ...(typeof value.directEndpoint === "string"
@@ -255,6 +264,7 @@ export class GatewayClient {
     const deviceKeys = generateStaticKeyPair();
     const host: SavedHost = {
       id: document.nodeId,
+      kind: document.principal === "host-admin" ? "admin" : "user",
       name: options.loginName,
       loginName: options.loginName,
       endpoint: document.endpoint,
@@ -304,6 +314,7 @@ export class GatewayClient {
     const deviceKeys = generateStaticKeyPair();
     const host: SavedHost = {
       id: document.nodeId,
+      kind: document.principal === "host-admin" ? "admin" : "user",
       name: options.loginName,
       loginName: options.loginName,
       endpoint: document.endpoint,
@@ -353,6 +364,7 @@ export class GatewayClient {
     const deviceKeys = generateStaticKeyPair();
     const host: SavedHost = {
       id: document.nodeId,
+      kind: document.principal === "host-admin" ? "admin" : "user",
       name: options.loginName,
       loginName: options.loginName,
       endpoint: document.endpoint,
@@ -694,12 +706,16 @@ function isRelayProfile(value: unknown): value is {
   hostPublicKey: string;
   hostFingerprint: string;
   directEndpoint?: string;
+  principal?: "user" | "host-admin";
 } {
   if (!value || typeof value !== "object") return false;
   const profile = value as Record<string, unknown>;
   return (
     profile.type === "relay/profile" &&
     profile.version === 1 &&
+    (profile.principal === undefined ||
+      profile.principal === "user" ||
+      profile.principal === "host-admin") &&
     typeof profile.routeId === "string" &&
     typeof profile.nodeId === "string" &&
     typeof profile.userId === "string" &&
@@ -871,6 +887,9 @@ function nextTextMessage(
 export function validatePairingDocument(value: PairingDocument): void {
   if (
     value.version !== 1 ||
+    (value.principal !== undefined &&
+      value.principal !== "user" &&
+      value.principal !== "host-admin") ||
     (value.transport !== "direct" && value.transport !== "relay") ||
     typeof value.endpoint !== "string" ||
     (value.directEndpoint !== undefined &&

@@ -21,6 +21,9 @@ import {
   type CodexNetworkConfig,
 } from "../host/network.js";
 import { inspectSshUnixAccount, type GetentRunner } from "./unix-accounts.js";
+import { HostStateStore } from "../host/state-store.js";
+import { ADMIN_STATE_FILE } from "./access-policy.js";
+import { AdminUserRegistry } from "./registry.js";
 
 export const INSTALLED_PROVISIONER_VERSION = 1 as const;
 export const HOST_PROVISIONER_CONFIG_PATH =
@@ -89,6 +92,7 @@ export async function issueSelfProvisioningGrant(
   options: {
     env?: NodeJS.ProcessEnv;
     configPath?: string;
+    adminStatePath?: string;
     runGetent?: GetentRunner;
   } = {},
 ): Promise<SelfProvisioningGrant> {
@@ -119,6 +123,27 @@ export async function issueSelfProvisioningGrant(
     throw new Error("Unix account home is not owned by the requesting user");
   }
   const installed = await loadHostProvisioner(options.configPath);
+  const adminState = await HostStateStore.open(
+    options.adminStatePath ?? ADMIN_STATE_FILE,
+  );
+  try {
+    const registry = new AdminUserRegistry(adminState);
+    const current = await registry.get(account.username);
+    if (
+      current &&
+      (current.status === "disabled" ||
+        current.status === "removal_pending" ||
+        current.status === "removing" ||
+        current.status === "removed")
+    ) {
+      throw new Error(
+        "CodexEverywhere access is disabled; contact the host administrator",
+      );
+    }
+    await registry.register(account);
+  } finally {
+    await adminState.close();
+  }
   const issued = issueProvisionedRouteCapability(installed.credential, {
     loginName: account.username,
   });

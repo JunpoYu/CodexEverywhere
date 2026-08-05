@@ -4,8 +4,10 @@ import { EventEmitter } from "node:events";
 import WebSocket, { WebSocketServer, type RawData } from "ws";
 
 import {
-  relayLoginId,
+  relayPrincipalLoginId,
   routeCapabilityLoginId,
+  routeCapabilityPrincipal,
+  type RelayPrincipal,
   verifyRouteCapability,
 } from "./capability.js";
 
@@ -28,6 +30,7 @@ type PendingConnection = {
 };
 
 type PublicHostProfile = {
+  principal: RelayPrincipal;
   nodeId: string;
   userId: string;
   hostPublicKey: string;
@@ -139,6 +142,8 @@ export class RelayServer extends EventEmitter<{ listening: [number] }> {
     const profile = parsePublicHostProfile(message.profile);
     if (loginId && !profile)
       throw new Error("Login-enabled route requires a public profile");
+    if (profile && profile.principal !== routeCapabilityPrincipal(capability))
+      throw new Error("Relay principal does not match route capability");
     const conflictingRoute = loginId ? this.#logins.get(loginId) : undefined;
     if (conflictingRoute && conflictingRoute !== capability.routeId)
       throw new Error("Login name registered by another route");
@@ -206,7 +211,12 @@ export class RelayServer extends EventEmitter<{ listening: [number] }> {
   #lookup(socket: WebSocket, message: Record<string, unknown>): void {
     if (typeof message.loginName !== "string")
       throw new Error("Missing login name");
-    const loginId = relayLoginId(this.#options.signingKey, message.loginName);
+    const principal = parseRelayPrincipal(message.principal);
+    const loginId = relayPrincipalLoginId(
+      this.#options.signingKey,
+      principal,
+      message.loginName,
+    );
     const routeId = this.#logins.get(loginId);
     const route = routeId ? this.#routes.get(routeId) : undefined;
     if (
@@ -217,12 +227,16 @@ export class RelayServer extends EventEmitter<{ listening: [number] }> {
       socket.close(1013, "login unavailable");
       return;
     }
+    const { principal: routePrincipal, ...publicProfile } = route.profile;
     socket.send(
       JSON.stringify({
         type: "relay/profile",
         version: 1,
         routeId,
-        ...route.profile,
+        ...(routePrincipal === "host-admin"
+          ? { principal: routePrincipal }
+          : {}),
+        ...publicProfile,
       }),
     );
   }
@@ -308,6 +322,7 @@ function parsePublicHostProfile(value: unknown): PublicHostProfile | undefined {
     throw new Error("Invalid public host profile");
   }
   return {
+    principal: parseRelayPrincipal(profile.principal),
     nodeId: profile.nodeId,
     userId: profile.userId,
     hostPublicKey: profile.hostPublicKey,
@@ -316,6 +331,12 @@ function parsePublicHostProfile(value: unknown): PublicHostProfile | undefined {
       ? { directEndpoint: validDirectEndpoint(profile.directEndpoint) }
       : {}),
   };
+}
+
+function parseRelayPrincipal(value: unknown): RelayPrincipal {
+  if (value === undefined || value === "user") return "user";
+  if (value === "host-admin") return value;
+  throw new Error("Invalid Relay principal");
 }
 
 function validDirectEndpoint(value: string): string {

@@ -1,7 +1,7 @@
 import { mkdtemp, mkdir, realpath, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { rm } from "node:fs/promises";
 
 import { HostStateStore } from "./state-store.js";
@@ -75,6 +75,27 @@ describe("WorkspaceRegistry defaults", () => {
       roots: [await realpath(first)],
       defaultRoot: await realpath(first),
     });
+    await store.close();
+  });
+
+  it("checks duplicate history paths once against one root snapshot", async () => {
+    const base = await temporaryDirectory();
+    const root = join(base, "root");
+    const child = join(root, "project");
+    const outside = join(base, "outside");
+    await Promise.all([
+      mkdir(child, { recursive: true }),
+      mkdir(outside, { recursive: true }),
+    ]);
+    const store = await HostStateStore.open(join(base, "state.sqlite"));
+    const registry = new WorkspaceRegistry(store);
+    await registry.add(root);
+    const read = vi.spyOn(store, "read");
+
+    await expect(
+      registry.allowedPaths([child, child, outside, join(base, "missing")]),
+    ).resolves.toEqual(new Set([child]));
+    expect(read).toHaveBeenCalledTimes(1);
     await store.close();
   });
 });

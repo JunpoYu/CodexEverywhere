@@ -101,6 +101,23 @@ export class WorkspaceRegistry {
     return resolveWorkspacePath(await this.list(), inputPath);
   }
 
+  async allowedPaths(inputPaths: readonly string[]): Promise<Set<string>> {
+    const roots = await this.list();
+    const allowed = new Set<string>();
+    await Promise.all(
+      [...new Set(inputPaths)].map(async (inputPath) => {
+        try {
+          await resolveWorkspacePath(roots, inputPath);
+          allowed.add(inputPath);
+        } catch {
+          // A history listing silently excludes missing, unreadable, or
+          // out-of-workspace paths without weakening the path boundary.
+        }
+      }),
+    );
+    return allowed;
+  }
+
   async browse(inputPath?: string): Promise<WorkspaceBrowseResponse> {
     return browseWorkspaceDirectories(await this.list(), inputPath, homedir());
   }

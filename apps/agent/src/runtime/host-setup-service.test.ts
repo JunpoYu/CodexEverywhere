@@ -64,7 +64,11 @@ describe("HostSetupService", () => {
       value: {
         networkConfigured: false,
         networkMode: "direct",
-        codex: { installed: true, version: "codex-cli 1.2.3" },
+        codex: {
+          installed: true,
+          binary: "codex",
+          version: "codex-cli 1.2.3",
+        },
         appServerRunning: false,
       },
     });
@@ -91,6 +95,7 @@ describe("HostSetupService", () => {
           },
         })),
         installCodex,
+        probeAppServer: vi.fn(async () => true),
       },
     });
 
@@ -103,6 +108,13 @@ describe("HostSetupService", () => {
     ]);
     expect(first).toEqual(second);
     expect(installCodex).toHaveBeenCalledOnce();
+    expect(first).toMatchObject({
+      value: {
+        installed: true,
+        binary: "/home/alice/.local/bin/codex",
+        restartRequired: true,
+      },
+    });
     expect(phases).toEqual([
       "preparing",
       "installing",
