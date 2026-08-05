@@ -25,6 +25,7 @@ import {
 } from "./gateway-client.js";
 import { ApprovalSubmissionTracker } from "./approval-submission.js";
 import { createCoalescedTask } from "./coalesced-task.js";
+import { ConversationOutlineView } from "./conversation-outline.js";
 import {
   codexLoginEventAction,
   shouldRenderInThreadTimeline,
@@ -359,8 +360,8 @@ app.innerHTML = `
       <div class="thread-search"><span aria-hidden="true">⌕</span><input id="thread-search" type="search" placeholder="搜索会话或目录" aria-label="搜索会话" /><kbd>⌘ K</kbd></div>
       <div id="thread-list" class="thread-list"></div>
     </aside>
-    <section class="content">
-      <div class="thread-header"><button id="back-to-sessions" class="back-to-sessions" type="button" aria-label="返回会话列表">←</button><div class="thread-heading"><p class="eyebrow">Codex session</p><h2 id="thread-title">选择一个会话</h2><small class="thread-cwd-line"><span>当前会话目录</span><code id="thread-cwd"></code></small></div><div class="thread-controls"><div class="codex-status"><span>Codex 状态</span><strong id="thread-state" class="pill idle" role="status" aria-live="polite">空闲</strong></div><div class="thread-actions"><button id="tui-handoff-button" class="ssh-handoff-action compact-action" type="button" title="通过 SSH 在官方 TUI 中继续同一个会话" hidden><span aria-hidden="true">›_</span> SSH 接力</button><button id="thread-settings-button" class="session-settings-action compact-action" type="button" hidden><span aria-hidden="true">⚙</span> 会话设置</button><button id="interrupt-turn" class="ghost danger-action compact-action" type="button" hidden>停止</button></div></div></div>
+    <section id="conversation-content" class="content">
+      <div class="thread-header"><button id="back-to-sessions" class="back-to-sessions" type="button" aria-label="返回会话列表">←</button><div class="thread-heading"><p class="eyebrow">Codex session</p><h2 id="thread-title">选择一个会话</h2><small class="thread-cwd-line"><span>当前会话目录</span><code id="thread-cwd"></code></small></div><div class="thread-controls"><div class="codex-status"><span>Codex 状态</span><strong id="thread-state" class="pill idle" role="status" aria-live="polite">空闲</strong></div><div class="thread-actions"><button id="thread-outline-button" class="thread-outline-action compact-action" type="button" aria-controls="conversation-outline" aria-expanded="false" hidden><span aria-hidden="true">☷</span> 大纲</button><button id="tui-handoff-button" class="ssh-handoff-action compact-action" type="button" title="通过 SSH 在官方 TUI 中继续同一个会话" hidden><span aria-hidden="true">›_</span> SSH 接力</button><button id="thread-settings-button" class="session-settings-action compact-action" type="button" hidden><span aria-hidden="true">⚙</span> 会话设置</button><button id="interrupt-turn" class="ghost danger-action compact-action" type="button" hidden>停止</button></div></div></div>
       <div id="thread-overview" class="thread-overview" hidden>
         <button id="thread-permission-summary" class="thread-fact permission-fact" type="button" title="修改这个会话后续轮次的权限"><span>会话权限</span><strong id="thread-info-permissions">—</strong><small>后续轮次继承 · 点击修改</small></button>
         <div class="thread-fact"><span>模型</span><strong id="thread-info-model">—</strong></div>
@@ -372,6 +373,11 @@ app.innerHTML = `
         <div class="ssh-handoff-banner-actions"><button id="ssh-handoff-banner-button" type="button">查看方法 <span aria-hidden="true">→</span></button><button id="dismiss-ssh-handoff-banner" class="ssh-handoff-banner-dismiss" type="button" title="以后不再显示这条说明">不再提示</button></div>
       </aside>
       <div id="timeline" class="timeline"><div class="empty empty-session"><strong>从一个任务开始</strong><span>选择左侧会话，或者新建一个 Codex 会话。</span><button id="empty-new-session" class="primary">新建会话</button></div></div>
+      <button id="jump-to-latest" class="jump-to-latest" type="button" title="回到正在生成的最新回复" hidden><span aria-hidden="true">↓</span> 回到最新消息</button>
+      <aside id="conversation-outline" class="conversation-outline" aria-label="对话大纲" hidden>
+        <header><div><strong>对话大纲</strong><small>按你的消息快速定位</small></div><span id="conversation-outline-count">0 条</span><button id="close-conversation-outline" class="icon-button" type="button" aria-label="关闭对话大纲">×</button></header>
+        <nav id="conversation-outline-list" aria-label="你发送的消息"></nav>
+      </aside>
       <div class="composer">
         <div class="composer-shell">
           <div id="slash-command-menu" class="slash-command-menu" role="listbox" aria-label="Codex 斜杠指令" hidden></div>
@@ -559,6 +565,22 @@ const alternativeLogin =
   requiredElement<HTMLDetailsElement>("alternative-login");
 const setupError = requiredElement<HTMLElement>("setup-error");
 const timeline = requiredElement<HTMLElement>("timeline");
+const jumpToLatestButton = requiredElement<HTMLButtonElement>("jump-to-latest");
+const conversationContent = requiredElement<HTMLElement>(
+  "conversation-content",
+);
+const conversationOutline = requiredElement<HTMLElement>(
+  "conversation-outline",
+);
+const conversationOutlineList = requiredElement<HTMLElement>(
+  "conversation-outline-list",
+);
+const conversationOutlineCount = requiredElement<HTMLElement>(
+  "conversation-outline-count",
+);
+const threadOutlineButton = requiredElement<HTMLButtonElement>(
+  "thread-outline-button",
+);
 const threadList = requiredElement<HTMLElement>("thread-list");
 const workspaceSelect = requiredElement<HTMLSelectElement>("workspace-select");
 const workspaceScopeSelect = requiredElement<HTMLSelectElement>(
@@ -647,7 +669,19 @@ themePreferenceSelect.addEventListener("change", () => {
 });
 const timelineView = new ThreadTimelineView(timeline, {
   onSteerQueued: (queueId) => void steerQueuedMessage(queueId),
+  onFollowLatestChanged: (following) => {
+    jumpToLatestButton.hidden = following || !activeThreadId;
+  },
 });
+const conversationOutlineView = new ConversationOutlineView(
+  timeline,
+  conversationContent,
+  conversationOutline,
+  conversationOutlineList,
+  conversationOutlineCount,
+  threadOutlineButton,
+);
+jumpToLatestButton.addEventListener("click", () => timelineView.followLatest());
 
 requiredElement("pair-button").addEventListener("click", () => void pair());
 requiredElement("open-first-use").addEventListener("click", showFirstUse);
@@ -730,6 +764,15 @@ requiredElement("back-to-sessions").addEventListener(
   "click",
   closeActiveThreadView,
 );
+threadOutlineButton.addEventListener("click", () =>
+  conversationOutlineView.toggleDrawer(),
+);
+requiredElement("close-conversation-outline").addEventListener("click", () =>
+  conversationOutlineView.closeDrawer(),
+);
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape") conversationOutlineView.closeDrawer();
+});
 requiredElement("manage-workspaces").addEventListener("click", () => {
   workspaceDialog.showModal();
   renderWorkspaceManager();
@@ -1034,6 +1077,7 @@ if (import.meta.env.DEV) {
       requiredElement("thread-cwd").textContent = activeThreadCwd;
       requiredElement("thread-settings-button").hidden = false;
       timelineView.clear("输入 / 查看 Codex 默认斜杠指令");
+      conversationOutlineView.setThreadActive(true);
       messageInput.disabled = false;
       sendMessage.disabled = false;
       queueMessage.disabled = false;
@@ -1425,6 +1469,8 @@ async function activate(nextClient: GatewayClient): Promise<void> {
   activeThreadTokenUsage = undefined;
   pendingRequestIds.clear();
   approvalSubmissions.clear();
+  conversationOutlineView.setThreadActive(false);
+  jumpToLatestButton.hidden = true;
   client?.close();
   client = nextClient;
   appServerRestartRequired = false;
@@ -2206,6 +2252,7 @@ async function enterWorkspace(
   provisioning.hidden = true;
   workspace.hidden = false;
   workspace.classList.remove("thread-open");
+  conversationOutlineView.setThreadActive(false);
   if (account?.email) {
     appendTimeline("system", "Codex 已登录", account.email);
   }
@@ -2672,6 +2719,8 @@ function closeActiveThreadView(): void {
   pendingRequestIds.clear();
   approvalSubmissions.clear();
   workspace.classList.remove("thread-open");
+  conversationOutlineView.setThreadActive(false);
+  jumpToLatestButton.hidden = true;
   requiredElement("thread-title").textContent = "选择一个会话";
   requiredElement("thread-cwd").textContent = "";
   requiredElement("thread-settings-button").hidden = true;
@@ -2752,6 +2801,8 @@ async function openThread(thread: ThreadSummary): Promise<void> {
   sendMessage.disabled = true;
   queueMessage.disabled = true;
   timeline.replaceChildren(loadingTimeline());
+  conversationOutlineView.setThreadActive(true);
+  jumpToLatestButton.hidden = true;
   try {
     if (previousThreadId && previousThreadId !== thread.id) {
       await unsubscribeThread(previousThreadId, currentClient);
@@ -3061,6 +3112,7 @@ async function startTask(): Promise<void> {
     sendMessage.disabled = false;
     queueMessage.disabled = false;
     timelineView.clear("Codex 正在处理第一条消息…");
+    conversationOutlineView.setThreadActive(true);
     const turnPayload: Record<string, unknown> = {
       threadId: activeThreadId,
       input: [{ type: "text", text: prompt.value.trim(), text_elements: [] }],

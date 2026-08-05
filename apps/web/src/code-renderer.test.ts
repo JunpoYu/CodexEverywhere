@@ -1,3 +1,6 @@
+import { readFileSync } from "node:fs";
+import { createRequire } from "node:module";
+
 import { describe, expect, it } from "vitest";
 
 import {
@@ -6,7 +9,40 @@ import {
   unifiedDiffStats,
 } from "./code-renderer.js";
 
+const rendererStyles = readFileSync(
+  new URL("./style.css", import.meta.url),
+  "utf8",
+);
+
+function packageVersion(packageJsonPath: string): string {
+  const manifest: unknown = JSON.parse(readFileSync(packageJsonPath, "utf8"));
+  if (
+    typeof manifest !== "object" ||
+    manifest === null ||
+    !("version" in manifest) ||
+    typeof manifest.version !== "string"
+  ) {
+    throw new Error(`Package manifest has no version: ${packageJsonPath}`);
+  }
+  return manifest.version;
+}
+
 describe("message Markdown rendering", () => {
+  it("uses matching KaTeX versions for rendering and styles", () => {
+    const webRequire = createRequire(import.meta.url);
+    const pluginRequire = createRequire(
+      webRequire.resolve("@mdit/plugin-katex"),
+    );
+    const stylesheetVersion = packageVersion(
+      webRequire.resolve("katex/package.json"),
+    );
+    const rendererVersion = packageVersion(
+      pluginRequire.resolve("katex/package.json"),
+    );
+
+    expect(stylesheetVersion).toBe(rendererVersion);
+  });
+
   it("renders headings, emphasis, lists, quotes, tables, and code", () => {
     const html = markdownToHtml(
       [
@@ -75,6 +111,14 @@ describe("message Markdown rendering", () => {
     expect(html).not.toContain("<script>");
     expect(html).toContain("&lt;script&gt;");
     expect(html).not.toContain('href="javascript:');
+  });
+});
+
+describe("message code styling", () => {
+  it("does not inherit the light inline-code background in fenced blocks", () => {
+    expect(rendererStyles).toMatch(
+      /\.message-code-block pre code\s*\{[^}]*background:\s*transparent;/su,
+    );
   });
 });
 

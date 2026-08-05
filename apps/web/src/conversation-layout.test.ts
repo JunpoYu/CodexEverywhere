@@ -15,11 +15,20 @@ describe("conversation layout contract", () => {
     expect(contract).toContain('"ssh-handoff"');
     expect(contract).toContain('"timeline"');
     expect(contract).toContain('"composer"');
+    expect(contract).toContain('"timeline outline"');
+    expect(contract).toContain('"composer outline"');
     expect(contract).toMatch(/\.timeline\s*\{[^}]*min-height:\s*0;/su);
     expect(contract).toMatch(
       /\.composer\s*\{[^}]*min-height:\s*min-content;/su,
     );
     expect(contract).toContain("grid-area: timeline;");
     expect(contract).toContain("grid-area: composer;");
+    expect(contract).toContain("grid-area: outline;");
+    expect(contract).toMatch(
+      /\.jump-to-latest\s*\{[^}]*grid-area:\s*timeline;[^}]*align-self:\s*end;/su,
+    );
+    expect(contract).toMatch(
+      /@media \(max-width: 1180px\)[\s\S]*\.thread-outline-action:not\(\[hidden\]\)[\s\S]*display:\s*inline-flex;/su,
+    );
   });
 });

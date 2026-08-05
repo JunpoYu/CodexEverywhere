@@ -9,6 +9,7 @@ import {
   isVisibleThreadItem,
   mcpServerStartupNotice,
   queuedMessageText,
+  shouldFollowTimeline,
   TRANSIENT_TIMELINE_SELECTOR,
   threadSnapshotRevision,
   threadSendMode,
@@ -54,6 +55,38 @@ describe("mcpServerStartupNotice", () => {
       expect(
         mcpServerStartupNotice({ name: "codex_apps", status }),
       ).toBeUndefined();
+  });
+});
+
+describe("timeline auto-follow", () => {
+  it("continues following when the reader is already near the latest message", () => {
+    expect(
+      shouldFollowTimeline({
+        scrollTop: 936,
+        scrollHeight: 1_500,
+        clientHeight: 500,
+      }),
+    ).toBe(true);
+  });
+
+  it("stops following once the reader scrolls into message history", () => {
+    expect(
+      shouldFollowTimeline({
+        scrollTop: 800,
+        scrollHeight: 1_500,
+        clientHeight: 500,
+      }),
+    ).toBe(false);
+  });
+
+  it("follows content that does not fill the timeline viewport", () => {
+    expect(
+      shouldFollowTimeline({
+        scrollTop: 0,
+        scrollHeight: 420,
+        clientHeight: 500,
+      }),
+    ).toBe(true);
   });
 });
 

@@ -90,6 +90,24 @@ export function threadSnapshotRevision(response: ThreadReadResponse): string {
 export const TRANSIENT_TIMELINE_SELECTOR =
   "[data-queue-id], [data-request-id], .timeline-entry.streaming";
 
+const FOLLOW_LATEST_THRESHOLD_PX = 64;
+
+export type TimelineScrollMetrics = {
+  scrollTop: number;
+  scrollHeight: number;
+  clientHeight: number;
+};
+
+export function shouldFollowTimeline(
+  metrics: TimelineScrollMetrics,
+  threshold = FOLLOW_LATEST_THRESHOLD_PX,
+): boolean {
+  return (
+    metrics.scrollHeight <= metrics.clientHeight ||
+    metrics.scrollHeight - metrics.scrollTop - metrics.clientHeight <= threshold
+  );
+}
+
 export type VisibleThreadItem = Exclude<ThreadItem, { type: "reasoning" }>;
 
 export function isVisibleThreadItem(
@@ -242,47 +260,60 @@ function localImageNameFromPath(path: string): string {
 export class ThreadTimelineView {
   readonly #container: HTMLElement;
   readonly #onSteerQueued: ((queueId: string) => void) | undefined;
+  readonly #onFollowLatestChanged: ((following: boolean) => void) | undefined;
   #snapshotRevision = "";
   #queuedSteerAvailable = false;
+  #followingLatest = true;
 
   constructor(
     container: HTMLElement,
-    options: { onSteerQueued?(queueId: string): void } = {},
+    options: {
+      onSteerQueued?(queueId: string): void;
+      onFollowLatestChanged?(following: boolean): void;
+    } = {},
   ) {
     this.#container = container;
     this.#onSteerQueued = options.onSteerQueued;
+    this.#onFollowLatestChanged = options.onFollowLatestChanged;
+    container.addEventListener(
+      "scroll",
+      () => this.#setFollowingLatest(this.#isNearLatest()),
+      { passive: true },
+    );
   }
 
   clear(message = "选择一个会话查看内容"): void {
     this.#container.replaceChildren(emptyElement(message));
+    this.#setFollowingLatest(true);
   }
 
   renderSnapshot(response: ThreadReadResponse): void {
-    this.#snapshotRevision = threadSnapshotRevision(response);
-    this.#container.replaceChildren();
-    for (const turn of response.thread.turns) this.#renderTurn(turn);
-    if (this.#container.childElementCount === 0) {
-      this.#container.append(emptyElement("这个会话还没有消息"));
-    }
-    this.scrollToEnd(false);
+    this.#replaceSnapshot(response);
+    this.followLatest();
   }
 
   reconcileSnapshot(response: ThreadReadResponse): boolean {
     const revision = threadSnapshotRevision(response);
     if (revision === this.#snapshotRevision) return false;
+    const followLatest = this.#isNearLatest();
+    const previousScrollTop = this.#container.scrollTop;
     const transientCards = Array.from(
       this.#container.querySelectorAll<HTMLElement>(
         TRANSIENT_TIMELINE_SELECTOR,
       ),
     );
-    this.renderSnapshot(response);
+    this.#replaceSnapshot(response);
     for (const card of transientCards) {
       const itemId = card.dataset.itemId;
       const snapshotCard = itemId ? this.#findItem(itemId) : undefined;
       if (snapshotCard) snapshotCard.replaceWith(card);
       else this.#container.append(card);
     }
-    this.scrollToEnd(false);
+    if (followLatest) this.followLatest();
+    else {
+      this.#container.scrollTop = previousScrollTop;
+      this.#setFollowingLatest(false);
+    }
     return true;
   }
 
@@ -296,11 +327,13 @@ export class ThreadTimelineView {
     });
     const card = this.#findItem(id);
     if (card) card.dataset.localUser = "true";
-    this.scrollToEnd(true);
+    this.followLatest();
   }
 
   removeLocalUser(): void {
+    const followLatest = this.#isNearLatest();
     this.#container.querySelector<HTMLElement>("[data-local-user]")?.remove();
+    this.#finishContentUpdate(followLatest);
   }
 
   upsertQueuedUser(
@@ -308,6 +341,7 @@ export class ThreadTimelineView {
     text: string,
     status: "pending" | "paused" = "pending",
   ): void {
+    const followLatest = this.#isNearLatest();
     this.#container.querySelector(".empty")?.remove();
     let card = this.#container.querySelector<HTMLElement>(
       `[data-queue-id="${CSS.escape(queueId)}"]`,
@@ -343,25 +377,35 @@ export class ThreadTimelineView {
       badge.className = `item-status queued-status ${status === "paused" ? "failure" : "running"}`;
       badge.textContent = status === "paused" ? "队列已暂停" : "已排队";
     }
-    this.scrollToEnd(true);
+    this.#finishContentUpdate(followLatest);
   }
 
   setQueuedSteerAvailable(available: boolean): void {
+    const followLatest = this.#isNearLatest();
     this.#queuedSteerAvailable = available;
     for (const button of this.#container.querySelectorAll<HTMLButtonElement>(
       ".queued-steer",
     )) {
       button.hidden = !available;
     }
+    this.#finishContentUpdate(followLatest);
   }
 
   removeQueuedUser(queueId: string): void {
+    const followLatest = this.#isNearLatest();
     this.#container
       .querySelector<HTMLElement>(`[data-queue-id="${CSS.escape(queueId)}"]`)
       ?.remove();
+    this.#finishContentUpdate(followLatest);
   }
 
   appendNotice(title: string, content: string, kind = "event"): void {
+    const followLatest = this.#isNearLatest();
+    this.#appendNoticeElement(title, content, kind);
+    this.#finishContentUpdate(followLatest);
+  }
+
+  #appendNoticeElement(title: string, content: string, kind: string): void {
     this.#container.querySelector(".empty")?.remove();
     const card = document.createElement("article");
     card.className = `timeline-entry ${kind}`;
@@ -372,7 +416,6 @@ export class ThreadTimelineView {
     body.textContent = content;
     card.append(heading, body);
     this.#container.append(card);
-    this.scrollToEnd(true);
   }
 
   handleEvent(event: EventEnvelope): boolean {
@@ -389,16 +432,18 @@ export class ThreadTimelineView {
       event.type === "codex/item/completed"
     ) {
       if (isThreadItem(payload.item)) {
+        const followLatest = this.#isNearLatest();
         this.#upsertItem(payload.item);
-        this.scrollToEnd(true);
+        this.#finishContentUpdate(followLatest);
         return true;
       }
     }
 
     const patchUpdate = fileChangeItemFromPatchUpdate(payload);
     if (event.type === "codex/item/fileChange/patchUpdated" && patchUpdate) {
+      const followLatest = this.#isNearLatest();
       this.#upsertItem(patchUpdate);
-      this.scrollToEnd(true);
+      this.#finishContentUpdate(followLatest);
       return true;
     }
 
@@ -410,9 +455,10 @@ export class ThreadTimelineView {
     }
 
     if (event.type === "codex/turn/completed" && isTurn(payload.turn)) {
+      const followLatest = this.#isNearLatest();
       for (const item of payload.turn.items) this.#upsertItem(item);
       if (payload.turn.error) {
-        this.appendNotice(
+        this.#appendNoticeElement(
           "Codex 错误",
           messageFromPayload(
             payload.turn.error as unknown as Record<string, unknown>,
@@ -420,7 +466,7 @@ export class ThreadTimelineView {
           "error",
         );
       }
-      this.scrollToEnd(true);
+      this.#finishContentUpdate(followLatest);
       return true;
     }
 
@@ -436,8 +482,9 @@ export class ThreadTimelineView {
       typeof payload.itemId === "string" &&
       typeof payload.delta === "string"
     ) {
+      const followLatest = this.#isNearLatest();
       this.#appendDelta(payload.itemId, payload.delta, deltaKind);
-      this.scrollToEnd(true);
+      this.#finishContentUpdate(followLatest);
       return true;
     }
 
@@ -452,11 +499,33 @@ export class ThreadTimelineView {
     return false;
   }
 
-  scrollToEnd(smooth: boolean): void {
-    this.#container.scrollTo({
-      behavior: smooth ? "smooth" : "auto",
-      top: this.#container.scrollHeight,
-    });
+  followLatest(): void {
+    this.#container.scrollTop = this.#container.scrollHeight;
+    this.#setFollowingLatest(true);
+  }
+
+  #replaceSnapshot(response: ThreadReadResponse): void {
+    this.#snapshotRevision = threadSnapshotRevision(response);
+    this.#container.replaceChildren();
+    for (const turn of response.thread.turns) this.#renderTurn(turn);
+    if (this.#container.childElementCount === 0) {
+      this.#container.append(emptyElement("这个会话还没有消息"));
+    }
+  }
+
+  #isNearLatest(): boolean {
+    return shouldFollowTimeline(this.#container);
+  }
+
+  #finishContentUpdate(followLatest: boolean): void {
+    if (followLatest) this.followLatest();
+    else this.#setFollowingLatest(false);
+  }
+
+  #setFollowingLatest(following: boolean): void {
+    if (following === this.#followingLatest) return;
+    this.#followingLatest = following;
+    this.#onFollowLatestChanged?.(following);
   }
 
   #renderTurn(turn: Turn): void {
