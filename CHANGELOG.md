@@ -16,6 +16,7 @@
 - Codex 版本设置现在分别显示宿主机当前安装版本与 npm 最新稳定版，明确标记可更新、已是最新或本机版本更高；npm 查询失败不会遮住已安装版本。
 - HPC 共享 Agent 安装器会规范化 release 目录的只读权限，避免从严格 umask 构建目录部署时普通用户无法加载 CLI。
 - Web 对话页现在安全渲染 Codex 代码围栏，并将 `fileChange` 的结构化 kind、实时 `patchUpdated` 和 unified diff 显示为可展开的逐行差异，避免对象字符串、原始事件 JSON 和整段单色 diff。
+- 文件修改卡片中的逐行差异默认收起，只在用户明确展开后显示；同一文件在流式更新或后台快照刷新时会保留用户当前的展开状态。
 - Codex 回复改用关闭原始 HTML、禁用 KaTeX trust 并经 DOMPurify 二次清理的 Markdown 管线，支持标题、强调、列表、引用、表格、链接、代码块，以及 `$…$`、`$$…$$`、`\\(…\\)`、`\\[…\\]` LaTeX 公式。
 - 会话页为 header、权限概览、SSH 提示、timeline 和输入框使用固定 Grid 区域；隐藏可选提示或持续接收长回复时，timeline 只在自己的滚动区域增长，不再把底部输入框挤出视口。
 - Web 会将重叠的历史刷新合并为 single-flight，并使用 app-server 状态库快速列出 CLI、VS Code 和 Web thread；状态库尚未建立索引或旧 Codex 拒绝快速参数时会自动回退传统扫描，Agent 对重复 cwd 只执行一次工作区边界校验，并为 app-server 列表请求设置有界等待与不含业务内容的慢请求耗时日志，避免 HPC 共享文件系统延迟导致 `thread/list` 排队超时或永久占住队列。

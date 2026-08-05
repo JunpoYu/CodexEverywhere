@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   describeThreadItem,
+  FileChangeDisclosureState,
   fileChangeItemFromPatchUpdate,
   fileChangeKindLabel,
   isReasoningEventType,
@@ -188,6 +189,29 @@ describe("describeThreadItem", () => {
     expect(
       fileChangeItemFromPatchUpdate({ itemId: "file-1", changes: [{}] }),
     ).toBeUndefined();
+  });
+});
+
+describe("file-change disclosure state", () => {
+  it("keeps file diffs collapsed until the user expands them", () => {
+    const state = new FileChangeDisclosureState();
+
+    expect(state.isOpen("file-1", "src/app.ts")).toBe(false);
+    state.setOpen("file-1", "src/app.ts", true);
+    expect(state.isOpen("file-1", "src/app.ts")).toBe(true);
+    expect(state.isOpen("file-1", "src/other.ts")).toBe(false);
+
+    state.setOpen("file-1", "src/app.ts", false);
+    expect(state.isOpen("file-1", "src/app.ts")).toBe(false);
+  });
+
+  it("clears expanded files when leaving the conversation", () => {
+    const state = new FileChangeDisclosureState();
+    state.setOpen("file-1", "src/app.ts", true);
+
+    state.clear();
+
+    expect(state.isOpen("file-1", "src/app.ts")).toBe(false);
   });
 });
 

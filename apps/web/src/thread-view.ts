@@ -252,6 +252,28 @@ export function fileChangeItemFromPatchUpdate(
   };
 }
 
+export class FileChangeDisclosureState {
+  readonly #open = new Set<string>();
+
+  isOpen(itemId: string, path: string): boolean {
+    return this.#open.has(fileChangeDisclosureKey(itemId, path));
+  }
+
+  setOpen(itemId: string, path: string, open: boolean): void {
+    const key = fileChangeDisclosureKey(itemId, path);
+    if (open) this.#open.add(key);
+    else this.#open.delete(key);
+  }
+
+  clear(): void {
+    this.#open.clear();
+  }
+}
+
+function fileChangeDisclosureKey(itemId: string, path: string): string {
+  return JSON.stringify([itemId, path]);
+}
+
 function localImageNameFromPath(path: string): string {
   const leaf = path.split(/[\\/]/u).at(-1) ?? "图片";
   return leaf.replace(/^[0-9a-f-]{36}-/iu, "") || "图片";
@@ -261,6 +283,7 @@ export class ThreadTimelineView {
   readonly #container: HTMLElement;
   readonly #onSteerQueued: ((queueId: string) => void) | undefined;
   readonly #onFollowLatestChanged: ((following: boolean) => void) | undefined;
+  readonly #fileChangeDisclosures = new FileChangeDisclosureState();
   #snapshotRevision = "";
   #queuedSteerAvailable = false;
   #followingLatest = true;
@@ -283,6 +306,7 @@ export class ThreadTimelineView {
   }
 
   clear(message = "选择一个会话查看内容"): void {
+    this.#fileChangeDisclosures.clear();
     this.#container.replaceChildren(emptyElement(message));
     this.#setFollowingLatest(true);
   }
@@ -647,7 +671,14 @@ export class ThreadTimelineView {
       for (const change of item.changes) {
         const details = document.createElement("details");
         details.className = "file-change-details";
-        details.open = item.changes.length === 1;
+        details.open = this.#fileChangeDisclosures.isOpen(item.id, change.path);
+        details.addEventListener("toggle", () => {
+          this.#fileChangeDisclosures.setOpen(
+            item.id,
+            change.path,
+            details.open,
+          );
+        });
         const summary = document.createElement("summary");
         const kind = document.createElement("span");
         kind.className = `file-change-kind file-change-${change.kind.type}`;
