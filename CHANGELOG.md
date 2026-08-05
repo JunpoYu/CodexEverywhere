@@ -14,6 +14,7 @@
 
 - Codex 探测不再锁定单一 CLI 版本；任何能正常报告语义版本的现有安装都可运行，PWA 初始化和设置页可将 npm 最新稳定版安装或更新到用户自己的 `~/.local`，并在 app-server 正在运行时把重启应用留给用户确认。
 - Codex 版本设置现在分别显示宿主机当前安装版本与 npm 最新稳定版，明确标记可更新、已是最新或本机版本更高；npm 查询失败不会遮住已安装版本。
+- HPC 共享 Agent 安装器会规范化 release 目录的只读权限，避免从严格 umask 构建目录部署时普通用户无法加载 CLI。
 - Web 对话页现在安全渲染 Codex 代码围栏，并将 `fileChange` 的结构化 kind、实时 `patchUpdated` 和 unified diff 显示为可展开的逐行差异，避免对象字符串、原始事件 JSON 和整段单色 diff。
 - Codex 回复改用关闭原始 HTML、禁用 KaTeX trust 并经 DOMPurify 二次清理的 Markdown 管线，支持标题、强调、列表、引用、表格、链接、代码块，以及 `$…$`、`$$…$$`、`\\(…\\)`、`\\[…\\]` LaTeX 公式。
 - 会话页为 header、权限概览、SSH 提示、timeline 和输入框使用固定 Grid 区域；隐藏可选提示或持续接收长回复时，timeline 只在自己的滚动区域增长，不再把底部输入框挤出视口。
