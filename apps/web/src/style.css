@@ -5899,6 +5899,16 @@ button.thread-fact {
   border: 1px solid #dcdee2;
 }
 
+.thread-outline-action:not([hidden]) {
+  display: inline-flex;
+}
+
+.thread-outline-action[aria-expanded="true"] {
+  color: #8b351b;
+  background: #fff4ee;
+  border-color: #e7b9a7;
+}
+
 .thread-outline-action > span {
   color: var(--accent);
   font-size: 13px;
@@ -6064,6 +6074,12 @@ button.thread-fact {
   border-color: #393d45;
 }
 
+:root[data-theme="dark"] .thread-outline-action[aria-expanded="true"] {
+  color: #ffd7c8;
+  background: #30241f;
+  border-color: #684032;
+}
+
 :root[data-theme="dark"] .jump-to-latest {
   color: #d5d8de;
   background: #272a30ed;
@@ -6129,10 +6145,6 @@ button.thread-fact {
       "ssh-handoff"
       "timeline"
       "composer";
-  }
-
-  .thread-outline-action:not([hidden]) {
-    display: inline-flex;
   }
 
   .conversation-outline {

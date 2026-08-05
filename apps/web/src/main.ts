@@ -773,13 +773,13 @@ requiredElement("back-to-sessions").addEventListener(
   closeActiveThreadView,
 );
 threadOutlineButton.addEventListener("click", () =>
-  conversationOutlineView.toggleDrawer(),
+  conversationOutlineView.toggle(),
 );
 requiredElement("close-conversation-outline").addEventListener("click", () =>
-  conversationOutlineView.closeDrawer(),
+  conversationOutlineView.collapse(),
 );
 document.addEventListener("keydown", (event) => {
-  if (event.key === "Escape") conversationOutlineView.closeDrawer();
+  if (event.key === "Escape") conversationOutlineView.dismissOverlay();
 });
 requiredElement("manage-workspaces").addEventListener("click", () => {
   workspaceDialog.showModal();

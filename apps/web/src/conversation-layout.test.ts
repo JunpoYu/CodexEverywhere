@@ -28,7 +28,13 @@ describe("conversation layout contract", () => {
       /\.jump-to-latest\s*\{[^}]*grid-area:\s*timeline;[^}]*align-self:\s*end;/su,
     );
     expect(contract).toMatch(
-      /@media \(max-width: 1180px\)[\s\S]*\.thread-outline-action:not\(\[hidden\]\)[\s\S]*display:\s*inline-flex;/su,
+      /\.thread-outline-action:not\(\[hidden\]\)\s*\{[^}]*display:\s*inline-flex;/su,
+    );
+    expect(contract).toMatch(
+      /\.conversation-outline\s*>\s*header\s+\.icon-button\s*\{[^}]*display:\s*none;/su,
+    );
+    expect(contract).toMatch(
+      /@media \(max-width: 1180px\)[\s\S]*\.conversation-outline\s*>\s*header\s+\.icon-button\s*\{[^}]*display:\s*grid;/su,
     );
   });
 });

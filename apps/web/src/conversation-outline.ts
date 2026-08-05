@@ -23,9 +23,11 @@ export class ConversationOutlineView {
   readonly #count: HTMLElement;
   readonly #toggle: HTMLButtonElement;
   readonly #observer: MutationObserver;
+  readonly #compactLayout = window.matchMedia("(max-width: 1180px)");
   #entries: OutlineEntry[] = [];
   #signature = "";
   #active = false;
+  #desktopCollapsed = false;
   #syncPending = false;
   #scrollFrame: number | undefined;
   #highlightTimer: number | undefined;
@@ -56,14 +58,16 @@ export class ConversationOutlineView {
     timeline.addEventListener("scroll", () => this.#scheduleActiveUpdate(), {
       passive: true,
     });
+    this.#compactLayout.addEventListener("change", () => {
+      this.#panel.classList.remove("open");
+      this.#renderVisibility();
+    });
   }
 
   setThreadActive(active: boolean): void {
     this.#active = active;
-    this.#content.classList.toggle("outline-available", active);
-    this.#panel.hidden = !active;
-    this.#toggle.hidden = !active;
-    this.closeDrawer();
+    this.#panel.classList.remove("open");
+    this.#renderVisibility();
     this.#signature = "";
     this.#entries = [];
     this.#list.replaceChildren();
@@ -72,16 +76,27 @@ export class ConversationOutlineView {
     if (active) this.sync();
   }
 
-  toggleDrawer(): void {
+  toggle(): void {
     if (!this.#active) return;
-    const open = !this.#panel.classList.contains("open");
-    this.#panel.classList.toggle("open", open);
-    this.#toggle.setAttribute("aria-expanded", String(open));
+    if (this.#compactLayout.matches) {
+      this.#panel.classList.toggle("open");
+    } else {
+      this.#desktopCollapsed = !this.#desktopCollapsed;
+    }
+    this.#renderVisibility();
   }
 
-  closeDrawer(): void {
+  collapse(): void {
+    if (!this.#active) return;
+    if (this.#compactLayout.matches) this.#panel.classList.remove("open");
+    else this.#desktopCollapsed = true;
+    this.#renderVisibility();
+  }
+
+  dismissOverlay(): void {
+    if (!this.#compactLayout.matches) return;
     this.#panel.classList.remove("open");
-    this.#toggle.setAttribute("aria-expanded", "false");
+    this.#renderVisibility();
   }
 
   sync(): void {
@@ -203,7 +218,28 @@ export class ConversationOutlineView {
       card.classList.remove("conversation-jump-target");
       this.#highlightTimer = undefined;
     }, 1_500);
-    if (window.matchMedia("(max-width: 1180px)").matches) this.closeDrawer();
+    if (this.#compactLayout.matches) this.collapse();
+  }
+
+  #renderVisibility(): void {
+    const compact = this.#compactLayout.matches;
+    if (!this.#active || !compact) this.#panel.classList.remove("open");
+    const panelExpanded = compact
+      ? this.#panel.classList.contains("open")
+      : !this.#desktopCollapsed;
+    const expanded = this.#active && panelExpanded;
+    this.#content.classList.toggle(
+      "outline-available",
+      this.#active && (compact || panelExpanded),
+    );
+    this.#panel.hidden = !this.#active || (!compact && !panelExpanded);
+    this.#toggle.hidden = !this.#active;
+    this.#toggle.setAttribute("aria-expanded", String(expanded));
+    this.#toggle.setAttribute(
+      "aria-label",
+      expanded ? "收起对话大纲" : "展开对话大纲",
+    );
+    this.#toggle.title = expanded ? "收起对话大纲" : "展开对话大纲";
   }
 }
 
