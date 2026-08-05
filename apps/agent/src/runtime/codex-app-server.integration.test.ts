@@ -19,6 +19,9 @@ type ThreadStartResponse = {
 type ThreadUnsubscribeResponse = {
   status: "notLoaded" | "notSubscribed" | "unsubscribed";
 };
+type ThreadListResponse = {
+  data: Array<{ id: string; cwd: string }>;
+};
 type TurnStartResponse = { turn: { id: string } };
 type TurnCompletedParams = {
   threadId: string;
@@ -99,6 +102,16 @@ describe("real Codex app-server contract", () => {
         threadId,
         name: "Contract Test Initial",
       });
+      const stateListed = await clientA.request<ThreadListResponse>(
+        "thread/list",
+        {
+          cwd: workspace,
+          limit: 100,
+          sourceKinds: ["cli", "vscode", "appServer"],
+          useStateDbOnly: true,
+        },
+      );
+      expect(stateListed.data).toEqual(expect.any(Array));
 
       const resumed = await clientB.request<ThreadStartResponse>(
         "thread/resume",

@@ -30,6 +30,9 @@ import type {
   QueueDispatcherEvent,
 } from "../runtime/queue-dispatcher.js";
 
+const FAST_THREAD_LIST_TIMEOUT_MS = 40_000;
+const LEGACY_THREAD_LIST_TIMEOUT_MS = 110_000;
+
 export type CodexGatewaySessionOptions = {
   socketPath: string;
   workspaces: WorkspaceRegistry;
@@ -259,26 +262,25 @@ export class CodexGatewaySession implements GatewaySession {
     const response = await this.#client.request<ThreadListResponse>(
       "thread/list",
       payload,
+      {
+        timeoutMs:
+          payload.useStateDbOnly === true
+            ? FAST_THREAD_LIST_TIMEOUT_MS
+            : LEGACY_THREAD_LIST_TIMEOUT_MS,
+      },
     );
-    const allowed = await Promise.all(
-      response.data.map(async (thread) => {
-        try {
-          await this.#workspaces.resolve(thread.cwd);
-          return thread;
-        } catch {
-          return undefined;
-        }
-      }),
+    const allowedPaths = await this.#workspaces.allowedPaths(
+      response.data.map((thread) => thread.cwd),
     );
     return {
       ...response,
-      data: allowed.filter(
-        (thread): thread is NonNullable<(typeof allowed)[number]> => {
-          if (!thread) return false;
+      data: response.data.filter((thread) => {
+        if (allowedPaths.has(thread.cwd)) {
           this.#authorizedThreads.add(thread.id);
           return true;
-        },
-      ),
+        }
+        return false;
+      }),
     };
   }
 

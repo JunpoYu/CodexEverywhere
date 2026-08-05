@@ -7,7 +7,10 @@ import type {
   RequestEnvelope,
 } from "@codex-everywhere/protocol";
 
-import { PasskeyRegistry } from "../host/passkeys.js";
+import {
+  PasskeyRegistry,
+  type RecoveryAuthorization,
+} from "../host/passkeys.js";
 import { PasswordRegistry, type OpaqueIdentifiers } from "../host/passwords.js";
 import type { AuthenticationAttemptKind } from "../host/auth-security.js";
 import type { GatewaySession } from "./direct-gateway.js";
@@ -45,7 +48,7 @@ export class AuthenticatedGatewaySession implements GatewaySession {
   #registrationMode: "initial" | "recovery" | "add" | undefined;
   #authenticationChallenge: string | undefined;
   #recoveryAuthorized = false;
-  #recoveryCode: string | undefined;
+  #recoveryAuthorization: RecoveryAuthorization | undefined;
   #serverLoginState: string | undefined;
   #unregisterAuthenticatedSession: (() => void) | undefined;
   #revoked = false;
@@ -136,14 +139,14 @@ export class AuthenticatedGatewaySession implements GatewaySession {
           {
             replaceExisting: mode === "recovery",
             issueRecoveryCodes: mode !== "add",
-            ...(mode === "recovery" && this.#recoveryCode
-              ? { recoveryCode: this.#recoveryCode }
+            ...(mode === "recovery" && this.#recoveryAuthorization
+              ? { recoveryAuthorization: this.#recoveryAuthorization }
               : {}),
           },
         );
         if (mode === "recovery") this.#onCredentialsRecovered?.();
         this.#recoveryAuthorized = false;
-        this.#recoveryCode = undefined;
+        this.#recoveryAuthorization = undefined;
         if (!this.#authenticated) await this.#finishAuthentication();
         return { authenticated: true, ...result };
       }
@@ -153,9 +156,10 @@ export class AuthenticatedGatewaySession implements GatewaySession {
         this.#consumeAuthAttempt?.("recovery");
         if (typeof payload.code !== "string")
           throw new Error("Recovery code is required");
-        await this.#passkeys.verifyRecoveryCode(payload.code);
+        this.#recoveryAuthorization = await this.#passkeys.authorizeRecovery(
+          payload.code,
+        );
         this.#recoveryAuthorized = true;
-        this.#recoveryCode = payload.code;
         return { registrationRequired: true };
       }
       case "auth/recovery/rotate": {

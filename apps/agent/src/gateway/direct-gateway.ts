@@ -31,6 +31,7 @@ import type { HostStateStore } from "../host/state-store.js";
 
 const MAX_MESSAGE_BYTES = 1024 * 1024;
 const MAX_GATEWAY_CONNECTIONS = 128;
+const SLOW_REQUEST_THRESHOLD_MS = 5_000;
 
 export type GatewaySession = {
   request(request: RequestEnvelope): Promise<unknown>;
@@ -44,6 +45,7 @@ export type DirectGatewayOptions = {
   path?: string;
   nodeId: string;
   userId: string;
+  principal?: "user" | "host-admin";
   loginName?: string;
   identity: StaticKeyPair;
   hostFingerprint: string;
@@ -201,6 +203,7 @@ class GatewayConnection {
         JSON.stringify({
           ok: true,
           version: PROTOCOL_VERSION,
+          principal: this.#options.principal ?? "user",
           ...(this.#options.loginName
             ? { loginName: this.#options.loginName }
             : {}),
@@ -253,8 +256,9 @@ class GatewayConnection {
     );
 
     this.#socket.on("message", (data) => {
+      const receivedAt = Date.now();
       this.#queue = this.#queue
-        .then(() => this.#handleEncrypted(data))
+        .then(() => this.#handleEncrypted(data, receivedAt))
         .catch(() => this.#socket.close(1008, "protocol error"));
     });
     this.#socket.once("close", () => {
@@ -263,7 +267,7 @@ class GatewayConnection {
     });
   }
 
-  async #handleEncrypted(data: RawData): Promise<void> {
+  async #handleEncrypted(data: RawData, receivedAt: number): Promise<void> {
     if (!this.#session || !this.#handler)
       throw new Error("Handshake incomplete");
     const frame = parseCipherFrame(data.toString());
@@ -274,6 +278,7 @@ class GatewayConnection {
     });
     if (!plaintext) return;
     const request = parseRequest(plaintext);
+    const operationStartedAt = Date.now();
     const execute = () => this.#handler!.request(request);
     const outcome = isReadMethod(request.method)
       ? await captureResult(execute)
@@ -282,6 +287,19 @@ class GatewayConnection {
           request.idempotencyKey,
           execute,
         );
+    const completedAt = Date.now();
+    if (completedAt - receivedAt >= SLOW_REQUEST_THRESHOLD_MS) {
+      console.warn(
+        JSON.stringify({
+          level: "warn",
+          event: "gateway.request_slow",
+          method: request.method,
+          queueWaitMs: operationStartedAt - receivedAt,
+          operationMs: completedAt - operationStartedAt,
+          totalMs: completedAt - receivedAt,
+        }),
+      );
+    }
     const response: ResponseEnvelope = outcome.ok
       ? {
           version: PROTOCOL_VERSION,

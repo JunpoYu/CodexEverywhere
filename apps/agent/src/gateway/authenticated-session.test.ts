@@ -138,7 +138,10 @@ describe("AuthenticatedGatewaySession", () => {
     }));
     const passkeys = {
       count: vi.fn(async () => 1),
-      verifyRecoveryCode: vi.fn(async () => undefined),
+      authorizeRecovery: vi.fn(async () => ({
+        kind: "recovery-code" as const,
+        code: "OLD-CODE",
+      })),
       registrationOptions: vi.fn(async () => ({ challenge: "replacement" })),
       verifyRegistration,
     } as unknown as PasskeyRegistry;
@@ -159,7 +162,10 @@ describe("AuthenticatedGatewaySession", () => {
       {
         replaceExisting: true,
         issueRecoveryCodes: true,
-        recoveryCode: "OLD-CODE",
+        recoveryAuthorization: {
+          kind: "recovery-code",
+          code: "OLD-CODE",
+        },
       },
     );
     expect(onCredentialsRecovered).toHaveBeenCalledOnce();

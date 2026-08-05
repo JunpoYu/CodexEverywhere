@@ -21,6 +21,7 @@ export type CodexServerRequest<T = unknown> = {
 type PendingRequest = {
   resolve: (result: unknown) => void;
   reject: (error: Error) => void;
+  timeout?: NodeJS.Timeout;
 };
 
 type RpcError = {
@@ -133,7 +134,11 @@ export class CodexAppServerClient extends EventEmitter<ClientEvents> {
     return this.#closed;
   }
 
-  request<T = unknown>(method: string, params?: unknown): Promise<T> {
+  request<T = unknown>(
+    method: string,
+    params?: unknown,
+    options: { timeoutMs?: number } = {},
+  ): Promise<T> {
     if (this.#closed)
       return Promise.reject(new Error("Codex app-server connection is closed"));
 
@@ -142,11 +147,28 @@ export class CodexAppServerClient extends EventEmitter<ClientEvents> {
       params === undefined ? { id, method } : { id, method, params };
 
     return new Promise<T>((resolve, reject) => {
-      this.#pending.set(id, {
+      const pending: PendingRequest = {
         resolve: (result) => resolve(result as T),
         reject,
-      });
-      this.#send(message);
+      };
+      if (options.timeoutMs !== undefined) {
+        pending.timeout = setTimeout(() => {
+          if (!this.#pending.delete(id)) return;
+          reject(
+            new Error(
+              `Timed out waiting for Codex app-server response: ${method}`,
+            ),
+          );
+        }, options.timeoutMs);
+      }
+      this.#pending.set(id, pending);
+      try {
+        this.#send(message);
+      } catch (error) {
+        this.#pending.delete(id);
+        if (pending.timeout) clearTimeout(pending.timeout);
+        reject(error instanceof Error ? error : new Error(String(error)));
+      }
     });
   }
 
@@ -208,6 +230,7 @@ export class CodexAppServerClient extends EventEmitter<ClientEvents> {
       const pending = this.#pending.get(message.id);
       if (!pending) return;
       this.#pending.delete(message.id);
+      if (pending.timeout) clearTimeout(pending.timeout);
       if (isRpcError(message.error))
         pending.reject(new CodexRpcError(message.error));
       else pending.resolve(message.result);
@@ -236,14 +259,20 @@ export class CodexAppServerClient extends EventEmitter<ClientEvents> {
     if (this.#closed) return;
     this.#closed = true;
     const error = new Error("Codex app-server connection closed");
-    for (const pending of this.#pending.values()) pending.reject(error);
+    for (const pending of this.#pending.values()) {
+      if (pending.timeout) clearTimeout(pending.timeout);
+      pending.reject(error);
+    }
     this.#pending.clear();
     this.emit("close");
   }
 
   #handleTransportError(error: Error): void {
     if (this.#closed) return;
-    for (const pending of this.#pending.values()) pending.reject(error);
+    for (const pending of this.#pending.values()) {
+      if (pending.timeout) clearTimeout(pending.timeout);
+      pending.reject(error);
+    }
     this.#pending.clear();
   }
 }

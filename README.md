@@ -43,15 +43,16 @@ CodexEverywhere 的目标不是提供 Web Terminal，也不是替代 SSH、Slurm
 
 ## 核心能力
 
-- **真实 Codex 会话**：创建、恢复和实时查看 app-server thread；结构化显示回复、计划、命令、文件修改、MCP、subagent、审批和错误。
-- **Codex 斜杠指令**：输入 `/` 即可按 Codex `0.144.1` 的官方顺序搜索、键盘或触控补全全部内置指令和别名；Web 等价操作调用 app-server 或现有界面，TUI/平台限定操作给出明确说明，未知指令不会被误发给模型。
+- **真实 Codex 会话**：创建、恢复和实时查看 app-server thread；以安全 Markdown 和 KaTeX 显示回复中的标题、列表、表格、代码与 LaTeX 公式，并结构化呈现计划、命令、文件修改、MCP、subagent、审批和错误。自动历史刷新会合并重复事件并优先读取 Codex 状态库，避免反复扫描全部 JSONL 会话记录。
+- **Codex 斜杠指令**：输入 `/` 即可按当前 Web 适配清单搜索、键盘或触控补全内置指令和别名；Web 等价操作调用 app-server 或现有界面，TUI/平台限定操作给出明确说明，未知指令不会被误发给模型。CLI 更新新增的指令会随 CodexEverywhere 的适配更新进入清单，但不影响更新版 CLI 的其他能力运行。
 - **Web / TUI 无缝接力**：会话页以高对比入口和可永久隐藏的说明条展示 SSH 接力；Web、`ce tui` 和其他官方 remote TUI 连接同一个 app-server，切换客户端不会中断活动任务，也不会用新客户端的启动默认值覆盖会话创建时保存的权限。
 - **Queue 优先**：thread 忙碌时消息默认进入宿主机持久 Queue；每条排队消息可在活动 turn 结束前显式转为 Steer。
 - **多工作区管理**：登记允许的 workspace root、浏览子目录、筛选历史会话；范围包含多个子目录时，会话按实际工作目录折叠分组。创建会话时可选择模型、推理强度、sandbox 和审批策略。
 - **会话级权限**：对话页常驻显示 sandbox 与审批策略；创建时选择的权限由 app-server 保存并用于后续轮次，只有用户在 Web 或 TUI 中明确修改才会更新，已打开的客户端通过原生设置通知同步显示。
 - **多用户 Unix 隔离**：每个 Linux 用户拥有独立 Agent、app-server、`~/.codex`、Web 身份、工作区、会话和队列。
 - **自助初始化**：管理员完成一次公共安装后，符合 HPC SSH/NSS 策略的现有用户可运行 `ce device pair` 自行初始化。
-- **Codex 登录引导**：支持官方设备码流程，也支持用户本人经 E2EE 导入已有的 `~/.codex/auth.json`。
+- **最小管理员控制面**：独立的 `/admin` 页面通过管理员 Passkey 或 OPAQUE 专用密码登录，可精确登记现有 Unix 用户、停用/启用 Web、签发短时恢复交接码、安排 24 小时后移除并查看安全审计；管理员不能查看用户工作区、会话、文件或 Codex 凭据。
+- **Codex 安装、更新与登录引导**：接受当前账号中任何可运行的 Codex 版本；用户可在 PWA 中把 npm 最新稳定版安装到自己的 `~/.local`，更新后自行决定何时重启 app-server，并可使用官方设备码或经 E2EE 导入已有的 `~/.codex/auth.json`。
 - **Passkey 与专用密码**：Web 身份由 Codex 宿主机验证；CodexEverywhere 不收集、复用或验证 SSH 密码。专用密码默认临时登录，只有显式保存新设备时才需要设备名称；当前浏览器已有同一用户记录时沿用原名称。
 - **Direct 优先、Relay 回退**：浏览器可直连时使用 HTTPS/WSS Direct Gateway；不可达时通过可选无状态 Relay 转发 Noise 端到端密文。
 - **适配老旧 HPC**：首个目标环境是 CentOS 7、glibc 2.17、Node.js 20；用户服务兼容 tmux、crontab watchdog、PID 文件和文件锁。
@@ -72,9 +73,9 @@ CodexEverywhere 的目标不是提供 Web Terminal，也不是替代 SSH、Slurm
 | 斜杠指令补全、重命名、归档和删除          | 可用             |
 | 文件上传、下载与完整 diff 浏览            | 计划中           |
 | Schedule、Web Push 与加密离线会话         | 计划中           |
-| 宿主机管理员停用、移除与恢复控制面        | 计划中           |
+| 宿主机管理员停用、移除与恢复控制面        | 可用，仍属 Alpha |
 
-当前仓库将 Codex CLI 固定在 `0.144.1`，并使用同版本生成的 app-server TypeScript schema。升级 Codex 时必须同步更新 schema 和兼容测试，不能直接把未知版本视为兼容。
+运行时不锁定 Codex CLI 版本：Agent 会接受任何能够正常执行并返回语义版本号的 Codex。仓库仍保留一个已验证版本生成的 app-server TypeScript schema 作为编译基线，并将未知事件作为 generic event 处理；用户升级到更新版本不需要等待 CodexEverywhere 发版。CodexEverywhere 自身升级时仍应刷新 schema 与兼容测试，以尽快支持新增的结构化能力。
 
 ## 架构
 
@@ -103,13 +104,26 @@ flowchart LR
 
 更完整的协议、身份、生命周期和威胁边界见[架构与产品规格](docs/architecture.zh-CN.md)。
 
+管理员控制面与用户数据面是两条隔离路径：
+
+```mermaid
+flowchart LR
+    AdminWeb["/admin · Passkey / 管理密码"] -->|"独立 Noise + Relay 身份域"| Controller["Administrator Controller<br/>普通运维 UID"]
+    Controller -->|"固定命令 · JSON 请求"| Helper["root-only ce-admin-helper"]
+    Helper --> Registry["root-only 用户状态与审计"]
+    Helper -. "停用 Agent / 生命周期操作" .-> UserAgent["用户 Agent"]
+    UserAgent --> AppServer["用户 Codex app-server"]
+    Helper -. "禁止连接" .-> AppServer
+```
+
 ## 安全与隔离
 
-CodexEverywhere 将三种身份明确分开：
+CodexEverywhere 将四种身份明确分开：
 
 1. **CodexEverywhere Web 身份**：Passkey 或独立专用密码；
 2. **Linux 身份**：HPC 已有的 SSH/Unix 用户和文件权限；
 3. **ChatGPT/Codex 身份**：每位用户自己的 Codex 登录和额度。
+4. **宿主机管理员 Web 身份**：独立管理员 Passkey 或 OPAQUE 管理密码；不复用 SSH 密码，也不能登录普通用户数据面。
 
 关键安全边界：
 
@@ -118,6 +132,8 @@ CodexEverywhere 将三种身份明确分开：
 - Relay 不持久化用户名、Passkey、密码记录、恢复码、workspace、thread 或文件；
 - Direct 与 Relay 都使用应用层 Noise 端到端加密，不只依赖 TLS；
 - 专用密码使用 OPAQUE PAKE，Agent 只保存 registration record；
+- 管理员 Controller 使用与普通用户不同的 Relay route、Noise user ID、Passkey user handle、OPAQUE user identifier、状态库和浏览器 Host Profile；同名也不会串路由；
+- root helper 只接受固定管理员运行账号通过无参数 sudo 入口提交的版本化操作，不提供 shell、任意路径或任意用户名执行参数；变更使用 revision 防并发覆盖并写入 root-only 审计；
 - workspace 路径在执行前经过 `realpath`、root 包含关系和符号链接逃逸检查；
 - 日志禁止记录提示词、文件内容、凭据、恢复码、配对秘密和解密后的 Relay payload；
 - `auth.json` 等同于登录凭据，只能由用户本人显式导入，并经已认证 E2EE 通道写入自己的账号。
@@ -142,7 +158,7 @@ E2EE 不能消除 Web 代码分发风险：如果 PWA 静态服务器被完全�
 - 用于 Passkey 的稳定 HTTPS PWA Origin
 - Direct 模式需要可信 TLS 入口；否则使用可选 Relay
 
-宿主机用户不必预先安装或登录 Codex。Agent 可以在 `~/.local` 中安装仓库当前支持的 Codex 版本，并在 PWA 中引导完成登录。
+宿主机用户不必预先安装或登录 Codex。Agent 会优先检测 `~/.local/bin/codex`，再检测 Agent `PATH` 中的 Codex；任何能正常报告版本的安装都可使用。PWA 可以把 npm 最新稳定版安装或更新到用户自己的 `~/.local`，不需要 root，也不会修改其他位置或共享安装。
 
 ## 从源码开始
 
@@ -262,6 +278,28 @@ ce device pair
 
 helper 不接受目标用户名参数，只依据 sudo 提供的真实调用者身份进行初始化。完整的权限模型、目录布局和发布流程见[架构文档](docs/architecture.zh-CN.md#多用户公共安装)。
 
+### 安装管理员控制面
+
+选择一个已有且受信任的本地运维 Unix 账号运行 Administrator Controller。这个账号会被授予调用固定管理 helper 的能力，因此应按宿主机管理员账号保护：
+
+```bash
+# root shell；依赖前一步已经安装的 host provisioner
+ce admin install-controller <ops-unix-user> --handle <admin-handle>
+
+# 切换到命令输出中指定的 Controller 运行账号
+CE_ADMIN_HOME=/var/lib/codex-everywhere/admin-controller \
+  ce admin web pair
+```
+
+打开 `https://<PWA-origin>/admin`，粘贴配对资料并注册第一个管理员 Passkey。进入“安全设置”后可以设置独立管理员密码；它采用 OPAQUE，不能使用或验证 SSH 密码。Controller 由 `/etc/cron.d/codex-everywhere-admin` 保活，root maintenance 每分钟处理到期的 24 小时移除任务。
+
+管理员操作语义：
+
+- **停用**只停止该用户的 CodexEverywhere Agent 并阻止 watchdog 重启；不会停止 Codex app-server、SSH、官方 TUI 或活动 turn。
+- **恢复**生成 10 分钟有效的临时交接码并使旧恢复码失效。用户在普通登录页兑换后，新恢复码只展示给用户，管理员看不到。
+- **移除**先停用并等待 24 小时；期间可以取消。到期后仅删除 `~/.codex-everywhere`，保留 `~/.codex`、workspace、Linux 账号和 SSH 权限。
+- **重新启用**允许用户继续连接；已经完成移除的用户需要再次运行 `ce device pair` 自助初始化。
+
 ## SSH TUI 接力
 
 ```bash
@@ -288,7 +326,7 @@ apps/
 └── web/     # TypeScript + Vite Web/PWA
 
 packages/
-├── codex-app-server-schema/  # 与固定 Codex 版本匹配的生成类型
+├── codex-app-server-schema/  # 已验证版本生成的 app-server 编译基线
 ├── crypto/                   # Noise、配对、加密帧和重放保护
 ├── protocol/                 # 版本化跨组件协议
 └── testing/                  # 测试工具
@@ -313,7 +351,7 @@ pnpm typecheck
 pnpm test
 pnpm build
 
-# 需要本机可用且版本匹配的 Codex
+# 需要本机可用的 Codex；用于真实 app-server 兼容测试
 pnpm test:app-server
 ```
 
@@ -339,7 +377,6 @@ pnpm test:app-server
 - 完成受限文件浏览、下载和 diff；
 - 增加 Schedule、运行历史和 missed-run 策略；
 - 增加端到端加密 Web Push 与设备级离线缓存；
-- 完成不接触用户业务数据的宿主机管理员控制面；
 - 补充可复现的生产部署、迁移和升级工具；
 - 在更多 Linux/HPC 发行版和 Codex 版本上建立兼容矩阵。
 

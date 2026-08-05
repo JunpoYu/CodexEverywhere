@@ -58,6 +58,7 @@ export class RelayConnector extends EventEmitter<{ connected: [] }> {
         version: 1,
         capability: this.#options.routeCapability,
         profile: {
+          principal: this.#options.principal ?? "user",
           nodeId: this.#options.nodeId,
           userId: this.#options.userId,
           hostPublicKey: Buffer.from(this.#options.identity.publicKey).toString(

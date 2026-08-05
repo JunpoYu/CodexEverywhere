@@ -64,6 +64,7 @@ describe("CodexGatewaySession notifications", () => {
     let steerPayload: Record<string, unknown> | undefined;
     let unsubscribePayload: Record<string, unknown> | undefined;
     let initializePayload: Record<string, unknown> | undefined;
+    let threadListPayload: Record<string, unknown> | undefined;
     const slashMethodPayloads = new Map<string, unknown>();
     httpServer.on("upgrade", (request, socket, head) => {
       webSocketServer.handleUpgrade(request, socket, head, (webSocket) => {
@@ -88,6 +89,19 @@ describe("CodexGatewaySession notifications", () => {
                 status: { type: "idle" },
                 turns: [],
               },
+            },
+          });
+        } else if (message.method === "thread/list") {
+          threadListPayload = message.params as Record<string, unknown>;
+          sendToClient?.({
+            id: message.id,
+            result: {
+              data: [
+                { id: "thread-1", cwd: workspacePath },
+                { id: "thread-2", cwd: childWorkspacePath },
+                { id: "thread-outside", cwd: directory },
+              ],
+              nextCursor: null,
             },
           });
         } else if (message.method === "turn/steer") {
@@ -215,6 +229,22 @@ describe("CodexGatewaySession notifications", () => {
       directories: [
         { name: "child", path: await realpath(childWorkspacePath) },
       ],
+    });
+    await expect(
+      session.request({
+        version: PROTOCOL_VERSION,
+        requestId: "list-1",
+        idempotencyKey: "list-1",
+        method: "thread/list",
+        payload: { limit: 100, useStateDbOnly: true },
+      }),
+    ).resolves.toMatchObject({
+      data: [{ id: "thread-1" }, { id: "thread-2" }],
+      nextCursor: null,
+    });
+    expect(threadListPayload).toEqual({
+      limit: 100,
+      useStateDbOnly: true,
     });
     for (const delta of ["A", "B", "C"]) {
       sendToClient?.({

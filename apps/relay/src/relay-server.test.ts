@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   generateRelaySigningKey,
   issueHostProvisionerCredential,
+  issueProvisionedAdminRouteCapability,
   issueProvisionedRouteCapability,
   issueRouteCapability,
 } from "./capability.js";
@@ -151,6 +152,57 @@ describe("RelayServer", () => {
       type: "relay/profile",
       nodeId: "node-shao",
       userId: "unix:2025",
+    });
+    lookup.close();
+    control.close();
+  });
+
+  it("only returns an administrator route for administrator lookup", async () => {
+    const signingKey = generateRelaySigningKey();
+    const provisioner = issueHostProvisionerCredential(signingKey, {
+      installationId: "hpc-cluster-1",
+      expiresAt: new Date(Date.now() + 86_400_000),
+    });
+    const route = issueProvisionedAdminRouteCapability(provisioner, {
+      adminHandle: "admin",
+    });
+    relay = await RelayServer.start({
+      host: "127.0.0.1",
+      port: 0,
+      signingKey,
+    });
+    const endpoint = `ws://127.0.0.1:${relay.port}`;
+    const control = await open(endpoint);
+    control.send(
+      JSON.stringify({
+        type: "relay/register",
+        version: 1,
+        capability: route.capability,
+        profile: {
+          principal: "host-admin",
+          nodeId: "admin-node",
+          userId: "admin:hpc-cluster-1",
+          hostPublicKey: "A".repeat(43),
+          hostFingerprint: `sha256:${"B".repeat(43)}`,
+        },
+      }),
+    );
+    await next(control);
+
+    const lookup = await open(endpoint);
+    lookup.send(
+      JSON.stringify({
+        type: "relay/lookup",
+        version: 1,
+        principal: "host-admin",
+        loginName: "admin",
+      }),
+    );
+    expect(JSON.parse(await next(lookup))).toMatchObject({
+      type: "relay/profile",
+      principal: "host-admin",
+      nodeId: "admin-node",
+      userId: "admin:hpc-cluster-1",
     });
     lookup.close();
     control.close();

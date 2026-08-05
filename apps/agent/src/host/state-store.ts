@@ -254,6 +254,12 @@ CREATE TABLE IF NOT EXISTS recovery_codes (
   created_at TEXT NOT NULL,
   used_at TEXT
 );
+CREATE TABLE IF NOT EXISTS admin_recovery_tickets (
+  hash BLOB PRIMARY KEY,
+  expires_at TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  used_at TEXT
+);
 CREATE TABLE IF NOT EXISTS web_password (
   id INTEGER PRIMARY KEY CHECK (id = 1),
   registration_record TEXT NOT NULL,
@@ -304,5 +310,31 @@ CREATE TABLE IF NOT EXISTS thread_cache (
   workspace_path TEXT NOT NULL,
   status TEXT NOT NULL,
   updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS admin_managed_users (
+  uid INTEGER PRIMARY KEY,
+  username TEXT NOT NULL UNIQUE,
+  home TEXT NOT NULL,
+  status TEXT NOT NULL,
+  registered_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  revision INTEGER NOT NULL,
+  remove_after TEXT
+);
+CREATE TABLE IF NOT EXISTS admin_audit_events (
+  id TEXT PRIMARY KEY,
+  request_id TEXT NOT NULL,
+  actor TEXT NOT NULL,
+  action TEXT NOT NULL,
+  target_username TEXT,
+  result TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS admin_audit_events_created_at
+  ON admin_audit_events(created_at DESC);
+CREATE TABLE IF NOT EXISTS admin_idempotency (
+  request_id TEXT PRIMARY KEY,
+  result_json TEXT NOT NULL,
+  created_at TEXT NOT NULL
 );
 `;

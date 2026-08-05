@@ -1,5 +1,6 @@
 export type SavedHost = {
   id: string;
+  kind?: "user" | "admin";
   name: string;
   loginName?: string;
   endpoint: string;

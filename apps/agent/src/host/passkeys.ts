@@ -27,6 +27,11 @@ export type WebAuthnIdentity = {
   userHandle?: Uint8Array;
 };
 
+export type RecoveryAuthorization = {
+  kind: "recovery-code" | "admin-ticket";
+  code: string;
+};
+
 export class PasskeyRegistry {
   readonly #state: HostStateStore;
   readonly #identity: WebAuthnIdentity;
@@ -77,6 +82,7 @@ export class PasskeyRegistry {
       replaceExisting?: boolean;
       issueRecoveryCodes?: boolean;
       recoveryCode?: string;
+      recoveryAuthorization?: RecoveryAuthorization;
     } = {},
   ): Promise<{ recoveryCodes: string[] }> {
     const verification = await verifyRegistrationResponse({
@@ -94,22 +100,28 @@ export class PasskeyRegistry {
     await this.#state.transaction((database) => {
       const createdAt = new Date().toISOString();
       if (options.replaceExisting) {
-        if (!options.recoveryCode)
+        const authorization =
+          options.recoveryAuthorization ??
+          (options.recoveryCode
+            ? { kind: "recovery-code" as const, code: options.recoveryCode }
+            : undefined);
+        if (!authorization)
           throw new Error("Recovery code authorization is missing");
-        const recoveryHash = findRecoveryHash(
-          database,
-          normalizeRecoveryCode(options.recoveryCode),
-        );
-        if (!recoveryHash)
-          throw new Error("Recovery code is invalid or already used");
+        const recoveryHash = findAuthorizationHash(database, authorization);
+        if (!recoveryHash) throw new Error("Recovery authorization is invalid");
         database.run(
-          "UPDATE recovery_codes SET used_at = ? WHERE hash = ? AND used_at IS NULL",
-          [createdAt, recoveryHash],
+          authorization.kind === "admin-ticket"
+            ? "UPDATE admin_recovery_tickets SET used_at = ? WHERE hash = ? AND used_at IS NULL AND expires_at > ?"
+            : "UPDATE recovery_codes SET used_at = ? WHERE hash = ? AND used_at IS NULL",
+          authorization.kind === "admin-ticket"
+            ? [createdAt, recoveryHash, createdAt]
+            : [createdAt, recoveryHash],
         );
         if (database.getRowsModified() !== 1)
-          throw new Error("Recovery code is invalid or already used");
+          throw new Error("Recovery authorization is invalid");
         database.run("DELETE FROM passkeys");
         database.run("DELETE FROM recovery_codes");
+        database.run("DELETE FROM admin_recovery_tickets");
         database.run("DELETE FROM web_password");
         database.run("DELETE FROM pairing_sessions");
         database.run("DELETE FROM push_subscriptions");
@@ -173,6 +185,50 @@ export class PasskeyRegistry {
       findRecoveryHash(database, normalized),
     );
     if (!match) throw new Error("Recovery code is invalid or already used");
+  }
+
+  async authorizeRecovery(code: string): Promise<RecoveryAuthorization> {
+    const authorization: RecoveryAuthorization = code
+      .trim()
+      .toUpperCase()
+      .startsWith("CEAR-")
+      ? { kind: "admin-ticket", code }
+      : { kind: "recovery-code", code };
+    const match = await this.#state.read((database) =>
+      findAuthorizationHash(database, authorization),
+    );
+    if (!match) throw new Error("Recovery authorization is invalid");
+    return authorization;
+  }
+
+  issueAdminRecoveryTicket(
+    subject: string,
+    ttlMs = 10 * 60 * 1_000,
+  ): Promise<{ handoffCode: string; expiresAt: string }> {
+    if (ttlMs < 60_000 || ttlMs > 60 * 60 * 1_000)
+      throw new Error("Admin recovery ticket lifetime is out of range");
+    const handoffCode = createAdminRecoveryTicket();
+    const createdAt = new Date();
+    const expiresAt = new Date(createdAt.getTime() + ttlMs).toISOString();
+    return this.#state.transaction((database) => {
+      database.run(`CREATE TABLE IF NOT EXISTS admin_recovery_tickets (
+        hash BLOB PRIMARY KEY,
+        expires_at TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        used_at TEXT
+      )`);
+      database.run("DELETE FROM recovery_codes");
+      database.run("DELETE FROM admin_recovery_tickets");
+      database.run(
+        "INSERT INTO admin_recovery_tickets (hash, expires_at, created_at) VALUES (?, ?, ?)",
+        [hashRecoveryCode(handoffCode), expiresAt, createdAt.toISOString()],
+      );
+      database.run(
+        "INSERT INTO audit_events (kind, subject_id, created_at) VALUES (?, ?, ?)",
+        ["admin_recovery_ticket_issued", subject, createdAt.toISOString()],
+      );
+      return { handoffCode, expiresAt };
+    });
   }
 
   rotateRecoveryCodes(subject = "user"): Promise<string[]> {
@@ -277,6 +333,11 @@ function createRecoveryCodes(): string[] {
   ];
 }
 
+function createAdminRecoveryTicket(): string {
+  const raw = randomBytes(16).toString("hex").toUpperCase();
+  return `CEAR-${raw.slice(0, 8)}-${raw.slice(8, 16)}-${raw.slice(16, 24)}-${raw.slice(24)}`;
+}
+
 function hashRecoveryCode(code: string): Uint8Array {
   const salt = randomBytes(16);
   return Buffer.concat([salt, scryptSync(code, salt, 32)]);
@@ -309,6 +370,35 @@ function findRecoveryHash(
       ) {
         return row.hash;
       }
+    }
+    return undefined;
+  } finally {
+    statement.free();
+  }
+}
+
+function findAuthorizationHash(
+  database: Database,
+  authorization: RecoveryAuthorization,
+): Uint8Array | undefined {
+  if (authorization.kind === "recovery-code") {
+    return findRecoveryHash(
+      database,
+      normalizeRecoveryCode(authorization.code),
+    );
+  }
+  const statement = database.prepare(
+    "SELECT hash FROM admin_recovery_tickets WHERE used_at IS NULL AND expires_at > ?",
+  );
+  statement.bind([new Date().toISOString()]);
+  try {
+    while (statement.step()) {
+      const row = statement.getAsObject() as Record<string, unknown>;
+      if (
+        row.hash instanceof Uint8Array &&
+        verifyRecoveryCode(normalizeRecoveryCode(authorization.code), row.hash)
+      )
+        return row.hash;
     }
     return undefined;
   } finally {

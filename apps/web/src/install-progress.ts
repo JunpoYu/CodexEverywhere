@@ -18,7 +18,7 @@ const phasePresentation: Record<
   Omit<CodexInstallProgressPresentation, "operationId" | "phase">
 > = {
   preparing: {
-    label: "正在准备安装目录",
+    label: "正在准备 Codex",
     detail: "检查并准备当前用户的 ~/.local 目录",
     step: 1,
   },
@@ -33,12 +33,12 @@ const phasePresentation: Record<
     step: 3,
   },
   completed: {
-    label: "Codex 安装完成",
-    detail: "版本验证已通过，可以继续登录 Codex",
+    label: "Codex 已是最新安装",
+    detail: "版本验证已通过；如果服务正在运行，下一步会安全重启",
     step: 4,
   },
   failed: {
-    label: "Codex 安装失败",
+    label: "Codex 安装或更新失败",
     detail: "请查看下方错误后重试；已完成的下载不会暴露到浏览器",
   },
 };

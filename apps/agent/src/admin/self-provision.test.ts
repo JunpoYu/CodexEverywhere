@@ -17,6 +17,8 @@ import {
   loadHostProvisioner,
   setHostProvisionerDefaultCodexNetwork,
 } from "./self-provision.js";
+import { HostStateStore } from "../host/state-store.js";
+import { AdminUserRegistry } from "./registry.js";
 
 const temporaryDirectories: string[] = [];
 afterEach(async () => {
@@ -60,6 +62,7 @@ describe("host self-provisioner", () => {
     const grant = await issueSelfProvisioningGrant({
       env: { SUDO_USER: "bob", SUDO_UID: String(uid) },
       configPath,
+      adminStatePath: join(home, "admin", "state.sqlite"),
       runGetent: async () =>
         `bob:x:${uid}:${process.getgid?.() ?? 20}::${home}:/bin/bash\n`,
     });
@@ -131,6 +134,56 @@ describe("host self-provisioner", () => {
       "installed sudo helper",
     );
   });
+
+  it.each(["disabled", "removal_pending", "removing", "removed"] as const)(
+    "rejects self-provisioning while administrator status is %s",
+    async (status) => {
+      const home = await temporaryDirectory();
+      const configPath = join(home, "etc", "provisioner.json");
+      const adminStatePath = join(home, "admin", "state.sqlite");
+      const uid = process.getuid?.() ?? 501;
+      const gid = process.getgid?.() ?? 20;
+      const credential = issueHostProvisionerCredential(
+        generateRelaySigningKey(),
+        {
+          installationId: "hpc-cluster-1",
+          expiresAt: new Date(Date.now() + 86_400_000),
+        },
+      );
+      await installHostProvisioner(
+        {
+          origin: "https://codex.example.com",
+          relayEndpoint: "wss://codex.example.com/relay",
+          credential,
+        },
+        configPath,
+      );
+      const state = await HostStateStore.open(adminStatePath);
+      const registry = new AdminUserRegistry(state);
+      const registered = await registry.register({
+        username: "bob",
+        uid,
+        gid,
+        home,
+        shell: "/bin/bash",
+      });
+      await registry.setStatus({
+        username: "bob",
+        expectedRevision: registered.revision,
+        status,
+      });
+      await state.close();
+
+      await expect(
+        issueSelfProvisioningGrant({
+          env: { SUDO_USER: "bob", SUDO_UID: String(uid) },
+          configPath,
+          adminStatePath,
+          runGetent: async () => `bob:x:${uid}:${gid}::${home}:/bin/bash\n`,
+        }),
+      ).rejects.toThrow("disabled");
+    },
+  );
 });
 
 async function temporaryDirectory(): Promise<string> {

@@ -17,14 +17,14 @@
 - 不稳定版本使用 `vMAJOR.MINOR.PATCH-alpha.N`；
 - 稳定版本使用 `vMAJOR.MINOR.PATCH`；
 - 根目录、Agent、Relay、Web、Crypto、Protocol 和 Testing package 保持相同项目版本；
-- `codex-app-server-schema` 独立使用与固定 Codex CLI 对应的版本号，不跟随项目版本。
+- `codex-app-server-schema` 独立使用生成该编译基线的 Codex CLI 版本号，不跟随项目版本，也不构成运行时白名单。
 
 每次发布必须同步更新：
 
 1. 所有项目 package 的 `version`；
 2. [CHANGELOG.md](../CHANGELOG.md)；
 3. README 中的公开版本和兼容性说明；
-4. 如 Codex 版本变化，同步生成 schema、更新固定版本并运行集成测试。
+4. 使用发布时的 npm 最新稳定版 Codex 重新生成 schema、更新基线版本并运行集成测试。
 
 ## 发布前检查
 
@@ -41,7 +41,7 @@ pnpm test:app-server
 git diff --check
 ```
 
-`test:app-server` 需要本机安装仓库固定版本的 Codex；不得用跳过集成测试的方式发布 Codex 适配层变更。
+`test:app-server` 需要本机安装发布时的 npm 最新稳定版 Codex；不得用跳过集成测试的方式发布 Codex 适配层变更。若项目声明额外的兼容版本，也应分别运行，但运行时不得仅按版本号拒绝用户已有的 Codex。
 
 同时人工确认：
 

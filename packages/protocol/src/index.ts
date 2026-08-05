@@ -68,6 +68,57 @@ export type HostProfile = {
   routeId?: string;
 };
 
+export type AdminUserAccessStatus =
+  "enabled" | "disabled" | "removal_pending" | "removing" | "removed";
+
+export type AdminUserSummary = {
+  version: 1;
+  uid: number;
+  username: string;
+  home: string;
+  status: AdminUserAccessStatus;
+  agentOnline: boolean;
+  registeredAt: string;
+  updatedAt: string;
+  revision: number;
+  removeAfter?: string;
+};
+
+export type AdminHostStatus = {
+  version: 1;
+  installationId: string;
+  serverName: string;
+  controllerStartedAt: string;
+  managedUsers: number;
+  enabledUsers: number;
+  disabledUsers: number;
+  pendingRemovals: number;
+};
+
+export type AdminAuditEvent = {
+  version: 1;
+  id: string;
+  requestId: string;
+  actor: string;
+  action: string;
+  targetUsername?: string;
+  result: "succeeded" | "failed";
+  createdAt: string;
+};
+
+export type AdminMutationRequest = {
+  version: 1;
+  username: string;
+  expectedRevision: number;
+};
+
+export type AdminRecoveryStartResult = {
+  version: 1;
+  username: string;
+  handoffCode: string;
+  expiresAt: string;
+};
+
 export type WorkspaceRoot = {
   id: string;
   path: string;

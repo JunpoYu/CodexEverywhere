@@ -1,5 +1,3 @@
-import "./style.css";
-
 import type {
   AskForApproval,
   Model,
@@ -26,6 +24,7 @@ import {
   type PairingDocument,
 } from "./gateway-client.js";
 import { ApprovalSubmissionTracker } from "./approval-submission.js";
+import { createCoalescedTask } from "./coalesced-task.js";
 import {
   codexLoginEventAction,
   shouldRenderInThreadTimeline,
@@ -58,6 +57,7 @@ import {
   threadSendMode,
   ThreadTimelineView,
 } from "./thread-view.js";
+import { requestThreadList, threadListErrorMessage } from "./thread-list.js";
 import {
   parseSlashCommand,
   slashCommandCompletion,
@@ -92,7 +92,7 @@ type ThreadSummary = {
 type SetupStatus = {
   networkConfigured: boolean;
   networkMode: "direct" | "proxy";
-  codex: { installed: boolean; version?: string };
+  codex: { installed: boolean; binary?: string; version?: string };
   appServerRunning: boolean;
 };
 
@@ -204,11 +204,12 @@ const threadUnsubscribeOperations = new Map<string, Promise<void>>();
 const threadDirectoryOpenState = new Map<string, boolean>();
 let composerSubmitting = false;
 let slashCommandSelection = 0;
+const runCoalescedRefresh = createCoalescedTask(performRefresh);
 
 app.innerHTML = `
   <header class="topbar">
     <div class="brand"><span class="brand-mark">C</span><div><strong>CodexEverywhere</strong><small>Your Codex, anywhere</small></div></div>
-    <div class="connection"><span class="connection-badge"><span id="status-dot" class="dot offline"></span><span id="status-text">未连接</span></span><select id="theme-preference" class="theme-preference" aria-label="外观主题" title="外观主题"><option value="system">跟随系统</option><option value="light">浅色</option><option value="dark">深色</option></select><details id="settings-menu" class="settings-menu" hidden><summary aria-label="打开设置">•••</summary><div><button id="recovery-codes-button" hidden>恢复码</button><button id="add-passkey-button" hidden>添加 Passkey</button><button id="set-password-button" hidden>设置密码</button><button id="settings-workspaces" type="button">工作目录</button><button id="settings-network" type="button">Codex 网络</button></div></details></div>
+    <div class="connection"><span class="connection-badge"><span id="status-dot" class="dot offline"></span><span id="status-text">未连接</span></span><select id="theme-preference" class="theme-preference" aria-label="外观主题" title="外观主题"><option value="system">跟随系统</option><option value="light">浅色</option><option value="dark">深色</option></select><details id="settings-menu" class="settings-menu" hidden><summary aria-label="打开设置">•••</summary><div><button id="recovery-codes-button" hidden>恢复码</button><button id="add-passkey-button" hidden>添加 Passkey</button><button id="set-password-button" hidden>设置密码</button><button id="settings-workspaces" type="button">工作目录</button><button id="settings-codex-version" type="button">Codex 版本</button><button id="settings-network" type="button">Codex 网络</button></div></details></div>
   </header>
   <section id="setup" class="setup-shell">
     <div class="setup-card auth-card">
@@ -231,8 +232,8 @@ app.innerHTML = `
           <p id="device-persistence-note" class="privacy-note">临时登录：不会保存设备密钥或设备名称。</p>
           <button id="login-password-button" class="secondary wide-action">使用专用密码登录</button>
           <div class="divider"><span>账户恢复</span></div>
-          <label>恢复码<input id="login-recovery-input" autocomplete="one-time-code" spellcheck="false" placeholder="XXXXX-XXXXX-XXXXX-XXXXX" /></label>
-          <button id="login-recovery-button" class="ghost wide-action">使用恢复码重置 Web 凭据</button>
+          <label>恢复码或管理员交接码<input id="login-recovery-input" autocomplete="one-time-code" spellcheck="false" placeholder="XXXXX-XXXXX… 或 CEAR-…" /></label>
+          <button id="login-recovery-button" class="ghost wide-action">恢复 Web 身份</button>
         </details>
         <details class="advanced-login">
           <summary>Direct 高级连接</summary>
@@ -280,8 +281,8 @@ app.innerHTML = `
           <small id="network-state" class="step-state"></small>
         </section>
         <section id="provision-install" class="step-card" hidden>
-          <strong class="step-title">检测并安装 Codex</strong>
-          <p class="lede">系统会检测当前用户已有的 Codex 和版本；未安装时可安装到 <code>~/.local</code>，不需要 root。</p>
+          <strong class="step-title">检测、安装与更新 Codex</strong>
+          <p class="lede">系统会使用当前用户已有的任意可运行版本。你也可以在 <code>~/.local</code> 安装 npm 最新稳定版，不需要 root，也不会修改其他位置的安装。</p>
           <div class="actions"><button id="back-to-network" class="ghost">返回</button><button id="install-codex" class="primary">开始安装</button><button id="continue-after-install" class="primary" hidden>继续</button></div>
           <div id="codex-install-progress" class="install-progress" role="status" aria-live="polite" hidden>
             <div class="install-progress-heading"><strong id="install-progress-label">正在启动安装</strong><span id="install-progress-count">0 / 4</span></div>
@@ -415,7 +416,7 @@ app.innerHTML = `
         </div>
       </label>
       <p id="copy-recovery-status" class="copy-status" aria-live="polite"></p>
-      <div class="recovery-warning">以后无法再次查看这个恢复码。若丢失，管理员可以重新签发，但旧恢复码会立即失效。</div>
+      <div class="recovery-warning">以后无法再次查看这个恢复码。若丢失，管理员可以签发一个 10 分钟有效的临时交接码；旧恢复码会立即失效，管理员不会看到你兑换后生成的新恢复码。</div>
       <button id="close-recovery-dialog" type="button" class="primary wide-action">我已保存</button>
     </div>
   </dialog>
@@ -462,6 +463,17 @@ app.innerHTML = `
       <p id="network-settings-state" class="step-state"></p>
       <p id="network-settings-error" class="error" role="alert"></p>
       <div class="actions dialog-actions"><button id="cancel-network-settings" class="ghost" type="button">取消</button><button id="save-network-settings" class="primary" type="button">保存并重启 Codex</button></div>
+    </div>
+  </dialog>
+  <dialog id="codex-version-dialog" class="network-settings-dialog">
+    <div>
+      <div class="dialog-heading"><div><p class="eyebrow">Codex runtime</p><h2>Codex 版本</h2></div><button id="close-codex-version" class="icon-button" type="button" aria-label="关闭">×</button></div>
+      <p class="lede">CodexEverywhere 接受当前账号中任何能够正常运行并报告版本的 Codex。更新会在你的 <code>~/.local</code> 中安装 npm 最新稳定版，不修改其他位置或共享安装。</p>
+      <div class="restart-warning"><strong>安装更新不会立即中断任务</strong><span>如果 app-server 正在运行，安装完成后由你决定何时重启并应用；重启会中断正在执行的 turn。</span></div>
+      <p id="codex-version-current" class="step-state">正在检测当前版本…</p>
+      <p id="codex-version-state" class="step-state" role="status" aria-live="polite"></p>
+      <p id="codex-version-error" class="error" role="alert"></p>
+      <div class="actions dialog-actions"><button id="cancel-codex-version" class="ghost" type="button">关闭</button><button id="apply-codex-update" class="secondary" type="button" hidden>重启并应用</button><button id="update-codex" class="primary" type="button">安装或更新到最新版</button></div>
     </div>
   </dialog>
   <dialog id="thread-settings-dialog" class="thread-settings-dialog">
@@ -599,6 +611,9 @@ const newSessionDialog =
 const networkSettingsDialog = requiredElement<HTMLDialogElement>(
   "network-settings-dialog",
 );
+const codexVersionDialog = requiredElement<HTMLDialogElement>(
+  "codex-version-dialog",
+);
 const threadSettingsDialog = requiredElement<HTMLDialogElement>(
   "thread-settings-dialog",
 );
@@ -735,6 +750,10 @@ requiredElement("settings-network").addEventListener(
   "click",
   () => void openNetworkSettings(),
 );
+requiredElement("settings-codex-version").addEventListener(
+  "click",
+  () => void openCodexVersionSettings(),
+);
 requiredElement("settings-network-mode").addEventListener(
   "change",
   renderSettingsNetworkFields,
@@ -748,6 +767,19 @@ requiredElement("cancel-network-settings").addEventListener("click", () =>
 requiredElement("save-network-settings").addEventListener(
   "click",
   () => void saveNetworkSettings(),
+);
+for (const id of ["close-codex-version", "cancel-codex-version"]) {
+  requiredElement(id).addEventListener("click", () =>
+    codexVersionDialog.close(),
+  );
+}
+requiredElement("update-codex").addEventListener(
+  "click",
+  () => void updateCodexFromSettings(),
+);
+requiredElement("apply-codex-update").addEventListener(
+  "click",
+  () => void applyCodexUpdate(),
 );
 requiredElement("close-workspace-dialog").addEventListener("click", () =>
   workspaceDialog.close(),
@@ -1100,7 +1132,7 @@ async function recoverWebCredentials(): Promise<void> {
   const name = loginName.value.trim();
   const recoveryCode = loginRecoveryInput.value.trim();
   if (!name || !recoveryCode) {
-    setupError.textContent = "请输入登录名和恢复码";
+    setupError.textContent = "请输入登录名和恢复码或管理员交接码";
     return;
   }
   setStatus("connecting", "正在恢复 Web 身份…");
@@ -1456,8 +1488,11 @@ function showProvisionStep(step: "network" | "install" | "login"): void {
 }
 
 function renderInstallStatus(status: SetupStatus): void {
-  installCodexButton.hidden = status.codex.installed;
+  installCodexButton.hidden = false;
   installCodexButton.disabled = false;
+  installCodexButton.textContent = status.codex.installed
+    ? "安装或更新到最新版"
+    : "安装最新版";
   const continueButton = requiredElement<HTMLButtonElement>(
     "continue-after-install",
   );
@@ -1467,7 +1502,7 @@ function renderInstallStatus(status: SetupStatus): void {
     ? "重启 Codex 服务并继续"
     : "确认版本并继续";
   requiredElement("install-state").textContent = status.codex.installed
-    ? `已安装${status.codex.version ? ` · ${status.codex.version}` : ""}`
+    ? `已安装${status.codex.version ? ` · ${status.codex.version}` : ""}${status.codex.binary ? ` · ${status.codex.binary}` : ""}`
     : "尚未安装";
   loginCodexButton.disabled = !status.codex.installed;
   requiredElement("network-state").textContent = !status.networkConfigured
@@ -1504,6 +1539,10 @@ function renderCodexInstallProgress(payload: unknown): void {
       `${progress.step} / ${CODEX_INSTALL_STEP_COUNT}`;
     updateCodexInstallProgressBar(progress.step);
   }
+  if (codexVersionDialog.open) {
+    requiredElement("codex-version-state").textContent =
+      `${progress.label}：${progress.detail}`;
+  }
 }
 
 function updateCodexInstallProgressBar(step: number): void {
@@ -1531,6 +1570,98 @@ function hideCodexInstallProgress(): void {
 
 function renderNetworkFields(): void {
   requiredElement("proxy-fields").hidden = networkMode.value !== "proxy";
+}
+
+async function openCodexVersionSettings(): Promise<void> {
+  if (!client) return;
+  requiredElement<HTMLDetailsElement>("settings-menu").open = false;
+  const current = requiredElement("codex-version-current");
+  const state = requiredElement("codex-version-state");
+  const error = requiredElement("codex-version-error");
+  current.textContent = "正在检测当前版本…";
+  state.textContent = "";
+  error.textContent = "";
+  const apply = requiredElement<HTMLButtonElement>("apply-codex-update");
+  apply.hidden = true;
+  apply.disabled = false;
+  apply.textContent = "重启并应用";
+  const update = requiredElement<HTMLButtonElement>("update-codex");
+  update.disabled = false;
+  update.textContent = "安装或更新到最新版";
+  codexVersionDialog.showModal();
+  try {
+    const status = await client.request<SetupStatus>("setup/status", {});
+    current.textContent = status.codex.installed
+      ? `当前版本：${status.codex.version ?? "未知"} · ${status.codex.binary ?? "Agent PATH"}`
+      : "当前没有检测到可运行的 Codex";
+  } catch (cause) {
+    error.textContent = errorMessage(cause);
+  }
+}
+
+async function updateCodexFromSettings(): Promise<void> {
+  if (!client) return;
+  const button = requiredElement<HTMLButtonElement>("update-codex");
+  const apply = requiredElement<HTMLButtonElement>("apply-codex-update");
+  const current = requiredElement("codex-version-current");
+  const state = requiredElement("codex-version-state");
+  const error = requiredElement("codex-version-error");
+  button.disabled = true;
+  button.textContent = "正在安装最新版…";
+  apply.hidden = true;
+  error.textContent = "";
+  state.textContent = "正在向宿主机发起安装或更新请求…";
+  try {
+    const result = await client.request<{
+      installed: true;
+      binary: string;
+      version?: string;
+      restartRequired: boolean;
+    }>("setup/codex/install", {}, { timeoutMs: 10 * 60_000 });
+    current.textContent = `当前安装：${result.version ?? "版本未知"} · ${result.binary}`;
+    state.textContent = result.restartRequired
+      ? "最新版已经安装。当前服务仍在使用原版本，请在任务空闲时重启并应用。"
+      : "最新版已经安装，将在下次启动 Codex 时使用。";
+    apply.hidden = !result.restartRequired;
+    if (!result.restartRequired) showToast("Codex 已安装或更新", "success");
+  } catch (cause) {
+    state.textContent = "";
+    error.textContent = errorMessage(cause);
+  } finally {
+    button.disabled = false;
+    button.textContent = "安装或更新到最新版";
+  }
+}
+
+async function applyCodexUpdate(): Promise<void> {
+  if (!client) return;
+  if (
+    !window.confirm(
+      "重启 Codex app-server 会中断正在运行的 turn。确认现在重启并应用新版本？",
+    )
+  )
+    return;
+  const button = requiredElement<HTMLButtonElement>("apply-codex-update");
+  const error = requiredElement("codex-version-error");
+  const state = requiredElement("codex-version-state");
+  button.disabled = true;
+  button.textContent = "正在重启…";
+  error.textContent = "";
+  try {
+    const previous = client;
+    state.textContent = "正在重启 Codex app-server 并应用新版本…";
+    await previous.request(
+      "setup/app-server/restart",
+      {},
+      { timeoutMs: 30_000 },
+    );
+    codexVersionDialog.close();
+    await reconnectAfterCodexRestart(previous);
+  } catch (cause) {
+    error.textContent = errorMessage(cause);
+    button.disabled = false;
+    button.textContent = "重启并应用";
+  }
 }
 
 async function openNetworkSettings(): Promise<void> {
@@ -1713,27 +1844,34 @@ async function installCodex(): Promise<void> {
   requiredElement("install-state").textContent = "正在启动安装…";
   showCodexInstallStarting();
   try {
-    const result = await client.request<{ installed: true; version?: string }>(
-      "setup/codex/install",
-      {},
-      { timeoutMs: 10 * 60_000 },
-    );
+    const result = await client.request<{
+      installed: true;
+      binary: string;
+      version?: string;
+      restartRequired: boolean;
+    }>("setup/codex/install", {}, { timeoutMs: 10 * 60_000 });
+    appServerRestartRequired = result.restartRequired;
+    const codex = {
+      installed: result.installed,
+      binary: result.binary,
+      ...(result.version ? { version: result.version } : {}),
+    };
     renderInstallStatus({
       networkConfigured: true,
       networkMode: networkMode.value as "direct" | "proxy",
-      codex: result,
-      appServerRunning: false,
+      codex,
+      appServerRunning: result.restartRequired,
     });
     provisionStatus = {
       networkConfigured: true,
       networkMode: networkMode.value as "direct" | "proxy",
-      codex: result,
-      appServerRunning: false,
+      codex,
+      appServerRunning: result.restartRequired,
     };
     showProvisionStep("install");
   } catch (cause) {
     installCodexButton.disabled = false;
-    requiredElement("install-state").textContent = "安装失败";
+    requiredElement("install-state").textContent = "安装或更新失败";
     error.textContent = errorMessage(cause);
   }
 }
@@ -2084,15 +2222,21 @@ function clearProxyInputs(): void {
 }
 
 async function refresh(): Promise<void> {
-  if (!client) return;
+  return runCoalescedRefresh();
+}
+
+async function performRefresh(): Promise<void> {
+  const targetClient = client;
+  if (!targetClient) return;
   const refreshButton = requiredElement<HTMLButtonElement>("refresh-button");
   refreshButton.classList.add("refreshing");
   refreshButton.disabled = true;
   try {
-    const workspaces = await client.request<WorkspaceProfile>(
+    const workspaces = await targetClient.request<WorkspaceProfile>(
       "workspace/list",
       {},
     );
+    if (client !== targetClient) return;
     const previousSelection = workspaceSelect.value;
     workspaceRoots = workspaces.roots;
     defaultWorkspaceRoot = workspaces.defaultRoot;
@@ -2110,18 +2254,21 @@ async function refresh(): Promise<void> {
       workspaceRoots.length === 0;
     renderWorkspaceScope(workspaces);
     renderWorkspaceManager(workspaces.defaultRoot);
-    const threads = await client.request<{ data: ThreadSummary[] }>(
-      "thread/list",
+    const threads = await requestThreadList<{ data: ThreadSummary[] }>(
+      targetClient,
       {
         limit: 100,
         sortKey: "updated_at",
         sortDirection: "desc",
+        sourceKinds: ["cli", "vscode", "appServer"],
       },
     );
+    if (client !== targetClient) return;
     threadsCache = threads.data;
     renderThreads(threadsCache);
   } catch (error) {
-    appendTimeline("error", "刷新失败", errorMessage(error));
+    if (client !== targetClient) return;
+    appendTimeline("error", "刷新失败", threadListErrorMessage(error));
   } finally {
     refreshButton.classList.remove("refreshing");
     refreshButton.disabled = false;
@@ -3043,7 +3190,7 @@ async function submitSlashCommand(): Promise<void> {
     appendTimeline(
       "error",
       "未知的斜杠指令",
-      "输入 / 查看 Codex 0.144.1 支持的指令和匹配项。该内容没有发送给 Codex。",
+      "输入 / 查看当前 Web 已适配的 Codex 指令和匹配项。该内容没有发送给 Codex。",
     );
     return;
   }
@@ -3097,7 +3244,7 @@ function respondToTuiOnlyCommand(command: SlashCommand): void {
   const explanations: Record<string, string> = {
     app: "这是 macOS/Windows Codex TUI 的桌面接力指令；当前页面已经是 Web 客户端。",
     ide: "IDE 上下文来自本机 IDE 扩展，浏览器无法读取；请在对应 IDE 或 SSH TUI 中使用。",
-    plan: "Plan 是 Codex TUI 的客户端协作模式，0.144.1 app-server 未提供等价切换接口，因此 Web 不会把它伪装成普通提示词。",
+    plan: "Plan 是 Codex TUI 的客户端协作模式，当前 app-server adapter 未提供等价切换接口，因此 Web 不会把它伪装成普通提示词。",
     diff: "该指令由 TUI 在本地执行 Git 检查；Web 网关不会开放通用 Shell 接口。",
     mention:
       "文件提及依赖 TUI 文件选择器；Web 中请直接在消息里写工作区相对路径。",
@@ -3480,9 +3627,13 @@ function showSlashStatus(): void {
 
 async function copyLatestCodexResponse(): Promise<void> {
   const responses = timeline.querySelectorAll<HTMLElement>(
-    ".timeline-entry.agent:not(.streaming) .message-text",
+    ".timeline-entry.agent:not(.streaming)",
   );
-  const text = responses.item(responses.length - 1)?.textContent?.trim();
+  const response = responses.item(responses.length - 1);
+  const text = (
+    response?.dataset.rawText ??
+    response?.querySelector<HTMLElement>(".message-text")?.textContent
+  )?.trim();
   if (!text) throw new Error("当前会话还没有可复制的完整回复");
   await navigator.clipboard.writeText(text);
   showToast("已复制最近一条 Codex 回复", "success");
@@ -4084,7 +4235,7 @@ function approvalSubmissionState(
 async function renderSavedHosts(): Promise<void> {
   const container = requiredElement("saved-hosts");
   const section = requiredElement("saved-section");
-  const hosts = await listHosts();
+  const hosts = (await listHosts()).filter((host) => host.kind !== "admin");
   savedHostsCache = hosts;
   renderDevicePersistence();
   container.replaceChildren();

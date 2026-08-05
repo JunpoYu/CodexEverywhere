@@ -3,10 +3,12 @@ import { describe, expect, it } from "vitest";
 import {
   generateRelaySigningKey,
   issueHostProvisionerCredential,
+  issueProvisionedAdminRouteCapability,
   issueProvisionedRouteCapability,
   issueRouteCapability,
   normalizeLoginName,
   relayLoginId,
+  relayPrincipalLoginId,
   routeCapabilityLoginId,
   verifyRouteCapability,
 } from "./capability.js";
@@ -115,5 +117,35 @@ describe("route capability", () => {
         new Date("2030-01-02T00:00:00.000Z"),
       ),
     ).toThrow("provisioner credential has expired");
+  });
+
+  it("separates administrator discovery from an identical Unix login name", () => {
+    const key = generateRelaySigningKey();
+    const provisioner = issueHostProvisionerCredential(key, {
+      installationId: "hpc-cluster-1",
+      expiresAt: new Date("2030-01-01T00:00:00.000Z"),
+    });
+    const user = issueProvisionedRouteCapability(
+      provisioner,
+      { loginName: "admin" },
+      new Date("2029-01-01T00:00:00.000Z"),
+    );
+    const administrator = issueProvisionedAdminRouteCapability(
+      provisioner,
+      { adminHandle: "admin" },
+      new Date("2029-01-01T00:00:00.000Z"),
+    );
+
+    expect(user.payload.principal).toBe("user");
+    expect(administrator.payload.principal).toBe("host-admin");
+    expect(routeCapabilityLoginId(user.payload, key)).toBe(
+      relayLoginId(key, "admin"),
+    );
+    expect(routeCapabilityLoginId(administrator.payload, key)).toBe(
+      relayPrincipalLoginId(key, "host-admin", "admin"),
+    );
+    expect(routeCapabilityLoginId(administrator.payload, key)).not.toBe(
+      routeCapabilityLoginId(user.payload, key),
+    );
   });
 });

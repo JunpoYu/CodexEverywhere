@@ -12,7 +12,7 @@
 
 - 每个 Linux 用户一个独立 Agent 和长期 app-server，使用自己的 `~/.codex` 登录状态。
 - 管理员只需完成一次公共运行时和 root-only 宿主机 provisioner 安装；此后任何能够通过现有 HPC 策略 SSH 登录、可由 NSS 查询且 home/shell 合规的 Linux 用户，都可直接执行 `ce device pair` 自行初始化，无需管理员逐个开通。
-- Agent 可在 Codex 尚未安装时启动；PWA 首次使用向导可选择直连或用户代理、将 Codex 安装到 `~/.local`，并通过官方设备码流程完成登录。安装过程通过端到端加密会话显示“准备、下载与安装、验证、完成”的阶段进度；不向浏览器转发可能包含代理或凭据的 npm 原始输出，也不伪造无法可靠获取的字节百分比。Codex 登录页以分步卡片突出官方验证入口和一次性代码，支持一键复制；页面以 app-server 的 `account/login/completed` / `account/updated` 通知为完成信号并以状态轮询兜底，授权完成后自动进入工作区。已经在本机登录 Codex 的用户也可使用标准位置 `~/.codex/auth.json`：PWA 将标准路径作为主入口并支持一键复制，同时保留按钮式的其他来源文件入口。macOS 文件窗口默认隐藏 `.codex`，界面必须提示用户先复制 `~/.codex/`，再在文件窗口按 `⌘⇧G` 打开“前往文件夹”、粘贴目录并选择 `auth.json`；浏览器安全模型仍要求用户在系统文件窗口确认一次。PWA 只在当前页面内存中读取文件，经过现有端到端加密通道直接原子写入该 Linux 用户的 `~/.codex/auth.json`，随后重启 app-server；Relay 不可见，浏览器不持久化文件内容、访问句柄或回显内容。
+- Agent 可在 Codex 尚未安装时启动；PWA 首次使用向导可选择直连或用户代理，使用当前账号中任何能够正常报告版本的 Codex，或把 npm 最新稳定版安装到 `~/.local`，并通过官方设备码流程完成登录。已登录用户也可从设置中更新；安装不会立即中断运行中的 app-server，用户在任务空闲时明确确认重启后才应用。安装过程通过端到端加密会话显示“准备、下载与安装、验证、完成”的阶段进度；不向浏览器转发可能包含代理或凭据的 npm 原始输出，也不伪造无法可靠获取的字节百分比。Codex 登录页以分步卡片突出官方验证入口和一次性代码，支持一键复制；页面以 app-server 的 `account/login/completed` / `account/updated` 通知为完成信号并以状态轮询兜底，授权完成后自动进入工作区。已经在本机登录 Codex 的用户也可使用标准位置 `~/.codex/auth.json`：PWA 将标准路径作为主入口并支持一键复制，同时保留按钮式的其他来源文件入口。macOS 文件窗口默认隐藏 `.codex`，界面必须提示用户先复制 `~/.codex/`，再在文件窗口按 `⌘⇧G` 打开“前往文件夹”、粘贴目录并选择 `auth.json`；浏览器安全模型仍要求用户在系统文件窗口确认一次。PWA 只在当前页面内存中读取文件，经过现有端到端加密通道直接原子写入该 Linux 用户的 `~/.codex/auth.json`，随后重启 app-server；Relay 不可见，浏览器不持久化文件内容、访问句柄或回显内容。
 - PWA 将日常登录与首次初始化完全分开：老用户首页只保留已保存设备或“用户名 + Passkey”的主路径，密码、临时设备和 Direct 地址作为次级入口；专用密码登录默认不记住设备且不要求设备名称，只有用户显式勾选保存新设备时才显示命名输入，当前浏览器已有同一用户记录时沿用原名称；每个已保存入口同时显示用户自定义的设备名和对应 Linux 用户名，避免同一浏览器保存多个 HPC 账号时混淆；新用户按“建立 Web 身份 → 网络 → 安装 → Codex 登录”逐步完成引导。
 - Direct WSS 或可选无状态 Relay；两种模式都在应用层使用 Noise IK 端到端加密。
 - Noise 加密传输会在记录层自动分片并重组大型响应与事件；恢复长会话或出现大型工具输出时，不会因单条 Noise 消息的 65,535 字节上限导致 Agent 崩溃。
@@ -34,7 +34,7 @@
 - 尚未选择会话时，会话时间线保持空白，不消费 app-server 通知；`configWarning`、`remoteControl/status/changed` 和账号状态等宿主机级事件即使在会话打开后也不作为原始 JSON 混入对话。MCP 启动失败使用不含 Transport 堆栈的结构化提示，并区分网络失败与需要重新授权；正常启动状态不写入时间线。当前 thread 的未知事件仍作为 generic event 显示，以保持协议向前兼容。
 - app-server 重启后，发送消息会自动将 `notLoaded` 的磁盘 thread 恢复到内存，不要求用户手动执行 `thread/resume`。
 - 日常工作区采用高密度会话侧栏、结构化时间线和固定底部输入器；提供加载骨架、状态动效、操作 Toast、输入失败恢复、移动端底部会话面板，以及 `Enter` 发送、`Shift+Enter` 换行、`Cmd/Ctrl+K` 搜索和 `Cmd/Ctrl+N` 新建会话。
-- 输入器以固定的 Codex `0.144.1` 官方发布清单注册全部默认斜杠指令及 `/pet`、`/clean` 别名。用户输入 `/` 时显示按官方顺序排列、可搜索且支持方向键、Tab、Enter 和触控的补全菜单；执行前在 Web 本地解析，绝不把未知指令、无效参数或忙碌期禁止执行的指令当作普通 prompt 或 Queue 消息。`/compact`、`/review`、`/rename`、`/new`、`/archive`、`/delete`、`/resume`、`/fork`、`/init`、`/goal`、`/skills`、`/mcp`、`/status`、`/usage`、`/copy`、`/theme`、`/logout` 等调用受限 app-server 方法或现有 Web 界面；依赖 TUI 本地状态、IDE、通用 Shell 或特定操作系统的指令仍被识别，并给出 SSH TUI 或平台限制说明。Web 网关不会为了 `/diff` 暴露任意命令执行接口。
+- 输入器以经过回归测试的 Codex `0.144.1` 官方发布清单作为 Web 斜杠指令基线，并注册 `/pet`、`/clean` 别名；它不是 CLI 运行版本白名单。用户输入 `/` 时显示按官方顺序排列、可搜索且支持方向键、Tab、Enter 和触控的补全菜单；执行前在 Web 本地解析，绝不把未知指令、无效参数或忙碌期禁止执行的指令当作普通 prompt 或 Queue 消息。`/compact`、`/review`、`/rename`、`/new`、`/archive`、`/delete`、`/resume`、`/fork`、`/init`、`/goal`、`/skills`、`/mcp`、`/status`、`/usage`、`/copy`、`/theme`、`/logout` 等调用受限 app-server 方法或现有 Web 界面；依赖 TUI 本地状态、IDE、通用 Shell 或特定操作系统的指令仍被识别，并给出 SSH TUI 或平台限制说明。Web 网关不会为了 `/diff` 暴露任意命令执行接口；新版 CLI 新增指令需要后续 Web adapter 更新，但不会阻止其余兼容能力运行。
 - 对话时间线是内容区内唯一的纵向滚动容器；会话头和输入器始终留在视口中，Codex 回复完成后自动滚动到最新消息。
 - 已完成初始化的用户登录后直接进入工作区；Codex 直连/代理配置位于设置菜单，修改前明确提示会中断活动 turn，保存后重启 app-server 并自动重新连接。
 - 会话头以高对比状态区根据 app-server 增量事件实时显示正在思考、回复、执行命令、修改文件、调用工具、等待操作、完成或异常，而不是只显示笼统的 active 状态；“会话设置”是带图标和强调色的一级操作，不能隐藏在弱提示或不明显的次级文字中。
@@ -45,13 +45,13 @@
 - 审批卡片按命令、网络、文件修改和额外权限显示人类可读摘要，不向普通用户倾倒协议 JSON；多个并发审批按 request id 独立跟踪，活动 thread 的快照修复不得移除尚待处理的审批卡，全部处理后立即退出等待状态。
 - 打开已有会话使用 `thread/resume` 而非只读 `thread/read`，确保当前浏览器连接订阅该 thread 的增量事件，并同时取得模型、推理强度、审批策略和 sandbox 设置。
 - PWA 切换会话或返回会话列表时调用 `thread/unsubscribe` 释放旧订阅；Agent 级 Queue 在队列耗尽或暂停后也释放自己的订阅。释放订阅不 interrupt 活动 turn，最后一个订阅者离开后由 app-server 自身的无订阅宽限期决定何时卸载内存状态，不另设 24 小时保留定时器或用户“卸载”按钮。
-- 已有会话可修改模型、推理强度、审批策略和文件/命令权限；PWA 通过固定 Codex 版本中显式启用的原生 `thread/settings/update` 保存设置，并用 `thread/settings/updated` 同步其他已订阅客户端。设置由 app-server 用于后续 turn，活动 turn 不会被静默中断。
+- 已有会话可修改模型、推理强度、审批策略和文件/命令权限；PWA 通过原生 `thread/settings/update` 保存设置，并用 `thread/settings/updated` 同步其他已订阅客户端。设置由 app-server 用于后续 turn，活动 turn 不会被静默中断；若用户安装的 Codex 尚不提供该方法，adapter 必须返回明确的能力错误。
 - 会话页把 sandbox 与审批策略作为首个高对比信息卡常驻展示，同时显示当前模型、推理强度，以及 app-server 实时上报的当前上下文使用量、窗口大小和累计 token；权限卡可直接进入设置，设置弹窗必须适配窄屏和低高度视口并可完整滚动。
 - Agent 级持久 Queue，不依赖浏览器连接推进；turn 正常完成后自动启动下一项，失败或中断时暂停，并保留 Queue 转 Steer 失败的原消息。
 - 写请求幂等、Agent/app-server 分离生命周期、官方 remote TUI 接力。
 - CentOS 7 友好的纯 WASM SQLite、PID/文件锁、tmux + crontab watchdog 和 `ce doctor`。
 
-以下能力仍属于后续版本，不应被误认为已经完成：宿主机管理员的停用/移除控制面与管理员恢复流程、完整 Queue 编辑与排序管理、文件浏览与传输、Schedule、Web Push、加密离线对话缓存、二维码引导和完整生产部署自动化。一次性宿主机 provisioner、用户自助初始化，以及通过斜杠指令执行 thread 重命名/归档/删除已经实现；当前 PWA 的 Service Worker 只缓存完整应用外壳，离线时不能操作 Codex。
+以下能力仍属于后续版本，不应被误认为已经完成：完整 Queue 编辑与排序管理、文件浏览与传输、Schedule、Web Push、加密离线对话缓存、二维码引导和完整生产部署自动化。一次性宿主机 provisioner、用户自助初始化、最小宿主机管理员控制面，以及通过斜杠指令执行 thread 重命名/归档/删除已经实现；当前 PWA 的 Service Worker 只缓存完整应用外壳，离线时不能操作 Codex。
 
 ### 本地构建与验证
 
@@ -144,12 +144,12 @@ ce admin install-provisioner \
 
 安装完成后，每位用户只需在自己的 SSH shell 执行 `ce device pair`。若该用户尚未初始化，`ce` 会无密码调用固定的 self-provision 辅助程序；辅助程序不接受目标用户名参数，只读取 sudo 提供的真实调用者身份，再通过 NSS 验证账号不是 root、具有登录 shell、home 是绝对路径且由该 UID 所有。root 进程只返回绑定该 Unix 用户的短时初始化资料，不写用户目录、不启动 Agent，也看不到设备配对资料；随后普通用户进程写入自己的 `~/.codex-everywhere`、安装自己的 crontab watchdog、启动自己的 Agent 并输出配对 JSON。用户不能用该入口为别人初始化。
 
-若公共 helper 或宿主机 provisioner 尚未安装，`ce device pair` 会明确提示管理员完成一次整机配置，不会留下半初始化状态。`ce admin bootstrap-user` 仍保留为迁移或应急工具，但不是正常准入流程。管理员将来可在本地控制面停用、移除或恢复用户；这些操作不改变 Linux/SSH 账号，也不能读取用户业务数据。
+若公共 helper 或宿主机 provisioner 尚未安装，`ce device pair` 会明确提示管理员完成一次整机配置，不会留下半初始化状态。`ce admin bootstrap-user` 仍保留为迁移或应急工具，但不是正常准入流程。管理员可在 `/admin` 本地控制面停用、移除或恢复用户；这些操作不改变 Linux/SSH 账号，也不能读取用户业务数据。
 
 首次初始化不是首页上的展开面板，而是一条独立的顺序流程。PWA 提供一键复制 `ce device pair` 初始化指令；用户在单独页面粘贴指令输出、注册 Passkey 并保存恢复码。建立 Web 身份后，PWA 自动进入宿主机初始化向导。未配置网络必须与用户明确选择的 `direct` 区分，不能用隐式直连跳过选择；部署可以显式配置非秘密的宿主机代理默认值，此时该选择来自 provisioner 并可由用户随后修改。检测到已有 Codex 时也必须展示实际版本，再由用户确认继续：
 
 1. 用户选择 Codex 直接访问互联网，或填写 Codex 宿主机能够访问的 HTTP/HTTPS/SOCKS 代理。浏览器电脑上的 `127.0.0.1` 代理通常不能被 HPC 使用。代理输入框使用可见文本，方便用户核对完整 URL；代理通过 E2EE 通道提交，只保存在该用户的 `~/.codex-everywhere/config.json`，PWA 保存后立即清空输入，Relay 永远无法看到。状态接口只披露 `direct` 或 `proxy`，不回传代理 URL、用户名或密码。
-2. 若当前账号没有受支持的 Codex，Agent 使用现有 Node.js/npm 将与仓库 schema 匹配的官方 `@openai/codex@0.144.1` 安装到 `~/.local`，不使用 root，也不修改系统级 Node/npm。安装下载复用上一步的用户代理；不匹配的已有版本不会被直接用于 app-server。
+2. Agent 先检查 `~/.local/bin/codex`，再检查自身 `PATH`，并接受任何能够正常执行 `codex --version` 且返回语义版本号的安装。用户可显式让 Agent 使用现有 Node.js/npm 将官方 `@openai/codex@latest` 安装或更新到 `~/.local`，不使用 root，也不修改其他位置、共享安装或系统级 Node/npm。安装下载复用上一步的用户代理；若 app-server 已运行，新版本只在用户明确重启后应用。
 3. Agent 按需启动用户自己的 app-server。PWA 调用 app-server 的 `account/login/start` 设备码登录，向用户显示官方验证地址和一次性代码；成功后认证材料由 Codex 自己写入 `~/.codex`，app-server 的登录完成通知会驱动页面自动继续。作为官方支持的无头登录替代路径，用户也可使用自己电脑标准位置的 `~/.codex/auth.json`，或选择从其他位置获得的 `auth.json`，经 E2EE 直接导入当前 Linux 账号；普通网页不能静默读取本机固定路径，因此系统文件窗口的一次确认不可省略，也不得持久化文件访问句柄。导入前必须明确确认替换，Agent 校验 JSON、大小、目录所有权和符号链接边界，以 `0700` 目录和 `0600` 文件权限原子落盘，并重启 app-server。
 4. 登录完成后进入 workspace。后续同一 Linux 用户始终复用自己的 Codex、`~/.codex` 和 app-server，不会共享其他用户的账号或额度。
 
@@ -238,7 +238,7 @@ CodexEverywhere 用户必须一对一映射到 HPC 已有的 SSH/Linux 用户。
 
 CodexEverywhere 设置最小的宿主机本地管理员入口，但不设置能够查看所有数据的超级用户。管理员只管理公共安装、宿主机 provisioner，以及用户的停用、移除和 Web 凭据恢复；角色只有管理员和普通用户，不实现通用 RBAC。管理员不能创建 Linux 用户。管理员没有 ChatGPT/Codex 身份，不启动 app-server，不显示 workspace/thread，也不能读取提示词、文件、`~/.codex` 或代替用户操作 Codex。Linux 文件权限始终是底层授权边界。
 
-管理员控制面和审计状态保存在 Codex 宿主机，不放在 Relay。若需要强制停止其他 Linux 用户的 Agent、隔离或删除其目录，必须由 HPC 系统管理员部署具有相应权限的受控服务；普通用户进程只能提供协作式管理。
+管理员控制面和审计状态保存在 Codex 宿主机，不放在 Relay。Administrator Controller 以指定的现有运维 Unix 账号长期运行，仅持有独立管理员 Web 身份和 route；固定的无参数 sudo helper 才以 root 执行停用 Agent、写访问策略、短时恢复交接和延迟移除。helper 不提供 shell、任意路径或任意命令，Controller 不连接用户 app-server。
 
 首次初始化流程：
 
@@ -296,7 +296,7 @@ Codex 宿主机：每个 Linux 用户独立运行
 
 **Relay** 适合 HPC、NAT 或防火墙后的宿主机。Agent 主动连接 Relay 并注册一个稳定的 opaque route ID；浏览器通过相同 route ID 找到在线 Agent。Relay 重启后不恢复任何用户数据库，由 Agent 重新注册在线路由。
 
-单用户或兼容路径仍可用 `ce-relay issue-route` 逐个签发 legacy route capability。多用户公共安装改用 `ce-relay issue-provisioner`：Relay 从主签名密钥派生只对一个 `installationId` 和有效期生效的宿主机签名密钥，HPC root 只保存该派生 credential，不能还原 Relay 主密钥或为其他 installation 签名。self-provision helper 为真实 sudo 调用者生成 v3 route capability；其中规范 Unix 用户名只存在于用户私有配置和发往 Relay 的 capability 内，不进入浏览器配对资料、运行日志或持久数据库。Relay 验证后立即用主密钥将其转换为 keyed opaque login ID，再只在内存中保存 login ID 到 route 的映射。浏览器提交明文登录名时，Relay 同样只在内存中计算 login ID 并立即丢弃请求字段。Relay 重启后映射由 Agent 重建，不落盘。
+单用户或兼容路径仍可用 `ce-relay issue-route` 逐个签发 legacy route capability。多用户公共安装改用 `ce-relay issue-provisioner`：Relay 从主签名密钥派生只对一个 `installationId` 和有效期生效的宿主机签名密钥，HPC root 只保存该派生 credential，不能还原 Relay 主密钥或为其他 installation 签名。self-provision helper 为真实 sudo 调用者生成 v4 user route capability；管理员安装流程生成 v4 host-admin route capability。两者使用不同 purpose、principal 和 keyed login ID 域，即使登录名相同也不能互相发现或注册。Relay 重启后映射由 Agent 或 Controller 重建，不落盘；旧 v1-v3 用户 route 仍按 user 域验证以兼容已有部署。
 
 PWA 可以保存多个 host profile，每个 profile 独立记录 direct endpoint、可选 Relay endpoint、route ID、设备密钥和本地缓存。新设备无需预存 profile：可以填写 Direct 地址直接获取公开宿主机资料，也可以通过登录名从 Relay 找到在线 Agent。两种方式都在预认证协议中验证宿主机身份。只要 profile 含 Direct 地址，PWA 就先直连，失败后才回退 Relay。
 
@@ -388,8 +388,8 @@ packages/
 
 ### 兼容策略
 
-- 当前受支持并由安装器固定的 Codex CLI 为 `0.144.1`；它与仓库内生成的 app-server schema 同步升级。
-- 启动 app-server 前必须验证实际 CLI 版本；未知的新旧版本不能仅因 `codex --version` 有输出就被视为兼容。
+- Codex CLI 运行版本不设白名单；仓库内生成的 app-server schema 是编译与回归测试基线，不是运行时版本门槛。CodexEverywhere 发版时应持续用 npm 最新稳定版执行真实集成测试并刷新 schema，以支持新字段和方法。
+- 启动 app-server 前必须验证实际 CLI 能执行并报告可解析的语义版本；这只证明安装可用，不代表所有新增 app-server 能力已被当前 Web 结构化支持。初始化或方法调用不兼容时必须返回清晰错误，不能静默降级或阻止用户使用其他仍兼容的能力。
 - 使用 `codex app-server generate-ts` 生成版本匹配的协议类型，并在 adapter 层隔离版本差异。
 - 默认只使用稳定 app-server API；实验性能力必须放在 feature flag 后。
 - 未知 notification 或 item 作为 generic event 透传，不能导致 Agent 或 Web 崩溃。
@@ -407,6 +407,8 @@ ce admin inspect-user <username>
 ce admin install-provisioner --origin <https-origin> --relay-endpoint <wss-endpoint> [--default-codex-proxy <url>] --credential-stdin
 ce admin set-provisioner-default-proxy <url>
 ce admin bootstrap-user <username> --origin <https-origin> --relay-endpoint <wss-endpoint> --capability-stdin
+ce admin install-controller <run-as-user> --handle <admin-handle>
+ce admin web start|stop|restart|status|pair
 ce transport direct|relay|status
 ce workspace add|remove|list
 ce device pair|list|revoke
@@ -418,7 +420,7 @@ ce tui [directory]
 
 `ce transport direct` 配置宿主机的 HTTPS/WSS 入口；`ce transport relay` 配置 Relay URL 和自包含 route capability。两条命令分别更新自己的连接配置并保留另一条，二者同时存在时状态为 `hybrid`。`ce doctor` 至少检查：Node/Codex 版本、Codex 登录状态、目录权限、socket、tmux、crontab、当前 transport、workspace roots、密钥权限和 app-server 健康状态。
 
-`ce admin install-provisioner` 是管理员只需执行一次的宿主机自助初始化配置；可选的 `--default-codex-proxy` 只为尚无网络选择的用户提供首次初始化默认值，`ce admin set-provisioner-default-proxy` 可在不重新输入 credential 的情况下更新它。内部的 `ce admin self-provision` 只能通过 root 所有的固定 sudo helper 调用，不是面向用户的命令。`ce admin bootstrap-user` 仅作为迁移和应急后备。`ce auth reset-recovery-codes` 是本机应急管理命令：它使旧恢复码失效并一次性输出一个新恢复码，不读取或重置 Linux、SSH、ChatGPT/Codex 凭据。Relay 包另外提供 `ce-relay serve`、`ce-relay issue-provisioner`、兼容命令 `ce-relay issue-route` 和 `ce-relay inspect-key`。这些命令只管理 Relay 自身服务密钥和自包含 credential/capability，不创建用户或节点记录。
+`ce admin install-provisioner` 是管理员只需执行一次的宿主机自助初始化配置；可选的 `--default-codex-proxy` 只为尚无网络选择的用户提供首次初始化默认值，`ce admin set-provisioner-default-proxy` 可在不重新输入 credential 的情况下更新它。内部的 `ce admin self-provision` 只能通过 root 所有的固定 sudo helper 调用，不是面向用户的命令。`ce admin bootstrap-user` 仅作为迁移和应急后备。`ce admin install-controller` 以 root 安装独立管理员 route、Controller 配置、固定 `ce-admin-helper`、最小 sudoers 和 cron 保活；日常使用指定运维账号执行 `ce admin web pair`，再在 `/admin` 完成管理员 Passkey 和可选 OPAQUE 管理密码设置。`ce auth reset-recovery-codes` 只用于用户本人本机应急；Web 管理恢复改用 10 分钟短时交接码，管理员不会看到兑换后生成的新恢复码。Relay 包另外提供 `ce-relay serve`、`ce-relay issue-provisioner`、兼容命令 `ce-relay issue-route` 和 `ce-relay inspect-key`。
 
 ## 9. 身份登录与端到端加密
 
@@ -436,7 +438,7 @@ ce tui [directory]
 - 应允许用户注册多个 Passkey，优先使用可跨设备同步的 Passkey，并支持浏览器提供的“使用另一台设备上的 Passkey”。
 - 恢复码首次注册时由 Agent 生成并通过 E2EE 会话直接一次性展示给用户，管理员不参与日常发放；Agent 只保存哈希，无法重新显示原码。
 - 已认证用户可以自行轮换恢复码；任一时刻仅有一个当前恢复码，轮换会使旧码立即失效，并再次只展示一次新码。
-- 用户遗失全部登录方式和恢复码时，管理员可在完成线下身份核验后触发重新签发。重新签发必须使全部旧恢复码失效、通知仍在线的用户设备并写入安全审计；新码优先通过短时恢复会话直接展示给用户，而不是长期显示在管理员界面。
+- 用户遗失全部登录方式和恢复码时，管理员在完成线下身份核验后签发 10 分钟有效的 `CEAR-…` 交接码。签发前停止 Web Agent 以关闭活动管理通道并使全部旧恢复码失效；用户在普通登录页完成新 Passkey 注册时才消费交接码，随后生成的新恢复码只通过用户 E2EE 会话展示，管理员界面不能读取。
 - 使用恢复码注册替代 Passkey 后，旧 Passkey、专用密码、可信设备、Push subscription 和活动 Web 会话全部撤销。恢复流程不影响 Linux、SSH 或 ChatGPT/Codex 凭据。
 
 ### 通道
@@ -456,7 +458,9 @@ E2EE 保证正常运行的 Relay、日志和网络观察者无法读取业务内
 
 ### 宿主机管理员控制面
 
-当前已实现的管理员入口只安装 root-only 宿主机 provisioner，并保留逐用户检查与应急 bootstrap CLI；用户目录仍由 NSS 提供，不复制成中心账号库。后续本地控制面只增加最小的停用状态、恢复操作状态和安全审计。管理员自身使用独立的强认证登录，但不配置 `codex login`，不连接任何用户的 app-server，也不建立跨用户 thread 索引。
+当前管理员入口由 `/admin` PWA、Administrator Controller 和固定 root helper 组成。管理员使用独立 Passkey 或 OPAQUE 管理密码登录；管理员 route、Noise user ID、Passkey user handle、OPAQUE user identifier、SQLite 和浏览器 Host Profile 均与普通用户分域。root-only SQLite 仅登记已经由 NSS 验证或自助初始化的 `uid / username / home / status / revision` 与管理审计，不复制 Unix 账号库，不保存业务数据。
+
+管理员可精确检查/登记现有 Unix 用户、停用或重新启用 Web、发起短时恢复交接、计划或取消 24 小时延迟移除。停用写入可由普通用户只读检查的 `/etc/codex-everywhere-access/$UID.disabled` 并停止 Agent；用户 watchdog 和 Agent 启动入口都会拒绝重启，但独立 app-server、SSH、TUI 和活动 turn 不受影响。到期移除只删除安全校验后的用户自有 `~/.codex-everywhere`，保留 `~/.codex`、工作区与 Linux/SSH 账号。所有变更要求客户端提供当前 revision、按 request ID 幂等，并写入不含提示词或文件内容的审计。
 
 ### Codex 宿主机 Agent
 
@@ -665,7 +669,7 @@ Push subscription 保存在宿主机，Agent 直接调用浏览器 Push service�
 - 实现 Direct Gateway、可选无状态 Relay、E2EE 和连接恢复。
 - 验证跨用户隔离、篡改与重放防护。
 - 已将新设备强制配对改为统一入口的 Passkey/专用密码双登录，并实现在线登录名路由、OPAQUE 预认证、临时设备模式、多 Passkey 管理和用户自助恢复码轮换。
-- 已实现一次性宿主机 provisioner 安装和现有 SSH 用户的安全自助初始化；继续实现最小的停用/移除、恢复码重新签发和安全审计。不创建 Linux 用户，不实现配额或通用 RBAC，管理员路径不得初始化或调用 Codex app-server。
+- 已实现一次性宿主机 provisioner 安装、现有 SSH 用户安全自助初始化，以及最小的停用/移除、短时恢复交接和安全审计。不创建 Linux 用户，不实现配额或通用 RBAC，管理员路径不得初始化或调用 Codex app-server。
 
 ### Phase 3：核心 PWA
 

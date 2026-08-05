@@ -143,7 +143,11 @@ export class HostSetupService {
       networkConfigured: config.network !== undefined,
       networkMode: config.network?.mode ?? "direct",
       codex: installation.installed
-        ? { installed: true, version: installation.version }
+        ? {
+            installed: true,
+            binary: installation.binary,
+            version: installation.version,
+          }
         : { installed: false },
       appServerRunning: await this.#dependencies.probeAppServer(
         this.#paths.appServerSocket,
@@ -217,7 +221,14 @@ export class HostSetupService {
     }
     try {
       const result = await installation;
-      return { installed: true, version: result.version };
+      return {
+        installed: true,
+        binary: result.binary,
+        version: result.version,
+        restartRequired: await this.#dependencies.probeAppServer(
+          this.#paths.appServerSocket,
+        ),
+      };
     } finally {
       if (operation && listener) operation.listeners.delete(listener);
       if (this.#installation === installation) {
