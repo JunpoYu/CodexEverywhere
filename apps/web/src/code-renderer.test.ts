@@ -96,6 +96,20 @@ describe("message Markdown rendering", () => {
     expect(html).toContain("<code>$not_math$</code>");
   });
 
+  it("keeps complex fraction layout metadata for display formulas", () => {
+    const html = markdownToHtml(
+      [
+        "$$",
+        "\\mathrm{NSE}_{\\mathrm{pooled,hourly}} = 1 - \\frac{\\sum_{w,h}(y_{w,h}-\\hat y_{w,h})^2}{\\sum_{w,h}(y_{w,h}-\\bar y_w)^2}",
+        "$$",
+      ].join("\n"),
+    );
+
+    expect(html).toContain("katex-display");
+    expect(html).toContain("vlist-t");
+    expect(html).toMatch(/style="[^"]*top:/u);
+  });
+
   it("supports bracket-style LaTeX delimiters", () => {
     const html = markdownToHtml(
       "行内 \\(a^2+b^2=c^2\\) 与块级：\n\n\\[\\sum_{i=1}^n i\\]",
@@ -119,6 +133,22 @@ describe("message code styling", () => {
     expect(rendererStyles).toMatch(
       /\.message-code-block pre code\s*\{[^}]*background:\s*transparent;/su,
     );
+  });
+});
+
+describe("message math styling", () => {
+  it("scrolls an outer shell instead of clipping the KaTeX layout node", () => {
+    expect(rendererStyles).toMatch(
+      /\.math-display-wrap\s*\{[^}]*overflow:\s*auto;/su,
+    );
+    expect(rendererStyles).not.toMatch(
+      /\.rich-message \.katex-display\s*\{[^}]*overflow-y:\s*hidden;/su,
+    );
+  });
+
+  it("scopes Markdown table rules to the generated table wrapper", () => {
+    expect(rendererStyles).toContain(".markdown-table-wrap > table {");
+    expect(rendererStyles).not.toContain(".rich-message table {");
   });
 });
 

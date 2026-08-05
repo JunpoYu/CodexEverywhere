@@ -52,7 +52,7 @@ CodexEverywhere 的目标不是提供 Web Terminal，也不是替代 SSH、Slurm
 - **多用户 Unix 隔离**：每个 Linux 用户拥有独立 Agent、app-server、`~/.codex`、Web 身份、工作区、会话和队列。
 - **自助初始化**：管理员完成一次公共安装后，符合 HPC SSH/NSS 策略的现有用户可运行 `ce device pair` 自行初始化。
 - **最小管理员控制面**：独立的 `/admin` 页面通过管理员 Passkey 或 OPAQUE 专用密码登录，可精确登记现有 Unix 用户、停用/启用 Web、签发短时恢复交接码、安排 24 小时后移除并查看安全审计；管理员不能查看用户工作区、会话、文件或 Codex 凭据。
-- **Codex 安装、更新与登录引导**：接受当前账号中任何可运行的 Codex 版本；用户可在 PWA 中把 npm 最新稳定版安装到自己的 `~/.local`，更新后自行决定何时重启 app-server，并可使用官方设备码或经 E2EE 导入已有的 `~/.codex/auth.json`。
+- **Codex 安装、更新与登录引导**：接受当前账号中任何可运行的 Codex 版本；版本设置会分别显示当前安装版本和 npm 最新稳定版，并明确提示是否存在可用更新。用户可把最新版安装到自己的 `~/.local`，更新后自行决定何时重启 app-server，并可使用官方设备码或经 E2EE 导入已有的 `~/.codex/auth.json`。
 - **Passkey 与专用密码**：Web 身份由 Codex 宿主机验证；CodexEverywhere 不收集、复用或验证 SSH 密码。专用密码默认临时登录，只有显式保存新设备时才需要设备名称；当前浏览器已有同一用户记录时沿用原名称。
 - **Direct 优先、Relay 回退**：浏览器可直连时使用 HTTPS/WSS Direct Gateway；不可达时通过可选无状态 Relay 转发 Noise 端到端密文。
 - **适配老旧 HPC**：首个目标环境是 CentOS 7、glibc 2.17、Node.js 20；用户服务兼容 tmux、crontab watchdog、PID 文件和文件锁。

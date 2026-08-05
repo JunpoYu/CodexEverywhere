@@ -3292,6 +3292,39 @@ button.thread-fact {
   width: min(600px, calc(100% - 28px));
 }
 
+.codex-version-comparison {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 18px;
+}
+
+.codex-version-comparison section {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+  padding: 14px;
+  background: var(--surface-soft);
+  border: 1px solid var(--line);
+  border-radius: 11px;
+}
+
+.codex-version-comparison span,
+.codex-version-comparison small {
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.codex-version-comparison strong {
+  color: var(--text);
+  font-size: 18px;
+}
+
+.codex-version-comparison small {
+  overflow-wrap: anywhere;
+  line-height: 1.45;
+}
+
 .restart-warning {
   display: grid;
   gap: 4px;
@@ -3637,6 +3670,10 @@ button.thread-fact {
     width: calc(100% - 18px);
     max-height: calc(100dvh - 18px);
     overflow-y: auto;
+  }
+
+  .codex-version-comparison {
+    grid-template-columns: 1fr;
   }
 
   .thread-settings-dialog {
@@ -5372,14 +5409,14 @@ button.thread-fact {
   border-radius: 9px;
 }
 
-.rich-message table {
+.markdown-table-wrap > table {
   width: 100%;
   min-width: 360px;
   border-collapse: collapse;
   font-size: 0.94em;
 }
 
-.rich-message :is(th, td) {
+.markdown-table-wrap > table :is(th, td) {
   padding: 0.55em 0.7em;
   border-right: 1px solid var(--line);
   border-bottom: 1px solid var(--line);
@@ -5387,15 +5424,15 @@ button.thread-fact {
   vertical-align: top;
 }
 
-.rich-message :is(th, td):last-child {
+.markdown-table-wrap > table :is(th, td):last-child {
   border-right: 0;
 }
 
-.rich-message tr:last-child td {
+.markdown-table-wrap > table tr:last-child td {
   border-bottom: 0;
 }
 
-.rich-message th {
+.markdown-table-wrap > table th {
   background: #f2f3f5;
   font-weight: 700;
 }
@@ -5415,17 +5452,22 @@ button.thread-fact {
   font-size: 1.02em;
 }
 
-.rich-message .katex-display {
+.math-display-wrap {
   max-width: 100%;
   margin: 0.9em 0;
-  overflow-x: auto;
-  overflow-y: hidden;
+  overflow: auto;
   padding: 0.7em 0.85em;
   background: #f8f6f3;
   border: 1px solid #ebe6e0;
   border-radius: 9px;
-  text-align: center;
   overscroll-behavior-x: contain;
+}
+
+.math-display-wrap > .katex-display {
+  width: max-content;
+  min-width: 100%;
+  margin: 0;
+  padding: 0.25em 0;
 }
 
 .inline-code {
@@ -5712,11 +5754,11 @@ button.thread-fact {
   background: #211d1b;
 }
 
-:root[data-theme="dark"] .rich-message th {
+:root[data-theme="dark"] .markdown-table-wrap > table th {
   background: #24282f;
 }
 
-:root[data-theme="dark"] .rich-message .katex-display {
+:root[data-theme="dark"] .math-display-wrap {
   background: #181b20;
   border-color: #30353d;
 }

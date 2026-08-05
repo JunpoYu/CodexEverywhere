@@ -44,6 +44,17 @@ export type CodexInstallProgressPayload = {
   phase: CodexInstallProgressPhase;
 };
 
+export type CodexVersionRelation = "older" | "current" | "newer" | "unknown";
+
+export type CodexVersionStatus = {
+  version: 1;
+  installed: boolean;
+  installedVersion?: string;
+  binary?: string;
+  latestVersion?: string;
+  relation: CodexVersionRelation;
+};
+
 export type CodexAuthImportRequest = {
   version: 1;
   content: string;

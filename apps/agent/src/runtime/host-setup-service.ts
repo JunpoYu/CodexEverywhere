@@ -8,6 +8,8 @@ import {
   type CodexAuthImportResult,
   type CodexInstallProgressPayload,
   type CodexInstallProgressPhase,
+  type CodexVersionRelation,
+  type CodexVersionStatus,
   type EventEnvelope,
   type RequestEnvelope,
 } from "@codex-everywhere/protocol";
@@ -25,6 +27,9 @@ import type { HostPaths } from "../host/paths.js";
 import type { AuthenticatedRequestResult } from "../gateway/authenticated-session.js";
 import {
   installCodexForCurrentUser,
+  compareCodexVersions,
+  codexCliVersion,
+  probeLatestCodexVersion,
   probeCodexInstallation,
   type CodexInstallation,
 } from "./codex-install.js";
@@ -46,6 +51,9 @@ type HostSetupDependencies = {
     env: NodeJS.ProcessEnv;
     onProgress?: (phase: CodexInstallProgressPhase) => void;
   }): Promise<CodexInstallation>;
+  probeLatestCodexVersion(options: {
+    env: NodeJS.ProcessEnv;
+  }): Promise<string | undefined>;
   probeAppServer(socketPath: string): Promise<boolean>;
   restartAppServer(
     paths: HostPaths,
@@ -71,6 +79,7 @@ const defaultDependencies: HostSetupDependencies = {
   writeConfig: writeHostConfig,
   probeCodex: probeCodexInstallation,
   installCodex: installCodexForCurrentUser,
+  probeLatestCodexVersion,
   probeAppServer,
   restartAppServer,
   importCodexAuth: importCodexAuthFile,
@@ -111,6 +120,8 @@ export class HostSetupService {
           handled: true,
           value: await this.#installCodex(emitEvent),
         };
+      case "setup/codex/version/read":
+        return { handled: true, value: await this.#codexVersionStatus() };
       case "setup/codex/auth/import":
         return {
           handled: true,
@@ -181,6 +192,31 @@ export class HostSetupService {
     return {
       networkMode: network.mode,
       restartRequired: appServerRunning,
+    };
+  }
+
+  async #codexVersionStatus(): Promise<CodexVersionStatus> {
+    const env = await this.codexEnvironment();
+    const [installation, latestVersion] = await Promise.all([
+      this.#dependencies.probeCodex({ userHome: this.#userHome, env }),
+      this.#dependencies.probeLatestCodexVersion({ env }),
+    ]);
+    const installedVersion = installation.version
+      ? codexCliVersion(installation.version)
+      : undefined;
+    let relation: CodexVersionRelation = "unknown";
+    if (installedVersion && latestVersion) {
+      const comparison = compareCodexVersions(installedVersion, latestVersion);
+      relation =
+        comparison < 0 ? "older" : comparison > 0 ? "newer" : "current";
+    }
+    return {
+      version: 1,
+      installed: installation.installed,
+      ...(installedVersion ? { installedVersion } : {}),
+      ...(installation.installed ? { binary: installation.binary } : {}),
+      ...(latestVersion ? { latestVersion } : {}),
+      relation,
     };
   }
 

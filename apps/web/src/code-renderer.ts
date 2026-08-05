@@ -2,8 +2,6 @@ import { katex } from "@mdit/plugin-katex";
 import DOMPurify from "dompurify";
 import MarkdownIt from "markdown-it";
 
-import "katex/dist/katex.min.css";
-
 const markdown = new MarkdownIt({
   html: false,
   breaks: true,
@@ -127,6 +125,14 @@ export function renderMessageContent(
   });
   container.replaceChildren(fragment);
   container.classList.add("rich-message");
+  for (const display of Array.from(
+    container.querySelectorAll<HTMLElement>(".katex-display"),
+  )) {
+    const wrapper = document.createElement("div");
+    wrapper.className = "math-display-wrap";
+    display.replaceWith(wrapper);
+    wrapper.append(display);
+  }
   for (const pre of Array.from(container.querySelectorAll("pre"))) {
     const code = pre.querySelector(":scope > code");
     if (!code) continue;
@@ -156,6 +162,7 @@ export function renderMessageContent(
       code.classList.add("inline-code");
   }
   for (const table of Array.from(container.querySelectorAll("table"))) {
+    if (table.closest(".katex")) continue;
     const wrapper = document.createElement("div");
     wrapper.className = "markdown-table-wrap";
     table.replaceWith(wrapper);

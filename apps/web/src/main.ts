@@ -15,6 +15,7 @@ import type { ReasoningEffort } from "@codex-everywhere/codex-app-server-schema"
 import {
   CODEX_INSTALL_PROGRESS_EVENT,
   type CodexAuthImportResult,
+  type CodexVersionStatus,
   type EventEnvelope,
 } from "@codex-everywhere/protocol";
 
@@ -26,6 +27,10 @@ import {
 import { ApprovalSubmissionTracker } from "./approval-submission.js";
 import { createCoalescedTask } from "./coalesced-task.js";
 import { ConversationOutlineView } from "./conversation-outline.js";
+import {
+  codexVersionFromCliOutput,
+  codexVersionPresentation,
+} from "./codex-version.js";
 import {
   codexLoginEventAction,
   shouldRenderInThreadTimeline,
@@ -476,7 +481,10 @@ app.innerHTML = `
       <div class="dialog-heading"><div><p class="eyebrow">Codex runtime</p><h2>Codex 版本</h2></div><button id="close-codex-version" class="icon-button" type="button" aria-label="关闭">×</button></div>
       <p class="lede">CodexEverywhere 接受当前账号中任何能够正常运行并报告版本的 Codex。更新会在你的 <code>~/.local</code> 中安装 npm 最新稳定版，不修改其他位置或共享安装。</p>
       <div class="restart-warning"><strong>安装更新不会立即中断任务</strong><span>如果 app-server 正在运行，安装完成后由你决定何时重启并应用；重启会中断正在执行的 turn。</span></div>
-      <p id="codex-version-current" class="step-state">正在检测当前版本…</p>
+      <div class="codex-version-comparison" aria-live="polite">
+        <section><span>当前安装版本</span><strong id="codex-version-current">检测中…</strong><small id="codex-version-binary">正在检查可执行文件</small></section>
+        <section><span>npm 最新稳定版</span><strong id="codex-version-latest">检测中…</strong><small>来自 <code>@openai/codex@latest</code></small></section>
+      </div>
       <p id="codex-version-state" class="step-state" role="status" aria-live="polite"></p>
       <p id="codex-version-error" class="error" role="alert"></p>
       <div class="actions dialog-actions"><button id="cancel-codex-version" class="ghost" type="button">关闭</button><button id="apply-codex-update" class="secondary" type="button" hidden>重启并应用</button><button id="update-codex" class="primary" type="button">安装或更新到最新版</button></div>
@@ -1048,7 +1056,8 @@ if (import.meta.env.DEV) {
   if (
     preview === "workspace" ||
     preview === "new-session" ||
-    preview === "slash-commands"
+    preview === "slash-commands" ||
+    preview === "codex-version"
   ) {
     setup.hidden = true;
     provisioning.hidden = true;
@@ -1062,6 +1071,17 @@ if (import.meta.env.DEV) {
     );
     requiredElement("thread-count").textContent = "2";
     if (preview === "new-session") newSessionDialog.showModal();
+    if (preview === "codex-version") {
+      renderCodexVersionSettings({
+        version: 1,
+        installed: true,
+        installedVersion: "0.151.0",
+        binary: "/Users/demo/.local/bin/codex",
+        latestVersion: "0.152.0",
+        relation: "older",
+      });
+      codexVersionDialog.showModal();
+    }
     if (preview === "slash-commands") {
       activeThreadId = "preview-thread";
       activeThreadCwd = "/Users/demo/CodexEverywhere";
@@ -1086,9 +1106,6 @@ if (import.meta.env.DEV) {
     }
   }
 }
-if ("serviceWorker" in navigator)
-  void navigator.serviceWorker.register("/sw.js");
-
 async function pair(): Promise<void> {
   setupError.textContent = "";
   try {
@@ -1622,9 +1639,13 @@ async function openCodexVersionSettings(): Promise<void> {
   if (!client) return;
   requiredElement<HTMLDetailsElement>("settings-menu").open = false;
   const current = requiredElement("codex-version-current");
+  const latest = requiredElement("codex-version-latest");
+  const binary = requiredElement("codex-version-binary");
   const state = requiredElement("codex-version-state");
   const error = requiredElement("codex-version-error");
-  current.textContent = "正在检测当前版本…";
+  current.textContent = "检测中…";
+  latest.textContent = "检测中…";
+  binary.textContent = "正在检查可执行文件";
   state.textContent = "";
   error.textContent = "";
   const apply = requiredElement<HTMLButtonElement>("apply-codex-update");
@@ -1632,26 +1653,60 @@ async function openCodexVersionSettings(): Promise<void> {
   apply.disabled = false;
   apply.textContent = "重启并应用";
   const update = requiredElement<HTMLButtonElement>("update-codex");
+  update.hidden = false;
   update.disabled = false;
   update.textContent = "安装或更新到最新版";
   codexVersionDialog.showModal();
   try {
-    const status = await client.request<SetupStatus>("setup/status", {});
-    current.textContent = status.codex.installed
-      ? `当前版本：${status.codex.version ?? "未知"} · ${status.codex.binary ?? "Agent PATH"}`
-      : "当前没有检测到可运行的 Codex";
+    const status = await readCodexVersionStatus();
+    renderCodexVersionSettings(status);
   } catch (cause) {
     error.textContent = errorMessage(cause);
   }
+}
+
+async function readCodexVersionStatus(): Promise<CodexVersionStatus> {
+  if (!client) throw new Error("尚未连接宿主机");
+  try {
+    return await client.request<CodexVersionStatus>(
+      "setup/codex/version/read",
+      {},
+      { timeoutMs: 30_000 },
+    );
+  } catch {
+    const status = await client.request<SetupStatus>("setup/status", {});
+    const installedVersion = codexVersionFromCliOutput(status.codex.version);
+    return {
+      version: 1,
+      installed: status.codex.installed,
+      ...(installedVersion ? { installedVersion } : {}),
+      ...(status.codex.binary ? { binary: status.codex.binary } : {}),
+      relation: "unknown",
+    };
+  }
+}
+
+function renderCodexVersionSettings(status: CodexVersionStatus): void {
+  const presentation = codexVersionPresentation(status);
+  requiredElement("codex-version-current").textContent =
+    presentation.installedLabel;
+  requiredElement("codex-version-latest").textContent =
+    presentation.latestLabel;
+  requiredElement("codex-version-binary").textContent =
+    presentation.binaryLabel;
+  requiredElement("codex-version-state").textContent = presentation.state;
+  const update = requiredElement<HTMLButtonElement>("update-codex");
+  update.textContent = presentation.actionLabel;
+  update.hidden = presentation.actionHidden;
 }
 
 async function updateCodexFromSettings(): Promise<void> {
   if (!client) return;
   const button = requiredElement<HTMLButtonElement>("update-codex");
   const apply = requiredElement<HTMLButtonElement>("apply-codex-update");
-  const current = requiredElement("codex-version-current");
   const state = requiredElement("codex-version-state");
   const error = requiredElement("codex-version-error");
+  const idleButtonText = button.textContent ?? "安装或更新到最新版";
   button.disabled = true;
   button.textContent = "正在安装最新版…";
   apply.hidden = true;
@@ -1664,7 +1719,15 @@ async function updateCodexFromSettings(): Promise<void> {
       version?: string;
       restartRequired: boolean;
     }>("setup/codex/install", {}, { timeoutMs: 10 * 60_000 });
-    current.textContent = `当前安装：${result.version ?? "版本未知"} · ${result.binary}`;
+    const installedVersion = codexVersionFromCliOutput(result.version);
+    renderCodexVersionSettings({
+      version: 1,
+      installed: true,
+      ...(installedVersion ? { installedVersion } : {}),
+      binary: result.binary,
+      ...(installedVersion ? { latestVersion: installedVersion } : {}),
+      relation: installedVersion ? "current" : "unknown",
+    });
     state.textContent = result.restartRequired
       ? "最新版已经安装。当前服务仍在使用原版本，请在任务空闲时重启并应用。"
       : "最新版已经安装，将在下次启动 Codex 时使用。";
@@ -1675,7 +1738,7 @@ async function updateCodexFromSettings(): Promise<void> {
     error.textContent = errorMessage(cause);
   } finally {
     button.disabled = false;
-    button.textContent = "安装或更新到最新版";
+    if (!button.hidden) button.textContent = idleButtonText;
   }
 }
 
