@@ -102,6 +102,8 @@ flowchart LR
 - **Relay**：适合 NAT、防火墙或 HPC 入站受限环境。Relay 不保存用户数据库，只在内存中维护在线 opaque route，并转发端到端密文。
 - **Local/TUI**：SSH 用户通过 `ce tui` 进入同一个 app-server；Web 或 TUI 退出不会停止正在运行的 turn。
 
+Gateway 按 Noise 帧序严格解密并为大消息分片；会改变状态的请求按客户端顺序执行，而 `thread/list`、`thread/read` 等只读请求独立并发。这样既保留 `thread/start` 后紧接 `turn/start` 的顺序，也避免慢速历史读取阻塞发送、审批或中断操作。
+
 更完整的协议、身份、生命周期和威胁边界见[架构与产品规格](docs/architecture.zh-CN.md)。
 
 管理员控制面与用户数据面是两条隔离路径：

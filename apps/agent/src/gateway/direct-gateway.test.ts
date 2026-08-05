@@ -194,6 +194,74 @@ describe("DirectGateway", () => {
     await gateway.close();
     await state.close();
   });
+
+  it("does not let a slow read block a later mutation", async () => {
+    const state = await stateStore();
+    const devices = new DeviceRegistry(state);
+    const grant = await devices.issuePairing();
+    const hostKeys = generateStaticKeyPair();
+    const deviceKeys = generateStaticKeyPair();
+    let finishRead: (() => void) | undefined;
+    const readPending = new Promise<void>((resolve) => {
+      finishRead = resolve;
+    });
+    let markReadStarted: (() => void) | undefined;
+    const readStarted = new Promise<void>((resolve) => {
+      markReadStarted = resolve;
+    });
+    let mutationStarted: (() => void) | undefined;
+    const mutationSeen = new Promise<void>((resolve) => {
+      mutationStarted = resolve;
+    });
+    const gateway = await DirectGateway.start({
+      host: "127.0.0.1",
+      port: 0,
+      nodeId: "node-1",
+      userId: "unix:1000",
+      identity: hostKeys,
+      hostFingerprint: `sha256:${"A".repeat(43)}`,
+      state,
+      createSession: () => ({
+        request: async (request: RequestEnvelope) => {
+          if (request.method === "thread/read") {
+            markReadStarted?.();
+            await readPending;
+          }
+          if (request.method === "turn/start") mutationStarted?.();
+          return {};
+        },
+      }),
+    });
+    const client = await connectClient({
+      port: gateway.port,
+      deviceKeys,
+      hostPublicKey: hostKeys.publicKey,
+      auth: {
+        mode: "pair",
+        pairingId: grant.pairingId,
+        secret: grant.secret,
+        deviceName: "Test browser",
+      },
+    });
+
+    sendRequest(client.socket, client.session, "thread/read", {});
+    await readStarted;
+    sendRequest(client.socket, client.session, "turn/start", {});
+    await expect(
+      Promise.race([
+        mutationSeen.then(() => "started"),
+        new Promise<string>((resolve) =>
+          setTimeout(() => resolve("blocked"), 250),
+        ),
+      ]),
+    ).resolves.toBe("started");
+
+    finishRead?.();
+    client.socket.close();
+    await onceClosed(client.socket);
+    await gateway.close();
+    await state.close();
+  });
 });
 
 async function connectClient(input: {
@@ -284,6 +352,37 @@ async function roundTrip(
 }
 
 let requestCounter = 0;
+
+function sendRequest(
+  socket: WebSocket,
+  session: SecureSession,
+  method: string,
+  payload: unknown,
+): void {
+  const requestNumber = ++requestCounter;
+  const frames = session.encryptMessage(
+    Buffer.from(
+      JSON.stringify({
+        version: PROTOCOL_VERSION,
+        requestId: `request-${requestNumber}`,
+        idempotencyKey: `idempotency-${requestNumber}`,
+        method,
+        payload,
+      }),
+    ),
+  );
+  for (const frame of frames) {
+    socket.send(
+      JSON.stringify({
+        type: "cipher",
+        version: PROTOCOL_VERSION,
+        sessionId: frame.sessionId,
+        sequence: frame.sequence,
+        ciphertext: Buffer.from(frame.ciphertext).toString("base64url"),
+      }),
+    );
+  }
+}
 
 function nextMessage(socket: WebSocket): Promise<RawData> {
   return new Promise((resolve, reject) => {
