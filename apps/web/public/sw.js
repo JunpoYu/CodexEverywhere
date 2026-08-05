@@ -1,4 +1,4 @@
-const CACHE = "codex-everywhere-v40";
+const CACHE = "codex-everywhere-v41";
 const CORE = ["/manifest.webmanifest", "/icon.svg"];
 
 self.addEventListener("install", (event) => {
