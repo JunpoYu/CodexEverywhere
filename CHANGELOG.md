@@ -30,6 +30,7 @@
 
 - 管理员与普通用户使用不同的 Relay principal、route capability purpose、keyed login ID、Noise user ID、Passkey/OPAQUE 身份域、状态库和浏览器 Host Profile。
 - 管理变更采用 revision 并发保护、request ID 幂等和 root-only 审计；停用 Agent 不会停止用户的 Codex app-server、SSH、TUI 或活动 turn。
+- 生产 Nginx CSP 仅通过 `style-src-attr` 放行 KaTeX 动态生成的布局属性，修复线上公式错位，同时继续禁止内联脚本和内联 `<style>` 元素。
 
 ## [0.3.0-alpha.1] - 2026-08-04
 
