@@ -14,7 +14,7 @@
     "@codex-everywhere/codex-app-server-schema": "workspace:*",
     "@codex-everywhere/crypto": "workspace:*",
     "@codex-everywhere/protocol": "workspace:*",
-    "@mdit/plugin-katex": "^1.0.2",
+    "@mdit/plugin-katex": "0.24.0",
     "@serenity-kit/opaque": "1.1.0",
     "@simplewebauthn/browser": "13.2.2",
     "dompurify": "^3.4.13",
