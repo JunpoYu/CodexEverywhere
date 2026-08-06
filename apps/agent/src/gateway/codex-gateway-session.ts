@@ -155,6 +155,11 @@ export class CodexGatewaySession implements GatewaySession {
         return this.#listThreads(payload);
       case "thread/read":
         return this.#readAuthorizedThread(payload);
+      case "thread/turns/list": {
+        const threadId = requiredString(payload, "threadId");
+        await this.#authorizeThread(threadId);
+        return this.#client.request(request.method, payload);
+      }
       case "queue/list":
         return this.#listQueue();
       case "queue/add":

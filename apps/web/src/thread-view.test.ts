@@ -6,6 +6,7 @@ import {
   FileChangeDisclosureState,
   fileChangeItemFromPatchUpdate,
   fileChangeKindLabel,
+  isInternalTimelineEventType,
   isReasoningEventType,
   isVisibleThreadItem,
   mcpServerStartupNotice,
@@ -143,6 +144,22 @@ describe("describeThreadItem", () => {
     );
     expect(isReasoningEventType("codex/item/reasoning/textDelta")).toBe(true);
     expect(isReasoningEventType("codex/item/agentMessage/delta")).toBe(false);
+  });
+
+  it("keeps known lifecycle metadata out of the message timeline", () => {
+    for (const type of [
+      "codex/item/commandExecution/terminalInteraction",
+      "codex/rawResponseItem/completed",
+      "codex/item/autoApprovalReview/started",
+      "codex/thread/closed",
+      "codex/turn/moderationMetadata",
+      "codex/thread/realtime/outputAudio/delta",
+    ]) {
+      expect(isInternalTimelineEventType(type)).toBe(true);
+    }
+    expect(
+      isInternalTimelineEventType("codex/item/commandExecution/outputDelta"),
+    ).toBe(false);
   });
 
   it("renders structured file change kinds instead of object coercion", () => {

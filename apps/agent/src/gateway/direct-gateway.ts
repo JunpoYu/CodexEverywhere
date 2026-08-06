@@ -561,6 +561,7 @@ function isReadMethod(method: string): boolean {
     "model/list",
     "thread/list",
     "thread/read",
+    "thread/turns/list",
     "thread/goal/get",
     "skills/list",
     "mcpServerStatus/list",

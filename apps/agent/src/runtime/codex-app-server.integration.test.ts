@@ -16,6 +16,9 @@ type ThreadStartResponse = {
   approvalPolicy?: unknown;
   sandbox?: { type: string };
 };
+type PaginatedThreadResumeResponse = ThreadStartResponse & {
+  initialTurnsPage?: { data: unknown[]; nextCursor: string | null } | null;
+};
 type ThreadUnsubscribeResponse = {
   status: "notLoaded" | "notSubscribed" | "unsubscribed";
 };
@@ -113,14 +116,21 @@ describe("real Codex app-server contract", () => {
       );
       expect(stateListed.data).toEqual(expect.any(Array));
 
-      const resumed = await clientB.request<ThreadStartResponse>(
+      const resumed = await clientB.request<PaginatedThreadResumeResponse>(
         "thread/resume",
         {
           threadId,
           cwd: workspace,
+          excludeTurns: true,
+          initialTurnsPage: {
+            limit: 20,
+            sortDirection: "desc",
+            itemsView: "full",
+          },
         },
       );
       expect(resumed.thread.id).toBe(threadId);
+      expect(resumed.initialTurnsPage?.data).toEqual([]);
       expect(resumed.approvalPolicy).toBe("never");
       expect(resumed.sandbox?.type).toBe("dangerFullAccess");
 

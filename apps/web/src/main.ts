@@ -9,6 +9,7 @@ import type {
   ThreadStatus,
   ThreadTokenUsage,
   TurnStartResponse,
+  TurnsPage,
   UserInput,
 } from "@codex-everywhere/codex-app-server-schema/v2";
 import type { ReasoningEffort } from "@codex-everywhere/codex-app-server-schema";
@@ -64,6 +65,12 @@ import {
   ThreadTimelineView,
 } from "./thread-view.js";
 import { requestThreadList, threadListErrorMessage } from "./thread-list.js";
+import {
+  HISTORY_PAGE_SIZE,
+  HISTORY_SYNC_TURN_LIMIT,
+  newestPageInReadingOrder,
+  resumeThreadHistory,
+} from "./thread-history.js";
 import {
   parseSlashCommand,
   slashCommandCompletion,
@@ -198,6 +205,9 @@ let activeThreadStatus: ThreadStatus | undefined;
 let activeTurnId: string | undefined;
 let threadSyncTimer: number | undefined;
 let threadSyncInFlight = false;
+let activeHistoryNextCursor: string | undefined;
+let activeHistoryPaged = false;
+let olderHistoryLoading = false;
 let lastRealtimeEventAt = 0;
 let activeThreadSettings: ThreadRuntimeSettings | undefined;
 let activeThreadTokenUsage: ThreadTokenUsage | undefined;
@@ -677,6 +687,7 @@ themePreferenceSelect.addEventListener("change", () => {
 });
 const timelineView = new ThreadTimelineView(timeline, {
   onSteerQueued: (queueId) => void steerQueuedMessage(queueId),
+  onLoadOlder: () => void loadOlderHistory(),
   onFollowLatestChanged: (following) => {
     jumpToLatestButton.hidden = following || !activeThreadId;
   },
@@ -1482,6 +1493,9 @@ async function activate(nextClient: GatewayClient): Promise<void> {
   activeThreadCwd = undefined;
   activeThreadStatus = undefined;
   activeTurnId = undefined;
+  activeHistoryNextCursor = undefined;
+  activeHistoryPaged = false;
+  olderHistoryLoading = false;
   activeThreadSettings = undefined;
   activeThreadTokenUsage = undefined;
   pendingRequestIds.clear();
@@ -2777,6 +2791,9 @@ function closeActiveThreadView(): void {
   activeThreadCwd = undefined;
   activeThreadStatus = undefined;
   activeTurnId = undefined;
+  activeHistoryNextCursor = undefined;
+  activeHistoryPaged = false;
+  olderHistoryLoading = false;
   activeThreadSettings = undefined;
   activeThreadTokenUsage = undefined;
   pendingRequestIds.clear();
@@ -2847,6 +2864,9 @@ async function openThread(thread: ThreadSummary): Promise<void> {
   activeThreadCwd = thread.cwd;
   renderWorkspaceScopeDescription();
   activeTurnId = undefined;
+  activeHistoryNextCursor = undefined;
+  activeHistoryPaged = false;
+  olderHistoryLoading = false;
   activeThreadSettings = undefined;
   activeThreadTokenUsage = undefined;
   pendingRequestIds.clear();
@@ -2877,10 +2897,8 @@ async function openThread(thread: ThreadSummary): Promise<void> {
       activeThreadId !== thread.id
     )
       return;
-    const detail = await currentClient.request<ThreadResumeResponse>(
-      "thread/resume",
-      { threadId: thread.id },
-    );
+    const history = await resumeThreadHistory(currentClient, thread.id);
+    const detail = history.detail;
     if (
       client !== currentClient ||
       sequence !== openThreadSequence ||
@@ -2894,8 +2912,12 @@ async function openThread(thread: ThreadSummary): Promise<void> {
     activeTurnId = [...detail.thread.turns]
       .reverse()
       .find((turn) => turn.status === "inProgress")?.id;
+    activeHistoryNextCursor = history.nextCursor;
+    activeHistoryPaged = history.paged;
     setThreadStatus(detail.thread.status);
-    timelineView.renderSnapshot(detail);
+    timelineView.renderSnapshot(detail, {
+      hasOlderHistory: Boolean(activeHistoryNextCursor),
+    });
     activeThreadSettings = {
       model: detail.model,
       effort: detail.reasoningEffort,
@@ -3155,6 +3177,9 @@ async function startTask(): Promise<void> {
     ++openThreadSequence;
     activeThreadId = started.thread.id;
     activeThreadCwd = started.thread.cwd;
+    activeHistoryNextCursor = undefined;
+    activeHistoryPaged = false;
+    olderHistoryLoading = false;
     renderWorkspaceScopeDescription();
     workspace.classList.add("thread-open");
     requiredElement("thread-title").textContent =
@@ -3847,6 +3872,61 @@ function stopThreadSync(): void {
   threadSyncTimer = undefined;
 }
 
+async function loadOlderHistory(): Promise<void> {
+  const targetClient = client;
+  const threadId = activeThreadId;
+  const cursor = activeHistoryNextCursor;
+  const sequence = openThreadSequence;
+  if (
+    !targetClient ||
+    !threadId ||
+    !activeHistoryPaged ||
+    !cursor ||
+    olderHistoryLoading
+  ) {
+    timelineView.setOlderHistoryLoading(false);
+    return;
+  }
+  olderHistoryLoading = true;
+  timelineView.setOlderHistoryLoading(true);
+  try {
+    const page = await targetClient.request<TurnsPage>("thread/turns/list", {
+      threadId,
+      cursor,
+      limit: HISTORY_PAGE_SIZE,
+      sortDirection: "desc",
+      itemsView: "full",
+    });
+    if (
+      client !== targetClient ||
+      sequence !== openThreadSequence ||
+      activeThreadId !== threadId
+    )
+      return;
+    activeHistoryNextCursor = page.nextCursor ?? undefined;
+    timelineView.prependTurns(
+      newestPageInReadingOrder(page),
+      Boolean(activeHistoryNextCursor),
+    );
+  } catch (error) {
+    if (
+      client === targetClient &&
+      sequence === openThreadSequence &&
+      activeThreadId === threadId
+    ) {
+      timelineView.setOlderHistoryLoading(false);
+      showToast(`加载历史失败：${errorMessage(error)}`, "error");
+    }
+  } finally {
+    if (
+      client === targetClient &&
+      sequence === openThreadSequence &&
+      activeThreadId === threadId
+    )
+      olderHistoryLoading = false;
+  }
+}
+
 async function syncActiveThread(): Promise<void> {
   if (
     threadSyncInFlight ||
@@ -3861,6 +3941,35 @@ async function syncActiveThread(): Promise<void> {
   const sequence = openThreadSequence;
   threadSyncInFlight = true;
   try {
+    if (activeHistoryPaged) {
+      const [metadata, recent] = await Promise.all([
+        currentClient.request<ThreadReadResponse>("thread/read", {
+          threadId,
+          includeTurns: false,
+        }),
+        currentClient.request<TurnsPage>("thread/turns/list", {
+          threadId,
+          limit: HISTORY_SYNC_TURN_LIMIT,
+          sortDirection: "desc",
+          itemsView: "full",
+        }),
+      ]);
+      if (
+        client !== currentClient ||
+        sequence !== openThreadSequence ||
+        activeThreadId !== threadId
+      )
+        return;
+      const recentTurns = newestPageInReadingOrder(recent);
+      activeTurnId = [...recentTurns]
+        .reverse()
+        .find((turn) => turn.status === "inProgress")?.id;
+      setThreadStatus(metadata.thread.status);
+      timelineView.mergeRecentTurns(recentTurns);
+      lastRealtimeEventAt = Date.now();
+      if (metadata.thread.status.type !== "active") stopThreadSync();
+      return;
+    }
     const detail = await currentClient.request<ThreadReadResponse>(
       "thread/read",
       { threadId, includeTurns: true },
