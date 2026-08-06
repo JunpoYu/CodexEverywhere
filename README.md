@@ -162,7 +162,7 @@ E2EE 不能消除 Web 代码分发风险：如果 PWA 静态服务器被完全�
 - 用于 Passkey 的稳定 HTTPS PWA Origin
 - Direct 模式需要可信 TLS 入口；否则使用可选 Relay
 
-宿主机用户不必预先安装或登录 Codex。Agent 会优先检测 `~/.local/bin/codex`，再检测 Agent `PATH` 中的 Codex；任何能正常报告版本的安装都可使用。PWA 可以把 npm 最新稳定版安装或更新到用户自己的 `~/.local`，不需要 root，也不会修改其他位置或共享安装。
+宿主机用户不必预先安装或登录 Codex。Agent 会优先检测 `~/.local/bin/codex`，再检测 Agent `PATH` 中的 Codex；任何能正常报告版本的安装都可使用。共享 watchdog 和 Codex 子进程环境会加入 Agent 自身的 Node.js 运行目录，因此从最小 cron 环境启动时也能执行基于 `#!/usr/bin/env node` 的用户级 Codex。PWA 可以把 npm 最新稳定版安装或更新到用户自己的 `~/.local`，不需要 root，也不会修改其他位置或共享安装。
 
 ## 从源码开始
 

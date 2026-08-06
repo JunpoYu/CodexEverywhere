@@ -46,6 +46,7 @@ export function renderWatchdogScript(
   const sessionName = `codex-everywhere-${process.getuid?.() ?? "user"}`;
   const logPath = join(paths.logsDir, "agent.log");
   const watchdogLock = `${scriptPath}.lock`;
+  const runtimeBin = dirname(runtime.nodePath);
   const disabledMarker = `/etc/codex-everywhere-access/${process.getuid?.() ?? "unknown"}.disabled`;
   return `#!/bin/sh
 set -eu
@@ -53,7 +54,10 @@ SESSION=${shellQuote(sessionName)}
 LOG=${shellQuote(logPath)}
 LOCK=${shellQuote(watchdogLock)}
 TMUX=${shellQuote(tmuxPath)}
+RUNTIME_BIN=${shellQuote(runtimeBin)}
 DISABLED=${shellQuote(disabledMarker)}
+PATH="$RUNTIME_BIN:\${PATH:-/usr/bin:/bin}"
+export PATH
 if ! mkdir "$LOCK" 2>/dev/null; then
   exit 0
 fi

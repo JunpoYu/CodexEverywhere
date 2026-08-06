@@ -31,6 +31,9 @@ describe("watchdog crontab management", () => {
     );
 
     expect(script).toContain("TMUX='/home/user/local/bin/tmux'");
+    expect(script).toContain("RUNTIME_BIN='/opt/node/bin'");
+    expect(script).toContain('PATH="$RUNTIME_BIN:${PATH:-/usr/bin:/bin}"');
+    expect(script).toContain("export PATH");
     expect(script).toContain('"$TMUX" has-session');
     expect(script).toContain('"$TMUX" new-session');
   });
