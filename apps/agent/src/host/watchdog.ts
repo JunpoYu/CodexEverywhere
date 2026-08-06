@@ -48,6 +48,7 @@ export function renderWatchdogScript(
   const watchdogLock = `${scriptPath}.lock`;
   const runtimeBin = dirname(runtime.nodePath);
   const disabledMarker = `/etc/codex-everywhere-access/${process.getuid?.() ?? "unknown"}.disabled`;
+  const agentCommand = `PATH=${shellQuote(runtimeBin)}:\${PATH:-/usr/bin:/bin}; export PATH; exec ${shellQuote(runtime.nodePath)} ${shellQuote(runtime.cliPath)} agent serve >> ${shellQuote(logPath)} 2>&1`;
   return `#!/bin/sh
 set -eu
 SESSION=${shellQuote(sessionName)}
@@ -83,7 +84,7 @@ if [ -f "$LOG" ] && [ "$(wc -c < "$LOG")" -gt 10485760 ]; then
   mv -f "$LOG" "$LOG.1"
 fi
 if ! "$TMUX" has-session -t "$SESSION" 2>/dev/null; then
-  "$TMUX" new-session -d -s "$SESSION" ${shellQuote(`${runtime.nodePath} ${shellQuote(runtime.cliPath)} agent serve >> ${shellQuote(logPath)} 2>&1`)}
+  "$TMUX" new-session -d -s "$SESSION" ${shellQuote(agentCommand)}
 fi
 `;
 }
