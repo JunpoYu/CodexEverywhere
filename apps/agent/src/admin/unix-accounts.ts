@@ -58,6 +58,21 @@ export async function inspectSshUnixAccount(
   return { eligible: true, account };
 }
 
+export async function inspectSshUnixAccountByUid(
+  uid: number,
+  runGetent: GetentRunner = systemGetent,
+): Promise<UnixAccountEligibility> {
+  if (!Number.isSafeInteger(uid) || uid <= 0)
+    return { eligible: false, reason: "invalid Unix UID" };
+  const line = await runGetent(String(uid));
+  if (!line)
+    return { eligible: false, reason: "Unix account not found in NSS" };
+  const account = parsePasswdEntry(line);
+  if (account.uid !== uid)
+    return { eligible: false, reason: "NSS returned a different Unix UID" };
+  return inspectSshUnixAccount(account.username, async () => line);
+}
+
 export function parsePasswdEntry(line: string): UnixAccount {
   const entries = line.trimEnd().split("\n");
   if (entries.length !== 1) throw new Error("Ambiguous NSS account result");

@@ -51,7 +51,8 @@ CodexEverywhere 的目标不是提供 Web Terminal，也不是替代 SSH、Slurm
 - **会话级权限**：对话页常驻显示 sandbox 与审批策略；创建时选择的权限由 app-server 保存并用于后续轮次，只有用户在 Web 或 TUI 中明确修改才会更新，已打开的客户端通过原生设置通知同步显示。
 - **多用户 Unix 隔离**：每个 Linux 用户拥有独立 Agent、app-server、`~/.codex`、Web 身份、工作区、会话和队列。
 - **自助初始化**：管理员完成一次公共安装后，符合 HPC SSH/NSS 策略的现有用户可运行 `ce device pair` 自行初始化。
-- **最小管理员控制面**：独立的 `/admin` 页面通过管理员 Passkey 或 OPAQUE 专用密码登录，可精确登记现有 Unix 用户、停用/启用 Web、签发短时恢复交接码、安排 24 小时后移除并查看安全审计；管理员不能查看用户工作区、会话、文件或 Codex 凭据。
+- **专用部署账号**：共享发行版、Node/tmux 运行时和自助初始化服务由无特权 `codexeverywhere` 账号持有；日常发布、回滚和用户首次初始化不需要 root。
+- **最小管理员控制面**：独立的 `/admin` 页面通过管理员 Passkey 或 OPAQUE 专用密码登录，可精确登记现有 Unix 用户、停用/启用 Web、签发短时恢复交接码、安排 24 小时后移除并查看安全审计；管理员不能查看用户工作区、会话、文件或 Codex 凭据。跨 UID 强制停止或删除仍属于可选的宿主机特权能力。
 - **Codex 安装、更新与登录引导**：接受当前账号中任何可运行的 Codex 版本；版本设置会分别显示当前安装版本和 npm 最新稳定版，并明确提示是否存在可用更新。用户可把最新版安装到自己的 `~/.local`，更新后自行决定何时重启 app-server，并可使用官方设备码或经 E2EE 导入已有的 `~/.codex/auth.json`。
 - **Passkey 与专用密码**：Web 身份由 Codex 宿主机验证；CodexEverywhere 不收集、复用或验证 SSH 密码。专用密码默认临时登录，只有显式保存新设备时才需要设备名称；当前浏览器已有同一用户记录时沿用原名称。
 - **Direct 优先、Relay 回退**：浏览器可直连时使用 HTTPS/WSS Direct Gateway；不可达时通过可选无状态 Relay 转发 Noise 端到端密文。
@@ -111,7 +112,7 @@ Gateway 按 Noise 帧序严格解密并为大消息分片；会改变状态的�
 ```mermaid
 flowchart LR
     AdminWeb["/admin · Passkey / 管理密码"] -->|"独立 Noise + Relay 身份域"| Controller["Administrator Controller<br/>普通运维 UID"]
-    Controller -->|"固定命令 · JSON 请求"| Helper["root-only ce-admin-helper"]
+    Controller -->|"可选的跨 UID 管理"| Helper["固定 root-only ce-admin-helper"]
     Helper --> Registry["root-only 用户状态与审计"]
     Helper -. "停用 Agent / 生命周期操作" .-> UserAgent["用户 Agent"]
     UserAgent --> AppServer["用户 Codex app-server"]
@@ -135,7 +136,7 @@ CodexEverywhere 将四种身份明确分开：
 - Direct 与 Relay 都使用应用层 Noise 端到端加密，不只依赖 TLS；
 - 专用密码使用 OPAQUE PAKE，Agent 只保存 registration record；
 - 管理员 Controller 使用与普通用户不同的 Relay route、Noise user ID、Passkey user handle、OPAQUE user identifier、状态库和浏览器 Host Profile；同名也不会串路由；
-- root helper 只接受固定管理员运行账号通过无参数 sudo 入口提交的版本化操作，不提供 shell、任意路径或任意用户名执行参数；变更使用 revision 防并发覆盖并写入 root-only 审计；
+- 共享发布与首次初始化不使用 root；可选 root helper 只接受固定管理员运行账号通过无参数 sudo 入口提交的版本化跨 UID 操作，不提供 shell、任意路径或任意用户名执行参数；变更使用 revision 防并发覆盖并写入 root-only 审计；
 - workspace 路径在执行前经过 `realpath`、root 包含关系和符号链接逃逸检查；
 - 日志禁止记录提示词、文件内容、凭据、恢复码、配对秘密和解密后的 Relay payload；
 - `auth.json` 等同于登录凭据，只能由用户本人显式导入，并经已认证 E2EE 通道写入自己的账号。
@@ -156,7 +157,7 @@ E2EE 不能消除 Web 代码分发风险：如果 PWA 静态服务器被完全�
 ### Codex 宿主机
 
 - 已有的 Linux/SSH 用户；CodexEverywhere 不负责创建系统账号
-- Node.js 20；CentOS 7 可使用 root 所有的共享 conda runtime
+- Node.js 20；CentOS 7 可使用专用部署账号所有的共享 conda runtime
 - `tmux` 和 `crontab`，不要求用户级 systemd
 - 用于 Passkey 的稳定 HTTPS PWA Origin
 - Direct 模式需要可信 TLS 入口；否则使用可选 Relay
@@ -235,20 +236,21 @@ Nginx 示例：
 
 ## 多用户 HPC 部署
 
-多用户部署中，root 只负责一次公共运行时、共享只读程序和受限 self-provision helper 安装；每个 Agent 和 app-server 始终以对应用户自己的 UID 运行。
+推荐创建一个无 sudo 权限的专用账号 `codexeverywhere`。它只持有共享运行时、版本化 Agent 和 rootless provisioner；每个 Agent、app-server、Codex 凭据和业务数据仍始终以对应用户自己的 UID 运行。root 只需最后一次把固定 launcher 安装为 `/usr/local/bin/ce`，此后的发布、回滚和首次初始化均不需要 root。
+
+默认安装在该账号 home 下时，安装脚本会把 home 设为 `0711`，只允许其他用户穿越到已知的共享程序路径而不能列出 home；`.ssh`、provisioner credential 等私有目录仍保持 `0700`，私有文件保持 `0600`。
 
 构建生产 Agent bundle：
 
 ```bash
-pnpm --filter @codex-everywhere/agent deploy \
-  --prod --legacy /tmp/codex-everywhere-agent
+deploy/hpc/prepare-agent-bundle.sh /tmp/codex-everywhere-agent
 ```
 
-在 HPC root shell 中安装共享 Node.js/tmux runtime 和版本化 Agent：
+以 `codexeverywhere` 登录 HPC，创建该账号所有的 Node.js/tmux runtime，并原子安装版本化 Agent：
 
 ```bash
-deploy/hpc/create-shared-runtime.sh /path/to/conda
-deploy/hpc/install-shared-agent.sh \
+deploy/hpc/create-rootless-runtime.sh /path/to/conda
+deploy/hpc/install-rootless-agent.sh \
   /tmp/codex-everywhere-agent \
   <release-id>
 ```
@@ -261,14 +263,16 @@ ce-relay issue-provisioner \
   --expires-days 365
 ```
 
-通过安全通道将 credential 交给 HPC 管理员，并在 root shell 中从不回显的标准输入安装：
+通过安全通道把 credential 直接写入专用账号的标准输入。credential 不应进入命令参数、shell 历史、发布包或普通日志：
 
 ```bash
-ce admin install-provisioner \
+ce provisioner install \
   --origin https://codex.example.com \
   --relay-endpoint wss://relay.example.com/relay \
   --default-codex-proxy http://127.0.0.1:7890 \
   --credential-stdin
+
+ce provisioner install-service
 ```
 
 `--default-codex-proxy` 是可选的部署级默认值，适合宿主机提供本地代理的集群。它只在用户尚未选择 Codex 网络时写入首次初始化配置，不覆盖已有用户设置；用户之后仍可在 Web 的“Codex 网络”中切换。不要通过该命令行参数传递含用户名或密码的代理 URL；需要私密代理凭据时，应由用户在 E2EE Web 设置中自行配置。
@@ -279,7 +283,17 @@ ce admin install-provisioner \
 ce device pair
 ```
 
-helper 不接受目标用户名参数，只依据 sudo 提供的真实调用者身份进行初始化。完整的权限模型、目录布局和发布流程见[架构文档](docs/architecture.zh-CN.md#多用户公共安装)。
+rootless provisioner 的请求目录使用 sticky + write-only 权限。请求文件的所有者 UID 由内核提供，服务再通过 NSS 校验该 UID 的用户名、home 与登录 shell；请求与响应使用临时 Noise 密钥加密并绑定 request ID，用户不能替其他 UID 初始化，也不能读取别人的 grant。
+
+最后一次 root 操作只安装一个固定、拒绝以 UID 0 执行专用账号代码的 launcher：
+
+```bash
+deploy/hpc/install-rootless-global-shim.sh \
+  /public/home/codexeverywhere/software/codex-everywhere \
+  codexeverywhere
+```
+
+以后由专用账号上传新 bundle、运行 `install-rootless-agent.sh` 并切换 `current`；watchdog 在服务重启后自动使用新版本。旧的 root-owned shared installer 和 sudo self-provision helper 仅作为迁移兼容路径保留。完整权限模型见[架构文档](docs/architecture.zh-CN.md#多用户公共安装)。
 
 ### 安装管理员控制面
 

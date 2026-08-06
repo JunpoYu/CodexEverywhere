@@ -60,6 +60,21 @@ import {
   requestSelfProvisioningGrant,
 } from "./runtime/self-service-provisioning.js";
 import {
+  RootlessProvisionerUnavailableError,
+  requestRootlessSelfProvisioningGrant,
+} from "./runtime/rootless-self-provisioning.js";
+import {
+  installRootlessProvisioner,
+  resolveRootlessProvisionerPaths,
+  runRootlessProvisioner,
+  setRootlessProvisionerDefaultCodexNetwork,
+} from "./admin/rootless-provisioner.js";
+import {
+  installRootlessProvisionerWatchdog,
+  rootlessProvisionerStatus,
+  stopRootlessProvisioner,
+} from "./runtime/rootless-provisioner-service.js";
+import {
   installAdminController,
   loadAdminControllerConfig,
   loadAdminInstallation,
@@ -201,6 +216,108 @@ agent
   .command("serve", { hidden: true })
   .description("Run the host Agent in the foreground")
   .action(async () => runAgentService(paths));
+
+const provisioner = program
+  .command("provisioner")
+  .description("Manage the rootless Unix-user provisioner");
+
+provisioner
+  .command("install")
+  .requiredOption("--origin <origin>", "Shared HTTPS PWA origin")
+  .requiredOption("--relay-endpoint <endpoint>", "Shared Relay WSS endpoint")
+  .option(
+    "--credential-stdin",
+    "Read the host provisioner credential from standard input",
+  )
+  .option(
+    "--default-codex-proxy <url>",
+    "Non-secret default proxy for newly initialized users",
+  )
+  .description("Install a provisioner credential under the current Unix user")
+  .action(
+    async (options: {
+      origin: string;
+      relayEndpoint: string;
+      credentialStdin?: boolean;
+      defaultCodexProxy?: string;
+    }) => {
+      if (process.getuid?.() === 0)
+        throw new Error("Rootless provisioner must not be installed as root");
+      if (!options.credentialStdin)
+        throw new Error("provisioner install requires --credential-stdin");
+      const raw = await readSecretFromStdin("Host provisioner credential");
+      const installed = await installRootlessProvisioner({
+        origin: options.origin,
+        relayEndpoint: options.relayEndpoint,
+        credential: JSON.parse(raw) as unknown,
+        ...(options.defaultCodexProxy
+          ? {
+              defaultCodexNetwork: createProxyNetworkConfig({
+                httpsProxy: options.defaultCodexProxy,
+              }),
+            }
+          : {}),
+      });
+      process.stdout.write(
+        `Installed rootless provisioner for ${installed.credential.installationId}.\n`,
+      );
+    },
+  );
+
+provisioner
+  .command("install-service")
+  .description("Install and start the rootless provisioner watchdog")
+  .action(async () => {
+    const result = await installRootlessProvisionerWatchdog({
+      nodePath: process.execPath,
+      cliPath: cliEntryPoint(),
+    });
+    process.stdout.write(
+      `Installed provisioner watchdog: ${result.scriptPath}\ntmux session: ${result.sessionName}\n`,
+    );
+  });
+
+provisioner
+  .command("set-default-proxy")
+  .argument("<url>", "Host-local HTTP/HTTPS proxy URL")
+  .description("Set the Codex proxy default for newly initialized users")
+  .action(async (url: string) => {
+    const network = createProxyNetworkConfig({ httpsProxy: url });
+    await setRootlessProvisionerDefaultCodexNetwork(network);
+    process.stdout.write(`Rootless provisioner default proxy: ${url}\n`);
+  });
+
+provisioner
+  .command("status")
+  .description("Show rootless provisioner health")
+  .action(async () => {
+    const status = await rootlessProvisionerStatus();
+    process.stdout.write(
+      status.running
+        ? `Rootless provisioner is running (PID ${String(status.pid)}).\n`
+        : "Rootless provisioner is stopped.\n",
+    );
+    if (!status.running) process.exitCode = 1;
+  });
+
+provisioner
+  .command("stop")
+  .description("Stop the rootless provisioner")
+  .action(async () => {
+    const stopped = await stopRootlessProvisioner();
+    process.stdout.write(
+      stopped
+        ? "Rootless provisioner stopped.\n"
+        : "Rootless provisioner is not running.\n",
+    );
+  });
+
+provisioner
+  .command("serve", { hidden: true })
+  .description("Run the rootless provisioner in the foreground")
+  .action(async () =>
+    runRootlessProvisioner(resolveRootlessProvisionerPaths()),
+  );
 
 const workspace = program
   .command("workspace")
@@ -803,7 +920,14 @@ device
       config = await readPairingHostConfig(paths, username);
     } catch (error) {
       if (!(error instanceof HostProvisioningRequiredError)) throw error;
-      const selfProvisioning = await requestSelfProvisioningGrant();
+      let selfProvisioning;
+      try {
+        selfProvisioning = await requestRootlessSelfProvisioningGrant();
+      } catch (rootlessError) {
+        if (!(rootlessError instanceof RootlessProvisionerUnavailableError))
+          throw rootlessError;
+        selfProvisioning = await requestSelfProvisioningGrant();
+      }
       await applySelfProvisioningGrant(paths, selfProvisioning);
       config = await readPairingHostConfig(paths, username);
     }

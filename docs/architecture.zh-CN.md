@@ -11,7 +11,7 @@
 当前版本已经形成从浏览器到真实 Codex app-server 的可用闭环：
 
 - 每个 Linux 用户一个独立 Agent 和长期 app-server，使用自己的 `~/.codex` 登录状态。
-- 管理员只需完成一次公共运行时和 root-only 宿主机 provisioner 安装；此后任何能够通过现有 HPC 策略 SSH 登录、可由 NSS 查询且 home/shell 合规的 Linux 用户，都可直接执行 `ce device pair` 自行初始化，无需管理员逐个开通。
+- 管理员只需创建一个无特权专用部署账号并完成一次固定全局 launcher 安装；共享运行时、版本化 Agent 和宿主机 provisioner 此后都由该账号维护。任何能够通过现有 HPC 策略 SSH 登录、可由 NSS 查询且 home/shell 合规的 Linux 用户，都可直接执行 `ce device pair` 自行初始化，无需管理员逐个开通或调用 sudo。
 - Agent 可在 Codex 尚未安装时启动；PWA 首次使用向导可选择直连或用户代理，使用当前账号中任何能够正常报告版本的 Codex，或把 npm 最新稳定版安装到 `~/.local`，并通过官方设备码流程完成登录。已登录用户也可从设置中更新；安装不会立即中断运行中的 app-server，用户在任务空闲时明确确认重启后才应用。安装过程通过端到端加密会话显示“准备、下载与安装、验证、完成”的阶段进度；不向浏览器转发可能包含代理或凭据的 npm 原始输出，也不伪造无法可靠获取的字节百分比。Codex 登录页以分步卡片突出官方验证入口和一次性代码，支持一键复制；页面以 app-server 的 `account/login/completed` / `account/updated` 通知为完成信号并以状态轮询兜底，授权完成后自动进入工作区。已经在本机登录 Codex 的用户也可使用标准位置 `~/.codex/auth.json`：PWA 将标准路径作为主入口并支持一键复制，同时保留按钮式的其他来源文件入口。macOS 文件窗口默认隐藏 `.codex`，界面必须提示用户先复制 `~/.codex/`，再在文件窗口按 `⌘⇧G` 打开“前往文件夹”、粘贴目录并选择 `auth.json`；浏览器安全模型仍要求用户在系统文件窗口确认一次。PWA 只在当前页面内存中读取文件，经过现有端到端加密通道直接原子写入该 Linux 用户的 `~/.codex/auth.json`，随后重启 app-server；Relay 不可见，浏览器不持久化文件内容、访问句柄或回显内容。
 - PWA 将日常登录与首次初始化完全分开：老用户首页只保留已保存设备或“用户名 + Passkey”的主路径，密码、临时设备和 Direct 地址作为次级入口；专用密码登录默认不记住设备且不要求设备名称，只有用户显式勾选保存新设备时才显示命名输入，当前浏览器已有同一用户记录时沿用原名称；每个已保存入口同时显示用户自定义的设备名和对应 Linux 用户名，避免同一浏览器保存多个 HPC 账号时混淆；新用户按“建立 Web 身份 → 网络 → 安装 → Codex 登录”逐步完成引导。
 - Direct WSS 或可选无状态 Relay；两种模式都在应用层使用 Noise IK 端到端加密。
@@ -115,36 +115,42 @@ node apps/agent/dist/cli.js device pair
 
 ### 多用户公共安装
 
-正式向多个 HPC 用户开放时，不得让其他账号执行某个用户 home 中的 `ce`，也不得共享该用户的 Agent、app-server、Relay capability、`~/.codex` 或 `~/.codex-everywhere`。管理员以普通运维账号 SSH 登录后通过 `su -` 或受控 sudo 临时提权；root 只完成一次公共安装和宿主机 provisioner 配置，用户 Agent 与 app-server 始终以用户自己的 Unix UID 运行。
+正式向多个 HPC 用户开放时，不得共享任何个人用户的 Agent、app-server、Relay capability、`~/.codex` 或 `~/.codex-everywhere`。推荐创建无 sudo 权限、无业务数据的专用 Unix 账号 `codexeverywhere`；它只持有共享只读发行版、Node.js/tmux runtime、宿主机 provisioner credential 与最小用户登记状态。普通用户只读取共享程序，所有用户 Agent 与 app-server 始终以用户自己的 Unix UID 运行。
 
-CentOS 7 的系统 Node.js 不满足要求时，可使用现有兼容的 conda 创建 root 所有的共享 Node.js 20 + tmux 运行时。Agent 使用 `pnpm --filter @codex-everywhere/agent deploy --prod --legacy <bundle>` 生成自包含生产 bundle，再通过部署脚本原子安装：
+CentOS 7 的系统 Node.js 不满足要求时，用兼容 conda 在专用账号下创建 Node.js 20 + tmux runtime。发布端通过专用脚本构建仅含生产文件的自包含 bundle；安装脚本在移动前拒绝组/全局可写文件、路径逃逸符号链接和开发机坏链接，再同文件系统原子切换 `current`：
 
 ```bash
-deploy/hpc/create-shared-runtime.sh /path/to/conda
-deploy/hpc/install-shared-agent.sh /path/to/agent-bundle <release-id>
+deploy/hpc/prepare-agent-bundle.sh /tmp/codex-everywhere-agent
+
+# 以下命令以 codexeverywhere 执行
+deploy/hpc/create-rootless-runtime.sh /path/to/conda
+deploy/hpc/install-rootless-agent.sh /path/to/agent-bundle <release-id>
 ```
 
-默认安装位置为 `/public/software/codex-everywhere`，并创建 root 所有的 `/usr/local/bin/ce`、`/usr/local/libexec/ce-self-provision` 和一条只允许执行该无参数辅助程序的 `NOPASSWD` sudoers 规则。普通用户只能读取和执行公共程序；程序仍按当前 UID 使用各自的 home、`/tmp/codex-everywhere-$UID`、crontab 和 tmux。共享运行时的 `bin` 会由 `ce` 加入 `PATH`，因此用户不需要自行安装 Node.js 或 tmux。
+默认安装位置为 `/public/home/codexeverywhere/software/codex-everywhere`。安装脚本将专用账号 home 设为 `0711`：其他用户只能穿越到已知共享程序路径，不能列出 home；`.ssh`、provisioner credential 等私有目录仍为 `0700`，私有文件为 `0600`。root 最后只执行一次 `install-rootless-global-shim.sh`，创建 root 所有的 `/usr/local/bin/ce` 固定 launcher；launcher 会拒绝 UID 0，避免 root 意外执行专用账号可更新的代码。以后安装、升级、回滚和 provisioner 保活都由专用账号完成，不再需要 root。程序按实际调用者 UID 使用各自的 home、`/tmp/codex-everywhere-$UID`、crontab 和 tmux。
 
-Relay 运维者只为整台 Codex 宿主机签发一次有期限的 provisioner credential，而不是逐个签发用户 capability。credential 含有只对一个 `installationId` 和有效期生效的派生签名密钥，不包含 Relay 主密钥；它必须通过受保护通道和不回显的标准输入交给宿主机 root，不能出现在 shell 参数、历史、普通用户文件或日志中：
+Relay 运维者只为整台 Codex 宿主机签发一次有期限的 provisioner credential，而不是逐个签发用户 capability。credential 含有只对一个 `installationId` 和有效期生效的派生签名密钥，不包含 Relay 主密钥；它必须通过受保护通道和不回显的标准输入直接交给专用账号，不能出现在 shell 参数、历史、发布包、普通用户文件或日志中：
 
 ```bash
-# Relay 宿主机：输出只交给 HPC 管理员
+# Relay 宿主机：输出通过安全管道直接进入下一条命令
 ce-relay issue-provisioner --installation-id <installation-id> --expires-days 3650
 
-# HPC root shell：命令会在 TTY 上关闭回显后读取 credential
-ce admin install-provisioner \
+# HPC 专用部署账号
+ce provisioner install \
   --origin https://codex.example.com \
   --relay-endpoint wss://codex.example.com/relay \
   --default-codex-proxy http://127.0.0.1:7890 \
   --credential-stdin
+ce provisioner install-service
 ```
 
-`--default-codex-proxy` 是可选的非秘密部署默认值。若集群在 Codex 宿主机上统一提供本地代理，provisioner 会在 self-provision grant 中携带该默认网络配置，普通用户进程只在自己的配置尚无网络选择时写入；它不会覆盖已有的 `direct` 或 `proxy` 选择。管理员以后可用 `ce admin set-provisioner-default-proxy <url>` 更新后续初始化的默认值而不接触 provisioner credential。命令行参数不得承载代理用户名或密码；带凭据的代理仍由用户通过 E2EE Web 设置写入。
+`--default-codex-proxy` 是可选的非秘密部署默认值。若集群在 Codex 宿主机上统一提供本地代理，provisioner 会在 self-provision grant 中携带该默认网络配置，普通用户进程只在自己的配置尚无网络选择时写入；它不会覆盖已有的 `direct` 或 `proxy` 选择。专用账号以后可用 `ce provisioner set-default-proxy <url>` 更新后续初始化的默认值而不接触 credential。命令行参数不得承载代理用户名或密码；带凭据的代理仍由用户通过 E2EE Web 设置写入。
 
-安装完成后，每位用户只需在自己的 SSH shell 执行 `ce device pair`。若该用户尚未初始化，`ce` 会无密码调用固定的 self-provision 辅助程序；辅助程序不接受目标用户名参数，只读取 sudo 提供的真实调用者身份，再通过 NSS 验证账号不是 root、具有登录 shell、home 是绝对路径且由该 UID 所有。root 进程只返回绑定该 Unix 用户的短时初始化资料，不写用户目录、不启动 Agent，也看不到设备配对资料；随后普通用户进程写入自己的 `~/.codex-everywhere`、安装自己的 crontab watchdog、启动自己的 Agent 并输出配对 JSON。用户不能用该入口为别人初始化。
+安装完成后，每位用户只需在自己的 SSH shell 执行 `ce device pair`。若尚未初始化，普通用户进程在 mode `1733` 的 sticky、不可列目录中以 `O_EXCL | O_NOFOLLOW` 创建单链接请求文件；provisioner 从已打开文件的 `fstat.uid` 获取内核认证的调用者 UID，而不信任 JSON 中的用户名。服务再通过 `getent passwd <uid>` 验证账号不是 root、具有登录 shell、home 是绝对路径且由该 UID 所有。请求和响应使用每请求临时 Noise 握手加密，并将 request ID、时间戳和 provisioner 静态公钥绑定进认证上下文；其他用户即使猜中响应文件名也不能解密或替换 grant。
 
-若公共 helper 或宿主机 provisioner 尚未安装，`ce device pair` 会明确提示管理员完成一次整机配置，不会留下半初始化状态。`ce admin bootstrap-user` 仍保留为迁移或应急工具，但不是正常准入流程。管理员可在 `/admin` 本地控制面停用、移除或恢复用户；这些操作不改变 Linux/SSH 账号，也不能读取用户业务数据。
+provisioner 只签发绑定该 Unix 用户的初始化资料，不写用户目录、不启动用户 Agent，也不接触 Codex。随后普通用户进程写入自己的 `~/.codex-everywhere`、安装自己的 crontab watchdog、启动自己的 Agent 并输出配对 JSON。用户不能用该入口为别人初始化。root-owned sudo helper 仅作为旧部署迁移回退；新部署不安装它。
+
+若 rootless provisioner 未运行，`ce device pair` 会明确提示完成宿主机配置；旧安装存在固定 sudo helper 时可兼容回退，但认证或权限异常绝不降级到 sudo 路径。`ce admin bootstrap-user` 仍保留为迁移或应急工具，不是正常准入流程。管理员可在 `/admin` 本地控制面停用、移除或恢复用户；这些操作不改变 Linux/SSH 账号，也不能读取用户业务数据。由于普通专用账号不能越过 Unix 权限，跨 UID 强制停止、写系统停用标记或删除仍属于可选的特权管理扩展，不是日常发布和自助初始化的前提。
 
 首次初始化不是首页上的展开面板，而是一条独立的顺序流程。PWA 提供一键复制 `ce device pair` 初始化指令；用户在单独页面粘贴指令输出、注册 Passkey 并保存恢复码。建立 Web 身份后，PWA 自动进入宿主机初始化向导。未配置网络必须与用户明确选择的 `direct` 区分，不能用隐式直连跳过选择；部署可以显式配置非秘密的宿主机代理默认值，此时该选择来自 provisioner 并可由用户随后修改。检测到已有 Codex 时也必须展示实际版本，再由用户确认继续：
 
@@ -234,16 +240,16 @@ HAPI 和 OpenAI Remote 可作为交互与工程参考，但不是本项目的依
 
 Passkey 和 CodexEverywhere 专用密码只负责宿主机范围内的 Web 登录，不能替代、代理或共享 ChatGPT/Codex 登录。PWA 默认调用用户自己 app-server 的官方设备码接口，不接触 ChatGPT 密码；用户显式选择本机 `auth.json` 时，文件包含 OpenAI token，系统必须将其视同密码，只允许经已认证的 E2EE 会话直接写入同一用户的 `~/.codex`，禁止日志、Relay 解密、浏览器持久化、内容回显和通用附件复用。专用密码要求至少 9 个字符并同时包含字母和数字，不强制特殊字符；它与 SSH/Linux 密码完全独立，系统禁止收集、转发或验证 SSH 密码。VPS 不保存 Passkey、密码验证记录、恢复码、代理配置、OpenAI 凭据或用户账号。一个用户退出 Codex、重新登录或耗尽额度，不得影响其他用户。
 
-CodexEverywhere 用户必须一对一映射到 HPC 已有的 SSH/Linux 用户。管理员完成一次宿主机安装后，self-provision helper 在每次首次初始化时通过系统 NSS（例如 `getent passwd`，兼容本地 `/etc/passwd`、LDAP 或其他 NSS 后端）确认调用者账号存在、不是 root、具有绝对 home 路径和可登录 shell，并验证 home 由该 UID 所有。CodexEverywhere 不创建或修改 Unix 账号、不读取 `shadow`、不检查或保存 SSH 密码，也不能绕过 `sshd` 的 AllowUsers、AllowGroups、密钥和集群侧访问策略。能够 SSH 登录并通过上述本机校验，就是默认自助初始化资格，不再要求第二次人工开通。
+CodexEverywhere 用户必须一对一映射到 HPC 已有的 SSH/Linux 用户。管理员完成一次宿主机安装后，rootless provisioner 以请求文件的内核所有者 UID 为身份依据，并通过系统 NSS（例如 `getent passwd <uid>`，兼容本地 `/etc/passwd`、LDAP 或其他 NSS 后端）确认账号存在、不是 root、具有绝对 home 路径和可登录 shell，并验证 home 由该 UID 所有。CodexEverywhere 不创建或修改 Unix 账号、不读取 `shadow`、不检查或保存 SSH 密码，也不能绕过 `sshd` 的 AllowUsers、AllowGroups、密钥和集群侧访问策略。能够 SSH 登录并通过上述本机校验，就是默认自助初始化资格，不再要求第二次人工开通。
 
 CodexEverywhere 设置最小的宿主机本地管理员入口，但不设置能够查看所有数据的超级用户。管理员只管理公共安装、宿主机 provisioner，以及用户的停用、移除和 Web 凭据恢复；角色只有管理员和普通用户，不实现通用 RBAC。管理员不能创建 Linux 用户。管理员没有 ChatGPT/Codex 身份，不启动 app-server，不显示 workspace/thread，也不能读取提示词、文件、`~/.codex` 或代替用户操作 Codex。Linux 文件权限始终是底层授权边界。
 
-管理员控制面和审计状态保存在 Codex 宿主机，不放在 Relay。Administrator Controller 以指定的现有运维 Unix 账号长期运行，仅持有独立管理员 Web 身份和 route；固定的无参数 sudo helper 才以 root 执行停用 Agent、写访问策略、短时恢复交接和延迟移除。helper 不提供 shell、任意路径或任意命令，Controller 不连接用户 app-server。
+管理员控制面和审计状态保存在 Codex 宿主机，不放在 Relay。Administrator Controller 以指定的现有运维 Unix 账号长期运行，仅持有独立管理员 Web 身份和 route。专用部署账号能够执行发布、回滚、签发首次初始化 grant 和维护自身登记状态，但 Unix 权限不允许它强制操作其他用户目录或进程；需要停用 Agent、写系统访问策略或到期删除时，仍由可选的固定无参数特权 helper 执行。helper 不提供 shell、任意路径或任意命令，Controller 不连接用户 app-server。
 
 首次初始化流程：
 
-1. 管理员一次性安装公共运行时、`ce`、固定 sudo helper 和 root-only 宿主机 provisioner；此时不创建任何个人 Agent。
-2. 已有 SSH 用户运行 `ce device pair`；helper 依据真实 sudo 调用者和 NSS 自助签发该用户的 Relay route，随后用户进程初始化并启动自己的 Agent。此时 Codex 可以尚未安装。
+1. 管理员创建无特权 `codexeverywhere` 专用账号；该账号安装公共运行时、`ce` 和 rootless provisioner。root 仅一次性安装拒绝 UID 0 的固定全局 launcher；此时不创建任何个人 Agent。
+2. 已有 SSH 用户运行 `ce device pair`；provisioner 依据请求文件的真实所有者 UID 和 NSS 自助签发该用户的 Relay route，随后用户进程初始化并启动自己的 Agent。此时 Codex 可以尚未安装。
 3. 用户在 PWA 完成一次性 Web 身份引导，核对宿主机指纹、注册第一个 Passkey，并保存只显示一次的恢复码。
 4. 用户在 PWA 选择 Codex 直连或自己的代理；代理配置只写入其宿主机目录。
 5. PWA 检测并按需安装 Codex，然后通过官方设备码完成该用户自己的 ChatGPT/Codex 登录。
@@ -296,7 +302,7 @@ Codex 宿主机：每个 Linux 用户独立运行
 
 **Relay** 适合 HPC、NAT 或防火墙后的宿主机。Agent 主动连接 Relay 并注册一个稳定的 opaque route ID；浏览器通过相同 route ID 找到在线 Agent。Relay 重启后不恢复任何用户数据库，由 Agent 重新注册在线路由。
 
-单用户或兼容路径仍可用 `ce-relay issue-route` 逐个签发 legacy route capability。多用户公共安装改用 `ce-relay issue-provisioner`：Relay 从主签名密钥派生只对一个 `installationId` 和有效期生效的宿主机签名密钥，HPC root 只保存该派生 credential，不能还原 Relay 主密钥或为其他 installation 签名。self-provision helper 为真实 sudo 调用者生成 v4 user route capability；管理员安装流程生成 v4 host-admin route capability。两者使用不同 purpose、principal 和 keyed login ID 域，即使登录名相同也不能互相发现或注册。Relay 重启后映射由 Agent 或 Controller 重建，不落盘；旧 v1-v3 用户 route 仍按 user 域验证以兼容已有部署。
+单用户或兼容路径仍可用 `ce-relay issue-route` 逐个签发 legacy route capability。多用户公共安装改用 `ce-relay issue-provisioner`：Relay 从主签名密钥派生只对一个 `installationId` 和有效期生效的宿主机签名密钥，HPC 专用部署账号只保存该派生 credential，不能还原 Relay 主密钥或为其他 installation 签名。rootless provisioner 为内核认证的请求文件所有者生成 v4 user route capability；管理员安装流程生成 v4 host-admin route capability。两者使用不同 purpose、principal 和 keyed login ID 域，即使登录名相同也不能互相发现或注册。Relay 重启后映射由 Agent 或 Controller 重建，不落盘；旧 v1-v3 用户 route 仍按 user 域验证以兼容已有部署。
 
 PWA 可以保存多个 host profile，每个 profile 独立记录 direct endpoint、可选 Relay endpoint、route ID、设备密钥和本地缓存。新设备无需预存 profile：可以填写 Direct 地址直接获取公开宿主机资料，也可以通过登录名从 Relay 找到在线 Agent。两种方式都在预认证协议中验证宿主机身份。只要 profile 含 Direct 地址，PWA 就先直连，失败后才回退 Relay。
 
@@ -403,6 +409,9 @@ packages/
 ce agent init
 ce agent start|stop|status|ensure
 ce agent install-service
+ce provisioner install --origin <https-origin> --relay-endpoint <wss-endpoint> [--default-codex-proxy <url>] --credential-stdin
+ce provisioner install-service|status|stop
+ce provisioner set-default-proxy <url>
 ce admin inspect-user <username>
 ce admin install-provisioner --origin <https-origin> --relay-endpoint <wss-endpoint> [--default-codex-proxy <url>] --credential-stdin
 ce admin set-provisioner-default-proxy <url>
@@ -420,7 +429,7 @@ ce tui [directory]
 
 `ce transport direct` 配置宿主机的 HTTPS/WSS 入口；`ce transport relay` 配置 Relay URL 和自包含 route capability。两条命令分别更新自己的连接配置并保留另一条，二者同时存在时状态为 `hybrid`。`ce doctor` 至少检查：Node/Codex 版本、Codex 登录状态、目录权限、socket、tmux、crontab、当前 transport、workspace roots、密钥权限和 app-server 健康状态。
 
-`ce admin install-provisioner` 是管理员只需执行一次的宿主机自助初始化配置；可选的 `--default-codex-proxy` 只为尚无网络选择的用户提供首次初始化默认值，`ce admin set-provisioner-default-proxy` 可在不重新输入 credential 的情况下更新它。内部的 `ce admin self-provision` 只能通过 root 所有的固定 sudo helper 调用，不是面向用户的命令。`ce admin bootstrap-user` 仅作为迁移和应急后备。`ce admin install-controller` 以 root 安装独立管理员 route、Controller 配置、固定 `ce-admin-helper`、最小 sudoers 和 cron 保活；日常使用指定运维账号执行 `ce admin web pair`，再在 `/admin` 完成管理员 Passkey 和可选 OPAQUE 管理密码设置。`ce auth reset-recovery-codes` 只用于用户本人本机应急；Web 管理恢复改用 10 分钟短时交接码，管理员不会看到兑换后生成的新恢复码。Relay 包另外提供 `ce-relay serve`、`ce-relay issue-provisioner`、兼容命令 `ce-relay issue-route` 和 `ce-relay inspect-key`。
+`ce provisioner install` 是专用部署账号只需执行一次的宿主机自助初始化配置；可选的 `--default-codex-proxy` 只为尚无网络选择的用户提供首次初始化默认值，`ce provisioner set-default-proxy` 可在不重新输入 credential 的情况下更新它。`install-service` 通过该账号自己的 crontab + tmux 保活服务。旧的 `ce admin install-provisioner` 和内部 `ce admin self-provision` 只用于 root-owned 部署迁移兼容，不是新部署或普通用户命令。`ce admin bootstrap-user` 仅作为迁移和应急后备。`ce admin install-controller` 以 root 安装需要跨 UID 强制执行的可选管理员 route、Controller 配置、固定 `ce-admin-helper`、最小 sudoers 和 cron 保活；日常使用指定运维账号执行 `ce admin web pair`，再在 `/admin` 完成管理员 Passkey 和可选 OPAQUE 管理密码设置。`ce auth reset-recovery-codes` 只用于用户本人本机应急；Web 管理恢复改用 10 分钟短时交接码，管理员不会看到兑换后生成的新恢复码。Relay 包另外提供 `ce-relay serve`、`ce-relay issue-provisioner`、兼容命令 `ce-relay issue-route` 和 `ce-relay inspect-key`。
 
 ## 9. 身份登录与端到端加密
 

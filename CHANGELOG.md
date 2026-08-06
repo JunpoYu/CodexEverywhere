@@ -6,12 +6,14 @@
 
 ### Added
 
+- 新增由无特权 `codexeverywhere` 专用账号运行的 rootless provisioner、tmux/crontab watchdog、原子发行版安装/回滚脚本和一次性 root-safe 全局 launcher；日常部署与现有 SSH 用户自助初始化不再依赖 sudo。
 - 新增独立 `/admin` 宿主机管理页面、Administrator Controller 和固定 root helper，支持现有 Unix 用户登记、Web 停用/启用、10 分钟恢复交接码、24 小时可撤销移除和最小安全审计。
 - 管理员身份支持 Passkey 与独立 OPAQUE 管理密码；管理员密码不复用或验证 SSH 密码。
 - 对话页新增基于用户消息的右侧大纲，支持当前位置提示和点击平滑跳转；窄屏以侧滑面板呈现，避免压缩消息与输入区域。
 
 ### Changed
 
+- 生产 Agent bundle 只包含发布所需文件，并在安装前拒绝组/全局可写路径、逃逸符号链接和泄漏开发机路径的坏链接。
 - Codex 探测不再锁定单一 CLI 版本；任何能正常报告语义版本的现有安装都可运行，PWA 初始化和设置页可将 npm 最新稳定版安装或更新到用户自己的 `~/.local`，并在 app-server 正在运行时把重启应用留给用户确认。
 - Codex 版本设置现在分别显示宿主机当前安装版本与 npm 最新稳定版，明确标记可更新、已是最新或本机版本更高；npm 查询失败不会遮住已安装版本。
 - HPC 共享 Agent 安装器会规范化 release 目录的只读权限，避免从严格 umask 构建目录部署时普通用户无法加载 CLI。
@@ -30,6 +32,7 @@
 
 ### Security
 
+- rootless self-provision 以请求文件的内核所有者 UID 为身份依据，通过 NSS 复核 Unix 账号，并用绑定 request ID、时效和 provisioner 公钥的 Noise 握手加密每个 grant；认证异常不会降级到旧 sudo helper。
 - 管理员与普通用户使用不同的 Relay principal、route capability purpose、keyed login ID、Noise user ID、Passkey/OPAQUE 身份域、状态库和浏览器 Host Profile。
 - 管理变更采用 revision 并发保护、request ID 幂等和 root-only 审计；停用 Agent 不会停止用户的 Codex app-server、SSH、TUI 或活动 turn。
 - 生产 Nginx CSP 仅通过 `style-src-attr` 放行 KaTeX 动态生成的布局属性，修复线上公式错位，同时继续禁止内联脚本和内联 `<style>` 元素。
