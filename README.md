@@ -23,7 +23,7 @@ CodexEverywhere 是一个面向 Linux/HPC 和可信小团队的自托管 Codex W
 项目不重新实现 Codex Agent。thread、turn、工具调用、审批和执行状态仍以官方 [Codex app-server](https://developers.openai.com/codex/app-server) 为唯一事实源；CodexEverywhere 只提供安全连接、Web 体验、持久队列和 HPC 运行层。
 
 > [!WARNING]
-> 项目目前处于 Alpha 阶段，最新预发布版本为 `v0.3.0-alpha.3`，尚未发布稳定版本。GitHub Release 提供经过 CI 验证的 Web、Agent、Relay 和 HPC 部署工具制品；协议、配置和存储结构仍可能变化，现阶段建议用于个人环境或可信团队试用。
+> 项目目前处于 Alpha 阶段，最新预发布版本为 `v0.3.0-alpha.4`，尚未发布稳定版本。GitHub Release 提供经过 CI 验证的 Web、Agent、Relay 和 HPC 部署工具制品；协议、配置和存储结构仍可能变化，现阶段建议用于个人环境或可信团队试用。
 
 > [!NOTE]
 > 这是一个独立的非官方项目，与 OpenAI 没有关联或背书。Codex 是 OpenAI 的产品。
