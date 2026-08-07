@@ -40,12 +40,14 @@
 - 会话头以紧凑状态区根据 app-server 增量事件实时显示正在思考、回复、执行命令、修改文件、调用工具、等待操作、完成或异常，而不是只显示笼统的 active 状态；完整会话设置保留明确的图标入口，常用的权限与模型设置同时在输入框状态栏中直接可见、可修改。
 - Agent 在首次读取或列出 thread 时完成 workspace 授权并缓存结果；同一连接中的后续 delta notification 立即转发，workspace root 变化时清空缓存，避免逐条 `thread/read` 阻塞流式回复。
 - 活动会话以 app-server delta notification 为实时主通道；PWA 在短时间收不到事件时自动读取并合并最新 `thread/read` 快照，结束后立即停止同步，避免通知偶发丢失时必须手动点击会话刷新。
-- 输入器以 app-server 的真实 thread 状态决定发送语义：空闲时启动 turn，活动或等待审批时默认持久加入宿主机 Queue；排队消息重新打开后仍显示，并可在活动 turn 结束前逐条原子转换为 Steer。发送失败会撤销临时消息，活动 turn 可由用户显式停止。
+- 输入器以 app-server 的真实 thread 状态决定发送语义：空闲时启动 turn，活动或等待审批时默认持久加入宿主机 Queue。排队项不写入或临时插入历史时间线，而是在输入框上方的固定 Queue 托盘中显示数量、正文和暂停状态；重新打开会话后从宿主机恢复，并可在活动 turn 结束前逐条原子转换为 Steer 或移除。发送失败会恢复输入内容，活动 turn 的停止按钮与发送操作同处输入器右侧。
 - 命令、文件与权限审批，以及 `requestUserInput` 回答。
-- 审批卡片按命令、网络、文件修改和额外权限显示人类可读摘要，不向普通用户倾倒协议 JSON；多个并发审批按 request id 独立跟踪，活动 thread 的快照修复不得移除尚待处理的审批卡，全部处理后立即退出等待状态。
+- 命令、网络、文件修改、额外权限审批和 `requestUserInput` 在输入框上方使用固定审批托盘显示人类可读摘要，不向普通用户倾倒协议 JSON，也不写入或临时插入历史时间线。多个并发请求按 request id 独立跟踪，一次只展开当前项，处理成功后短暂显示结果并自动推进；不提供批量允许。其他 Web/TUI 客户端先处理时同步更新托盘。存在审批时 Queue 压缩为可手动展开的单行摘要，全部处理后立即退出等待状态。
 - 打开已有会话使用 `thread/resume` 而非只读 `thread/read`，确保当前浏览器连接订阅该 thread 的增量事件，并同时取得模型、推理强度、审批策略和 sandbox 设置。
+- Web 为刚发送的用户消息创建乐观卡片，但以 `turn/start` 返回的 turn id 绑定身份；如果 `turn/started` 通知和后台快照先到达，绑定阶段必须立即移除已经存在权威用户消息的乐观副本。assistant 流式卡片除 item id 外还记录 turn id 与消息类型；快照或完成事件在生命周期阶段出现不同 item id 时，按同一 turn 内的类型归并并以权威完成项收口，禁止保留刷新后才消失的重复卡片。
 - PWA 切换会话或返回会话列表时调用 `thread/unsubscribe` 释放旧订阅；Agent 级 Queue 在队列耗尽或暂停后也释放自己的订阅。释放订阅不 interrupt 活动 turn，最后一个订阅者离开后由 app-server 自身的无订阅宽限期决定何时卸载内存状态，不另设 24 小时保留定时器或用户“卸载”按钮。
 - 已有会话可修改模型、推理强度、审批策略和文件/命令权限；PWA 通过原生 `thread/settings/update` 保存设置，并用 `thread/settings/updated` 同步其他已订阅客户端。设置由 app-server 用于后续 turn，活动 turn 不会被静默中断；若用户安装的 Codex 尚不提供该方法，adapter 必须返回明确的能力错误。
+- 用户级全局设置集中在右上角设置中心。新会话默认 sandbox 与审批策略通过版本化 `preferences/read`、`preferences/session-permissions/update` 协议保存在该 Linux 用户自己的宿主机状态库中，浏览器只负责展示与修改；初始值为 `workspace-write + on-request`。创建 Web 会话时会明确展示并带入当前默认值，但设置更新不得改写已有 thread，也不得覆盖 TUI 已保存的会话级权限。外观偏好仍只保存在当前浏览器，代理秘密仍只保存在宿主机专用配置中。
 - 会话页不再用独立信息卡占用 timeline 上方空间；输入框 footer 以紧凑状态栏常驻显示 sandbox 与审批策略、模型与推理强度，以及 app-server 实时上报的当前上下文窗口和占用比例。权限与模型标签可直接进入对应设置区域；上下文使用环形进度并在 70% 与 90% 分级提示，完整用量保留在可访问文本与悬停说明中。运行中修改设置时显示“下一轮”，设置弹窗必须适配窄屏和低高度视口并可完整滚动。
 - Agent 级持久 Queue，不依赖浏览器连接推进；turn 正常完成后自动启动下一项，失败或中断时暂停，并保留 Queue 转 Steer 失败的原消息。
 - 写请求幂等、Agent/app-server 分离生命周期、官方 remote TUI 接力。
@@ -573,13 +575,14 @@ type EventEnvelope = {
 - **Steer**：使用 `turn/steer` 将消息加入当前活动 turn，必须携带 `expectedTurnId`。
 - **Queue**：由 CodexEverywhere 持久化，在当前 turn 完成后调用新的 `turn/start`。
 
-thread 忙碌时默认 Queue。每条排队消息在时间线中可见；活动 turn 仍存在时，消息卡片提供“转为 Steer”按钮。转换由 Agent 原子认领该队列项，`turn/steer` 成功后才标记完成，失败则恢复原排队状态，避免先删 Queue 再 Steer 导致消息丢失。
+thread 忙碌时默认 Queue。每条排队消息固定显示在输入框上方的 Queue 托盘中；活动 turn 仍存在时，消息条目提供“转为 Steer”按钮。转换由 Agent 原子认领该队列项，`turn/steer` 成功后才标记完成，失败则恢复原排队状态，避免先删 Queue 再 Steer 导致消息丢失。
 
 Queue 的推进属于长期 Agent，而不是创建队列项的浏览器连接。如果当前 turn 以 `completed` 正常完成，Agent 自动启动下一项；如果 turn 失败或被中断，所有尚未启动的相关队列项暂停并通知用户，避免异常后连续执行。
 
 ### 审批
 
 - Web 和 TUI 都可以响应同一个 app-server 审批。
+- Web 将待审批请求固定在输入框上方的审批托盘中，按 `requestId` 分别处理；只展开当前项，其余折叠，完成后自动推进，不提供批量允许。其他客户端先响应时，本页通过 resolved 事件同步收起。
 - 第一份有效响应生效。
 - `serverRequest/resolved` 到达后，所有设备立即禁用对应操作。
 - MCP elicitation 使用 app-server 定义的 `action/content/_meta` 响应结构，不能套用普通审批的 `decision` 字段。
@@ -628,9 +631,9 @@ Queue 的推进属于长期 Agent，而不是创建队列项的浏览器连接�
 - 通过一个按 `thread/read` 快照和增量 notification 归并的前端 reducer 渲染会话，不直接把 app-server payload 作为 JSON 展示。
 - 用户消息、assistant Markdown、计划、命令执行、文件修改、MCP 调用、subagent、审批、用户问题、错误和未知 generic event 使用不同的结构化组件；reasoning item 不在 Web 中展示。
 - 命令与工具默认显示紧凑摘要、运行/成功/失败状态和耗时，展开后查看输入输出；文件修改优先显示文件名、增删统计和 diff。
-- 审批和 `requestUserInput` 在时间线原位置内联处理，同时在会话列表标记“需要操作”；多设备回答后所有界面同步为已处理。
+- 审批和 `requestUserInput` 在输入框上方固定托盘内处理，同时在会话列表标记“需要操作”；多设备回答后所有界面同步为已处理。托盘不会触发时间线滚动，也不会抢走用户正在阅读的历史位置。
 - 会话头显示标题、目录、状态、模型、reasoning effort 和上下文使用量；次级菜单提供重命名、归档、删除以及后续的 fork/export。
-- 输入区固定在底部，明确区分发送、Steer、Queue 和 interrupt。运行中默认 Queue；排队内容在时间线中可见，并可对单条消息点击“转为 Steer”立即补充到当前 turn。
+- 输入区固定在底部，明确区分发送、Steer、Queue 和 interrupt。运行中默认 Queue；排队内容固定在输入框上方的 Queue 托盘中，并可对单条消息点击“转为 Steer”立即补充到当前 turn。出现审批时审批托盘优先，Queue 自动压缩但仍可展开查看。
 - 输入区当前只发送文本，不提供图片或文件附件上传。Gateway 必须拒绝 Web 客户端构造的 `localImage` 输入，避免绕过受限文件服务读取宿主机路径。
 - 提供受 workspace 限制的文件树、文件预览和 diff，但不提供 Web Terminal 或任意命令入口。
 

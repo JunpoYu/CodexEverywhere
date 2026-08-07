@@ -8,7 +8,7 @@ import initSqlJs, { type Database, type SqlJsStatic } from "sql.js";
 import { isProcessAlive, readProcessRecord } from "./process-files.js";
 
 const require = createRequire(import.meta.url);
-const SCHEMA_VERSION = 4;
+const SCHEMA_VERSION = 5;
 let sqlModule: Promise<SqlJsStatic> | undefined;
 
 export class HostStateStore {
@@ -229,6 +229,12 @@ CREATE TABLE IF NOT EXISTS workspace_roots (
 CREATE TABLE IF NOT EXISTS workspace_settings (
   id INTEGER PRIMARY KEY CHECK (id = 1),
   default_path TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS user_preferences (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  default_sandbox TEXT NOT NULL,
+  default_approval_policy TEXT NOT NULL,
+  updated_at TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS trusted_devices (
   id TEXT PRIMARY KEY,

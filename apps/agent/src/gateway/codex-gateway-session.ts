@@ -25,6 +25,7 @@ import {
 } from "../runtime/codex-app-server-client.js";
 import type { GatewaySession } from "./direct-gateway.js";
 import { QueueRegistry } from "../host/queue.js";
+import { UserPreferencesRegistry } from "../host/user-preferences.js";
 import type {
   QueueDispatcher,
   QueueDispatcherEvent,
@@ -38,6 +39,7 @@ export type CodexGatewaySessionOptions = {
   workspaces: WorkspaceRegistry;
   nodeStatus(): Promise<unknown> | unknown;
   queue: QueueRegistry;
+  preferences: UserPreferencesRegistry;
   queueDispatcher?: QueueDispatcher;
 };
 
@@ -46,6 +48,7 @@ export class CodexGatewaySession implements GatewaySession {
   readonly #workspaces: WorkspaceRegistry;
   readonly #nodeStatus: () => Promise<unknown> | unknown;
   readonly #queue: QueueRegistry;
+  readonly #preferences: UserPreferencesRegistry;
   readonly #queueDispatcher: QueueDispatcher | undefined;
   readonly #events = new EventEmitter<{ event: [EventEnvelope] }>();
   readonly #serverRequests = new Map<string, CodexServerRequest>();
@@ -61,6 +64,7 @@ export class CodexGatewaySession implements GatewaySession {
     this.#workspaces = options.workspaces;
     this.#nodeStatus = options.nodeStatus;
     this.#queue = options.queue;
+    this.#preferences = options.preferences;
     this.#queueDispatcher = options.queueDispatcher;
     this.#unsubscribeQueue = options.queueDispatcher?.onEvent(
       (event) => void this.#forwardQueueEvent(event),
@@ -118,6 +122,13 @@ export class CodexGatewaySession implements GatewaySession {
         requireAbsoluteWorkspacePath(path);
         return this.#workspaces.setDefault(path);
       }
+      case "preferences/read":
+        return this.#preferences.readSessionPermissionDefaults();
+      case "preferences/session-permissions/update":
+        return this.#preferences.updateSessionPermissionDefaults({
+          sandbox: payload.sandbox,
+          approvalPolicy: payload.approvalPolicy,
+        });
       case "model/list":
         return this.#client.request("model/list", payload);
       case "codex/account/read":

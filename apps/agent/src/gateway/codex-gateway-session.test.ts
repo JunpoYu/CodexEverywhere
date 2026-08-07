@@ -13,6 +13,7 @@ import { WebSocketServer } from "ws";
 import { HostStateStore } from "../host/state-store.js";
 import { QueueRegistry } from "../host/queue.js";
 import { WorkspaceRegistry } from "../host/workspaces.js";
+import { UserPreferencesRegistry } from "../host/user-preferences.js";
 import {
   CodexGatewaySession,
   threadNeedsResume,
@@ -51,6 +52,7 @@ describe("CodexGatewaySession notifications", () => {
     const workspaces = new WorkspaceRegistry(state);
     await workspaces.add(workspacePath);
     const queue = new QueueRegistry(state);
+    const preferences = new UserPreferencesRegistry(state);
     const queued = await queue.add({
       workspacePath,
       threadId: "thread-1",
@@ -163,12 +165,37 @@ describe("CodexGatewaySession notifications", () => {
       socketPath,
       workspaces,
       queue,
+      preferences,
       nodeStatus: () => ({}),
     });
     const events: EventEnvelope[] = [];
     session.onEvent((event) => events.push(event));
     expect(initializePayload).toMatchObject({
       capabilities: { experimentalApi: true },
+    });
+    await expect(
+      session.request({
+        version: PROTOCOL_VERSION,
+        requestId: "preferences-read",
+        idempotencyKey: "preferences-read",
+        method: "preferences/read",
+        payload: {},
+      }),
+    ).resolves.toMatchObject({
+      sandbox: "workspace-write",
+      approvalPolicy: "on-request",
+    });
+    await expect(
+      session.request({
+        version: PROTOCOL_VERSION,
+        requestId: "preferences-update",
+        idempotencyKey: "preferences-update",
+        method: "preferences/session-permissions/update",
+        payload: { sandbox: "read-only", approvalPolicy: "never" },
+      }),
+    ).resolves.toMatchObject({
+      sandbox: "read-only",
+      approvalPolicy: "never",
     });
     await session.request({
       version: PROTOCOL_VERSION,

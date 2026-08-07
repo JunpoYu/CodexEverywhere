@@ -88,13 +88,40 @@ export function threadSnapshotRevision(response: ThreadReadResponse): string {
 }
 
 export const TRANSIENT_TIMELINE_SELECTOR =
-  "[data-queue-id], [data-request-id], [data-local-user], .timeline-entry.streaming";
+  "[data-local-user], .timeline-entry.streaming";
 
 export function localUserReconciledByTurns(
   localTurnId: string | undefined,
   turns: ReadonlyArray<Pick<Turn, "id">>,
 ): boolean {
   return Boolean(localTurnId && turns.some((turn) => turn.id === localTurnId));
+}
+
+export type StreamingTimelineKind = "agent" | "plan" | "tool";
+
+export function streamingItemCandidateId(
+  streamTurnId: string | undefined,
+  streamItemId: string | undefined,
+  streamKind: StreamingTimelineKind | undefined,
+  turns: ReadonlyArray<Turn>,
+): string | undefined {
+  if (!streamTurnId || !streamKind) return undefined;
+  const turn = turns.find((candidate) => candidate.id === streamTurnId);
+  if (!turn) return undefined;
+  if (
+    streamItemId &&
+    turn.items.some(
+      (item: ThreadItem) =>
+        isVisibleThreadItem(item) && item.id === streamItemId,
+    )
+  )
+    return streamItemId;
+  if (streamKind === "tool") return undefined;
+  const candidates = turn.items.filter(
+    (item: ThreadItem): item is VisibleThreadItem =>
+      isVisibleThreadItem(item) && itemTimelineKind(item) === streamKind,
+  );
+  return candidates.at(-1)?.id;
 }
 
 const FOLLOW_LATEST_THRESHOLD_PX = 64;
@@ -320,12 +347,10 @@ function localImageNameFromPath(path: string): string {
 
 export class ThreadTimelineView {
   readonly #container: HTMLElement;
-  readonly #onSteerQueued: ((queueId: string) => void) | undefined;
   readonly #onLoadOlder: (() => void) | undefined;
   readonly #onFollowLatestChanged: ((following: boolean) => void) | undefined;
   readonly #fileChangeDisclosures = new FileChangeDisclosureState();
   #snapshotRevision = "";
-  #queuedSteerAvailable = false;
   #followingLatest = true;
   #hasOlderHistory = false;
   #loadingOlderHistory = false;
@@ -333,13 +358,11 @@ export class ThreadTimelineView {
   constructor(
     container: HTMLElement,
     options: {
-      onSteerQueued?(queueId: string): void;
       onLoadOlder?(): void;
       onFollowLatestChanged?(following: boolean): void;
     } = {},
   ) {
     this.#container = container;
-    this.#onSteerQueued = options.onSteerQueued;
     this.#onLoadOlder = options.onLoadOlder;
     this.#onFollowLatestChanged = options.onFollowLatestChanged;
     container.addEventListener(
@@ -417,8 +440,15 @@ export class ThreadTimelineView {
     }
     for (const card of transientCards) {
       if (localUserReconciledByTurns(card.dataset.localTurnId, turns)) continue;
-      const itemId = card.dataset.itemId;
-      const snapshotCard = itemId ? this.#findItem(itemId) : undefined;
+      const candidateId = streamingItemCandidateId(
+        card.dataset.streamTurnId,
+        card.dataset.itemId,
+        streamingKind(card.dataset.streamKind),
+        turns,
+      );
+      const snapshotCard = candidateId
+        ? this.#findItem(candidateId)
+        : undefined;
       if (snapshotCard) snapshotCard.replaceWith(card);
       else this.#container.append(card);
     }
@@ -445,8 +475,15 @@ export class ThreadTimelineView {
         )
       )
         continue;
-      const itemId = card.dataset.itemId;
-      const snapshotCard = itemId ? this.#findItem(itemId) : undefined;
+      const candidateId = streamingItemCandidateId(
+        card.dataset.streamTurnId,
+        card.dataset.itemId,
+        streamingKind(card.dataset.streamKind),
+        response.thread.turns,
+      );
+      const snapshotCard = candidateId
+        ? this.#findItem(candidateId)
+        : undefined;
       if (snapshotCard) snapshotCard.replaceWith(card);
       else this.#container.append(card);
     }
@@ -474,75 +511,20 @@ export class ThreadTimelineView {
   bindLocalUserToTurn(turnId: string): void {
     const card =
       this.#container.querySelector<HTMLElement>("[data-local-user]");
-    if (card) card.dataset.localTurnId = turnId;
+    if (!card) return;
+    const authoritativeTurn = this.#container.querySelector<HTMLElement>(
+      `[data-turn-id="${CSS.escape(turnId)}"]`,
+    );
+    if (authoritativeTurn?.querySelector(".timeline-entry.user")) {
+      card.remove();
+      return;
+    }
+    card.dataset.localTurnId = turnId;
   }
 
   removeLocalUser(): void {
     const followLatest = this.#isNearLatest();
     this.#container.querySelector<HTMLElement>("[data-local-user]")?.remove();
-    this.#finishContentUpdate(followLatest);
-  }
-
-  upsertQueuedUser(
-    queueId: string,
-    text: string,
-    status: "pending" | "paused" = "pending",
-  ): void {
-    const followLatest = this.#isNearLatest();
-    this.#container.querySelector(".empty")?.remove();
-    let card = this.#container.querySelector<HTMLElement>(
-      `[data-queue-id="${CSS.escape(queueId)}"]`,
-    );
-    if (!card) {
-      card = document.createElement("article");
-      card.className = "timeline-entry user queued-message";
-      card.dataset.queueId = queueId;
-      const heading = document.createElement("header");
-      const title = document.createElement("strong");
-      title.textContent = "你";
-      const badge = document.createElement("span");
-      badge.className = "item-status queued-status";
-      heading.append(title, badge);
-      const body = document.createElement("div");
-      body.className = "message-text";
-      body.textContent = text;
-      const actions = document.createElement("footer");
-      actions.className = "queued-actions";
-      const steer = document.createElement("button");
-      steer.type = "button";
-      steer.className = "ghost compact-action queued-steer";
-      steer.textContent = "转为 Steer";
-      steer.title = "立即补充到当前正在运行的任务";
-      steer.hidden = !this.#queuedSteerAvailable;
-      steer.addEventListener("click", () => this.#onSteerQueued?.(queueId));
-      actions.append(steer);
-      card.append(heading, body, actions);
-      this.#container.append(card);
-    }
-    const badge = card.querySelector<HTMLElement>(".queued-status");
-    if (badge) {
-      badge.className = `item-status queued-status ${status === "paused" ? "failure" : "running"}`;
-      badge.textContent = status === "paused" ? "队列已暂停" : "已排队";
-    }
-    this.#finishContentUpdate(followLatest);
-  }
-
-  setQueuedSteerAvailable(available: boolean): void {
-    const followLatest = this.#isNearLatest();
-    this.#queuedSteerAvailable = available;
-    for (const button of this.#container.querySelectorAll<HTMLButtonElement>(
-      ".queued-steer",
-    )) {
-      button.hidden = !available;
-    }
-    this.#finishContentUpdate(followLatest);
-  }
-
-  removeQueuedUser(queueId: string): void {
-    const followLatest = this.#isNearLatest();
-    this.#container
-      .querySelector<HTMLElement>(`[data-queue-id="${CSS.escape(queueId)}"]`)
-      ?.remove();
     this.#finishContentUpdate(followLatest);
   }
 
@@ -581,7 +563,10 @@ export class ThreadTimelineView {
     ) {
       if (isThreadItem(payload.item)) {
         const followLatest = this.#isNearLatest();
-        this.#upsertItem(payload.item);
+        this.#upsertItem(
+          payload.item,
+          typeof payload.turnId === "string" ? payload.turnId : undefined,
+        );
         this.#finishContentUpdate(followLatest);
         return true;
       }
@@ -604,7 +589,8 @@ export class ThreadTimelineView {
 
     if (event.type === "codex/turn/completed" && isTurn(payload.turn)) {
       const followLatest = this.#isNearLatest();
-      for (const item of payload.turn.items) this.#upsertItem(item);
+      for (const item of payload.turn.items)
+        this.#upsertItem(item, payload.turn.id);
       if (payload.turn.error) {
         this.#appendNoticeElement(
           "Codex 错误",
@@ -631,7 +617,12 @@ export class ThreadTimelineView {
       typeof payload.delta === "string"
     ) {
       const followLatest = this.#isNearLatest();
-      this.#appendDelta(payload.itemId, payload.delta, deltaKind);
+      this.#appendDelta(
+        payload.itemId,
+        payload.delta,
+        deltaKind,
+        typeof payload.turnId === "string" ? payload.turnId : undefined,
+      );
       this.#finishContentUpdate(followLatest);
       return true;
     }
@@ -725,23 +716,31 @@ export class ThreadTimelineView {
     return section.childElementCount > 0 ? section : undefined;
   }
 
-  #upsertItem(item: ThreadItem): void {
+  #upsertItem(item: ThreadItem, turnId?: string): void {
     if (!isVisibleThreadItem(item)) return;
     this.#container.querySelector(".empty")?.remove();
     if (item.type === "userMessage" && !item.id.startsWith("local-")) {
       this.#container.querySelector<HTMLElement>("[data-local-user]")?.remove();
     }
     const [existing, ...duplicates] = this.#findItems(item.id);
+    const aliases = turnId
+      ? this.#streamingAliases(turnId, itemTimelineKind(item)).filter(
+          (candidate) => candidate !== existing,
+        )
+      : [];
     const replacement = this.#itemElement(item);
     if (existing) existing.replaceWith(replacement);
+    else if (aliases[0]) aliases[0].replaceWith(replacement);
     else this.#container.append(replacement);
     for (const duplicate of duplicates) duplicate.remove();
+    for (const alias of aliases.slice(existing ? 0 : 1)) alias.remove();
   }
 
   #appendDelta(
     itemId: string,
     delta: string,
-    kind: "agent" | "plan" | "tool",
+    kind: StreamingTimelineKind,
+    turnId: string | undefined,
   ): void {
     this.#container.querySelector(".empty")?.remove();
     let card = this.#findItem(itemId);
@@ -757,6 +756,9 @@ export class ThreadTimelineView {
       card.append(heading, body);
       this.#container.append(card);
     }
+    card.classList.add("streaming");
+    card.dataset.streamKind = kind;
+    if (turnId) card.dataset.streamTurnId = turnId;
     let target = card.querySelector<HTMLElement>(
       ".stream-target, .message-text, pre",
     );
@@ -783,6 +785,22 @@ export class ThreadTimelineView {
     return Array.from(
       this.#container.querySelectorAll<HTMLElement>("[data-item-id]"),
     ).filter((candidate) => candidate.dataset.itemId === itemId);
+  }
+
+  #streamingAliases(
+    turnId: string,
+    kind: StreamingTimelineKind | undefined,
+  ): HTMLElement[] {
+    if (!kind || kind === "tool") return [];
+    return Array.from(
+      this.#container.querySelectorAll<HTMLElement>(
+        ".timeline-entry.streaming",
+      ),
+    ).filter(
+      (candidate) =>
+        candidate.dataset.streamTurnId === turnId &&
+        candidate.dataset.streamKind === kind,
+    );
   }
 
   #removeLooseTurnItems(turn: Turn): void {
@@ -909,6 +927,24 @@ export class ThreadTimelineView {
     card.append(body);
     return card;
   }
+}
+
+function itemTimelineKind(
+  item: VisibleThreadItem,
+): StreamingTimelineKind | undefined {
+  if (item.type === "agentMessage") return "agent";
+  if (item.type === "plan") return "plan";
+  if (item.type === "commandExecution" || item.type === "fileChange")
+    return "tool";
+  return undefined;
+}
+
+function streamingKind(
+  value: string | undefined,
+): StreamingTimelineKind | undefined {
+  return value === "agent" || value === "plan" || value === "tool"
+    ? value
+    : undefined;
 }
 
 function statusTone(status: string): string {

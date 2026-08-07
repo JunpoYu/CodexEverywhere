@@ -18,6 +18,7 @@ import {
   type CodexAuthImportResult,
   type CodexVersionStatus,
   type EventEnvelope,
+  type SessionPermissionDefaults,
 } from "@codex-everywhere/protocol";
 
 import {
@@ -224,12 +225,19 @@ const threadUnsubscribeOperations = new Map<string, Promise<void>>();
 const threadDirectoryOpenState = new Map<string, boolean>();
 let composerSubmitting = false;
 let slashCommandSelection = 0;
+const queuedItems = new Map<string, QueueItem>();
+let expandedApprovalId: string | undefined;
+let sessionPermissionDefaults: SessionPermissionDefaults = {
+  version: 1,
+  sandbox: "workspace-write",
+  approvalPolicy: "on-request",
+};
 const runCoalescedRefresh = createCoalescedTask(performRefresh);
 
 app.innerHTML = `
   <header class="topbar">
     <div class="brand"><span class="brand-mark">C</span><div><strong>CodexEverywhere</strong><small>Your Codex, anywhere</small></div></div>
-    <div class="connection"><span class="connection-badge"><span id="status-dot" class="dot offline"></span><span id="status-text">未连接</span></span><select id="theme-preference" class="theme-preference" aria-label="外观主题" title="外观主题"><option value="system">跟随系统</option><option value="light">浅色</option><option value="dark">深色</option></select><details id="settings-menu" class="settings-menu" hidden><summary aria-label="打开设置">•••</summary><div><button id="recovery-codes-button" hidden>恢复码</button><button id="add-passkey-button" hidden>添加 Passkey</button><button id="set-password-button" hidden>设置密码</button><button id="settings-workspaces" type="button">工作目录</button><button id="settings-codex-version" type="button">Codex 版本</button><button id="settings-network" type="button">Codex 网络</button></div></details></div>
+    <div class="connection"><span class="connection-badge"><span id="status-dot" class="dot offline"></span><span id="status-text">未连接</span></span><button id="settings-button" class="settings-button" type="button" aria-label="打开设置" hidden><span aria-hidden="true">⚙</span><strong>设置</strong></button></div>
   </header>
   <section id="setup" class="setup-shell">
     <div class="setup-card auth-card">
@@ -380,7 +388,7 @@ app.innerHTML = `
       <div id="thread-list" class="thread-list"></div>
     </aside>
     <section id="conversation-content" class="content">
-      <div class="thread-header"><button id="back-to-sessions" class="back-to-sessions" type="button" aria-label="返回会话列表">←</button><div class="thread-heading"><p class="eyebrow">Codex session</p><h2 id="thread-title">选择一个会话</h2><small class="thread-cwd-line"><span>当前会话目录</span><code id="thread-cwd"></code></small></div><div class="thread-controls"><div class="codex-status"><strong id="thread-state" class="pill idle" role="status" aria-live="polite">空闲</strong></div><div class="thread-actions"><button id="thread-outline-button" class="thread-outline-action compact-action" type="button" aria-controls="conversation-outline" aria-expanded="false" hidden><span aria-hidden="true">☷</span> 大纲</button><button id="tui-handoff-button" class="ssh-handoff-action compact-action" type="button" title="通过 SSH 在官方 TUI 中继续同一个会话" hidden><span aria-hidden="true">›_</span> SSH 接力</button><button id="thread-settings-button" class="session-settings-action compact-action icon-only-action" type="button" aria-label="打开会话设置" title="会话设置" hidden><span aria-hidden="true">⚙</span></button><button id="interrupt-turn" class="ghost danger-action compact-action" type="button" hidden>停止</button></div></div></div>
+      <div class="thread-header"><button id="back-to-sessions" class="back-to-sessions" type="button" aria-label="返回会话列表">←</button><div class="thread-heading"><p class="eyebrow">Codex session</p><h2 id="thread-title">选择一个会话</h2><small class="thread-cwd-line"><span>当前会话目录</span><code id="thread-cwd"></code></small></div><div class="thread-controls"><div class="codex-status"><strong id="thread-state" class="pill idle" role="status" aria-live="polite">空闲</strong></div><div class="thread-actions"><button id="thread-outline-button" class="thread-outline-action compact-action" type="button" aria-controls="conversation-outline" aria-expanded="false" hidden><span aria-hidden="true">☷</span> 大纲</button><button id="tui-handoff-button" class="ssh-handoff-action compact-action" type="button" title="通过 SSH 在官方 TUI 中继续同一个会话" hidden><span aria-hidden="true">›_</span> SSH 接力</button><button id="thread-settings-button" class="session-settings-action compact-action icon-only-action" type="button" aria-label="打开会话设置" title="会话设置" hidden><span aria-hidden="true">⚙</span></button></div></div></div>
       <aside id="ssh-handoff-banner" class="ssh-handoff-banner" aria-label="SSH 接力提示" hidden>
         <div class="ssh-handoff-banner-copy"><span class="ssh-terminal-mark" aria-hidden="true">›_</span><div><strong>也可以通过 SSH 访问同一个会话</strong><span>登录运行 Codex 的 HPC 后，用 <code>ce tui</code> 继续；Web、SSH TUI 可随时切换，当前任务不会中断。</span></div></div>
         <div class="ssh-handoff-banner-actions"><button id="ssh-handoff-banner-button" type="button">查看方法 <span aria-hidden="true">→</span></button><button id="dismiss-ssh-handoff-banner" class="ssh-handoff-banner-dismiss" type="button" title="以后不再显示这条说明">不再提示</button></div>
@@ -392,6 +400,14 @@ app.innerHTML = `
         <nav id="conversation-outline-list" aria-label="你发送的消息"></nav>
       </aside>
       <div class="composer">
+        <aside id="composer-approvals" class="composer-approvals" aria-label="待审批操作" hidden>
+          <header><div><span class="approval-indicator" aria-hidden="true">!</span><strong>待审批</strong><span id="composer-approval-count">0 项</span></div><small id="composer-approval-note">当前任务正在等待你的操作</small></header>
+          <div id="composer-approval-list" class="composer-approval-list"></div>
+        </aside>
+        <aside id="composer-queue" class="composer-queue" aria-label="待发送消息" hidden>
+          <header id="composer-queue-header" role="button" tabindex="0" aria-expanded="true"><div><span class="queue-indicator" aria-hidden="true"></span><strong>待发送</strong><span id="composer-queue-count">0 条</span></div><small id="composer-queue-note">当前任务结束后依次发送</small></header>
+          <div id="composer-queue-list" class="composer-queue-list"></div>
+        </aside>
         <div class="composer-shell">
           <div id="slash-command-menu" class="slash-command-menu" role="listbox" aria-label="Codex 斜杠指令" hidden></div>
           <textarea id="message-input" rows="1" placeholder="给 Codex 发送消息，输入 / 查看指令…" aria-autocomplete="list" aria-controls="slash-command-menu" disabled></textarea>
@@ -407,19 +423,48 @@ app.innerHTML = `
               </div>
               <span class="composer-hint">Enter 发送 · Shift + Enter 换行</span>
             </div>
-            <div class="composer-actions"><button id="queue-message" class="ghost queue-action" disabled>加入队列</button><button id="send-message" class="primary send-action" disabled><span>发送</span><kbd>↵</kbd></button></div>
+            <div class="composer-actions"><button id="queue-message" class="ghost queue-action" disabled>加入队列</button><button id="interrupt-turn" class="stop-action" type="button" title="停止当前 Codex 任务" hidden><span aria-hidden="true">■</span><strong>停止</strong></button><button id="send-message" class="primary send-action" disabled><span>发送</span><kbd>↵</kbd></button></div>
           </div>
         </div>
       </div>
     </section>
   </main>
+  <dialog id="settings-dialog" class="settings-dialog">
+    <div>
+      <div class="dialog-heading settings-dialog-heading"><div><p class="eyebrow">Preferences</p><h2>设置</h2><p class="lede">管理这个 Linux 用户的 CodexEverywhere、Codex 和新会话默认值。</p></div><button id="close-settings" class="icon-button" type="button" aria-label="关闭设置">×</button></div>
+      <div class="settings-center-grid">
+        <section class="settings-center-section settings-defaults-section">
+          <div class="settings-section-heading"><span class="settings-section-icon" aria-hidden="true">◇</span><div><strong>新会话默认权限</strong><small>保存在宿主机，仅用于以后从 Web 创建的会话</small></div></div>
+          <div class="settings-default-fields"><label>文件与命令权限<select id="default-session-sandbox"><option value="read-only">只读</option><option value="workspace-write">可写当前工作目录</option><option value="danger-full-access">完全访问（危险）</option></select></label><label>审批策略<select id="default-session-approval"><option value="on-request">按需审批</option><option value="untrusted">仅不受信任命令需审批</option><option value="never">不请求审批</option></select></label></div>
+          <div class="settings-default-actions"><p id="default-session-permissions-state" class="field-note" role="status" aria-live="polite"></p><button id="save-default-session-permissions" class="primary" type="button">保存默认权限</button></div>
+        </section>
+        <section class="settings-center-section">
+          <div class="settings-section-heading"><span class="settings-section-icon" aria-hidden="true">◐</span><div><strong>外观</strong><small>只保存在当前浏览器</small></div></div>
+          <label class="settings-inline-field">主题<select id="theme-preference" class="theme-preference" aria-label="外观主题"><option value="system">跟随系统</option><option value="light">浅色</option><option value="dark">深色</option></select></label>
+        </section>
+        <section class="settings-center-section">
+          <div class="settings-section-heading"><span class="settings-section-icon" aria-hidden="true">⌂</span><div><strong>工作目录</strong><small>管理允许访问的目录和新会话默认目录</small></div></div>
+          <button id="settings-workspaces" class="settings-link-button" type="button"><span><strong>管理工作目录</strong><small>添加、移除或选择默认目录</small></span><b aria-hidden="true">›</b></button>
+        </section>
+        <section class="settings-center-section">
+          <div class="settings-section-heading"><span class="settings-section-icon codex-icon" aria-hidden="true">C</span><div><strong>Codex</strong><small>管理宿主机上的运行环境</small></div></div>
+          <div class="settings-link-list"><button id="settings-network" class="settings-link-button" type="button"><span><strong>网络</strong><small>直连、代理和出网配置</small></span><b aria-hidden="true">›</b></button><button id="settings-codex-version" class="settings-link-button" type="button"><span><strong>版本</strong><small>查看当前版本并安装更新</small></span><b aria-hidden="true">›</b></button></div>
+        </section>
+        <section class="settings-center-section settings-identity-section">
+          <div class="settings-section-heading"><span class="settings-section-icon" aria-hidden="true">⌁</span><div><strong>Web 身份与恢复</strong><small>只用于登录 CodexEverywhere，不是 SSH 或 ChatGPT 凭据</small></div></div>
+          <div class="settings-identity-actions"><button id="add-passkey-button" class="secondary" hidden>添加 Passkey</button><button id="set-password-button" class="secondary" hidden>设置密码</button><button id="recovery-codes-button" class="ghost" hidden>轮换恢复码</button></div>
+        </section>
+      </div>
+      <p id="settings-error" class="error" role="alert"></p>
+    </div>
+  </dialog>
   <dialog id="new-session-dialog" class="new-session-dialog">
     <div>
       <div class="dialog-heading"><div><p class="eyebrow">New session</p><h2>启动 Codex 会话</h2></div><button id="cancel-new-session" class="icon-button" type="button" aria-label="关闭">×</button></div>
       <label>工作目录<div class="workspace-picker"><select id="workspace-select" aria-label="Codex 启动目录"></select><button id="browse-session-directory" class="ghost" type="button">浏览子目录</button><button id="manage-workspaces" class="workspace-manage-button" type="button"><span aria-hidden="true">⚙</span> 管理工作区</button></div></label>
       <label>第一条消息<textarea id="new-prompt" rows="5" placeholder="描述你希望 Codex 完成的任务…"></textarea></label>
       <div class="launch-options"><label>模型<select id="new-session-model"><option value="">Codex 默认</option></select></label><label>推理强度<select id="new-session-effort"><option value="">模型默认</option></select></label></div>
-      <details class="session-advanced"><summary>高级设置</summary><div class="launch-options"><label>沙箱<select id="new-session-sandbox"><option value="">Codex 默认</option><option value="read-only">只读</option><option value="workspace-write">可写工作目录</option><option value="danger-full-access">完全访问</option></select></label><label>审批策略<select id="new-session-approval"><option value="">Codex 默认</option><option value="untrusted">仅信任命令免审批</option><option value="on-request">按需审批</option><option value="never">从不询问</option></select></label></div></details>
+      <details class="session-advanced"><summary><span>本次会话权限</span><small id="new-session-permission-summary">可写工作目录 · 按需审批</small></summary><div class="launch-options"><label>沙箱<select id="new-session-sandbox"><option value="read-only">只读</option><option value="workspace-write">可写工作目录</option><option value="danger-full-access">完全访问</option></select></label><label>审批策略<select id="new-session-approval"><option value="untrusted">仅信任命令免审批</option><option value="on-request">按需审批</option><option value="never">从不询问</option></select></label></div><p class="field-note">已填入全局默认值；这里的修改只影响本次新会话。</p></details>
       <p id="new-session-error" class="error" role="alert"></p>
       <button id="start-task" class="primary wide-action">创建并发送</button>
     </div>
@@ -615,6 +660,23 @@ const workspaceScopeSelect = requiredElement<HTMLSelectElement>(
 );
 const messageInput = requiredElement<HTMLTextAreaElement>("message-input");
 const slashCommandMenu = requiredElement<HTMLElement>("slash-command-menu");
+const composerApprovals = requiredElement<HTMLElement>("composer-approvals");
+const composerApprovalList = requiredElement<HTMLElement>(
+  "composer-approval-list",
+);
+const composerApprovalCount = requiredElement<HTMLElement>(
+  "composer-approval-count",
+);
+const composerApprovalNote = requiredElement<HTMLElement>(
+  "composer-approval-note",
+);
+const composerQueue = requiredElement<HTMLElement>("composer-queue");
+const composerQueueHeader = requiredElement<HTMLElement>(
+  "composer-queue-header",
+);
+const composerQueueList = requiredElement<HTMLElement>("composer-queue-list");
+const composerQueueCount = requiredElement<HTMLElement>("composer-queue-count");
+const composerQueueNote = requiredElement<HTMLElement>("composer-queue-note");
 const sendMessage = requiredElement<HTMLButtonElement>("send-message");
 const queueMessage = requiredElement<HTMLButtonElement>("queue-message");
 const networkMode = requiredElement<HTMLSelectElement>("network-mode");
@@ -657,6 +719,7 @@ const directoryPickerDialog = requiredElement<HTMLDialogElement>(
 );
 const newSessionDialog =
   requiredElement<HTMLDialogElement>("new-session-dialog");
+const settingsDialog = requiredElement<HTMLDialogElement>("settings-dialog");
 const networkSettingsDialog = requiredElement<HTMLDialogElement>(
   "network-settings-dialog",
 );
@@ -695,7 +758,6 @@ themePreferenceSelect.addEventListener("change", () => {
   showToast(`外观已切换为${themePreferenceLabel(preference)}`);
 });
 const timelineView = new ThreadTimelineView(timeline, {
-  onSteerQueued: (queueId) => void steerQueuedMessage(queueId),
   onLoadOlder: () => void loadOlderHistory(),
   onFollowLatestChanged: (following) => {
     jumpToLatestButton.hidden = following || !activeThreadId;
@@ -710,6 +772,15 @@ const conversationOutlineView = new ConversationOutlineView(
   threadOutlineButton,
 );
 jumpToLatestButton.addEventListener("click", () => timelineView.followLatest());
+composerQueueHeader.addEventListener(
+  "click",
+  toggleComposerQueueDuringApproval,
+);
+composerQueueHeader.addEventListener("keydown", (event) => {
+  if (event.key !== "Enter" && event.key !== " ") return;
+  event.preventDefault();
+  toggleComposerQueueDuringApproval();
+});
 
 requiredElement("pair-button").addEventListener("click", () => void pair());
 requiredElement("open-first-use").addEventListener("click", showFirstUse);
@@ -735,18 +806,29 @@ requiredElement("login-recovery-button").addEventListener(
 );
 rememberDevice.addEventListener("change", renderDevicePersistence);
 loginName.addEventListener("input", renderDevicePersistence);
-requiredElement("set-password-button").addEventListener(
+requiredElement("settings-button").addEventListener(
   "click",
-  openPasswordDialog,
+  () => void openSettingsCenter(),
 );
-requiredElement("add-passkey-button").addEventListener(
+requiredElement("close-settings").addEventListener("click", () =>
+  settingsDialog.close(),
+);
+requiredElement("save-default-session-permissions").addEventListener(
   "click",
-  () => void addPasskey(),
+  () => void saveDefaultSessionPermissions(),
 );
-requiredElement("recovery-codes-button").addEventListener(
-  "click",
-  () => void rotateRecoveryCodes(),
-);
+requiredElement("set-password-button").addEventListener("click", () => {
+  settingsDialog.close();
+  openPasswordDialog();
+});
+requiredElement("add-passkey-button").addEventListener("click", () => {
+  settingsDialog.close();
+  void addPasskey();
+});
+requiredElement("recovery-codes-button").addEventListener("click", () => {
+  settingsDialog.close();
+  void rotateRecoveryCodes();
+});
 requiredElement("copy-recovery-code").addEventListener(
   "click",
   () => void copyRecoveryCode(),
@@ -814,17 +896,18 @@ requiredElement("browse-workspace-path").addEventListener(
   () => void openDirectoryPicker("workspace"),
 );
 requiredElement("settings-workspaces").addEventListener("click", () => {
+  settingsDialog.close();
   workspaceDialog.showModal();
   renderWorkspaceManager();
 });
-requiredElement("settings-network").addEventListener(
-  "click",
-  () => void openNetworkSettings(),
-);
-requiredElement("settings-codex-version").addEventListener(
-  "click",
-  () => void openCodexVersionSettings(),
-);
+requiredElement("settings-network").addEventListener("click", () => {
+  settingsDialog.close();
+  void openNetworkSettings();
+});
+requiredElement("settings-codex-version").addEventListener("click", () => {
+  settingsDialog.close();
+  void openCodexVersionSettings();
+});
 requiredElement("settings-network-mode").addEventListener(
   "change",
   renderSettingsNetworkFields,
@@ -881,6 +964,9 @@ workspaceSelect.addEventListener("change", () => {
 requiredElement("new-session-model").addEventListener("change", () =>
   renderReasoningEfforts(),
 );
+for (const id of ["new-session-sandbox", "new-session-approval"]) {
+  requiredElement(id).addEventListener("change", renderNewSessionPermissions);
+}
 requiredElement("start-task").addEventListener("click", () => void startTask());
 sendMessage.addEventListener("click", () => void continueThread());
 queueMessage.addEventListener("click", () => void queueForThread());
@@ -1515,8 +1601,16 @@ async function activate(nextClient: GatewayClient): Promise<void> {
   activeThreadSettings = undefined;
   activeThreadTokenUsage = undefined;
   threadSettingsPendingNextTurn = false;
+  sessionPermissionDefaults = {
+    version: 1,
+    sandbox: "workspace-write",
+    approvalPolicy: "on-request",
+  };
   pendingRequestIds.clear();
   approvalSubmissions.clear();
+  clearApprovalTray();
+  queuedItems.clear();
+  renderComposerQueue();
   conversationOutlineView.setThreadActive(false);
   jumpToLatestButton.hidden = true;
   renderComposerSessionMeta();
@@ -1530,7 +1624,7 @@ async function activate(nextClient: GatewayClient): Promise<void> {
   requiredElement("recovery-codes-button").hidden = false;
   requiredElement("add-passkey-button").hidden = false;
   requiredElement("set-password-button").hidden = false;
-  requiredElement("settings-menu").hidden = false;
+  requiredElement("settings-button").hidden = false;
   setStatus(
     "online",
     nextClient.transport === "direct"
@@ -1667,9 +1761,107 @@ function renderNetworkFields(): void {
   requiredElement("proxy-fields").hidden = networkMode.value !== "proxy";
 }
 
+async function openSettingsCenter(): Promise<void> {
+  if (!client) return;
+  requiredElement("settings-error").textContent = "";
+  renderDefaultSessionPermissions();
+  settingsDialog.showModal();
+  try {
+    await loadSessionPermissionDefaults(client);
+    renderDefaultSessionPermissions();
+  } catch (cause) {
+    requiredElement("settings-error").textContent = errorMessage(cause);
+  }
+}
+
+async function loadSessionPermissionDefaults(
+  targetClient: GatewayClient,
+): Promise<void> {
+  const defaults = await targetClient.request<SessionPermissionDefaults>(
+    "preferences/read",
+    {},
+  );
+  if (client !== targetClient) return;
+  sessionPermissionDefaults = defaults;
+}
+
+function renderDefaultSessionPermissions(): void {
+  requiredElement<HTMLSelectElement>("default-session-sandbox").value =
+    sessionPermissionDefaults.sandbox;
+  requiredElement<HTMLSelectElement>("default-session-approval").value =
+    sessionPermissionDefaults.approvalPolicy;
+  requiredElement("default-session-permissions-state").textContent =
+    `当前默认：${sessionPermissionSummary(sessionPermissionDefaults.sandbox, sessionPermissionDefaults.approvalPolicy)}`;
+}
+
+async function saveDefaultSessionPermissions(): Promise<void> {
+  if (!client) return;
+  const sandbox = requiredElement<HTMLSelectElement>("default-session-sandbox")
+    .value as SessionPermissionDefaults["sandbox"];
+  const approvalPolicy = requiredElement<HTMLSelectElement>(
+    "default-session-approval",
+  ).value as SessionPermissionDefaults["approvalPolicy"];
+  if (
+    sandbox === "danger-full-access" &&
+    sessionPermissionDefaults.sandbox !== "danger-full-access" &&
+    !window.confirm(
+      "完全访问会让以后从 Web 创建的新会话默认拥有工作目录之外的读写和命令权限。确定保存吗？",
+    )
+  )
+    return;
+  const button = requiredElement<HTMLButtonElement>(
+    "save-default-session-permissions",
+  );
+  const state = requiredElement("default-session-permissions-state");
+  const error = requiredElement("settings-error");
+  button.disabled = true;
+  button.textContent = "正在保存…";
+  state.textContent = "正在保存到宿主机…";
+  error.textContent = "";
+  try {
+    sessionPermissionDefaults = await client.request<SessionPermissionDefaults>(
+      "preferences/session-permissions/update",
+      { sandbox, approvalPolicy },
+    );
+    renderDefaultSessionPermissions();
+    showToast("新会话默认权限已更新", "success");
+  } catch (cause) {
+    state.textContent = "保存失败，默认权限未改变";
+    error.textContent = errorMessage(cause);
+  } finally {
+    button.disabled = false;
+    button.textContent = "保存默认权限";
+  }
+}
+
+function sessionPermissionSummary(
+  sandbox: SessionPermissionDefaults["sandbox"],
+  approval: SessionPermissionDefaults["approvalPolicy"],
+): string {
+  const sandboxLabel = {
+    "read-only": "只读",
+    "workspace-write": "可写工作目录",
+    "danger-full-access": "完全访问",
+  }[sandbox];
+  const approvalLabel = {
+    untrusted: "仅不受信任命令审批",
+    "on-request": "按需审批",
+    never: "不请求审批",
+  }[approval];
+  return `${sandboxLabel} · ${approvalLabel}`;
+}
+
+function renderNewSessionPermissions(): void {
+  const sandbox = requiredElement<HTMLSelectElement>("new-session-sandbox")
+    .value as SessionPermissionDefaults["sandbox"];
+  const approval = requiredElement<HTMLSelectElement>("new-session-approval")
+    .value as SessionPermissionDefaults["approvalPolicy"];
+  requiredElement("new-session-permission-summary").textContent =
+    sessionPermissionSummary(sandbox, approval);
+}
+
 async function openCodexVersionSettings(): Promise<void> {
   if (!client) return;
-  requiredElement<HTMLDetailsElement>("settings-menu").open = false;
   const current = requiredElement("codex-version-current");
   const latest = requiredElement("codex-version-latest");
   const binary = requiredElement("codex-version-binary");
@@ -1807,7 +1999,6 @@ async function applyCodexUpdate(): Promise<void> {
 
 async function openNetworkSettings(): Promise<void> {
   if (!client) return;
-  requiredElement<HTMLDetailsElement>("settings-menu").open = false;
   const state = requiredElement("network-settings-state");
   const error = requiredElement("network-settings-error");
   state.textContent = "正在读取当前配置…";
@@ -2351,7 +2542,15 @@ async function enterWorkspace(
   if (account?.email) {
     appendTimeline("system", "Codex 已登录", account.email);
   }
-  await refresh();
+  const targetClient = client;
+  if (!targetClient) return;
+  await Promise.all([
+    refresh(),
+    loadSessionPermissionDefaults(targetClient).catch(() => {
+      // Older Agents do not expose host-side preferences. The explicit safe
+      // fallback remains visible until the Agent is upgraded.
+    }),
+  ]);
 }
 
 function inputValue(id: string): string {
@@ -2817,6 +3016,9 @@ function closeActiveThreadView(): void {
   threadSettingsPendingNextTurn = false;
   pendingRequestIds.clear();
   approvalSubmissions.clear();
+  clearApprovalTray();
+  queuedItems.clear();
+  renderComposerQueue();
   workspace.classList.remove("thread-open");
   conversationOutlineView.setThreadActive(false);
   jumpToLatestButton.hidden = true;
@@ -2891,6 +3093,9 @@ async function openThread(thread: ThreadSummary): Promise<void> {
   threadSettingsPendingNextTurn = false;
   pendingRequestIds.clear();
   approvalSubmissions.clear();
+  clearApprovalTray();
+  queuedItems.clear();
+  renderComposerQueue();
   requiredElement("thread-settings-button").hidden = true;
   setTuiHandoffVisible(false);
   renderComposerSessionMeta();
@@ -2989,6 +3194,11 @@ async function openNewSession(): Promise<void> {
   ) {
     workspaceSelect.value = selectedWorkspaceScope;
   }
+  requiredElement<HTMLSelectElement>("new-session-sandbox").value =
+    sessionPermissionDefaults.sandbox;
+  requiredElement<HTMLSelectElement>("new-session-approval").value =
+    sessionPermissionDefaults.approvalPolicy;
+  renderNewSessionPermissions();
   newSessionDialog.showModal();
   requiredElement<HTMLTextAreaElement>("new-prompt").focus();
   if (codexModels.length > 0 || !client) return;
@@ -3202,6 +3412,8 @@ async function startTask(): Promise<void> {
       threadPayload,
     );
     createdThreadId = started.thread.id;
+    queuedItems.clear();
+    renderComposerQueue();
     ++openThreadSequence;
     activeThreadId = started.thread.id;
     activeThreadCwd = started.thread.cwd;
@@ -3834,32 +4046,32 @@ async function submitComposerMessage(forceQueue: boolean): Promise<void> {
 
   setComposerSubmitting(true);
   const input: UserInput[] = [{ type: "text", text, text_elements: [] }];
+  const shouldQueue =
+    forceQueue || threadSendMode(activeThreadStatus) === "queue";
   let messageCleared = false;
+  let localMessageAppended = false;
   try {
     messageInput.value = "";
     messageCleared = true;
     autoResize(messageInput);
-    timelineView.appendLocalUser(input);
-    if (forceQueue || threadSendMode(activeThreadStatus) === "queue") {
+    if (shouldQueue) {
       const item = await targetClient.request<QueueItem>("queue/add", {
         threadId,
         input,
       });
-      timelineView.removeLocalUser();
-      timelineView.upsertQueuedUser(
-        item.id,
-        queuedMessageText({ input }),
-        item.status === "paused" ? "paused" : "pending",
-      );
+      queuedItems.set(item.id, item);
+      renderComposerQueue();
       showToast(
         forceQueue ? "消息已加入队列" : "当前任务仍在运行，消息已加入队列",
         "success",
       );
     } else {
+      timelineView.appendLocalUser(input);
+      localMessageAppended = true;
       await sendTurn(targetClient, threadId, input);
     }
   } catch (error) {
-    timelineView.removeLocalUser();
+    if (localMessageAppended) timelineView.removeLocalUser();
     if (messageCleared && !messageInput.value) messageInput.value = text;
     autoResize(messageInput);
     messageInput.focus();
@@ -4035,19 +4247,67 @@ async function renderQueuedMessages(
       {},
     );
     if (sequence !== openThreadSequence || activeThreadId !== threadId) return;
+    queuedItems.clear();
     for (const item of result.items) {
       if (item.threadId !== threadId || item.status === "running") continue;
       const text = queuedMessageText(item.turnPayload);
-      if (text)
-        timelineView.upsertQueuedUser(
-          item.id,
-          text,
-          item.status === "paused" ? "paused" : "pending",
-        );
+      if (text) queuedItems.set(item.id, item);
     }
+    renderComposerQueue();
   } catch (error) {
-    appendTimeline("error", "无法读取消息队列", errorMessage(error));
+    showToast(`无法读取消息队列：${errorMessage(error)}`, "error");
   }
+}
+
+function renderComposerQueue(): void {
+  const items = [...queuedItems.values()];
+  composerQueue.hidden = items.length === 0 || !activeThreadId;
+  composerQueueCount.textContent = `${String(items.length)} 条`;
+  composerQueueNote.textContent = items.some((item) => item.status === "paused")
+    ? "发送已暂停，可移除后重新发送"
+    : activeThreadStatus?.type === "active"
+      ? "当前任务结束后依次发送"
+      : "正在等待发送";
+  composerQueueList.replaceChildren();
+  for (const item of items) {
+    const row = document.createElement("article");
+    row.className = `composer-queue-item ${item.status}`;
+    row.dataset.queueId = item.id;
+
+    const copy = document.createElement("div");
+    const status = document.createElement("span");
+    status.className = "composer-queue-status";
+    status.textContent = item.status === "paused" ? "已暂停" : "排队中";
+    const text = document.createElement("p");
+    text.textContent = queuedMessageText(item.turnPayload);
+    text.title = text.textContent;
+    copy.append(status, text);
+
+    const actions = document.createElement("div");
+    actions.className = "composer-queue-actions";
+    const canSteer =
+      activeThreadStatus?.type === "active" && Boolean(activeTurnId);
+    if (canSteer) {
+      const steer = document.createElement("button");
+      steer.type = "button";
+      steer.className = "ghost queue-tray-steer";
+      steer.textContent = "转为 Steer";
+      steer.title = "立即补充到当前正在运行的任务";
+      steer.addEventListener("click", () => void steerQueuedMessage(item.id));
+      actions.append(steer);
+    }
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.className = "icon-button queue-tray-remove";
+    remove.textContent = "×";
+    remove.title = "移除这条待发送消息";
+    remove.setAttribute("aria-label", "移除待发送消息");
+    remove.addEventListener("click", () => void removeQueuedMessage(item.id));
+    actions.append(remove);
+    row.append(copy, actions);
+    composerQueueList.append(row);
+  }
+  updateApprovalTray();
 }
 
 async function interruptActiveTurn(): Promise<void> {
@@ -4072,21 +4332,43 @@ async function steerQueuedMessage(queueId: string): Promise<void> {
     showToast("当前没有可接收 Steer 的运行中任务", "error");
     return;
   }
-  const card = timeline.querySelector<HTMLElement>(
+  const card = composerQueueList.querySelector<HTMLElement>(
     `[data-queue-id="${CSS.escape(queueId)}"]`,
   );
-  const button = card?.querySelector<HTMLButtonElement>(".queued-steer");
+  const button = card?.querySelector<HTMLButtonElement>(".queue-tray-steer");
   if (button) button.disabled = true;
   try {
     await client.request("queue/steer", {
       id: queueId,
       expectedTurnId: activeTurnId,
     });
-    timelineView.removeQueuedUser(queueId);
+    queuedItems.delete(queueId);
+    renderComposerQueue();
     showToast("排队消息已转为 Steer", "success");
   } catch (error) {
     if (button) button.disabled = false;
     showToast(`转为 Steer 失败：${errorMessage(error)}`, "error");
+  }
+}
+
+async function removeQueuedMessage(queueId: string): Promise<void> {
+  if (!client) return;
+  const row = composerQueueList.querySelector<HTMLElement>(
+    `[data-queue-id="${CSS.escape(queueId)}"]`,
+  );
+  const button = row?.querySelector<HTMLButtonElement>(".queue-tray-remove");
+  if (button) button.disabled = true;
+  try {
+    const result = await client.request<{ removed: boolean }>("queue/remove", {
+      id: queueId,
+    });
+    if (!result.removed) throw new Error("消息已经开始发送或已被移除");
+    queuedItems.delete(queueId);
+    renderComposerQueue();
+    showToast("已移除待发送消息", "success");
+  } catch (error) {
+    if (button) button.disabled = false;
+    showToast(`移除失败：${errorMessage(error)}`, "error");
   }
 }
 
@@ -4133,11 +4415,12 @@ function renderEvent(event: EventEnvelope): void {
     pendingRequestIds.delete(requestId);
     const resolution = approvalSubmissions.resolve(requestId);
     const card = Array.from(
-      timeline.querySelectorAll<HTMLElement>("[data-request-id]"),
+      composerApprovalList.querySelectorAll<HTMLElement>("[data-request-id]"),
     ).find((candidate) => candidate.dataset.requestId === requestId);
     if (card && !card.classList.contains("answered"))
-      markAnswered(
+      resolveApprovalCard(
         card,
+        requestId,
         resolution.wasSubmitting
           ? (card.dataset.submissionResult ?? "已处理")
           : "已由其他客户端处理",
@@ -4149,15 +4432,18 @@ function renderEvent(event: EventEnvelope): void {
     (event.type === "queue/started" || event.type === "queue/steered") &&
     typeof payload.itemId === "string"
   ) {
-    timelineView.removeQueuedUser(payload.itemId);
+    queuedItems.delete(payload.itemId);
+    renderComposerQueue();
     return;
   }
   if (event.type === "queue/paused" && typeof payload.itemId === "string") {
-    const card = timeline.querySelector<HTMLElement>(
-      `[data-queue-id="${CSS.escape(payload.itemId)}"]`,
-    );
-    const text = card?.querySelector<HTMLElement>(".message-text")?.textContent;
-    if (text) timelineView.upsertQueuedUser(payload.itemId, text, "paused");
+    const item = queuedItems.get(payload.itemId);
+    if (item) {
+      item.status = "paused";
+      renderComposerQueue();
+    } else if (activeThreadId) {
+      void renderQueuedMessages(activeThreadId, openThreadSequence);
+    }
     return;
   }
 
@@ -4222,7 +4508,7 @@ function renderEvent(event: EventEnvelope): void {
 function renderApproval(payload: unknown): void {
   if (!isRecord(payload) || typeof payload.requestId !== "string") return;
   if (
-    timeline.querySelector(
+    composerApprovalList.querySelector(
       `[data-request-id="${CSS.escape(payload.requestId)}"]`,
     )
   )
@@ -4232,11 +4518,11 @@ function renderApproval(payload: unknown): void {
     return;
   }
   const presentation = approvalPresentation(payload.method, payload.params);
-  const card = document.createElement("article");
-  card.className = "timeline-card approval";
-  card.dataset.requestId = payload.requestId;
-  const heading = document.createElement("strong");
-  heading.textContent = presentation.title;
+  const { card, body } = createApprovalTrayCard(
+    payload.requestId,
+    presentation.title,
+    presentation.summary,
+  );
   const detail = document.createElement("div");
   detail.className = "approval-summary";
   const summary = document.createElement("p");
@@ -4269,9 +4555,10 @@ function renderApproval(payload: unknown): void {
     () => void answerApproval(payload, false, card),
   );
   actions.append(deny);
-  card.append(heading, detail, actions);
-  timeline.append(card);
-  card.scrollIntoView({ behavior: "smooth", block: "end" });
+  body.append(detail, actions);
+  composerApprovalList.append(card);
+  if (!expandedApprovalId) expandedApprovalId = payload.requestId;
+  updateApprovalTray();
 }
 
 async function answerApproval(
@@ -4307,16 +4594,12 @@ async function answerApproval(
       });
     }
     if (!approvalSubmissions.complete(requestId) || !card.isConnected) return;
-    markAnswered(card, resultText);
-    pendingRequestIds.delete(requestId);
-    updatePendingApprovalState();
+    resolveApprovalCard(card, requestId, resultText);
   } catch (error) {
     const disposition = approvalSubmissions.fail(requestId, error);
     if (disposition === "ignored" || !card.isConnected) return;
     if (disposition === "already-handled") {
-      markAnswered(card, "已由其他客户端处理");
-      pendingRequestIds.delete(requestId);
-      updatePendingApprovalState();
+      resolveApprovalCard(card, requestId, "已由其他客户端处理");
       return;
     }
     setApprovalSubmissionFailed(card, `提交失败：${errorMessage(error)}`);
@@ -4333,11 +4616,15 @@ function renderUserInput(payload: Record<string, unknown>): void {
   const questions = Array.isArray(payload.params.questions)
     ? payload.params.questions.filter(isRecord)
     : [];
-  const card = document.createElement("article");
-  card.className = "timeline-card approval";
-  card.dataset.requestId = payload.requestId;
-  const heading = document.createElement("strong");
-  heading.textContent = "Codex 需要你的回答";
+  const firstQuestion = questions[0];
+  const summary = firstQuestion
+    ? String(firstQuestion.question ?? firstQuestion.header ?? "需要补充信息")
+    : "Codex 需要你补充信息后才能继续。";
+  const { card, body } = createApprovalTrayCard(
+    payload.requestId,
+    "Codex 需要你的回答",
+    summary,
+  );
   const form = document.createElement("div");
   form.className = "input-questions";
   const controls = new Map<string, HTMLInputElement | HTMLSelectElement>();
@@ -4385,24 +4672,169 @@ function renderUserInput(payload: Record<string, unknown>): void {
         result: { answers },
       });
       if (!approvalSubmissions.complete(requestId) || !card.isConnected) return;
-      markAnswered(card, "已提交回答");
-      pendingRequestIds.delete(requestId);
-      updatePendingApprovalState();
+      resolveApprovalCard(card, requestId, "已提交回答");
     } catch (error) {
       const disposition = approvalSubmissions.fail(requestId, error);
       if (disposition === "ignored" || !card.isConnected) return;
       if (disposition === "already-handled") {
-        markAnswered(card, "已由其他客户端处理");
-        pendingRequestIds.delete(requestId);
-        updatePendingApprovalState();
+        resolveApprovalCard(card, requestId, "已由其他客户端处理");
         return;
       }
       setApprovalSubmissionFailed(card, `提交回答失败：${errorMessage(error)}`);
     }
   });
   actions.append(submit);
-  card.append(heading, form, actions);
-  timeline.append(card);
+  body.append(form, actions);
+  composerApprovalList.append(card);
+  if (!expandedApprovalId) expandedApprovalId = payload.requestId;
+  updateApprovalTray();
+}
+
+function createApprovalTrayCard(
+  requestId: string,
+  titleText: string,
+  summaryText: string,
+): { card: HTMLElement; body: HTMLElement } {
+  const card = document.createElement("article");
+  card.className = "approval-tray-item";
+  card.dataset.requestId = requestId;
+
+  const toggle = document.createElement("button");
+  toggle.type = "button";
+  toggle.className = "approval-tray-toggle";
+  toggle.setAttribute("aria-expanded", "false");
+  const order = document.createElement("span");
+  order.className = "approval-tray-order";
+  const copy = document.createElement("span");
+  copy.className = "approval-tray-copy";
+  const title = document.createElement("strong");
+  title.textContent = titleText;
+  const summary = document.createElement("small");
+  summary.textContent = summaryText;
+  copy.append(title, summary);
+  const chevron = document.createElement("span");
+  chevron.className = "approval-tray-chevron";
+  chevron.setAttribute("aria-hidden", "true");
+  toggle.append(order, copy, chevron);
+  toggle.addEventListener("click", () => {
+    if (card.classList.contains("answered")) return;
+    expandedApprovalId = requestId;
+    updateApprovalTray();
+  });
+
+  const body = document.createElement("div");
+  body.className = "approval-tray-body";
+  card.append(toggle, body);
+  return { card, body };
+}
+
+function updateApprovalTray(): void {
+  const cards = Array.from(
+    composerApprovalList.querySelectorAll<HTMLElement>(".approval-tray-item"),
+  );
+  const pendingCards = cards.filter(
+    (card) => !card.classList.contains("answered"),
+  );
+  if (
+    !expandedApprovalId ||
+    !cards.some((card) => card.dataset.requestId === expandedApprovalId)
+  ) {
+    expandedApprovalId = pendingCards[0]?.dataset.requestId;
+  }
+
+  composerApprovals.hidden = cards.length === 0;
+  composerApprovalCount.textContent = `${pendingCards.length} 项`;
+  const expandedCard = cards.find(
+    (card) => card.dataset.requestId === expandedApprovalId,
+  );
+  const expandedIndex = pendingCards.findIndex(
+    (card) => card.dataset.requestId === expandedApprovalId,
+  );
+  composerApprovalNote.textContent = expandedCard?.classList.contains(
+    "answered",
+  )
+    ? pendingCards.length > 0
+      ? "操作已处理，正在进入下一项"
+      : "操作已处理"
+    : pendingCards.length > 1
+      ? `逐项处理 · 当前第 ${Math.max(0, expandedIndex) + 1}/${pendingCards.length} 项`
+      : pendingCards.length === 1
+        ? "当前任务正在等待你的操作"
+        : "操作已处理";
+
+  let pendingIndex = 0;
+  for (const card of cards) {
+    const answered = card.classList.contains("answered");
+    if (!answered) pendingIndex += 1;
+    const expanded = card.dataset.requestId === expandedApprovalId;
+    card.classList.toggle("collapsed", !expanded);
+    const toggle = card.querySelector<HTMLButtonElement>(
+      ".approval-tray-toggle",
+    );
+    toggle?.setAttribute("aria-expanded", String(expanded));
+    const order = card.querySelector<HTMLElement>(".approval-tray-order");
+    if (order) order.textContent = answered ? "✓" : String(pendingIndex);
+  }
+
+  const composer = composerApprovals.parentElement;
+  const hasPendingApproval = pendingCards.length > 0;
+  composer?.classList.toggle("approval-pending", hasPendingApproval);
+  if (!hasPendingApproval) composerQueue.classList.remove("force-open");
+  composerQueueHeader.setAttribute(
+    "aria-expanded",
+    String(
+      !hasPendingApproval || composerQueue.classList.contains("force-open"),
+    ),
+  );
+}
+
+function resolveApprovalCard(
+  card: HTMLElement,
+  requestId: string,
+  text: string,
+): void {
+  markAnswered(card, text);
+  pendingRequestIds.delete(requestId);
+  updatePendingApprovalState();
+  updateApprovalTray();
+  if (card.dataset.resolutionScheduled === "true") return;
+  card.dataset.resolutionScheduled = "true";
+  window.setTimeout(() => {
+    if (!card.isConnected) return;
+    card.remove();
+    if (expandedApprovalId === requestId) expandedApprovalId = undefined;
+    updateApprovalTray();
+  }, 900);
+}
+
+function clearApprovalTray(preserveAnswered = false): void {
+  expandedApprovalId = undefined;
+  if (preserveAnswered) {
+    for (const card of composerApprovalList.querySelectorAll(
+      ".approval-tray-item:not(.answered)",
+    ))
+      card.remove();
+  } else {
+    composerApprovalList.replaceChildren();
+  }
+  if (composerApprovalList.childElementCount > 0) {
+    updateApprovalTray();
+    return;
+  }
+  composerApprovals.hidden = true;
+  composerApprovals.parentElement?.classList.remove("approval-pending");
+  composerQueue.classList.remove("force-open");
+  composerQueueHeader.setAttribute("aria-expanded", "true");
+}
+
+function toggleComposerQueueDuringApproval(): void {
+  if (
+    composerQueue.hidden ||
+    !composerApprovals.parentElement?.classList.contains("approval-pending")
+  )
+    return;
+  const expanded = composerQueue.classList.toggle("force-open");
+  composerQueueHeader.setAttribute("aria-expanded", String(expanded));
 }
 
 function isApprovalMethod(method: unknown): boolean {
@@ -4873,7 +5305,7 @@ function updateComposerMode(): void {
   requiredElement("thread-state").title = active
     ? "新消息会保存在 HPC 队列中，并在当前任务结束后发送"
     : "";
-  timelineView.setQueuedSteerAvailable(active && Boolean(activeTurnId));
+  renderComposerQueue();
 }
 
 function setThreadActivity(key: string, label: string): void {
@@ -4898,6 +5330,7 @@ function updateThreadActivity(
   if (event.type === "codex/turn/completed") {
     pendingRequestIds.clear();
     approvalSubmissions.clear();
+    clearApprovalTray(true);
     activeTurnId = undefined;
     activeThreadStatus = { type: "idle" };
     setThreadActivity("completed", "已完成");

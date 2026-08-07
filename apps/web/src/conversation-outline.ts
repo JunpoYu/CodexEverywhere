@@ -114,16 +114,11 @@ export class ConversationOutlineView {
       return {
         card,
         label: conversationOutlineLabel(text),
-        queued: card.classList.contains("queued-message"),
-        key:
-          card.dataset.itemId ??
-          card.dataset.queueId ??
-          card.dataset.localUser ??
-          text,
+        key: card.dataset.itemId ?? card.dataset.localUser ?? text,
       };
     });
     const signature = items
-      .map((item) => `${item.key}\u0000${item.label}\u0000${item.queued}`)
+      .map((item) => `${item.key}\u0000${item.label}`)
       .join("\u0001");
     if (signature === this.#signature) {
       this.#scheduleActiveUpdate();
@@ -148,11 +143,6 @@ export class ConversationOutlineView {
       label.className = "conversation-outline-label";
       label.textContent = item.label;
       button.append(number, label);
-      if (item.queued) {
-        const status = document.createElement("small");
-        status.textContent = "排队";
-        button.append(status);
-      }
       button.addEventListener("click", () => this.#jumpTo(item.card, button));
       this.#list.append(button);
       return { card: item.card, button };

@@ -13,6 +13,7 @@ import {
   mcpServerStartupNotice,
   queuedMessageText,
   shouldFollowTimeline,
+  streamingItemCandidateId,
   TRANSIENT_TIMELINE_SELECTOR,
   threadSnapshotRevision,
   threadSendMode,
@@ -262,9 +263,9 @@ describe("composer delivery", () => {
     expect(threadSnapshotRevision(response as never)).not.toBe(before);
   });
 
-  it("preserves queued messages and approval cards during snapshot repair", () => {
-    expect(TRANSIENT_TIMELINE_SELECTOR).toContain("[data-queue-id]");
-    expect(TRANSIENT_TIMELINE_SELECTOR).toContain("[data-request-id]");
+  it("preserves optimistic cards during snapshot repair", () => {
+    expect(TRANSIENT_TIMELINE_SELECTOR).not.toContain("[data-queue-id]");
+    expect(TRANSIENT_TIMELINE_SELECTOR).not.toContain("[data-request-id]");
     expect(TRANSIENT_TIMELINE_SELECTOR).toContain(".timeline-entry.streaming");
     expect(TRANSIENT_TIMELINE_SELECTOR).toContain("[data-local-user]");
   });
@@ -274,5 +275,52 @@ describe("composer delivery", () => {
     expect(localUserReconciledByTurns(undefined, turns)).toBe(false);
     expect(localUserReconciledByTurns("turn-pending", turns)).toBe(false);
     expect(localUserReconciledByTurns("turn-new", turns)).toBe(true);
+  });
+
+  it("reconciles a streaming first reply by turn and kind when item ids differ", () => {
+    const turns = [
+      {
+        id: "turn-new",
+        status: "inProgress",
+        error: null,
+        items: [
+          {
+            type: "userMessage",
+            id: "user-authoritative",
+            clientId: null,
+            content: [{ type: "text", text: "你好", text_elements: [] }],
+          },
+          {
+            type: "agentMessage",
+            id: "agent-authoritative",
+            text: "首次回复",
+            phase: null,
+          },
+        ],
+      },
+    ] as never;
+
+    expect(
+      streamingItemCandidateId("turn-new", "agent-streaming", "agent", turns),
+    ).toBe("agent-authoritative");
+    expect(
+      streamingItemCandidateId(
+        "turn-new",
+        "agent-authoritative",
+        "agent",
+        turns,
+      ),
+    ).toBe("agent-authoritative");
+    expect(
+      streamingItemCandidateId("turn-other", "agent-streaming", "agent", turns),
+    ).toBeUndefined();
+    expect(
+      streamingItemCandidateId(
+        "turn-new",
+        "unknown-tool-stream",
+        "tool",
+        turns,
+      ),
+    ).toBeUndefined();
   });
 });
