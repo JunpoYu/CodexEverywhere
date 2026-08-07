@@ -4,6 +4,8 @@
 
 ## [Unreleased]
 
+## [0.3.0-alpha.2] - 2026-08-07
+
 ### Added
 
 - 新增由 GitHub tag 的干净 checkout 生成 Web、Agent、Relay 和 HPC 工具不可变制品的 Release pipeline；每个 Release 附带组件版本、commit、协议版本、文件大小、SHA-256 校验和与 GitHub provenance attestation。
