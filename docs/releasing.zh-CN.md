@@ -1,12 +1,14 @@
 # 发布流程
 
-本文档定义 CodexEverywhere 的公开发布流程。当前公开版本为 `v0.3.0-alpha.1`，在稳定版之前只发布源代码，不发布 npm 包、容器镜像或未经独立验证的预构建 HPC bundle。
+本文档定义 CodexEverywhere 的公开发布流程。当前公开版本为 `v0.3.0-alpha.1`。GitHub Release 从 tag 的干净 checkout 构建 Web、Agent、Relay 和 HPC 部署工具，不发布 npm 包；生产环境只消费这些不可变制品，不从开发工作区重新构建。
+
+发布与部署是两个阶段：公开仓库负责把源码变成可验证制品，生产运维环境负责选择版本、保存部署秘密并消费制品。真实域名、主机、SSH 参数、credential 和环境 inventory 不进入公开仓库。
 
 ## 分支与历史
 
 - 公开仓库的默认分支为 `main`。
-- 初次发布必须从当前清理后的无父提交分支 `codex/public-release` 建立公开 `main`，不得推送包含私人部署信息的旧本地历史。
-- 公开后，所有功能分支都从公开 `main` 创建；不得把旧的私人 `main` 合并回公开历史。
+- 所有功能分支都从公开 `main` 创建并通过 Pull Request 合并；不得把旧的私人 `main` 合并回公开历史。
+- `main` 是唯一可信源码主线；功能分支、PR head、本地提交和脏工作区不得作为生产部署输入。
 - Release tag 是已发布版本的唯一不可变标识。已经推送的 tag 不得移动或复用。
 - 提交使用 GitHub noreply 邮箱，Issue、PR、提交说明和测试数据不得包含真实部署身份、主机名、域名、路径或凭据。
 
@@ -80,6 +82,19 @@ git push public v0.3.0-alpha.1
 
 Tag 推送后，[Release workflow](../.github/workflows/release.yml) 会重新执行格式、类型、测试和构建检查，并创建 GitHub Release。带连字符的版本会自动标记为 prerelease。
 
+Release workflow 还会验证 tag commit 属于公开 `main`，并生成：
+
+```text
+codex-everywhere-web-<tag>.tar.gz
+codex-everywhere-agent-<tag>.tar.gz
+codex-everywhere-relay-<tag>.tar.gz
+codex-everywhere-hpc-tools-<tag>.tar.gz
+manifest.json
+SHA256SUMS
+```
+
+`manifest.json` 记录统一版本、完整 commit、协议版本、Node.js 要求以及每个制品的名称、大小和 SHA-256。GitHub Actions 同时为制品生成 provenance attestation。Release 已存在时 workflow 不覆盖或移动它。
+
 ## 后续发布
 
 1. 从公开 `main` 创建发布准备分支；
@@ -88,7 +103,11 @@ Tag 推送后，[Release workflow](../.github/workflows/release.yml) 会重新�
 4. 合并后在本地同步公开 `main`；
 5. 创建并推送 annotated tag；
 6. 检查自动生成的 GitHub Release、安装文档和源代码归档；
-7. 在测试宿主机完成一次全新安装与升级演练。
+7. 检查 manifest、SHA-256 和 provenance attestation；
+8. 由独立 staging 运维环境消费 Release，完成全新安装、升级和回滚演练；
+9. 人工批准后，由 production 运维环境部署同一组制品，不重新构建。
+
+不要把 GitHub Actions 的生产 SSH 私钥放进公开源码仓库。HPC 推荐由无特权专用部署账号主动下载 Release；Web/Relay 可以由私有 ops 仓库或带 Environment 审批的部署工作流消费 Release。完整流程见[部署与升级](deployment.zh-CN.md)。
 
 ## 撤回与修复
 

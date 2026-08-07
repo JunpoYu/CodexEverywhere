@@ -240,7 +240,7 @@ Nginx 示例：
 
 默认安装在该账号 home 下时，安装脚本会把 home 设为 `0711`，只允许其他用户穿越到已知的共享程序路径而不能列出 home；`.ssh`、provisioner credential 等私有目录仍保持 `0700`，私有文件保持 `0600`。
 
-构建生产 Agent bundle：
+从源码构建 Agent bundle 仅用于开发、测试或尚无正式 Release 的首次 bootstrap：
 
 ```bash
 deploy/hpc/prepare-agent-bundle.sh /tmp/codex-everywhere-agent
@@ -293,7 +293,13 @@ deploy/hpc/install-rootless-global-shim.sh \
   codexeverywhere
 ```
 
-以后由专用账号上传新 bundle、运行 `install-rootless-agent.sh` 并切换 `current`；watchdog 在服务重启后自动使用新版本。旧的 root-owned shared installer 和 sudo self-provision helper 仅作为迁移兼容路径保留。完整权限模型见[架构文档](docs/architecture.zh-CN.md#多用户公共安装)。
+正式 Release 后，升级不再从开发工作区上传 bundle。专用账号下载 Release 中经过校验的 `codex-everywhere-hpc-tools-<tag>.tar.gz`，解压后执行：
+
+```bash
+hpc-tools/install-release.sh <tag>
+```
+
+该入口会下载同一 Release 的 Agent、manifest 和 SHA-256，交叉验证后安装到版本目录并原子切换 `current`；watchdog 在服务重启后使用新版本。回滚只需运行 `activate-rootless-release.sh <old-tag> [install-root]`，不重新构建。旧的 root-owned shared installer 和 sudo self-provision helper 仅作为迁移兼容路径保留。完整权限模型见[架构文档](docs/architecture.zh-CN.md#多用户公共安装)，生产发布边界见[部署与升级](docs/deployment.zh-CN.md)。
 
 ### 安装管理员控制面
 
@@ -383,6 +389,7 @@ pnpm test:app-server
 - [安全策略](SECURITY.md)
 - [版本记录](CHANGELOG.md)
 - [发布流程](docs/releasing.zh-CN.md)
+- [部署与升级](docs/deployment.zh-CN.md)
 - [项目内 Codex/工程约束](AGENTS.md)
 - [官方 Codex CLI 文档](https://developers.openai.com/codex/cli)
 - [官方 Codex app-server 文档](https://developers.openai.com/codex/app-server)

@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { execFileSync, spawn } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { readFile, stat } from "node:fs/promises";
 import { homedir, hostname, userInfo } from "node:os";
 import { join } from "node:path";
@@ -99,11 +100,25 @@ const paths = resolveHostPaths();
 program
   .name("ce")
   .description("CodexEverywhere host agent and TUI launcher")
-  .version("0.1.0");
+  .version(packageVersion());
 
 const agent = program
   .command("agent")
   .description("Manage the local host agent");
+
+function packageVersion(): string {
+  const value: unknown = JSON.parse(
+    readFileSync(new URL("../package.json", import.meta.url), "utf8"),
+  );
+  if (
+    value &&
+    typeof value === "object" &&
+    "version" in value &&
+    typeof value.version === "string"
+  )
+    return value.version;
+  throw new Error("Agent package version is missing");
+}
 
 agent
   .command("install-service")

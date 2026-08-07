@@ -392,6 +392,8 @@ packages/
 └── testing/   # app-server 与 relay 测试工具
 ```
 
+Monorepo 只负责源码协作和跨组件测试，不是生产部署目录。公开 `main` 是唯一可信源码主线；GitHub Release 从属于 `main` 的不可变 tag 构建 Web、Agent 和 Relay 制品，生产运维环境只消费 Release 的 manifest、校验和与制品。真实域名、主机、SSH 参数和 credential 位于独立私有 ops 环境。合并、发布和部署是三个独立审批点，功能分支或本地工作区不能直接成为生产输入。详细流程见[部署与升级](deployment.zh-CN.md)。
+
 ### 兼容策略
 
 - Codex CLI 运行版本不设白名单；仓库内生成的 app-server schema 是编译与回归测试基线，不是运行时版本门槛。CodexEverywhere 发版时应持续用 npm 最新稳定版执行真实集成测试并刷新 schema，以支持新字段和方法。
