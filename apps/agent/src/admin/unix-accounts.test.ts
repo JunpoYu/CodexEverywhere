@@ -1,6 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { inspectSshUnixAccount, parsePasswdEntry } from "./unix-accounts.js";
+import {
+  inspectSshUnixAccount,
+  inspectSshUnixAccountByUid,
+  parsePasswdEntry,
+} from "./unix-accounts.js";
 
 describe("Unix account eligibility", () => {
   it("accepts an existing NSS account with a home and login shell", async () => {
@@ -57,6 +61,23 @@ describe("Unix account eligibility", () => {
       reason: "invalid Unix username",
     });
     expect(runGetent).not.toHaveBeenCalled();
+  });
+
+  it("resolves the authenticated file owner through NSS by UID", async () => {
+    const runGetent = vi.fn(
+      async () => "alice:x:1003:1003:Alice:/public/home/alice:/bin/bash\n",
+    );
+    await expect(inspectSshUnixAccountByUid(1003, runGetent)).resolves.toEqual({
+      eligible: true,
+      account: {
+        username: "alice",
+        uid: 1003,
+        gid: 1003,
+        home: "/public/home/alice",
+        shell: "/bin/bash",
+      },
+    });
+    expect(runGetent).toHaveBeenCalledWith("1003");
   });
 
   it("fails closed on ambiguous or malformed NSS output", () => {

@@ -7,6 +7,9 @@
   "bin": {
     "ce-relay": "./dist/cli.js"
   },
+  "files": [
+    "dist"
+  ],
   "scripts": {
     "build": "tsc -b && chmod 755 dist/cli.js",
     "clean": "rm -rf dist *.tsbuildinfo",

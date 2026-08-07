@@ -88,7 +88,32 @@ export function threadSnapshotRevision(response: ThreadReadResponse): string {
 }
 
 export const TRANSIENT_TIMELINE_SELECTOR =
-  "[data-queue-id], [data-request-id], .timeline-entry.streaming";
+  "[data-queue-id], [data-request-id], [data-local-user], .timeline-entry.streaming";
+
+export function localUserReconciledByTurns(
+  localTurnId: string | undefined,
+  turns: ReadonlyArray<Pick<Turn, "id">>,
+): boolean {
+  return Boolean(localTurnId && turns.some((turn) => turn.id === localTurnId));
+}
+
+const FOLLOW_LATEST_THRESHOLD_PX = 64;
+
+export type TimelineScrollMetrics = {
+  scrollTop: number;
+  scrollHeight: number;
+  clientHeight: number;
+};
+
+export function shouldFollowTimeline(
+  metrics: TimelineScrollMetrics,
+  threshold = FOLLOW_LATEST_THRESHOLD_PX,
+): boolean {
+  return (
+    metrics.scrollHeight <= metrics.clientHeight ||
+    metrics.scrollHeight - metrics.scrollTop - metrics.clientHeight <= threshold
+  );
+}
 
 export type VisibleThreadItem = Exclude<ThreadItem, { type: "reasoning" }>;
 
@@ -100,6 +125,38 @@ export function isVisibleThreadItem(
 
 export function isReasoningEventType(type: string): boolean {
   return type.startsWith("codex/item/reasoning/");
+}
+
+const INTERNAL_TIMELINE_EVENT_TYPES = new Set([
+  "codex/thread/archived",
+  "codex/thread/deleted",
+  "codex/thread/unarchived",
+  "codex/thread/closed",
+  "codex/thread/goal/updated",
+  "codex/thread/goal/cleared",
+  "codex/hook/started",
+  "codex/hook/completed",
+  "codex/turn/plan/updated",
+  "codex/item/autoApprovalReview/started",
+  "codex/item/autoApprovalReview/completed",
+  "codex/rawResponseItem/completed",
+  "codex/item/commandExecution/terminalInteraction",
+  "codex/item/mcpToolCall/progress",
+  "codex/thread/compacted",
+  "codex/model/verification",
+  "codex/turn/moderationMetadata",
+  "codex/model/safetyBuffering/updated",
+  "codex/thread/realtime/started",
+  "codex/thread/realtime/itemAdded",
+  "codex/thread/realtime/transcript/delta",
+  "codex/thread/realtime/transcript/done",
+  "codex/thread/realtime/outputAudio/delta",
+  "codex/thread/realtime/sdp",
+  "codex/thread/realtime/closed",
+]);
+
+export function isInternalTimelineEventType(type: string): boolean {
+  return INTERNAL_TIMELINE_EVENT_TYPES.has(type);
 }
 
 export function describeThreadItem(
@@ -234,6 +291,28 @@ export function fileChangeItemFromPatchUpdate(
   };
 }
 
+export class FileChangeDisclosureState {
+  readonly #open = new Set<string>();
+
+  isOpen(itemId: string, path: string): boolean {
+    return this.#open.has(fileChangeDisclosureKey(itemId, path));
+  }
+
+  setOpen(itemId: string, path: string, open: boolean): void {
+    const key = fileChangeDisclosureKey(itemId, path);
+    if (open) this.#open.add(key);
+    else this.#open.delete(key);
+  }
+
+  clear(): void {
+    this.#open.clear();
+  }
+}
+
+function fileChangeDisclosureKey(itemId: string, path: string): string {
+  return JSON.stringify([itemId, path]);
+}
+
 function localImageNameFromPath(path: string): string {
   const leaf = path.split(/[\\/]/u).at(-1) ?? "图片";
   return leaf.replace(/^[0-9a-f-]{36}-/iu, "") || "图片";
@@ -242,47 +321,140 @@ function localImageNameFromPath(path: string): string {
 export class ThreadTimelineView {
   readonly #container: HTMLElement;
   readonly #onSteerQueued: ((queueId: string) => void) | undefined;
+  readonly #onLoadOlder: (() => void) | undefined;
+  readonly #onFollowLatestChanged: ((following: boolean) => void) | undefined;
+  readonly #fileChangeDisclosures = new FileChangeDisclosureState();
   #snapshotRevision = "";
   #queuedSteerAvailable = false;
+  #followingLatest = true;
+  #hasOlderHistory = false;
+  #loadingOlderHistory = false;
 
   constructor(
     container: HTMLElement,
-    options: { onSteerQueued?(queueId: string): void } = {},
+    options: {
+      onSteerQueued?(queueId: string): void;
+      onLoadOlder?(): void;
+      onFollowLatestChanged?(following: boolean): void;
+    } = {},
   ) {
     this.#container = container;
     this.#onSteerQueued = options.onSteerQueued;
+    this.#onLoadOlder = options.onLoadOlder;
+    this.#onFollowLatestChanged = options.onFollowLatestChanged;
+    container.addEventListener(
+      "scroll",
+      () => this.#setFollowingLatest(this.#isNearLatest()),
+      { passive: true },
+    );
   }
 
   clear(message = "选择一个会话查看内容"): void {
+    this.#fileChangeDisclosures.clear();
+    this.#hasOlderHistory = false;
+    this.#loadingOlderHistory = false;
     this.#container.replaceChildren(emptyElement(message));
+    this.#setFollowingLatest(true);
   }
 
-  renderSnapshot(response: ThreadReadResponse): void {
-    this.#snapshotRevision = threadSnapshotRevision(response);
-    this.#container.replaceChildren();
-    for (const turn of response.thread.turns) this.#renderTurn(turn);
-    if (this.#container.childElementCount === 0) {
-      this.#container.append(emptyElement("这个会话还没有消息"));
+  renderSnapshot(
+    response: ThreadReadResponse,
+    options: { hasOlderHistory?: boolean } = {},
+  ): void {
+    this.#hasOlderHistory = options.hasOlderHistory ?? false;
+    this.#loadingOlderHistory = false;
+    this.#replaceSnapshot(response);
+    this.followLatest();
+  }
+
+  setOlderHistoryLoading(loading: boolean): void {
+    this.#loadingOlderHistory = loading;
+    this.#renderHistoryPager();
+  }
+
+  prependTurns(turns: Turn[], hasOlderHistory: boolean): void {
+    const previousHeight = this.#container.scrollHeight;
+    const anchor = this.#container.querySelector(
+      ".turn-block, .timeline-entry:not(.history-pagination)",
+    );
+    const fragment = document.createDocumentFragment();
+    for (const turn of turns) {
+      if (
+        this.#container.querySelector(`[data-turn-id="${CSS.escape(turn.id)}"]`)
+      )
+        continue;
+      const section = this.#turnElement(turn);
+      if (section) fragment.append(section);
     }
-    this.scrollToEnd(false);
+    this.#container.insertBefore(fragment, anchor);
+    this.#hasOlderHistory = hasOlderHistory;
+    this.#loadingOlderHistory = false;
+    this.#renderHistoryPager();
+    this.#container.scrollTop += this.#container.scrollHeight - previousHeight;
+    this.#setFollowingLatest(false);
   }
 
-  reconcileSnapshot(response: ThreadReadResponse): boolean {
-    const revision = threadSnapshotRevision(response);
-    if (revision === this.#snapshotRevision) return false;
+  mergeRecentTurns(turns: Turn[]): void {
+    const followLatest = this.#isNearLatest();
     const transientCards = Array.from(
       this.#container.querySelectorAll<HTMLElement>(
         TRANSIENT_TIMELINE_SELECTOR,
       ),
     );
-    this.renderSnapshot(response);
+    for (const card of transientCards) card.remove();
+    for (const turn of turns) {
+      const replacement = this.#turnElement(turn);
+      const existing = this.#container.querySelector<HTMLElement>(
+        `[data-turn-id="${CSS.escape(turn.id)}"]`,
+      );
+      this.#removeLooseTurnItems(turn);
+      if (existing) {
+        if (replacement) existing.replaceWith(replacement);
+        else existing.remove();
+      } else if (replacement) {
+        this.#container.append(replacement);
+      }
+    }
     for (const card of transientCards) {
+      if (localUserReconciledByTurns(card.dataset.localTurnId, turns)) continue;
       const itemId = card.dataset.itemId;
       const snapshotCard = itemId ? this.#findItem(itemId) : undefined;
       if (snapshotCard) snapshotCard.replaceWith(card);
       else this.#container.append(card);
     }
-    this.scrollToEnd(false);
+    this.#renderHistoryPager();
+    this.#finishContentUpdate(followLatest);
+  }
+
+  reconcileSnapshot(response: ThreadReadResponse): boolean {
+    const revision = threadSnapshotRevision(response);
+    if (revision === this.#snapshotRevision) return false;
+    const followLatest = this.#isNearLatest();
+    const previousScrollTop = this.#container.scrollTop;
+    const transientCards = Array.from(
+      this.#container.querySelectorAll<HTMLElement>(
+        TRANSIENT_TIMELINE_SELECTOR,
+      ),
+    );
+    this.#replaceSnapshot(response);
+    for (const card of transientCards) {
+      if (
+        localUserReconciledByTurns(
+          card.dataset.localTurnId,
+          response.thread.turns,
+        )
+      )
+        continue;
+      const itemId = card.dataset.itemId;
+      const snapshotCard = itemId ? this.#findItem(itemId) : undefined;
+      if (snapshotCard) snapshotCard.replaceWith(card);
+      else this.#container.append(card);
+    }
+    if (followLatest) this.followLatest();
+    else {
+      this.#container.scrollTop = previousScrollTop;
+      this.#setFollowingLatest(false);
+    }
     return true;
   }
 
@@ -296,11 +468,19 @@ export class ThreadTimelineView {
     });
     const card = this.#findItem(id);
     if (card) card.dataset.localUser = "true";
-    this.scrollToEnd(true);
+    this.followLatest();
+  }
+
+  bindLocalUserToTurn(turnId: string): void {
+    const card =
+      this.#container.querySelector<HTMLElement>("[data-local-user]");
+    if (card) card.dataset.localTurnId = turnId;
   }
 
   removeLocalUser(): void {
+    const followLatest = this.#isNearLatest();
     this.#container.querySelector<HTMLElement>("[data-local-user]")?.remove();
+    this.#finishContentUpdate(followLatest);
   }
 
   upsertQueuedUser(
@@ -308,6 +488,7 @@ export class ThreadTimelineView {
     text: string,
     status: "pending" | "paused" = "pending",
   ): void {
+    const followLatest = this.#isNearLatest();
     this.#container.querySelector(".empty")?.remove();
     let card = this.#container.querySelector<HTMLElement>(
       `[data-queue-id="${CSS.escape(queueId)}"]`,
@@ -343,25 +524,35 @@ export class ThreadTimelineView {
       badge.className = `item-status queued-status ${status === "paused" ? "failure" : "running"}`;
       badge.textContent = status === "paused" ? "队列已暂停" : "已排队";
     }
-    this.scrollToEnd(true);
+    this.#finishContentUpdate(followLatest);
   }
 
   setQueuedSteerAvailable(available: boolean): void {
+    const followLatest = this.#isNearLatest();
     this.#queuedSteerAvailable = available;
     for (const button of this.#container.querySelectorAll<HTMLButtonElement>(
       ".queued-steer",
     )) {
       button.hidden = !available;
     }
+    this.#finishContentUpdate(followLatest);
   }
 
   removeQueuedUser(queueId: string): void {
+    const followLatest = this.#isNearLatest();
     this.#container
       .querySelector<HTMLElement>(`[data-queue-id="${CSS.escape(queueId)}"]`)
       ?.remove();
+    this.#finishContentUpdate(followLatest);
   }
 
   appendNotice(title: string, content: string, kind = "event"): void {
+    const followLatest = this.#isNearLatest();
+    this.#appendNoticeElement(title, content, kind);
+    this.#finishContentUpdate(followLatest);
+  }
+
+  #appendNoticeElement(title: string, content: string, kind: string): void {
     this.#container.querySelector(".empty")?.remove();
     const card = document.createElement("article");
     card.className = `timeline-entry ${kind}`;
@@ -372,7 +563,6 @@ export class ThreadTimelineView {
     body.textContent = content;
     card.append(heading, body);
     this.#container.append(card);
-    this.scrollToEnd(true);
   }
 
   handleEvent(event: EventEnvelope): boolean {
@@ -384,21 +574,24 @@ export class ThreadTimelineView {
     }
     if (event.type === "codex/turn/started") return true;
     if (isReasoningEventType(event.type)) return true;
+    if (isInternalTimelineEventType(event.type)) return true;
     if (
       event.type === "codex/item/started" ||
       event.type === "codex/item/completed"
     ) {
       if (isThreadItem(payload.item)) {
+        const followLatest = this.#isNearLatest();
         this.#upsertItem(payload.item);
-        this.scrollToEnd(true);
+        this.#finishContentUpdate(followLatest);
         return true;
       }
     }
 
     const patchUpdate = fileChangeItemFromPatchUpdate(payload);
     if (event.type === "codex/item/fileChange/patchUpdated" && patchUpdate) {
+      const followLatest = this.#isNearLatest();
       this.#upsertItem(patchUpdate);
-      this.scrollToEnd(true);
+      this.#finishContentUpdate(followLatest);
       return true;
     }
 
@@ -410,9 +603,10 @@ export class ThreadTimelineView {
     }
 
     if (event.type === "codex/turn/completed" && isTurn(payload.turn)) {
+      const followLatest = this.#isNearLatest();
       for (const item of payload.turn.items) this.#upsertItem(item);
       if (payload.turn.error) {
-        this.appendNotice(
+        this.#appendNoticeElement(
           "Codex 错误",
           messageFromPayload(
             payload.turn.error as unknown as Record<string, unknown>,
@@ -420,7 +614,7 @@ export class ThreadTimelineView {
           "error",
         );
       }
-      this.scrollToEnd(true);
+      this.#finishContentUpdate(followLatest);
       return true;
     }
 
@@ -436,30 +630,84 @@ export class ThreadTimelineView {
       typeof payload.itemId === "string" &&
       typeof payload.delta === "string"
     ) {
+      const followLatest = this.#isNearLatest();
       this.#appendDelta(payload.itemId, payload.delta, deltaKind);
-      this.scrollToEnd(true);
+      this.#finishContentUpdate(followLatest);
       return true;
     }
 
-    if (event.type === "codex/error" || event.type === "codex/warning") {
+    if (
+      event.type === "codex/error" ||
+      event.type === "codex/warning" ||
+      event.type === "codex/guardianWarning"
+    ) {
+      const isError = event.type === "codex/error";
       this.appendNotice(
-        event.type === "codex/error" ? "Codex 错误" : "Codex 警告",
+        isError ? "Codex 错误" : "Codex 警告",
         messageFromPayload(payload),
-        event.type === "codex/error" ? "error" : "event",
+        isError ? "error" : "event",
       );
       return true;
     }
     return false;
   }
 
-  scrollToEnd(smooth: boolean): void {
-    this.#container.scrollTo({
-      behavior: smooth ? "smooth" : "auto",
-      top: this.#container.scrollHeight,
-    });
+  followLatest(): void {
+    this.#container.scrollTop = this.#container.scrollHeight;
+    this.#setFollowingLatest(true);
   }
 
-  #renderTurn(turn: Turn): void {
+  #replaceSnapshot(response: ThreadReadResponse): void {
+    this.#snapshotRevision = threadSnapshotRevision(response);
+    this.#container.replaceChildren();
+    for (const turn of response.thread.turns) {
+      const section = this.#turnElement(turn);
+      if (section) this.#container.append(section);
+    }
+    if (this.#container.childElementCount === 0) {
+      this.#container.append(emptyElement("这个会话还没有消息"));
+    }
+    this.#renderHistoryPager();
+  }
+
+  #renderHistoryPager(): void {
+    this.#container.querySelector(".history-pagination")?.remove();
+    if (!this.#hasOlderHistory) return;
+    const wrapper = document.createElement("div");
+    wrapper.className = "history-pagination";
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "secondary compact-action";
+    button.disabled = this.#loadingOlderHistory;
+    button.textContent = this.#loadingOlderHistory
+      ? "正在加载更早消息…"
+      : "加载更早消息";
+    button.addEventListener("click", () => {
+      if (this.#loadingOlderHistory) return;
+      this.#loadingOlderHistory = true;
+      this.#renderHistoryPager();
+      this.#onLoadOlder?.();
+    });
+    wrapper.append(button);
+    this.#container.prepend(wrapper);
+  }
+
+  #isNearLatest(): boolean {
+    return shouldFollowTimeline(this.#container);
+  }
+
+  #finishContentUpdate(followLatest: boolean): void {
+    if (followLatest) this.followLatest();
+    else this.#setFollowingLatest(false);
+  }
+
+  #setFollowingLatest(following: boolean): void {
+    if (following === this.#followingLatest) return;
+    this.#followingLatest = following;
+    this.#onFollowLatestChanged?.(following);
+  }
+
+  #turnElement(turn: Turn): HTMLElement | undefined {
     const section = document.createElement("section");
     section.className = "turn-block";
     section.dataset.turnId = turn.id;
@@ -474,7 +722,7 @@ export class ThreadTimelineView {
       );
       section.append(error);
     }
-    if (section.childElementCount > 0) this.#container.append(section);
+    return section.childElementCount > 0 ? section : undefined;
   }
 
   #upsertItem(item: ThreadItem): void {
@@ -483,10 +731,11 @@ export class ThreadTimelineView {
     if (item.type === "userMessage" && !item.id.startsWith("local-")) {
       this.#container.querySelector<HTMLElement>("[data-local-user]")?.remove();
     }
-    const existing = this.#findItem(item.id);
+    const [existing, ...duplicates] = this.#findItems(item.id);
     const replacement = this.#itemElement(item);
     if (existing) existing.replaceWith(replacement);
     else this.#container.append(replacement);
+    for (const duplicate of duplicates) duplicate.remove();
   }
 
   #appendDelta(
@@ -527,9 +776,26 @@ export class ThreadTimelineView {
   }
 
   #findItem(itemId: string): HTMLElement | undefined {
+    return this.#findItems(itemId)[0];
+  }
+
+  #findItems(itemId: string): HTMLElement[] {
     return Array.from(
       this.#container.querySelectorAll<HTMLElement>("[data-item-id]"),
-    ).find((candidate) => candidate.dataset.itemId === itemId);
+    ).filter((candidate) => candidate.dataset.itemId === itemId);
+  }
+
+  #removeLooseTurnItems(turn: Turn): void {
+    const itemIds = new Set(
+      turn.items.filter(isVisibleThreadItem).map((item: ThreadItem) => item.id),
+    );
+    if (itemIds.size === 0) return;
+    for (const card of this.#container.querySelectorAll<HTMLElement>(
+      "[data-item-id]",
+    )) {
+      if (card.dataset.itemId && itemIds.has(card.dataset.itemId))
+        card.remove();
+    }
   }
 
   #itemElement(item: VisibleThreadItem): HTMLElement {
@@ -559,9 +825,13 @@ export class ThreadTimelineView {
         const details = document.createElement("details");
         const summary = document.createElement("summary");
         summary.textContent = `查看输出${item.durationMs ? ` · ${formatDuration(item.durationMs)}` : ""}`;
-        const output = document.createElement("pre");
-        output.textContent = item.aggregatedOutput;
-        details.append(summary, output);
+        details.append(summary);
+        details.addEventListener("toggle", () => {
+          if (!details.open || details.querySelector("pre")) return;
+          const output = document.createElement("pre");
+          output.textContent = item.aggregatedOutput;
+          details.append(output);
+        });
         card.append(details);
       }
       return card;
@@ -578,7 +848,20 @@ export class ThreadTimelineView {
       for (const change of item.changes) {
         const details = document.createElement("details");
         details.className = "file-change-details";
-        details.open = item.changes.length === 1;
+        details.open = this.#fileChangeDisclosures.isOpen(item.id, change.path);
+        details.addEventListener("toggle", () => {
+          this.#fileChangeDisclosures.setOpen(
+            item.id,
+            change.path,
+            details.open,
+          );
+          if (!details.open || details.querySelector("[data-lazy-diff]"))
+            return;
+          const content = document.createElement("div");
+          content.dataset.lazyDiff = "true";
+          content.append(renderUnifiedDiff(change.diff));
+          details.append(content);
+        });
         const summary = document.createElement("summary");
         const kind = document.createElement("span");
         kind.className = `file-change-kind file-change-${change.kind.type}`;
@@ -597,16 +880,19 @@ export class ThreadTimelineView {
         deletions.textContent = `−${String(stats.deletions)}`;
         size.append(additions, deletions);
         summary.append(kind, path, size);
+        details.append(summary);
         if (change.kind.type === "update" && change.kind.move_path) {
           const moved = document.createElement("div");
           moved.className = "file-change-move";
           moved.textContent = `移动到 ${change.kind.move_path}`;
-          details.append(summary, moved, renderUnifiedDiff(change.diff));
-          card.append(details);
-          continue;
+          details.append(moved);
         }
-        const diff = renderUnifiedDiff(change.diff);
-        details.append(summary, diff);
+        if (details.open) {
+          const content = document.createElement("div");
+          content.dataset.lazyDiff = "true";
+          content.append(renderUnifiedDiff(change.diff));
+          details.append(content);
+        }
         card.append(details);
       }
       return card;

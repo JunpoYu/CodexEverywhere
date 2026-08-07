@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { chmod, mkdir, open, readFile, rename, rm } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
@@ -22,7 +23,21 @@ const signingKeyFile = join(relayHome, "signing.key");
 program
   .name("ce-relay")
   .description("Stateless ciphertext relay for CodexEverywhere")
-  .version("0.1.0");
+  .version(packageVersion());
+
+function packageVersion(): string {
+  const value: unknown = JSON.parse(
+    readFileSync(new URL("../package.json", import.meta.url), "utf8"),
+  );
+  if (
+    value &&
+    typeof value === "object" &&
+    "version" in value &&
+    typeof value.version === "string"
+  )
+    return value.version;
+  throw new Error("Relay package version is missing");
+}
 
 program
   .command("init")

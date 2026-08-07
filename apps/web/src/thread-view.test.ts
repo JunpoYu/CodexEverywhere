@@ -3,12 +3,16 @@ import { describe, expect, it } from "vitest";
 
 import {
   describeThreadItem,
+  FileChangeDisclosureState,
   fileChangeItemFromPatchUpdate,
   fileChangeKindLabel,
+  isInternalTimelineEventType,
   isReasoningEventType,
   isVisibleThreadItem,
+  localUserReconciledByTurns,
   mcpServerStartupNotice,
   queuedMessageText,
+  shouldFollowTimeline,
   TRANSIENT_TIMELINE_SELECTOR,
   threadSnapshotRevision,
   threadSendMode,
@@ -54,6 +58,38 @@ describe("mcpServerStartupNotice", () => {
       expect(
         mcpServerStartupNotice({ name: "codex_apps", status }),
       ).toBeUndefined();
+  });
+});
+
+describe("timeline auto-follow", () => {
+  it("continues following when the reader is already near the latest message", () => {
+    expect(
+      shouldFollowTimeline({
+        scrollTop: 936,
+        scrollHeight: 1_500,
+        clientHeight: 500,
+      }),
+    ).toBe(true);
+  });
+
+  it("stops following once the reader scrolls into message history", () => {
+    expect(
+      shouldFollowTimeline({
+        scrollTop: 800,
+        scrollHeight: 1_500,
+        clientHeight: 500,
+      }),
+    ).toBe(false);
+  });
+
+  it("follows content that does not fill the timeline viewport", () => {
+    expect(
+      shouldFollowTimeline({
+        scrollTop: 0,
+        scrollHeight: 420,
+        clientHeight: 500,
+      }),
+    ).toBe(true);
   });
 });
 
@@ -111,6 +147,22 @@ describe("describeThreadItem", () => {
     expect(isReasoningEventType("codex/item/agentMessage/delta")).toBe(false);
   });
 
+  it("keeps known lifecycle metadata out of the message timeline", () => {
+    for (const type of [
+      "codex/item/commandExecution/terminalInteraction",
+      "codex/rawResponseItem/completed",
+      "codex/item/autoApprovalReview/started",
+      "codex/thread/closed",
+      "codex/turn/moderationMetadata",
+      "codex/thread/realtime/outputAudio/delta",
+    ]) {
+      expect(isInternalTimelineEventType(type)).toBe(true);
+    }
+    expect(
+      isInternalTimelineEventType("codex/item/commandExecution/outputDelta"),
+    ).toBe(false);
+  });
+
   it("renders structured file change kinds instead of object coercion", () => {
     expect(
       fileChangeKindLabel({
@@ -158,6 +210,29 @@ describe("describeThreadItem", () => {
   });
 });
 
+describe("file-change disclosure state", () => {
+  it("keeps file diffs collapsed until the user expands them", () => {
+    const state = new FileChangeDisclosureState();
+
+    expect(state.isOpen("file-1", "src/app.ts")).toBe(false);
+    state.setOpen("file-1", "src/app.ts", true);
+    expect(state.isOpen("file-1", "src/app.ts")).toBe(true);
+    expect(state.isOpen("file-1", "src/other.ts")).toBe(false);
+
+    state.setOpen("file-1", "src/app.ts", false);
+    expect(state.isOpen("file-1", "src/app.ts")).toBe(false);
+  });
+
+  it("clears expanded files when leaving the conversation", () => {
+    const state = new FileChangeDisclosureState();
+    state.setOpen("file-1", "src/app.ts", true);
+
+    state.clear();
+
+    expect(state.isOpen("file-1", "src/app.ts")).toBe(false);
+  });
+});
+
 describe("composer delivery", () => {
   it("starts idle threads and persists messages for active threads", () => {
     expect(threadSendMode({ type: "idle" })).toBe("start");
@@ -191,5 +266,13 @@ describe("composer delivery", () => {
     expect(TRANSIENT_TIMELINE_SELECTOR).toContain("[data-queue-id]");
     expect(TRANSIENT_TIMELINE_SELECTOR).toContain("[data-request-id]");
     expect(TRANSIENT_TIMELINE_SELECTOR).toContain(".timeline-entry.streaming");
+    expect(TRANSIENT_TIMELINE_SELECTOR).toContain("[data-local-user]");
+  });
+
+  it("drops the optimistic user card only after its authoritative turn arrives", () => {
+    const turns = [{ id: "turn-old" }, { id: "turn-new" }];
+    expect(localUserReconciledByTurns(undefined, turns)).toBe(false);
+    expect(localUserReconciledByTurns("turn-pending", turns)).toBe(false);
+    expect(localUserReconciledByTurns("turn-new", turns)).toBe(true);
   });
 });

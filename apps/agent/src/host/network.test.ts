@@ -18,10 +18,13 @@ describe("Codex network configuration", () => {
       {
         base: { PATH: "/usr/bin", HTTPS_PROXY: "http://old.example" },
         userHome: "/home/user",
+        runtimeBin: "/opt/codex-everywhere/runtime/bin",
       },
     );
 
-    expect(environment.PATH).toBe("/home/user/.local/bin:/usr/bin");
+    expect(environment.PATH).toBe(
+      "/home/user/.local/bin:/opt/codex-everywhere/runtime/bin:/usr/bin",
+    );
     expect(environment.HTTPS_PROXY).toBe(
       "http://user:secret@proxy.example:7890",
     );
@@ -36,10 +39,26 @@ describe("Codex network configuration", () => {
   it("removes inherited proxy variables in direct mode", () => {
     const environment = codexProcessEnvironment(
       { mode: "direct" },
-      { base: { HTTPS_PROXY: "http://old.example", PATH: "/bin" } },
+      {
+        base: { HTTPS_PROXY: "http://old.example", PATH: "/bin" },
+        runtimeBin: "/opt/codex-everywhere/runtime/bin",
+      },
     );
     expect(environment.HTTPS_PROXY).toBeUndefined();
     expect(environment.https_proxy).toBeUndefined();
+    expect(environment.PATH).toBe("/opt/codex-everywhere/runtime/bin:/bin");
+  });
+
+  it("deduplicates the runtime directory already present in PATH", () => {
+    const environment = codexProcessEnvironment(undefined, {
+      base: { PATH: "/opt/runtime/bin:/usr/bin:/opt/runtime/bin" },
+      userHome: "/home/user",
+      runtimeBin: "/opt/runtime/bin",
+    });
+
+    expect(environment.PATH).toBe(
+      "/home/user/.local/bin:/opt/runtime/bin:/usr/bin",
+    );
   });
 
   it("rejects unsupported proxy protocols and multiline values", () => {

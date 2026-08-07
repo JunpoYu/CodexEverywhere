@@ -2,8 +2,22 @@ const HOST_LEVEL_EVENT_TYPES = new Set([
   "codex/account/login/completed",
   "codex/account/updated",
   "codex/account/rateLimits/updated",
+  "codex/app/list/updated",
   "codex/configWarning",
+  "codex/deprecationNotice",
+  "codex/externalAgentConfig/import/completed",
+  "codex/externalAgentConfig/import/progress",
+  "codex/fs/changed",
+  "codex/fuzzyFileSearch/sessionCompleted",
+  "codex/fuzzyFileSearch/sessionUpdated",
+  "codex/mcpServer/oauthLogin/completed",
   "codex/remoteControl/status/changed",
+  "codex/skills/changed",
+  "codex/windows/worldWritableWarning",
+  "codex/windowsSandbox/setupCompleted",
+  "codex/command/exec/outputDelta",
+  "codex/process/outputDelta",
+  "codex/process/exited",
 ]);
 
 export type CodexLoginEventAction =

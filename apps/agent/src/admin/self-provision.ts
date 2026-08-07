@@ -20,7 +20,11 @@ import {
   validateCodexNetworkConfig,
   type CodexNetworkConfig,
 } from "../host/network.js";
-import { inspectSshUnixAccount, type GetentRunner } from "./unix-accounts.js";
+import {
+  inspectSshUnixAccount,
+  type GetentRunner,
+  type UnixAccount,
+} from "./unix-accounts.js";
 import { HostStateStore } from "../host/state-store.js";
 import { ADMIN_STATE_FILE } from "./access-policy.js";
 import { AdminUserRegistry } from "./registry.js";
@@ -118,6 +122,16 @@ export async function issueSelfProvisioningGrant(
   if (account.uid !== uid) {
     throw new Error("sudo identity does not match the NSS Unix account");
   }
+  return issueProvisioningGrantForAccount(account, options);
+}
+
+export async function issueProvisioningGrantForAccount(
+  account: UnixAccount,
+  options: {
+    configPath?: string;
+    adminStatePath?: string;
+  } = {},
+): Promise<SelfProvisioningGrant> {
   const home = await stat(account.home);
   if (!home.isDirectory() || home.uid !== account.uid) {
     throw new Error("Unix account home is not owned by the requesting user");

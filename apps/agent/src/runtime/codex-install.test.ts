@@ -4,7 +4,9 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 
 import {
+  compareCodexVersions,
   installCodexForCurrentUser,
+  probeLatestCodexVersion,
   probeCodexInstallation,
   type CommandRunner,
 } from "./codex-install.js";
@@ -59,6 +61,34 @@ describe("Codex user installation", () => {
       "verifying",
       "completed",
     ]);
+  });
+
+  it("reads the npm latest tag without installing anything", async () => {
+    const run = vi.fn<CommandRunner>(async () => ({
+      stdout: '"0.152.0"\n',
+    }));
+
+    await expect(probeLatestCodexVersion({ run })).resolves.toBe("0.152.0");
+    expect(run).toHaveBeenCalledWith(
+      "npm",
+      ["view", "@openai/codex@latest", "version", "--json"],
+      expect.objectContaining({ timeoutMs: 20_000 }),
+    );
+  });
+
+  it("keeps the installed version visible when npm latest is unavailable", async () => {
+    const run = vi.fn<CommandRunner>(async () => {
+      throw new Error("registry unavailable");
+    });
+
+    await expect(probeLatestCodexVersion({ run })).resolves.toBeUndefined();
+  });
+
+  it("orders stable and prerelease Codex versions", () => {
+    expect(compareCodexVersions("0.151.0", "0.152.0")).toBeLessThan(0);
+    expect(compareCodexVersions("0.152.0", "0.152.0")).toBe(0);
+    expect(compareCodexVersions("0.153.0", "0.152.0")).toBeGreaterThan(0);
+    expect(compareCodexVersions("0.152.0-beta.2", "0.152.0")).toBeLessThan(0);
   });
 
   it("accepts older, newer, and prerelease Codex versions", async () => {

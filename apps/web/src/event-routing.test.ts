@@ -29,6 +29,10 @@ describe("shouldRenderInThreadTimeline", () => {
       "codex/remoteControl/status/changed",
       "codex/account/login/completed",
       "codex/account/updated",
+      "codex/skills/changed",
+      "codex/fs/changed",
+      "codex/command/exec/outputDelta",
+      "codex/process/outputDelta",
     ]) {
       expect(
         shouldRenderInThreadTimeline({

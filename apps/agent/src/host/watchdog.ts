@@ -46,14 +46,19 @@ export function renderWatchdogScript(
   const sessionName = `codex-everywhere-${process.getuid?.() ?? "user"}`;
   const logPath = join(paths.logsDir, "agent.log");
   const watchdogLock = `${scriptPath}.lock`;
+  const runtimeBin = dirname(runtime.nodePath);
   const disabledMarker = `/etc/codex-everywhere-access/${process.getuid?.() ?? "unknown"}.disabled`;
+  const agentCommand = `PATH=${shellQuote(runtimeBin)}:\${PATH:-/usr/bin:/bin}; export PATH; exec ${shellQuote(runtime.nodePath)} ${shellQuote(runtime.cliPath)} agent serve >> ${shellQuote(logPath)} 2>&1`;
   return `#!/bin/sh
 set -eu
 SESSION=${shellQuote(sessionName)}
 LOG=${shellQuote(logPath)}
 LOCK=${shellQuote(watchdogLock)}
 TMUX=${shellQuote(tmuxPath)}
+RUNTIME_BIN=${shellQuote(runtimeBin)}
 DISABLED=${shellQuote(disabledMarker)}
+PATH="$RUNTIME_BIN:\${PATH:-/usr/bin:/bin}"
+export PATH
 if ! mkdir "$LOCK" 2>/dev/null; then
   exit 0
 fi
@@ -79,7 +84,7 @@ if [ -f "$LOG" ] && [ "$(wc -c < "$LOG")" -gt 10485760 ]; then
   mv -f "$LOG" "$LOG.1"
 fi
 if ! "$TMUX" has-session -t "$SESSION" 2>/dev/null; then
-  "$TMUX" new-session -d -s "$SESSION" ${shellQuote(`${runtime.nodePath} ${shellQuote(runtime.cliPath)} agent serve >> ${shellQuote(logPath)} 2>&1`)}
+  "$TMUX" new-session -d -s "$SESSION" ${shellQuote(agentCommand)}
 fi
 `;
 }

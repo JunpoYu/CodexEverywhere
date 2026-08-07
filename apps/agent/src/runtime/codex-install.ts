@@ -95,10 +95,88 @@ export async function installCodexForCurrentUser(
   return { installed: true, binary, version };
 }
 
+export async function probeLatestCodexVersion(
+  options: {
+    env?: NodeJS.ProcessEnv;
+    npmBinary?: string;
+    run?: CommandRunner;
+  } = {},
+): Promise<string | undefined> {
+  const env = options.env ?? process.env;
+  const run = options.run ?? runCommand;
+  try {
+    const { stdout } = await run(
+      options.npmBinary ?? "npm",
+      ["view", CODEX_NPM_SPEC, "version", "--json"],
+      { env, timeoutMs: 20_000 },
+    );
+    const result: unknown = JSON.parse(stdout);
+    return typeof result === "string" && semanticVersion(result)
+      ? result
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 export function codexCliVersion(output: string): string | undefined {
   return output.match(
     /(?:^|\s)codex-cli\s+(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?)(?:\s|$)/iu,
   )?.[1];
+}
+
+export function compareCodexVersions(left: string, right: string): number {
+  const leftVersion = semanticVersion(left);
+  const rightVersion = semanticVersion(right);
+  if (!leftVersion || !rightVersion) return 0;
+  for (const key of ["major", "minor", "patch"] as const) {
+    const difference = leftVersion[key] - rightVersion[key];
+    if (difference !== 0) return Math.sign(difference);
+  }
+  if (leftVersion.prerelease.length === 0)
+    return rightVersion.prerelease.length === 0 ? 0 : 1;
+  if (rightVersion.prerelease.length === 0) return -1;
+  const length = Math.max(
+    leftVersion.prerelease.length,
+    rightVersion.prerelease.length,
+  );
+  for (let index = 0; index < length; index += 1) {
+    const leftPart = leftVersion.prerelease[index];
+    const rightPart = rightVersion.prerelease[index];
+    if (leftPart === undefined) return -1;
+    if (rightPart === undefined) return 1;
+    if (leftPart === rightPart) continue;
+    const leftNumber = /^\d+$/u.test(leftPart) ? Number(leftPart) : undefined;
+    const rightNumber = /^\d+$/u.test(rightPart)
+      ? Number(rightPart)
+      : undefined;
+    if (leftNumber !== undefined && rightNumber !== undefined)
+      return Math.sign(leftNumber - rightNumber);
+    if (leftNumber !== undefined) return -1;
+    if (rightNumber !== undefined) return 1;
+    return leftPart < rightPart ? -1 : 1;
+  }
+  return 0;
+}
+
+function semanticVersion(version: string):
+  | {
+      major: number;
+      minor: number;
+      patch: number;
+      prerelease: string[];
+    }
+  | undefined {
+  const match = version.match(
+    /^(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?$/u,
+  );
+  if (!match) return undefined;
+  return {
+    major: Number(match[1]),
+    minor: Number(match[2]),
+    patch: Number(match[3]),
+    prerelease: match[4]?.split(".") ?? [],
+  };
 }
 
 async function runCommand(

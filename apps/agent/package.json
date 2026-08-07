@@ -7,6 +7,9 @@
   "bin": {
     "ce": "./dist/cli.js"
   },
+  "files": [
+    "dist"
+  ],
   "exports": {
     ".": "./dist/index.js"
   },

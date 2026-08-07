@@ -9,12 +9,14 @@ import type {
   ThreadStatus,
   ThreadTokenUsage,
   TurnStartResponse,
+  TurnsPage,
   UserInput,
 } from "@codex-everywhere/codex-app-server-schema/v2";
 import type { ReasoningEffort } from "@codex-everywhere/codex-app-server-schema";
 import {
   CODEX_INSTALL_PROGRESS_EVENT,
   type CodexAuthImportResult,
+  type CodexVersionStatus,
   type EventEnvelope,
 } from "@codex-everywhere/protocol";
 
@@ -25,6 +27,11 @@ import {
 } from "./gateway-client.js";
 import { ApprovalSubmissionTracker } from "./approval-submission.js";
 import { createCoalescedTask } from "./coalesced-task.js";
+import { ConversationOutlineView } from "./conversation-outline.js";
+import {
+  codexVersionFromCliOutput,
+  codexVersionPresentation,
+} from "./codex-version.js";
 import {
   codexLoginEventAction,
   shouldRenderInThreadTimeline,
@@ -58,6 +65,12 @@ import {
   ThreadTimelineView,
 } from "./thread-view.js";
 import { requestThreadList, threadListErrorMessage } from "./thread-list.js";
+import {
+  HISTORY_PAGE_SIZE,
+  HISTORY_SYNC_TURN_LIMIT,
+  newestPageInReadingOrder,
+  resumeThreadHistory,
+} from "./thread-history.js";
 import {
   parseSlashCommand,
   slashCommandCompletion,
@@ -192,6 +205,9 @@ let activeThreadStatus: ThreadStatus | undefined;
 let activeTurnId: string | undefined;
 let threadSyncTimer: number | undefined;
 let threadSyncInFlight = false;
+let activeHistoryNextCursor: string | undefined;
+let activeHistoryPaged = false;
+let olderHistoryLoading = false;
 let lastRealtimeEventAt = 0;
 let activeThreadSettings: ThreadRuntimeSettings | undefined;
 let activeThreadTokenUsage: ThreadTokenUsage | undefined;
@@ -359,8 +375,8 @@ app.innerHTML = `
       <div class="thread-search"><span aria-hidden="true">⌕</span><input id="thread-search" type="search" placeholder="搜索会话或目录" aria-label="搜索会话" /><kbd>⌘ K</kbd></div>
       <div id="thread-list" class="thread-list"></div>
     </aside>
-    <section class="content">
-      <div class="thread-header"><button id="back-to-sessions" class="back-to-sessions" type="button" aria-label="返回会话列表">←</button><div class="thread-heading"><p class="eyebrow">Codex session</p><h2 id="thread-title">选择一个会话</h2><small class="thread-cwd-line"><span>当前会话目录</span><code id="thread-cwd"></code></small></div><div class="thread-controls"><div class="codex-status"><span>Codex 状态</span><strong id="thread-state" class="pill idle" role="status" aria-live="polite">空闲</strong></div><div class="thread-actions"><button id="tui-handoff-button" class="ssh-handoff-action compact-action" type="button" title="通过 SSH 在官方 TUI 中继续同一个会话" hidden><span aria-hidden="true">›_</span> SSH 接力</button><button id="thread-settings-button" class="session-settings-action compact-action" type="button" hidden><span aria-hidden="true">⚙</span> 会话设置</button><button id="interrupt-turn" class="ghost danger-action compact-action" type="button" hidden>停止</button></div></div></div>
+    <section id="conversation-content" class="content">
+      <div class="thread-header"><button id="back-to-sessions" class="back-to-sessions" type="button" aria-label="返回会话列表">←</button><div class="thread-heading"><p class="eyebrow">Codex session</p><h2 id="thread-title">选择一个会话</h2><small class="thread-cwd-line"><span>当前会话目录</span><code id="thread-cwd"></code></small></div><div class="thread-controls"><div class="codex-status"><span>Codex 状态</span><strong id="thread-state" class="pill idle" role="status" aria-live="polite">空闲</strong></div><div class="thread-actions"><button id="thread-outline-button" class="thread-outline-action compact-action" type="button" aria-controls="conversation-outline" aria-expanded="false" hidden><span aria-hidden="true">☷</span> 大纲</button><button id="tui-handoff-button" class="ssh-handoff-action compact-action" type="button" title="通过 SSH 在官方 TUI 中继续同一个会话" hidden><span aria-hidden="true">›_</span> SSH 接力</button><button id="thread-settings-button" class="session-settings-action compact-action" type="button" hidden><span aria-hidden="true">⚙</span> 会话设置</button><button id="interrupt-turn" class="ghost danger-action compact-action" type="button" hidden>停止</button></div></div></div>
       <div id="thread-overview" class="thread-overview" hidden>
         <button id="thread-permission-summary" class="thread-fact permission-fact" type="button" title="修改这个会话后续轮次的权限"><span>会话权限</span><strong id="thread-info-permissions">—</strong><small>后续轮次继承 · 点击修改</small></button>
         <div class="thread-fact"><span>模型</span><strong id="thread-info-model">—</strong></div>
@@ -372,6 +388,11 @@ app.innerHTML = `
         <div class="ssh-handoff-banner-actions"><button id="ssh-handoff-banner-button" type="button">查看方法 <span aria-hidden="true">→</span></button><button id="dismiss-ssh-handoff-banner" class="ssh-handoff-banner-dismiss" type="button" title="以后不再显示这条说明">不再提示</button></div>
       </aside>
       <div id="timeline" class="timeline"><div class="empty empty-session"><strong>从一个任务开始</strong><span>选择左侧会话，或者新建一个 Codex 会话。</span><button id="empty-new-session" class="primary">新建会话</button></div></div>
+      <button id="jump-to-latest" class="jump-to-latest" type="button" title="回到正在生成的最新回复" hidden><span aria-hidden="true">↓</span> 回到最新消息</button>
+      <aside id="conversation-outline" class="conversation-outline" aria-label="对话大纲" hidden>
+        <header><div><strong>对话大纲</strong><small>按你的消息快速定位</small></div><span id="conversation-outline-count">0 条</span><button id="close-conversation-outline" class="icon-button conversation-outline-dismiss" type="button" aria-label="关闭对话大纲" title="关闭对话大纲"></button></header>
+        <nav id="conversation-outline-list" aria-label="你发送的消息"></nav>
+      </aside>
       <div class="composer">
         <div class="composer-shell">
           <div id="slash-command-menu" class="slash-command-menu" role="listbox" aria-label="Codex 斜杠指令" hidden></div>
@@ -470,7 +491,10 @@ app.innerHTML = `
       <div class="dialog-heading"><div><p class="eyebrow">Codex runtime</p><h2>Codex 版本</h2></div><button id="close-codex-version" class="icon-button" type="button" aria-label="关闭">×</button></div>
       <p class="lede">CodexEverywhere 接受当前账号中任何能够正常运行并报告版本的 Codex。更新会在你的 <code>~/.local</code> 中安装 npm 最新稳定版，不修改其他位置或共享安装。</p>
       <div class="restart-warning"><strong>安装更新不会立即中断任务</strong><span>如果 app-server 正在运行，安装完成后由你决定何时重启并应用；重启会中断正在执行的 turn。</span></div>
-      <p id="codex-version-current" class="step-state">正在检测当前版本…</p>
+      <div class="codex-version-comparison" aria-live="polite">
+        <section><span>当前安装版本</span><strong id="codex-version-current">检测中…</strong><small id="codex-version-binary">正在检查可执行文件</small></section>
+        <section><span>npm 最新稳定版</span><strong id="codex-version-latest">检测中…</strong><small>来自 <code>@openai/codex@latest</code></small></section>
+      </div>
       <p id="codex-version-state" class="step-state" role="status" aria-live="polite"></p>
       <p id="codex-version-error" class="error" role="alert"></p>
       <div class="actions dialog-actions"><button id="cancel-codex-version" class="ghost" type="button">关闭</button><button id="apply-codex-update" class="secondary" type="button" hidden>重启并应用</button><button id="update-codex" class="primary" type="button">安装或更新到最新版</button></div>
@@ -559,6 +583,22 @@ const alternativeLogin =
   requiredElement<HTMLDetailsElement>("alternative-login");
 const setupError = requiredElement<HTMLElement>("setup-error");
 const timeline = requiredElement<HTMLElement>("timeline");
+const jumpToLatestButton = requiredElement<HTMLButtonElement>("jump-to-latest");
+const conversationContent = requiredElement<HTMLElement>(
+  "conversation-content",
+);
+const conversationOutline = requiredElement<HTMLElement>(
+  "conversation-outline",
+);
+const conversationOutlineList = requiredElement<HTMLElement>(
+  "conversation-outline-list",
+);
+const conversationOutlineCount = requiredElement<HTMLElement>(
+  "conversation-outline-count",
+);
+const threadOutlineButton = requiredElement<HTMLButtonElement>(
+  "thread-outline-button",
+);
 const threadList = requiredElement<HTMLElement>("thread-list");
 const workspaceSelect = requiredElement<HTMLSelectElement>("workspace-select");
 const workspaceScopeSelect = requiredElement<HTMLSelectElement>(
@@ -647,7 +687,20 @@ themePreferenceSelect.addEventListener("change", () => {
 });
 const timelineView = new ThreadTimelineView(timeline, {
   onSteerQueued: (queueId) => void steerQueuedMessage(queueId),
+  onLoadOlder: () => void loadOlderHistory(),
+  onFollowLatestChanged: (following) => {
+    jumpToLatestButton.hidden = following || !activeThreadId;
+  },
 });
+const conversationOutlineView = new ConversationOutlineView(
+  timeline,
+  conversationContent,
+  conversationOutline,
+  conversationOutlineList,
+  conversationOutlineCount,
+  threadOutlineButton,
+);
+jumpToLatestButton.addEventListener("click", () => timelineView.followLatest());
 
 requiredElement("pair-button").addEventListener("click", () => void pair());
 requiredElement("open-first-use").addEventListener("click", showFirstUse);
@@ -730,6 +783,15 @@ requiredElement("back-to-sessions").addEventListener(
   "click",
   closeActiveThreadView,
 );
+threadOutlineButton.addEventListener("click", () =>
+  conversationOutlineView.toggle(),
+);
+requiredElement("close-conversation-outline").addEventListener("click", () =>
+  conversationOutlineView.collapse(),
+);
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape") conversationOutlineView.dismissOverlay();
+});
 requiredElement("manage-workspaces").addEventListener("click", () => {
   workspaceDialog.showModal();
   renderWorkspaceManager();
@@ -1005,7 +1067,8 @@ if (import.meta.env.DEV) {
   if (
     preview === "workspace" ||
     preview === "new-session" ||
-    preview === "slash-commands"
+    preview === "slash-commands" ||
+    preview === "codex-version"
   ) {
     setup.hidden = true;
     provisioning.hidden = true;
@@ -1019,6 +1082,17 @@ if (import.meta.env.DEV) {
     );
     requiredElement("thread-count").textContent = "2";
     if (preview === "new-session") newSessionDialog.showModal();
+    if (preview === "codex-version") {
+      renderCodexVersionSettings({
+        version: 1,
+        installed: true,
+        installedVersion: "0.151.0",
+        binary: "/Users/demo/.local/bin/codex",
+        latestVersion: "0.152.0",
+        relation: "older",
+      });
+      codexVersionDialog.showModal();
+    }
     if (preview === "slash-commands") {
       activeThreadId = "preview-thread";
       activeThreadCwd = "/Users/demo/CodexEverywhere";
@@ -1034,6 +1108,7 @@ if (import.meta.env.DEV) {
       requiredElement("thread-cwd").textContent = activeThreadCwd;
       requiredElement("thread-settings-button").hidden = false;
       timelineView.clear("输入 / 查看 Codex 默认斜杠指令");
+      conversationOutlineView.setThreadActive(true);
       messageInput.disabled = false;
       sendMessage.disabled = false;
       queueMessage.disabled = false;
@@ -1042,9 +1117,6 @@ if (import.meta.env.DEV) {
     }
   }
 }
-if ("serviceWorker" in navigator)
-  void navigator.serviceWorker.register("/sw.js");
-
 async function pair(): Promise<void> {
   setupError.textContent = "";
   try {
@@ -1421,10 +1493,15 @@ async function activate(nextClient: GatewayClient): Promise<void> {
   activeThreadCwd = undefined;
   activeThreadStatus = undefined;
   activeTurnId = undefined;
+  activeHistoryNextCursor = undefined;
+  activeHistoryPaged = false;
+  olderHistoryLoading = false;
   activeThreadSettings = undefined;
   activeThreadTokenUsage = undefined;
   pendingRequestIds.clear();
   approvalSubmissions.clear();
+  conversationOutlineView.setThreadActive(false);
+  jumpToLatestButton.hidden = true;
   client?.close();
   client = nextClient;
   appServerRestartRequired = false;
@@ -1576,9 +1653,13 @@ async function openCodexVersionSettings(): Promise<void> {
   if (!client) return;
   requiredElement<HTMLDetailsElement>("settings-menu").open = false;
   const current = requiredElement("codex-version-current");
+  const latest = requiredElement("codex-version-latest");
+  const binary = requiredElement("codex-version-binary");
   const state = requiredElement("codex-version-state");
   const error = requiredElement("codex-version-error");
-  current.textContent = "正在检测当前版本…";
+  current.textContent = "检测中…";
+  latest.textContent = "检测中…";
+  binary.textContent = "正在检查可执行文件";
   state.textContent = "";
   error.textContent = "";
   const apply = requiredElement<HTMLButtonElement>("apply-codex-update");
@@ -1586,26 +1667,60 @@ async function openCodexVersionSettings(): Promise<void> {
   apply.disabled = false;
   apply.textContent = "重启并应用";
   const update = requiredElement<HTMLButtonElement>("update-codex");
+  update.hidden = false;
   update.disabled = false;
   update.textContent = "安装或更新到最新版";
   codexVersionDialog.showModal();
   try {
-    const status = await client.request<SetupStatus>("setup/status", {});
-    current.textContent = status.codex.installed
-      ? `当前版本：${status.codex.version ?? "未知"} · ${status.codex.binary ?? "Agent PATH"}`
-      : "当前没有检测到可运行的 Codex";
+    const status = await readCodexVersionStatus();
+    renderCodexVersionSettings(status);
   } catch (cause) {
     error.textContent = errorMessage(cause);
   }
+}
+
+async function readCodexVersionStatus(): Promise<CodexVersionStatus> {
+  if (!client) throw new Error("尚未连接宿主机");
+  try {
+    return await client.request<CodexVersionStatus>(
+      "setup/codex/version/read",
+      {},
+      { timeoutMs: 30_000 },
+    );
+  } catch {
+    const status = await client.request<SetupStatus>("setup/status", {});
+    const installedVersion = codexVersionFromCliOutput(status.codex.version);
+    return {
+      version: 1,
+      installed: status.codex.installed,
+      ...(installedVersion ? { installedVersion } : {}),
+      ...(status.codex.binary ? { binary: status.codex.binary } : {}),
+      relation: "unknown",
+    };
+  }
+}
+
+function renderCodexVersionSettings(status: CodexVersionStatus): void {
+  const presentation = codexVersionPresentation(status);
+  requiredElement("codex-version-current").textContent =
+    presentation.installedLabel;
+  requiredElement("codex-version-latest").textContent =
+    presentation.latestLabel;
+  requiredElement("codex-version-binary").textContent =
+    presentation.binaryLabel;
+  requiredElement("codex-version-state").textContent = presentation.state;
+  const update = requiredElement<HTMLButtonElement>("update-codex");
+  update.textContent = presentation.actionLabel;
+  update.hidden = presentation.actionHidden;
 }
 
 async function updateCodexFromSettings(): Promise<void> {
   if (!client) return;
   const button = requiredElement<HTMLButtonElement>("update-codex");
   const apply = requiredElement<HTMLButtonElement>("apply-codex-update");
-  const current = requiredElement("codex-version-current");
   const state = requiredElement("codex-version-state");
   const error = requiredElement("codex-version-error");
+  const idleButtonText = button.textContent ?? "安装或更新到最新版";
   button.disabled = true;
   button.textContent = "正在安装最新版…";
   apply.hidden = true;
@@ -1618,7 +1733,15 @@ async function updateCodexFromSettings(): Promise<void> {
       version?: string;
       restartRequired: boolean;
     }>("setup/codex/install", {}, { timeoutMs: 10 * 60_000 });
-    current.textContent = `当前安装：${result.version ?? "版本未知"} · ${result.binary}`;
+    const installedVersion = codexVersionFromCliOutput(result.version);
+    renderCodexVersionSettings({
+      version: 1,
+      installed: true,
+      ...(installedVersion ? { installedVersion } : {}),
+      binary: result.binary,
+      ...(installedVersion ? { latestVersion: installedVersion } : {}),
+      relation: installedVersion ? "current" : "unknown",
+    });
     state.textContent = result.restartRequired
       ? "最新版已经安装。当前服务仍在使用原版本，请在任务空闲时重启并应用。"
       : "最新版已经安装，将在下次启动 Codex 时使用。";
@@ -1629,7 +1752,7 @@ async function updateCodexFromSettings(): Promise<void> {
     error.textContent = errorMessage(cause);
   } finally {
     button.disabled = false;
-    button.textContent = "安装或更新到最新版";
+    if (!button.hidden) button.textContent = idleButtonText;
   }
 }
 
@@ -2206,6 +2329,7 @@ async function enterWorkspace(
   provisioning.hidden = true;
   workspace.hidden = false;
   workspace.classList.remove("thread-open");
+  conversationOutlineView.setThreadActive(false);
   if (account?.email) {
     appendTimeline("system", "Codex 已登录", account.email);
   }
@@ -2667,11 +2791,16 @@ function closeActiveThreadView(): void {
   activeThreadCwd = undefined;
   activeThreadStatus = undefined;
   activeTurnId = undefined;
+  activeHistoryNextCursor = undefined;
+  activeHistoryPaged = false;
+  olderHistoryLoading = false;
   activeThreadSettings = undefined;
   activeThreadTokenUsage = undefined;
   pendingRequestIds.clear();
   approvalSubmissions.clear();
   workspace.classList.remove("thread-open");
+  conversationOutlineView.setThreadActive(false);
+  jumpToLatestButton.hidden = true;
   requiredElement("thread-title").textContent = "选择一个会话";
   requiredElement("thread-cwd").textContent = "";
   requiredElement("thread-settings-button").hidden = true;
@@ -2735,6 +2864,9 @@ async function openThread(thread: ThreadSummary): Promise<void> {
   activeThreadCwd = thread.cwd;
   renderWorkspaceScopeDescription();
   activeTurnId = undefined;
+  activeHistoryNextCursor = undefined;
+  activeHistoryPaged = false;
+  olderHistoryLoading = false;
   activeThreadSettings = undefined;
   activeThreadTokenUsage = undefined;
   pendingRequestIds.clear();
@@ -2752,6 +2884,8 @@ async function openThread(thread: ThreadSummary): Promise<void> {
   sendMessage.disabled = true;
   queueMessage.disabled = true;
   timeline.replaceChildren(loadingTimeline());
+  conversationOutlineView.setThreadActive(true);
+  jumpToLatestButton.hidden = true;
   try {
     if (previousThreadId && previousThreadId !== thread.id) {
       await unsubscribeThread(previousThreadId, currentClient);
@@ -2763,10 +2897,8 @@ async function openThread(thread: ThreadSummary): Promise<void> {
       activeThreadId !== thread.id
     )
       return;
-    const detail = await currentClient.request<ThreadResumeResponse>(
-      "thread/resume",
-      { threadId: thread.id },
-    );
+    const history = await resumeThreadHistory(currentClient, thread.id);
+    const detail = history.detail;
     if (
       client !== currentClient ||
       sequence !== openThreadSequence ||
@@ -2780,8 +2912,12 @@ async function openThread(thread: ThreadSummary): Promise<void> {
     activeTurnId = [...detail.thread.turns]
       .reverse()
       .find((turn) => turn.status === "inProgress")?.id;
+    activeHistoryNextCursor = history.nextCursor;
+    activeHistoryPaged = history.paged;
     setThreadStatus(detail.thread.status);
-    timelineView.renderSnapshot(detail);
+    timelineView.renderSnapshot(detail, {
+      hasOlderHistory: Boolean(activeHistoryNextCursor),
+    });
     activeThreadSettings = {
       model: detail.model,
       effort: detail.reasoningEffort,
@@ -3041,6 +3177,9 @@ async function startTask(): Promise<void> {
     ++openThreadSequence;
     activeThreadId = started.thread.id;
     activeThreadCwd = started.thread.cwd;
+    activeHistoryNextCursor = undefined;
+    activeHistoryPaged = false;
+    olderHistoryLoading = false;
     renderWorkspaceScopeDescription();
     workspace.classList.add("thread-open");
     requiredElement("thread-title").textContent =
@@ -3061,6 +3200,7 @@ async function startTask(): Promise<void> {
     sendMessage.disabled = false;
     queueMessage.disabled = false;
     timelineView.clear("Codex 正在处理第一条消息…");
+    conversationOutlineView.setThreadActive(true);
     const turnPayload: Record<string, unknown> = {
       threadId: activeThreadId,
       input: [{ type: "text", text: prompt.value.trim(), text_elements: [] }],
@@ -3716,6 +3856,7 @@ async function sendTurn(
   });
   if (client !== targetClient || activeThreadId !== threadId) return;
   activeTurnId = response.turn.id;
+  timelineView.bindLocalUserToTurn(response.turn.id);
   setThreadStatus({ type: "active", activeFlags: [] });
   lastRealtimeEventAt = Date.now();
   startThreadSync();
@@ -3732,6 +3873,61 @@ function stopThreadSync(): void {
   threadSyncTimer = undefined;
 }
 
+async function loadOlderHistory(): Promise<void> {
+  const targetClient = client;
+  const threadId = activeThreadId;
+  const cursor = activeHistoryNextCursor;
+  const sequence = openThreadSequence;
+  if (
+    !targetClient ||
+    !threadId ||
+    !activeHistoryPaged ||
+    !cursor ||
+    olderHistoryLoading
+  ) {
+    timelineView.setOlderHistoryLoading(false);
+    return;
+  }
+  olderHistoryLoading = true;
+  timelineView.setOlderHistoryLoading(true);
+  try {
+    const page = await targetClient.request<TurnsPage>("thread/turns/list", {
+      threadId,
+      cursor,
+      limit: HISTORY_PAGE_SIZE,
+      sortDirection: "desc",
+      itemsView: "full",
+    });
+    if (
+      client !== targetClient ||
+      sequence !== openThreadSequence ||
+      activeThreadId !== threadId
+    )
+      return;
+    activeHistoryNextCursor = page.nextCursor ?? undefined;
+    timelineView.prependTurns(
+      newestPageInReadingOrder(page),
+      Boolean(activeHistoryNextCursor),
+    );
+  } catch (error) {
+    if (
+      client === targetClient &&
+      sequence === openThreadSequence &&
+      activeThreadId === threadId
+    ) {
+      timelineView.setOlderHistoryLoading(false);
+      showToast(`加载历史失败：${errorMessage(error)}`, "error");
+    }
+  } finally {
+    if (
+      client === targetClient &&
+      sequence === openThreadSequence &&
+      activeThreadId === threadId
+    )
+      olderHistoryLoading = false;
+  }
+}
+
 async function syncActiveThread(): Promise<void> {
   if (
     threadSyncInFlight ||
@@ -3746,6 +3942,35 @@ async function syncActiveThread(): Promise<void> {
   const sequence = openThreadSequence;
   threadSyncInFlight = true;
   try {
+    if (activeHistoryPaged) {
+      const [metadata, recent] = await Promise.all([
+        currentClient.request<ThreadReadResponse>("thread/read", {
+          threadId,
+          includeTurns: false,
+        }),
+        currentClient.request<TurnsPage>("thread/turns/list", {
+          threadId,
+          limit: HISTORY_SYNC_TURN_LIMIT,
+          sortDirection: "desc",
+          itemsView: "full",
+        }),
+      ]);
+      if (
+        client !== currentClient ||
+        sequence !== openThreadSequence ||
+        activeThreadId !== threadId
+      )
+        return;
+      const recentTurns = newestPageInReadingOrder(recent);
+      activeTurnId = [...recentTurns]
+        .reverse()
+        .find((turn) => turn.status === "inProgress")?.id;
+      setThreadStatus(metadata.thread.status);
+      timelineView.mergeRecentTurns(recentTurns);
+      lastRealtimeEventAt = Date.now();
+      if (metadata.thread.status.type !== "active") stopThreadSync();
+      return;
+    }
     const detail = await currentClient.request<ThreadReadResponse>(
       "thread/read",
       { threadId, includeTurns: true },

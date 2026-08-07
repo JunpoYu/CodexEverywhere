@@ -89,7 +89,7 @@ fi
 
 rsync -a "$agent_bundle/" "$staging_directory/"
 chown -R root:root "$staging_directory"
-chmod -R go-w "$staging_directory"
+chmod -R u+rwX,go+rX,go-w "$staging_directory"
 chown root:root "$wrapper"
 chmod 0755 "$wrapper"
 chown root:root "$helper"

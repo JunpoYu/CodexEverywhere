@@ -74,6 +74,71 @@ describe("HostSetupService", () => {
     });
   });
 
+  it("reports installed and npm latest Codex versions separately", async () => {
+    const probeLatestCodexVersion = vi.fn(async ({ env }) =>
+      env.HTTPS_PROXY ? "0.152.0" : undefined,
+    );
+    const service = new HostSetupService(resolveHostPaths(), {
+      userHome: "/home/alice",
+      dependencies: {
+        readConfig: vi.fn(async (): Promise<HostConfig> => ({
+          ...createHostConfig(),
+          network: {
+            mode: "proxy",
+            httpsProxy: "http://proxy:7890",
+          },
+        })),
+        probeCodex: vi.fn(async () => ({
+          installed: true,
+          binary: "/home/alice/.local/bin/codex",
+          version: "codex-cli 0.151.0",
+        })),
+        probeLatestCodexVersion,
+      },
+    });
+
+    await expect(
+      service.request(envelope("setup/codex/version/read", {})),
+    ).resolves.toEqual({
+      handled: true,
+      value: {
+        version: 1,
+        installed: true,
+        installedVersion: "0.151.0",
+        binary: "/home/alice/.local/bin/codex",
+        latestVersion: "0.152.0",
+        relation: "older",
+      },
+    });
+    expect(probeLatestCodexVersion).toHaveBeenCalledWith({
+      env: expect.objectContaining({ HTTPS_PROXY: "http://proxy:7890" }),
+    });
+  });
+
+  it("returns the installed Codex version when npm cannot be reached", async () => {
+    const service = new HostSetupService(resolveHostPaths(), {
+      dependencies: {
+        readConfig: vi.fn(async () => createHostConfig()),
+        probeCodex: vi.fn(async () => ({
+          installed: true,
+          binary: "codex",
+          version: "codex-cli 0.151.0",
+        })),
+        probeLatestCodexVersion: vi.fn(async () => undefined),
+      },
+    });
+
+    await expect(
+      service.request(envelope("setup/codex/version/read", {})),
+    ).resolves.toMatchObject({
+      value: {
+        installed: true,
+        installedVersion: "0.151.0",
+        relation: "unknown",
+      },
+    });
+  });
+
   it("uses the configured proxy for a serialized user installation", async () => {
     const installCodex = vi.fn(async ({ env, onProgress }) => {
       onProgress?.("installing");

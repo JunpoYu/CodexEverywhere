@@ -177,7 +177,8 @@ class GatewayConnection {
   #handler: GatewaySession | undefined;
   #trustedDeviceId: string | undefined;
   #unsubscribe: (() => void) | undefined;
-  #queue: Promise<void> = Promise.resolve();
+  #receiveQueue: Promise<void> = Promise.resolve();
+  #mutationQueue: Promise<void> = Promise.resolve();
 
   constructor(socket: WebSocket, options: DirectGatewayOptions) {
     this.#socket = socket;
@@ -257,8 +258,8 @@ class GatewayConnection {
 
     this.#socket.on("message", (data) => {
       const receivedAt = Date.now();
-      this.#queue = this.#queue
-        .then(() => this.#handleEncrypted(data, receivedAt))
+      this.#receiveQueue = this.#receiveQueue
+        .then(() => this.#receiveEncrypted(data, receivedAt))
         .catch(() => this.#socket.close(1008, "protocol error"));
     });
     this.#socket.once("close", () => {
@@ -267,7 +268,7 @@ class GatewayConnection {
     });
   }
 
-  async #handleEncrypted(data: RawData, receivedAt: number): Promise<void> {
+  #receiveEncrypted(data: RawData, receivedAt: number): void {
     if (!this.#session || !this.#handler)
       throw new Error("Handshake incomplete");
     const frame = parseCipherFrame(data.toString());
@@ -278,9 +279,24 @@ class GatewayConnection {
     });
     if (!plaintext) return;
     const request = parseRequest(plaintext);
+    if (isReadMethod(request.method)) {
+      void this.#executeRequest(request, receivedAt, true);
+      return;
+    }
+    this.#mutationQueue = this.#mutationQueue
+      .then(() => this.#executeRequest(request, receivedAt, false))
+      .catch(() => this.#socket.close(1011, "request processing failed"));
+  }
+
+  async #executeRequest(
+    request: RequestEnvelope,
+    receivedAt: number,
+    readOnly: boolean,
+  ): Promise<void> {
+    if (!this.#handler) throw new Error("Handshake incomplete");
     const operationStartedAt = Date.now();
     const execute = () => this.#handler!.request(request);
-    const outcome = isReadMethod(request.method)
+    const outcome = readOnly
       ? await captureResult(execute)
       : await new IdempotencyRegistry(this.#options.state).execute(
           this.#requiredDeviceId(),
@@ -545,6 +561,7 @@ function isReadMethod(method: string): boolean {
     "model/list",
     "thread/list",
     "thread/read",
+    "thread/turns/list",
     "thread/goal/get",
     "skills/list",
     "mcpServerStatus/list",

@@ -1,4 +1,4 @@
-import { delimiter, join } from "node:path";
+import { delimiter, dirname, join } from "node:path";
 
 export type CodexNetworkConfig =
   | { mode: "direct" }
@@ -48,17 +48,23 @@ export function validateCodexNetworkConfig(
 
 export function codexProcessEnvironment(
   network: CodexNetworkConfig | undefined,
-  options: { base?: NodeJS.ProcessEnv; userHome?: string } = {},
+  options: {
+    base?: NodeJS.ProcessEnv;
+    userHome?: string;
+    runtimeBin?: string;
+  } = {},
 ): NodeJS.ProcessEnv {
   const environment = { ...(options.base ?? process.env) };
   for (const key of PROXY_ENVIRONMENT_KEYS) delete environment[key];
-  const userHome = options.userHome;
-  if (userHome) {
-    const localBin = join(userHome, ".local", "bin");
-    environment.PATH = environment.PATH
-      ? `${localBin}${delimiter}${environment.PATH}`
-      : localBin;
-  }
+  const executableDirectories = [
+    ...(options.userHome ? [join(options.userHome, ".local", "bin")] : []),
+    options.runtimeBin ?? dirname(process.execPath),
+    ...(environment.PATH?.split(delimiter) ?? []),
+  ].filter(
+    (directory, index, directories) =>
+      Boolean(directory) && directories.indexOf(directory) === index,
+  );
+  environment.PATH = executableDirectories.join(delimiter);
   if (!network || network.mode === "direct") return environment;
   setBothCases(environment, "HTTPS_PROXY", network.httpsProxy);
   setBothCases(

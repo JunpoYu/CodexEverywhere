@@ -1,12 +1,49 @@
+import { readFileSync } from "node:fs";
+import { createRequire } from "node:module";
+
 import { describe, expect, it } from "vitest";
 
 import {
   markdownToHtml,
+  messageSanitizerConfig,
   parseUnifiedDiff,
   unifiedDiffStats,
 } from "./code-renderer.js";
 
+const rendererStyles = readFileSync(
+  new URL("./style.css", import.meta.url),
+  "utf8",
+);
+
+function packageVersion(packageJsonPath: string): string {
+  const manifest: unknown = JSON.parse(readFileSync(packageJsonPath, "utf8"));
+  if (
+    typeof manifest !== "object" ||
+    manifest === null ||
+    !("version" in manifest) ||
+    typeof manifest.version !== "string"
+  ) {
+    throw new Error(`Package manifest has no version: ${packageJsonPath}`);
+  }
+  return manifest.version;
+}
+
 describe("message Markdown rendering", () => {
+  it("uses matching KaTeX versions for rendering and styles", () => {
+    const webRequire = createRequire(import.meta.url);
+    const pluginRequire = createRequire(
+      webRequire.resolve("@mdit/plugin-katex"),
+    );
+    const stylesheetVersion = packageVersion(
+      webRequire.resolve("katex/package.json"),
+    );
+    const rendererVersion = packageVersion(
+      pluginRequire.resolve("katex/package.json"),
+    );
+
+    expect(stylesheetVersion).toBe(rendererVersion);
+  });
+
   it("renders headings, emphasis, lists, quotes, tables, and code", () => {
     const html = markdownToHtml(
       [
@@ -60,6 +97,43 @@ describe("message Markdown rendering", () => {
     expect(html).toContain("<code>$not_math$</code>");
   });
 
+  it("keeps complex fraction layout metadata for display formulas", () => {
+    const html = markdownToHtml(
+      [
+        "$$",
+        "\\mathrm{NSE}_{\\mathrm{pooled,hourly}} = 1 - \\frac{\\sum_{w,h}(y_{w,h}-\\hat y_{w,h})^2}{\\sum_{w,h}(y_{w,h}-\\bar y_w)^2}",
+        "$$",
+      ].join("\n"),
+    );
+
+    expect(html).toContain("katex-display");
+    expect(html).toContain("vlist-t");
+    expect(html).toMatch(/style="[^"]*top:/u);
+  });
+
+  it("keeps the SVG primitives used by KaTeX radicals after sanitizing", () => {
+    const html = markdownToHtml(
+      [
+        "$$",
+        "\\mathrm{KGE}=1-\\sqrt{(r-1)^2+(\\alpha-1)^2+(\\beta-1)^2}",
+        "$$",
+      ].join("\n"),
+    );
+
+    expect(html).toContain("<svg");
+    expect(html).toContain("<path");
+    expect(messageSanitizerConfig.ADD_TAGS).toEqual(["svg", "path"]);
+    expect(messageSanitizerConfig.ADD_ATTR).toEqual(
+      expect.arrayContaining([
+        "width",
+        "height",
+        "viewBox",
+        "preserveAspectRatio",
+        "d",
+      ]),
+    );
+  });
+
   it("supports bracket-style LaTeX delimiters", () => {
     const html = markdownToHtml(
       "行内 \\(a^2+b^2=c^2\\) 与块级：\n\n\\[\\sum_{i=1}^n i\\]",
@@ -75,6 +149,30 @@ describe("message Markdown rendering", () => {
     expect(html).not.toContain("<script>");
     expect(html).toContain("&lt;script&gt;");
     expect(html).not.toContain('href="javascript:');
+  });
+});
+
+describe("message code styling", () => {
+  it("does not inherit the light inline-code background in fenced blocks", () => {
+    expect(rendererStyles).toMatch(
+      /\.message-code-block pre code\s*\{[^}]*background:\s*transparent;/su,
+    );
+  });
+});
+
+describe("message math styling", () => {
+  it("scrolls an outer shell instead of clipping the KaTeX layout node", () => {
+    expect(rendererStyles).toMatch(
+      /\.math-display-wrap\s*\{[^}]*overflow:\s*auto;/su,
+    );
+    expect(rendererStyles).not.toMatch(
+      /\.rich-message \.katex-display\s*\{[^}]*overflow-y:\s*hidden;/su,
+    );
+  });
+
+  it("scopes Markdown table rules to the generated table wrapper", () => {
+    expect(rendererStyles).toContain(".markdown-table-wrap > table {");
+    expect(rendererStyles).not.toContain(".rich-message table {");
   });
 });
 

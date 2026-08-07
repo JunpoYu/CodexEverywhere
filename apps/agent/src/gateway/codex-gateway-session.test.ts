@@ -146,6 +146,7 @@ describe("CodexGatewaySession notifications", () => {
             "account/rateLimits/read",
             "account/usage/read",
             "thread/settings/update",
+            "thread/turns/list",
           ].includes(String(message.method))
         ) {
           slashMethodPayloads.set(String(message.method), message.params);
@@ -175,6 +176,24 @@ describe("CodexGatewaySession notifications", () => {
       idempotencyKey: "read-1",
       method: "thread/read",
       payload: { threadId: "thread-1", includeTurns: true },
+    });
+    await session.request({
+      version: PROTOCOL_VERSION,
+      requestId: "turns-1",
+      idempotencyKey: "turns-page-1",
+      method: "thread/turns/list",
+      payload: {
+        threadId: "thread-1",
+        limit: 20,
+        sortDirection: "desc",
+        itemsView: "full",
+      },
+    });
+    expect(slashMethodPayloads.get("thread/turns/list")).toEqual({
+      threadId: "thread-1",
+      limit: 20,
+      sortDirection: "desc",
+      itemsView: "full",
     });
     await expect(
       session.request({
@@ -259,7 +278,7 @@ describe("CodexGatewaySession notifications", () => {
     }
     await new Promise((resolve) => setTimeout(resolve, 20));
 
-    expect(threadReads).toBe(2);
+    expect(threadReads).toBe(3);
     expect(events.map((event) => event.payload)).toEqual([
       expect.objectContaining({ delta: "A" }),
       expect.objectContaining({ delta: "B" }),
