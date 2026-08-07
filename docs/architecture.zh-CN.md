@@ -37,7 +37,7 @@
 - 输入器以经过回归测试的 Codex `0.144.1` 官方发布清单作为 Web 斜杠指令基线，并注册 `/pet`、`/clean` 别名；它不是 CLI 运行版本白名单。用户输入 `/` 时显示按官方顺序排列、可搜索且支持方向键、Tab、Enter 和触控的补全菜单；执行前在 Web 本地解析，绝不把未知指令、无效参数或忙碌期禁止执行的指令当作普通 prompt 或 Queue 消息。`/compact`、`/review`、`/rename`、`/new`、`/archive`、`/delete`、`/resume`、`/fork`、`/init`、`/goal`、`/skills`、`/mcp`、`/status`、`/usage`、`/copy`、`/theme`、`/logout` 等调用受限 app-server 方法或现有 Web 界面；依赖 TUI 本地状态、IDE、通用 Shell 或特定操作系统的指令仍被识别，并给出 SSH TUI 或平台限制说明。Web 网关不会为了 `/diff` 暴露任意命令执行接口；新版 CLI 新增指令需要后续 Web adapter 更新，但不会阻止其余兼容能力运行。
 - 对话时间线是内容区内唯一的纵向滚动容器；会话头和输入器始终留在视口中，Codex 回复完成后自动滚动到最新消息。
 - 已完成初始化的用户登录后直接进入工作区；Codex 直连/代理配置位于设置菜单，修改前明确提示会中断活动 turn，保存后重启 app-server 并自动重新连接。
-- 会话头以高对比状态区根据 app-server 增量事件实时显示正在思考、回复、执行命令、修改文件、调用工具、等待操作、完成或异常，而不是只显示笼统的 active 状态；“会话设置”是带图标和强调色的一级操作，不能隐藏在弱提示或不明显的次级文字中。
+- 会话头以紧凑状态区根据 app-server 增量事件实时显示正在思考、回复、执行命令、修改文件、调用工具、等待操作、完成或异常，而不是只显示笼统的 active 状态；完整会话设置保留明确的图标入口，常用的权限与模型设置同时在输入框状态栏中直接可见、可修改。
 - Agent 在首次读取或列出 thread 时完成 workspace 授权并缓存结果；同一连接中的后续 delta notification 立即转发，workspace root 变化时清空缓存，避免逐条 `thread/read` 阻塞流式回复。
 - 活动会话以 app-server delta notification 为实时主通道；PWA 在短时间收不到事件时自动读取并合并最新 `thread/read` 快照，结束后立即停止同步，避免通知偶发丢失时必须手动点击会话刷新。
 - 输入器以 app-server 的真实 thread 状态决定发送语义：空闲时启动 turn，活动或等待审批时默认持久加入宿主机 Queue；排队消息重新打开后仍显示，并可在活动 turn 结束前逐条原子转换为 Steer。发送失败会撤销临时消息，活动 turn 可由用户显式停止。
@@ -46,7 +46,7 @@
 - 打开已有会话使用 `thread/resume` 而非只读 `thread/read`，确保当前浏览器连接订阅该 thread 的增量事件，并同时取得模型、推理强度、审批策略和 sandbox 设置。
 - PWA 切换会话或返回会话列表时调用 `thread/unsubscribe` 释放旧订阅；Agent 级 Queue 在队列耗尽或暂停后也释放自己的订阅。释放订阅不 interrupt 活动 turn，最后一个订阅者离开后由 app-server 自身的无订阅宽限期决定何时卸载内存状态，不另设 24 小时保留定时器或用户“卸载”按钮。
 - 已有会话可修改模型、推理强度、审批策略和文件/命令权限；PWA 通过原生 `thread/settings/update` 保存设置，并用 `thread/settings/updated` 同步其他已订阅客户端。设置由 app-server 用于后续 turn，活动 turn 不会被静默中断；若用户安装的 Codex 尚不提供该方法，adapter 必须返回明确的能力错误。
-- 会话页把 sandbox 与审批策略作为首个高对比信息卡常驻展示，同时显示当前模型、推理强度，以及 app-server 实时上报的当前上下文使用量、窗口大小和累计 token；权限卡可直接进入设置，设置弹窗必须适配窄屏和低高度视口并可完整滚动。
+- 会话页不再用独立信息卡占用 timeline 上方空间；输入框 footer 以紧凑状态栏常驻显示 sandbox 与审批策略、模型与推理强度，以及 app-server 实时上报的当前上下文窗口和占用比例。权限与模型标签可直接进入对应设置区域；上下文使用环形进度并在 70% 与 90% 分级提示，完整用量保留在可访问文本与悬停说明中。运行中修改设置时显示“下一轮”，设置弹窗必须适配窄屏和低高度视口并可完整滚动。
 - Agent 级持久 Queue，不依赖浏览器连接推进；turn 正常完成后自动启动下一项，失败或中断时暂停，并保留 Queue 转 Steer 失败的原消息。
 - 写请求幂等、Agent/app-server 分离生命周期、官方 remote TUI 接力。
 - CentOS 7 友好的纯 WASM SQLite、PID/文件锁、tmux + crontab watchdog 和 `ce doctor`。

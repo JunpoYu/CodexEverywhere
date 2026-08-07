@@ -116,14 +116,24 @@ export function mcpElicitationResponse(
 export type ContextUsagePresentation = {
   label: string;
   percent: number | null;
+  percentLabel: string;
+  windowLabel: string;
   detail: string;
+  level: "unknown" | "normal" | "warning" | "danger";
 };
 
 export function contextUsagePresentation(
   usage: ThreadTokenUsage | undefined,
 ): ContextUsagePresentation {
   if (!usage) {
-    return { label: "等待数据", percent: null, detail: "尚未收到 token usage" };
+    return {
+      label: "等待数据",
+      percent: null,
+      percentLabel: "上下文",
+      windowLabel: "—",
+      detail: "尚未收到 token usage",
+      level: "unknown",
+    };
   }
   const used = usage.last.totalTokens;
   const window = usage.modelContextWindow;
@@ -131,14 +141,21 @@ export function contextUsagePresentation(
     return {
       label: formatTokenCount(used),
       percent: null,
+      percentLabel: "上下文",
+      windowLabel: "—",
       detail: `累计 ${formatTokenCount(usage.total.totalTokens)}`,
+      level: "unknown",
     };
   }
   const percent = Math.max(0, Math.min(100, (used / window) * 100));
+  const percentLabel = `${stripTrailingZero(percent.toFixed(1))}%`;
   return {
     label: `${formatTokenCount(used)} / ${formatTokenCount(window)}`,
     percent,
+    percentLabel,
+    windowLabel: formatTokenCount(window),
     detail: `${percent.toFixed(1)}% · 累计 ${formatTokenCount(usage.total.totalTokens)}`,
+    level: percent >= 90 ? "danger" : percent >= 70 ? "warning" : "normal",
   };
 }
 
