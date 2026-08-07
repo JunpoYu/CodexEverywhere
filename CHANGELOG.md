@@ -4,6 +4,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- HPC Release 安装器在 GitHub Release CDN 跳转或 TLS 连接短暂中断时会使用兼容 CentOS 7 旧版 curl 的有界重试，并通过临时文件避免把不完整下载误当成可校验制品。
+
 ## [0.3.0-alpha.2] - 2026-08-07
 
 ### Added

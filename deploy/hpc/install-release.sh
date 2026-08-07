@@ -62,12 +62,32 @@ trap 'rm -rf "$temporary_directory"' EXIT HUP INT TERM
 asset=codex-everywhere-agent-$version.tar.gz
 base_url=https://github.com/$repository/releases/download/$version
 
-curl --fail --location --silent --show-error \
-  "$base_url/SHA256SUMS" --output "$temporary_directory/SHA256SUMS"
-curl --fail --location --silent --show-error \
-  "$base_url/manifest.json" --output "$temporary_directory/manifest.json"
-curl --fail --location --silent --show-error \
-  "$base_url/$asset" --output "$temporary_directory/$asset"
+download_release_file() {
+  source_url=$1
+  destination=$2
+  partial=$destination.partial
+  attempt=1
+  while [ "$attempt" -le 5 ]; do
+    rm -f "$partial"
+    if curl --fail --location --silent --show-error --connect-timeout 20 \
+      "$source_url" --output "$partial"; then
+      mv "$partial" "$destination"
+      return 0
+    fi
+    rm -f "$partial"
+    if [ "$attempt" -lt 5 ]; then
+      echo "Release download failed; retrying ($attempt/5): $source_url" >&2
+      sleep $((attempt * 2))
+    fi
+    attempt=$((attempt + 1))
+  done
+  echo "Release download failed after 5 attempts: $source_url" >&2
+  return 1
+}
+
+download_release_file "$base_url/SHA256SUMS" "$temporary_directory/SHA256SUMS"
+download_release_file "$base_url/manifest.json" "$temporary_directory/manifest.json"
+download_release_file "$base_url/$asset" "$temporary_directory/$asset"
 
 expected=$(awk -v file="$asset" '$2 == file { print $1 }' "$temporary_directory/SHA256SUMS")
 if [ -z "$expected" ]; then
