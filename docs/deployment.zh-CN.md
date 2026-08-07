@@ -10,9 +10,23 @@
          → staging → 人工批准 → production
 ```
 
-生产部署只接受语义版本 tag，例如 `v0.3.0-alpha.1`。禁止从功能分支、PR head、本地路径、未提交工作区或服务器上的 Git checkout 构建生产文件。
+生产部署只接受语义版本 tag，例如 `v0.3.0-alpha.3`。禁止从功能分支、PR head、本地路径、未提交工作区或服务器上的 Git checkout 构建生产文件。生产服务器不需要 clone 本项目，也不得通过 `git pull`、`pnpm install` 或 `pnpm build` 完成升级。
 
-公开仓库保存通用代码、模板和安装器。真实部署应使用独立的私有 ops 仓库或服务器本地受限目录保存：
+公开仓库保存通用代码、模板和安装器。个人与单集群部署默认把真实配置保存在对应服务器的本地受限目录；只有多环境、多人运维或需要配置审阅时，才需要额外建立私有 ops 仓库。两种方式都不得把生产配置复制回公开开发仓库。
+
+配置归属如下：
+
+| 内容                               | 权威位置                        | 进入公开 Git |
+| ---------------------------------- | ------------------------------- | ------------ |
+| 源码、测试、通用安装器             | 公开仓库                        | 是           |
+| Nginx、systemd 示例                | 公开仓库                        | 仅占位符模板 |
+| Web、Agent、Relay 程序             | GitHub Release 与服务器版本目录 | 仅 Release   |
+| 域名、主机、SSH 参数、代理默认值   | 对应生产服务器                  | 否           |
+| Relay credential、TLS/SSH 私钥     | 对应服务器受限目录              | 否           |
+| 用户 Passkey、密码记录、Codex 凭据 | 用户自己的 HPC home             | 否           |
+| 当前部署版本、时间与回滚记录       | 服务器本地 inventory            | 否           |
+
+服务器本地至少记录：
 
 - staging/production inventory；
 - 域名、主机地址和 SSH 参数；
@@ -33,14 +47,14 @@ Release 制品由 GitHub Actions 从 tag 的干净 checkout 构建一次。部�
 后续版本由专用账号执行。先从 Release 下载并验证 `codex-everywhere-hpc-tools-<tag>.tar.gz`，然后在解压目录运行：
 
 ```bash
-hpc-tools/install-release.sh v0.3.0-alpha.1
+hpc-tools/install-release.sh <tag>
 ```
 
 也可以显式指定 fork 和安装位置：
 
 ```bash
 hpc-tools/install-release.sh \
-  v0.3.0-alpha.1 \
+  <tag> \
   example/CodexEverywhere \
   /srv/codex-everywhere \
   /srv/codex-everywhere/runtime
@@ -52,13 +66,13 @@ hpc-tools/install-release.sh \
 <install-root>/releases/<tag>
 ```
 
-验证后原子切换 `current`。共享 runtime 不随每个版本重复安装。`/usr/local/bin/ce` 始终指向专用账号的稳定 wrapper。
+验证后原子切换 `current`。安装器同时把经过验证的 manifest 保存为该版本的 `release-manifest.json`，并原子更新安装根目录的 `active-release`；它们是不含 secret 的服务器本地 inventory。共享 runtime 不随每个版本重复安装。`/usr/local/bin/ce` 始终指向专用账号的稳定 wrapper。
 
 回滚不下载或重建任何内容：
 
 ```bash
 hpc-tools/activate-rootless-release.sh \
-  v0.3.0-alpha.1 \
+  <old-tag> \
   /srv/codex-everywhere
 ```
 
@@ -100,23 +114,35 @@ systemd 或其他 supervisor 使用稳定的 `current/dist/cli.js`。部署前�
 - production 需要人工批准；
 - 失败时回滚到上一 Release，不在服务器直接修代码。
 
-私有 ops 仓库可以保存如下非秘密版本选择：
+服务器本地 inventory 可以保存如下非秘密版本选择；文件不放在程序 Release 目录内，升级时不得覆盖：
 
 ```json
 {
   "environment": "production",
-  "version": "v0.3.0-alpha.1",
+  "version": "<tag>",
   "components": {
-    "web": "v0.3.0-alpha.1",
-    "relay": "v0.3.0-alpha.1",
-    "agent": "v0.3.0-alpha.1"
+    "web": "<tag>",
+    "relay": "<tag>",
+    "agent": "<tag>"
   }
 }
 ```
 
-真实 secret 仍使用 GitHub Environments、服务器文件权限或专用 secret manager，不提交到 ops Git 历史。
+个人部署可以直接把 inventory 保存在只有部署账号可写的本地文件中，并通过项目目录之外的加密备份保护。私有 ops 仓库只是可选的多环境协作层；真实 secret 始终使用服务器文件权限、GitHub Environments 或专用 secret manager，不提交到任何 Git 历史。
 
-## 7. 兼容与可观测性
+## 7. 配置与备份
+
+程序、配置和状态必须分离：
+
+- `releases/<tag>` 与 `current` 只保存可重新下载的程序；
+- HPC provisioner 配置保存在专用账号 home，用户状态分别保存在各自的 `~/.codex-everywhere` 与 `~/.codex`；
+- Relay credential 与状态保存在 `/var/lib` 或显式的 `CE_RELAY_HOME`；
+- Nginx、systemd、TLS 和环境文件保存在服务器 `/etc`；
+- 备份不得写入源码 checkout、Release 目录或公开仓库。
+
+升级前备份配置和 inventory，升级后确认其 inode、权限或内容未被安装器替换。敏感备份必须加密并设置保留期。Release 制品无需备份，可随时从 GitHub 重新下载。
+
+## 8. 兼容与可观测性
 
 Web 和 Agent 的版本可能在滚动升级期间短暂不一致，因此协议变更至少保持当前版与上一版兼容。Relay 尽量只转发密文，不依赖业务消息结构。
 

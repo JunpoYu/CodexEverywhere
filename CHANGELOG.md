@@ -8,6 +8,12 @@
 
 - HPC Release 安装器在 GitHub Release CDN 跳转或 TLS 连接短暂中断时会使用兼容 CentOS 7 旧版 curl 的有界重试，并通过临时文件避免把不完整下载误当成可校验制品。
 
+### Changed
+
+- 公开仓库新增自动卫生检查，拒绝跟踪运行状态、凭据文件、私钥标记、真实用户 home、公网 IP，以及在公开 CI 中使用 SSH/rsync 部署；部署文档明确个人或单集群的生产配置默认只保存在对应服务器，私有 ops 仓库仅作为多环境协作选项。
+- 文档与测试不再使用特定集群的本地代理端口，统一改为 `example.com` 占位符；真实代理默认值只属于宿主机 provisioner 配置。
+- rootless HPC 安装与回滚会在服务器安装根目录原子记录 `active-release`，并为正式 Release 保存已验证的 manifest；生产版本 inventory 不再依赖开发仓库或人工命名的备份目录。
+
 ## [0.3.0-alpha.2] - 2026-08-07
 
 ### Added

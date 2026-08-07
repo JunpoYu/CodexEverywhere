@@ -139,7 +139,7 @@ ce-relay issue-provisioner --installation-id <installation-id> --expires-days 36
 ce provisioner install \
   --origin https://codex.example.com \
   --relay-endpoint wss://codex.example.com/relay \
-  --default-codex-proxy http://127.0.0.1:7890 \
+  --default-codex-proxy http://proxy.example.com:8080 \
   --credential-stdin
 ce provisioner install-service
 ```

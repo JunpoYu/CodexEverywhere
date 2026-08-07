@@ -43,7 +43,7 @@ describe("host self-provisioner", () => {
         credential,
         defaultCodexNetwork: {
           mode: "proxy",
-          httpsProxy: "http://127.0.0.1:7890",
+          httpsProxy: "http://proxy.example.com:8080",
         },
       },
       configPath,
@@ -54,7 +54,7 @@ describe("host self-provisioner", () => {
       credential: { installationId: "hpc-cluster-1" },
       defaultCodexNetwork: {
         mode: "proxy",
-        httpsProxy: "http://127.0.0.1:7890",
+        httpsProxy: "http://proxy.example.com:8080",
       },
     });
 
@@ -75,7 +75,7 @@ describe("host self-provisioner", () => {
       relayEndpoint: "wss://codex.example.com/relay",
       defaultCodexNetwork: {
         mode: "proxy",
-        httpsProxy: "http://127.0.0.1:7890",
+        httpsProxy: "http://proxy.example.com:8080",
       },
     });
     expect(routeCapabilityLoginId(verified, relayKey)).toBe(
@@ -101,7 +101,7 @@ describe("host self-provisioner", () => {
     );
 
     await setHostProvisionerDefaultCodexNetwork(
-      { mode: "proxy", httpsProxy: "http://127.0.0.1:7890" },
+      { mode: "proxy", httpsProxy: "http://proxy.example.com:8080" },
       configPath,
     );
 
@@ -109,7 +109,7 @@ describe("host self-provisioner", () => {
       credential: { installationId: "hpc-cluster-1" },
       defaultCodexNetwork: {
         mode: "proxy",
-        httpsProxy: "http://127.0.0.1:7890",
+        httpsProxy: "http://proxy.example.com:8080",
       },
     });
     expect((await stat(configPath)).mode & 0o777).toBe(0o600);

@@ -166,6 +166,8 @@ E2EE 不能消除 Web 代码分发风险：如果 PWA 静态服务器被完全�
 
 ## 从源码开始
 
+源码 checkout 只用于开发、测试和生成 Release，不是生产配置目录。公开仓库中的域名、账号、路径和代理均为虚构示例；真实配置保存在对应服务器的受限目录，HPC、Web 与 Relay 通过 GitHub Release 升级，不在生产机 `git pull` 或重新构建。配置归属、备份和回滚边界见[部署与升级](docs/deployment.zh-CN.md)。
+
 ### 1. 安装依赖并构建
 
 ```bash
@@ -269,7 +271,7 @@ ce-relay issue-provisioner \
 ce provisioner install \
   --origin https://codex.example.com \
   --relay-endpoint wss://relay.example.com/relay \
-  --default-codex-proxy http://127.0.0.1:7890 \
+  --default-codex-proxy http://proxy.example.com:8080 \
   --credential-stdin
 
 ce provisioner install-service
