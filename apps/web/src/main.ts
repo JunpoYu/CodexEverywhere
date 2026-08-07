@@ -36,7 +36,10 @@ import {
   codexLoginEventAction,
   shouldRenderInThreadTimeline,
 } from "./event-routing.js";
-import { shouldDismissDialogFromBackdrop } from "./dialog-behavior.js";
+import {
+  shouldDismissDialogFromBackdrop,
+  shouldPreventDialogCancel,
+} from "./dialog-behavior.js";
 import {
   CODEX_INSTALL_STEP_COUNT,
   codexInstallProgressPresentation,
@@ -211,6 +214,7 @@ let olderHistoryLoading = false;
 let lastRealtimeEventAt = 0;
 let activeThreadSettings: ThreadRuntimeSettings | undefined;
 let activeThreadTokenUsage: ThreadTokenUsage | undefined;
+let threadSettingsPendingNextTurn = false;
 let directoryPickerTarget: "session" | "workspace" = "session";
 let directoryBrowseState: WorkspaceBrowseResponse | undefined;
 let directoryBrowseSequence = 0;
@@ -376,13 +380,7 @@ app.innerHTML = `
       <div id="thread-list" class="thread-list"></div>
     </aside>
     <section id="conversation-content" class="content">
-      <div class="thread-header"><button id="back-to-sessions" class="back-to-sessions" type="button" aria-label="返回会话列表">←</button><div class="thread-heading"><p class="eyebrow">Codex session</p><h2 id="thread-title">选择一个会话</h2><small class="thread-cwd-line"><span>当前会话目录</span><code id="thread-cwd"></code></small></div><div class="thread-controls"><div class="codex-status"><span>Codex 状态</span><strong id="thread-state" class="pill idle" role="status" aria-live="polite">空闲</strong></div><div class="thread-actions"><button id="thread-outline-button" class="thread-outline-action compact-action" type="button" aria-controls="conversation-outline" aria-expanded="false" hidden><span aria-hidden="true">☷</span> 大纲</button><button id="tui-handoff-button" class="ssh-handoff-action compact-action" type="button" title="通过 SSH 在官方 TUI 中继续同一个会话" hidden><span aria-hidden="true">›_</span> SSH 接力</button><button id="thread-settings-button" class="session-settings-action compact-action" type="button" hidden><span aria-hidden="true">⚙</span> 会话设置</button><button id="interrupt-turn" class="ghost danger-action compact-action" type="button" hidden>停止</button></div></div></div>
-      <div id="thread-overview" class="thread-overview" hidden>
-        <button id="thread-permission-summary" class="thread-fact permission-fact" type="button" title="修改这个会话后续轮次的权限"><span>会话权限</span><strong id="thread-info-permissions">—</strong><small>后续轮次继承 · 点击修改</small></button>
-        <div class="thread-fact"><span>模型</span><strong id="thread-info-model">—</strong></div>
-        <div class="thread-fact"><span>推理强度</span><strong id="thread-info-effort">—</strong></div>
-        <div class="thread-fact context-usage"><span>上下文</span><strong id="thread-info-context">等待数据</strong><div class="context-meter" aria-hidden="true"><i id="thread-context-fill"></i></div><small id="thread-context-detail"></small></div>
-      </div>
+      <div class="thread-header"><button id="back-to-sessions" class="back-to-sessions" type="button" aria-label="返回会话列表">←</button><div class="thread-heading"><p class="eyebrow">Codex session</p><h2 id="thread-title">选择一个会话</h2><small class="thread-cwd-line"><span>当前会话目录</span><code id="thread-cwd"></code></small></div><div class="thread-controls"><div class="codex-status"><strong id="thread-state" class="pill idle" role="status" aria-live="polite">空闲</strong></div><div class="thread-actions"><button id="thread-outline-button" class="thread-outline-action compact-action" type="button" aria-controls="conversation-outline" aria-expanded="false" hidden><span aria-hidden="true">☷</span> 大纲</button><button id="tui-handoff-button" class="ssh-handoff-action compact-action" type="button" title="通过 SSH 在官方 TUI 中继续同一个会话" hidden><span aria-hidden="true">›_</span> SSH 接力</button><button id="thread-settings-button" class="session-settings-action compact-action icon-only-action" type="button" aria-label="打开会话设置" title="会话设置" hidden><span aria-hidden="true">⚙</span></button><button id="interrupt-turn" class="ghost danger-action compact-action" type="button" hidden>停止</button></div></div></div>
       <aside id="ssh-handoff-banner" class="ssh-handoff-banner" aria-label="SSH 接力提示" hidden>
         <div class="ssh-handoff-banner-copy"><span class="ssh-terminal-mark" aria-hidden="true">›_</span><div><strong>也可以通过 SSH 访问同一个会话</strong><span>登录运行 Codex 的 HPC 后，用 <code>ce tui</code> 继续；Web、SSH TUI 可随时切换，当前任务不会中断。</span></div></div>
         <div class="ssh-handoff-banner-actions"><button id="ssh-handoff-banner-button" type="button">查看方法 <span aria-hidden="true">→</span></button><button id="dismiss-ssh-handoff-banner" class="ssh-handoff-banner-dismiss" type="button" title="以后不再显示这条说明">不再提示</button></div>
@@ -397,7 +395,20 @@ app.innerHTML = `
         <div class="composer-shell">
           <div id="slash-command-menu" class="slash-command-menu" role="listbox" aria-label="Codex 斜杠指令" hidden></div>
           <textarea id="message-input" rows="1" placeholder="给 Codex 发送消息，输入 / 查看指令…" aria-autocomplete="list" aria-controls="slash-command-menu" disabled></textarea>
-          <div class="composer-footer"><span class="composer-hint">Enter 发送 · Shift + Enter 换行</span><div><button id="queue-message" class="ghost queue-action" disabled>加入队列</button><button id="send-message" class="primary send-action" disabled><span>发送</span><kbd>↵</kbd></button></div></div>
+          <div class="composer-footer">
+            <div class="composer-footer-leading">
+              <div id="composer-session-meta" class="composer-session-meta" aria-label="会话配置和上下文" hidden>
+                <button id="thread-permission-summary" class="session-meta-item permission-meta" type="button" title="修改这个会话后续轮次的权限"><span class="session-meta-icon" aria-hidden="true">◇</span><span id="thread-info-permissions">—</span><small id="thread-permission-pending" hidden>下一轮</small></button>
+                <button id="thread-model-summary" class="session-meta-item model-meta" type="button" title="修改模型和推理强度"><span id="thread-info-model">—</span><span class="session-meta-separator" aria-hidden="true">·</span><span id="thread-info-effort">—</span></button>
+                <div id="thread-context-summary" class="session-context unknown" role="progressbar" aria-label="上下文用量尚不可用" aria-valuemin="0" aria-valuemax="100" aria-valuetext="尚未收到上下文用量" tabindex="0">
+                  <span id="thread-context-ring" class="context-ring" aria-hidden="true"></span>
+                  <span class="context-copy"><strong id="thread-context-window">—</strong><small id="thread-context-percent">上下文</small></span>
+                </div>
+              </div>
+              <span class="composer-hint">Enter 发送 · Shift + Enter 换行</span>
+            </div>
+            <div class="composer-actions"><button id="queue-message" class="ghost queue-action" disabled>加入队列</button><button id="send-message" class="primary send-action" disabled><span>发送</span><kbd>↵</kbd></button></div>
+          </div>
         </div>
       </div>
     </section>
@@ -504,11 +515,9 @@ app.innerHTML = `
     <div>
       <div class="dialog-heading"><div><p class="eyebrow">Session settings</p><h2>会话设置</h2></div><button id="close-thread-settings" class="icon-button" type="button" aria-label="关闭">×</button></div>
       <p class="lede">使用 Codex app-server 原生设置。修改会从下一轮消息开始生效，并成为这个会话后续轮次的默认值。</p>
-      <div class="thread-settings-grid">
-        <label>模型<select id="thread-model"></select></label>
-        <label>推理强度<select id="thread-effort"></select></label>
-        <label>审批策略<select id="thread-approval"><option value="on-request">按需审批</option><option value="untrusted">仅不受信任命令需审批</option><option value="never">不请求审批</option></select></label>
-        <label>文件与命令权限<select id="thread-sandbox"><option value="readOnly">只读</option><option value="workspaceWrite">可写当前工作目录</option><option value="dangerFullAccess">完全访问（危险）</option></select></label>
+      <div class="thread-settings-groups">
+        <section id="thread-settings-model-section" class="thread-settings-section"><div><strong>模型行为</strong><small>选择模型及其推理强度</small></div><div class="thread-settings-fields"><label>模型<select id="thread-model"></select></label><label>推理强度<select id="thread-effort"></select></label></div></section>
+        <section id="thread-settings-permission-section" class="thread-settings-section permission-section"><div><strong>执行权限</strong><small>决定后续轮次可访问的范围和审批方式</small></div><div class="thread-settings-fields"><label>文件与命令权限<select id="thread-sandbox"><option value="readOnly">只读</option><option value="workspaceWrite">可写当前工作目录</option><option value="dangerFullAccess">完全访问（危险）</option></select></label><label>审批策略<select id="thread-approval"><option value="on-request">按需审批</option><option value="untrusted">仅不受信任命令需审批</option><option value="never">不请求审批</option></select></label></div></section>
       </div>
       <div id="thread-settings-notice" class="restart-warning" hidden><strong>下一轮生效</strong><span>当前 turn 不会被中断；如果正在运行，新消息会带着这些设置进入队列。</span></div>
       <p id="thread-settings-error" class="error" role="alert"></p>
@@ -908,7 +917,11 @@ requiredElement("thread-settings-button").addEventListener(
 );
 requiredElement("thread-permission-summary").addEventListener(
   "click",
-  () => void openThreadSettings(),
+  () => void openThreadSettings("permissions"),
+);
+requiredElement("thread-model-summary").addEventListener(
+  "click",
+  () => void openThreadSettings("model"),
 );
 requiredElement("close-thread-settings").addEventListener("click", () =>
   threadSettingsDialog.close(),
@@ -981,6 +994,9 @@ for (const dialog of document.querySelectorAll<HTMLDialogElement>("dialog")) {
   dialog.addEventListener("click", (event) => {
     if (event.target === dialog && shouldDismissDialogFromBackdrop(dialog.id))
       dialog.close();
+  });
+  dialog.addEventListener("cancel", (event) => {
+    if (shouldPreventDialogCancel(dialog.id)) event.preventDefault();
   });
 }
 window.addEventListener("keydown", (event) => {
@@ -1113,7 +1129,7 @@ if (import.meta.env.DEV) {
       sendMessage.disabled = false;
       queueMessage.disabled = false;
       setThreadStatus(activeThreadStatus);
-      renderThreadOverview();
+      renderComposerSessionMeta();
     }
   }
 }
@@ -1498,10 +1514,12 @@ async function activate(nextClient: GatewayClient): Promise<void> {
   olderHistoryLoading = false;
   activeThreadSettings = undefined;
   activeThreadTokenUsage = undefined;
+  threadSettingsPendingNextTurn = false;
   pendingRequestIds.clear();
   approvalSubmissions.clear();
   conversationOutlineView.setThreadActive(false);
   jumpToLatestButton.hidden = true;
+  renderComposerSessionMeta();
   client?.close();
   client = nextClient;
   appServerRestartRequired = false;
@@ -2796,6 +2814,7 @@ function closeActiveThreadView(): void {
   olderHistoryLoading = false;
   activeThreadSettings = undefined;
   activeThreadTokenUsage = undefined;
+  threadSettingsPendingNextTurn = false;
   pendingRequestIds.clear();
   approvalSubmissions.clear();
   workspace.classList.remove("thread-open");
@@ -2805,7 +2824,7 @@ function closeActiveThreadView(): void {
   requiredElement("thread-cwd").textContent = "";
   requiredElement("thread-settings-button").hidden = true;
   setTuiHandoffVisible(false);
-  requiredElement("thread-overview").hidden = true;
+  renderComposerSessionMeta();
   messageInput.disabled = true;
   sendMessage.disabled = true;
   queueMessage.disabled = true;
@@ -2869,11 +2888,12 @@ async function openThread(thread: ThreadSummary): Promise<void> {
   olderHistoryLoading = false;
   activeThreadSettings = undefined;
   activeThreadTokenUsage = undefined;
+  threadSettingsPendingNextTurn = false;
   pendingRequestIds.clear();
   approvalSubmissions.clear();
   requiredElement("thread-settings-button").hidden = true;
   setTuiHandoffVisible(false);
-  requiredElement("thread-overview").hidden = true;
+  renderComposerSessionMeta();
   lastRealtimeEventAt = Date.now();
   workspace.classList.add("thread-open");
   requiredElement("thread-title").textContent =
@@ -2926,7 +2946,7 @@ async function openThread(thread: ThreadSummary): Promise<void> {
     };
     setTuiHandoffVisible(true);
     requiredElement("thread-settings-button").hidden = false;
-    renderThreadOverview();
+    renderComposerSessionMeta();
     await renderQueuedMessages(thread.id, sequence);
     if (
       client !== currentClient ||
@@ -3009,7 +3029,9 @@ function renderReasoningEfforts(): void {
     effort.value = previous;
 }
 
-async function openThreadSettings(): Promise<void> {
+async function openThreadSettings(
+  focus?: "model" | "permissions",
+): Promise<void> {
   if (!client || !activeThreadSettings) return;
   const error = requiredElement("thread-settings-error");
   error.textContent = "";
@@ -3052,6 +3074,11 @@ async function openThreadSettings(): Promise<void> {
     requiredElement("thread-settings-notice").hidden =
       activeThreadStatus?.type !== "active";
     threadSettingsDialog.showModal();
+    if (focus === "model") {
+      requiredElement<HTMLSelectElement>("thread-model").focus();
+    } else if (focus === "permissions") {
+      requiredElement<HTMLSelectElement>("thread-sandbox").focus();
+    }
   } catch (cause) {
     error.textContent = errorMessage(cause);
     threadSettingsDialog.showModal();
@@ -3129,7 +3156,8 @@ async function saveThreadSettings(): Promise<void> {
           ? currentSettings.sandboxPolicy
           : sandboxPolicyForType(sandboxType, currentSettings.sandboxPolicy),
     };
-    renderThreadOverview();
+    threadSettingsPendingNextTurn = activeThreadStatus?.type === "active";
+    renderComposerSessionMeta();
     threadSettingsDialog.close();
     showToast(
       activeThreadStatus?.type === "active"
@@ -3194,7 +3222,7 @@ async function startTask(): Promise<void> {
     setTuiHandoffVisible(true);
     requiredElement("thread-settings-button").hidden = false;
     activeThreadTokenUsage = undefined;
-    renderThreadOverview();
+    renderComposerSessionMeta();
     setThreadStatus({ type: "active" });
     messageInput.disabled = false;
     sendMessage.disabled = false;
@@ -4164,7 +4192,7 @@ function renderEvent(event: EventEnvelope): void {
     isThreadTokenUsage(payload.tokenUsage)
   ) {
     activeThreadTokenUsage = payload.tokenUsage;
-    renderThreadOverview();
+    renderComposerSessionMeta();
     return;
   }
   if (
@@ -4173,7 +4201,7 @@ function renderEvent(event: EventEnvelope): void {
     typeof payload.toModel === "string"
   ) {
     activeThreadSettings.model = payload.toModel;
-    renderThreadOverview();
+    renderComposerSessionMeta();
     return;
   }
   updateThreadActivity(event, payload);
@@ -4623,6 +4651,10 @@ function setThreadStatus(status: unknown): void {
     startThreadSync();
   } else {
     stopThreadSync();
+    if (threadSettingsPendingNextTurn) {
+      threadSettingsPendingNextTurn = false;
+      renderComposerSessionMeta();
+    }
   }
   updateComposerMode();
 }
@@ -4641,36 +4673,88 @@ function updatePendingApprovalState(): void {
     setThreadActivity("active", "继续处理");
 }
 
-function renderThreadOverview(): void {
-  const overview = requiredElement("thread-overview");
+function renderComposerSessionMeta(): void {
+  const meta = requiredElement("composer-session-meta");
+  const hint = requiredElement("message-input").parentElement?.querySelector(
+    ".composer-hint",
+  ) as HTMLElement | null;
   if (!activeThreadSettings || !activeThreadId) {
-    overview.hidden = true;
+    meta.hidden = true;
+    if (hint) hint.hidden = false;
     return;
   }
-  overview.hidden = false;
+  meta.hidden = false;
+  if (hint) hint.hidden = true;
   requiredElement("thread-info-model").textContent = activeThreadSettings.model;
-  requiredElement("thread-info-effort").textContent =
-    activeThreadSettings.effort ?? "模型默认";
-  requiredElement("thread-info-permissions").textContent =
-    `${sandboxPolicyLabel(activeThreadSettings.sandboxPolicy)} · ${approvalPolicyLabel(activeThreadSettings.approvalPolicy)}`;
+  requiredElement("thread-info-effort").textContent = reasoningEffortLabel(
+    activeThreadSettings.effort,
+  );
+  const permissionLabel = `${sandboxPolicyLabel(activeThreadSettings.sandboxPolicy)} · ${approvalPolicyLabel(activeThreadSettings.approvalPolicy)}`;
+  requiredElement("thread-info-permissions").textContent = permissionLabel;
+  const permission = requiredElement("thread-permission-summary");
+  permission.classList.toggle(
+    "dangerous",
+    activeThreadSettings.sandboxPolicy.type === "dangerFullAccess",
+  );
+  permission.classList.toggle(
+    "read-only",
+    activeThreadSettings.sandboxPolicy.type === "readOnly",
+  );
+  permission.setAttribute(
+    "aria-label",
+    `会话权限：${permissionLabel}。点击修改后续轮次权限`,
+  );
+  requiredElement("thread-permission-pending").hidden =
+    !threadSettingsPendingNextTurn;
+
+  requiredElement("thread-model-summary").setAttribute(
+    "aria-label",
+    `模型：${activeThreadSettings.model}，推理强度：${reasoningEffortLabel(activeThreadSettings.effort)}。点击修改`,
+  );
 
   const context = contextUsagePresentation(activeThreadTokenUsage);
-  const contextLabel = requiredElement("thread-info-context");
-  const contextDetail = requiredElement("thread-context-detail");
-  const contextFill = requiredElement<HTMLElement>("thread-context-fill");
-  contextLabel.textContent = context.label;
-  contextDetail.textContent = context.detail;
-  contextFill.style.width = `${context.percent ?? 0}%`;
-  contextFill.classList.toggle(
-    "warning",
-    context.percent !== null && context.percent >= 80,
+  requiredElement("thread-context-window").textContent = context.windowLabel;
+  requiredElement("thread-context-percent").textContent = context.percentLabel;
+  const contextSummary = requiredElement("thread-context-summary");
+  const contextRing = requiredElement<HTMLElement>("thread-context-ring");
+  contextSummary.className = `session-context ${context.level}`;
+  contextRing.style.setProperty(
+    "--context-progress",
+    `${(context.percent ?? 0) * 3.6}deg`,
   );
-  contextLabel.parentElement?.setAttribute(
-    "title",
+  contextSummary.setAttribute(
+    "aria-label",
+    context.percent === null
+      ? `上下文用量：${context.detail}`
+      : `上下文窗口 ${context.windowLabel}，已使用 ${context.percentLabel}`,
+  );
+  contextSummary.setAttribute(
+    "aria-valuetext",
     context.percent === null
       ? context.detail
-      : `当前上下文 ${context.label}，${context.detail}`,
+      : `${context.label}，${context.percentLabel}`,
   );
+  if (context.percent === null) {
+    contextSummary.removeAttribute("aria-valuenow");
+  } else {
+    contextSummary.setAttribute("aria-valuenow", context.percent.toFixed(1));
+  }
+  contextSummary.title =
+    context.percent === null
+      ? context.detail
+      : `当前上下文 ${context.label}，${context.detail}${context.level === "danger" ? "；建议尽快压缩上下文" : ""}`;
+}
+
+function reasoningEffortLabel(effort: ReasoningEffort | null): string {
+  if (!effort) return "默认";
+  const labels: Partial<Record<ReasoningEffort, string>> = {
+    minimal: "最低",
+    low: "低",
+    medium: "中",
+    high: "高",
+    xhigh: "极高",
+  };
+  return labels[effort] ?? effort;
 }
 
 function sandboxPolicyLabel(policy: SandboxPolicy): string {
@@ -4739,7 +4823,8 @@ function applyThreadSettingsNotification(
     activeThreadCwd = typed.cwd;
     requiredElement("thread-cwd").textContent = typed.cwd;
   }
-  renderThreadOverview();
+  threadSettingsPendingNextTurn = activeThreadStatus?.type === "active";
+  renderComposerSessionMeta();
 }
 
 function isApprovalPolicy(value: unknown): value is AskForApproval {

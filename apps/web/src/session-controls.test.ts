@@ -78,7 +78,10 @@ describe("contextUsagePresentation", () => {
     ).toEqual({
       label: "32K / 128K",
       percent: 25,
+      percentLabel: "25%",
+      windowLabel: "128K",
       detail: "25.0% · 累计 180K",
+      level: "normal",
     });
   });
 
@@ -86,5 +89,29 @@ describe("contextUsagePresentation", () => {
     expect(formatTokenCount(1_250)).toBe("1.3K");
     expect(formatTokenCount(2_000_000)).toBe("2M");
     expect(contextUsagePresentation(undefined).percent).toBeNull();
+  });
+
+  it("classifies compact context warnings", () => {
+    const usage = (used: number) =>
+      contextUsagePresentation({
+        last: {
+          totalTokens: used,
+          inputTokens: used,
+          cachedInputTokens: 0,
+          outputTokens: 0,
+          reasoningOutputTokens: 0,
+        },
+        total: {
+          totalTokens: used,
+          inputTokens: used,
+          cachedInputTokens: 0,
+          outputTokens: 0,
+          reasoningOutputTokens: 0,
+        },
+        modelContextWindow: 100_000,
+      });
+    expect(usage(70_000).level).toBe("warning");
+    expect(usage(90_000).level).toBe("danger");
+    expect(usage(90_000).percentLabel).toBe("90%");
   });
 });

@@ -2337,7 +2337,7 @@ dialog::backdrop {
   height: 100%;
   min-height: 0;
   overflow: hidden;
-  grid-template-rows: 70px auto auto minmax(0, 1fr) auto;
+  grid-template-rows: 60px auto minmax(0, 1fr) auto;
   background:
     radial-gradient(circle at 74% 0, #f9eee8 0, transparent 22%), var(--canvas);
 }
@@ -2406,18 +2406,7 @@ dialog::backdrop {
 }
 
 .codex-status {
-  display: grid;
-  gap: 3px;
-  justify-items: start;
-}
-
-.codex-status > span {
-  padding-left: 2px;
-  color: #8a9099;
-  font-size: 8px;
-  font-weight: 750;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
+  display: block;
 }
 
 .codex-status .pill {
@@ -2426,6 +2415,13 @@ dialog::backdrop {
   font-size: 10px;
   font-weight: 750;
   box-shadow: 0 1px 2px #1113180a;
+}
+
+.icon-only-action {
+  width: 30px;
+  padding-right: 0;
+  padding-left: 0;
+  justify-content: center;
 }
 
 .codex-status .pill::before {
@@ -2771,124 +2767,51 @@ dialog::backdrop {
   width: 100%;
 }
 
-.thread-settings-grid {
+.thread-settings-groups {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 14px;
+  gap: 12px;
   margin-top: 20px;
 }
 
-.thread-overview {
-  display: flex;
-  min-width: 0;
-  gap: 24px;
-  align-items: center;
-  padding: 9px max(22px, calc((100% - 900px) / 2));
-  overflow-x: auto;
-  color: var(--muted);
-  background: #fffaf7d9;
-  border-bottom: 1px solid var(--line);
-  scrollbar-width: thin;
+.thread-settings-section {
+  padding: 14px;
+  background: #f7f8f9;
+  border: 1px solid var(--line);
+  border-radius: 12px;
 }
 
-.thread-fact {
+.thread-settings-section > div:first-child {
   display: grid;
-  flex: 0 0 auto;
-  min-width: 90px;
   gap: 2px;
 }
 
-button.thread-fact {
-  padding: 0;
-  color: inherit;
-  background: transparent;
-  border: 0;
-  border-radius: 8px;
-  text-align: left;
-}
-
-.permission-fact {
-  position: sticky;
-  left: 0;
-  min-width: 210px;
-  padding: 6px 10px !important;
-  background: #fff4ee !important;
-  border: 1px solid #efc8b8 !important;
-  box-shadow: 0 2px 8px #79391b12;
-}
-
-.permission-fact:hover {
-  background: #ffede5 !important;
-  border-color: #d99478 !important;
-}
-
-.permission-fact > small {
-  color: #9a6049;
-  font-size: 8px;
-  font-weight: 650;
-}
-
-.thread-fact > span {
-  color: var(--subtle);
-  font-size: 8px;
-  font-weight: 750;
-  letter-spacing: 0.07em;
-  text-transform: uppercase;
-}
-
-.thread-fact > strong {
-  max-width: 220px;
-  overflow: hidden;
+.thread-settings-section > div:first-child > strong {
   color: var(--ink);
-  font-size: 10px;
-  font-weight: 650;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  font-size: 12px;
 }
 
-.context-usage {
-  grid-template-columns: minmax(130px, 170px) auto;
-  min-width: 260px;
-}
-
-.context-usage > span,
-.context-usage > strong {
-  grid-column: 1;
-}
-
-.context-usage > small {
-  grid-row: 1 / span 2;
-  grid-column: 2;
-  align-self: center;
+.thread-settings-section > div:first-child > small {
   color: var(--subtle);
-  font-size: 8px;
-  white-space: nowrap;
+  font-size: 9px;
 }
 
-.context-meter {
-  grid-column: 1 / -1;
-  height: 3px;
-  margin-top: 2px;
-  overflow: hidden;
-  background: #e8e1dc;
-  border-radius: 99px;
+.thread-settings-section.permission-section {
+  background: #fff8f4;
+  border-color: #edd5ca;
 }
 
-.context-meter i {
-  display: block;
-  width: 0;
-  height: 100%;
-  background: var(--accent);
-  border-radius: inherit;
-  transition: width 300ms ease;
+.thread-settings-fields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
 }
 
-.context-meter i.warning {
-  background: #d99124;
+.thread-settings-fields label {
+  margin-top: 12px;
 }
 
 @media (max-width: 650px) {
-  .thread-settings-grid {
+  .thread-settings-fields {
     grid-template-columns: 1fr;
   }
 }
@@ -3261,9 +3184,218 @@ button.thread-fact {
   gap: 5px;
 }
 
+.composer-actions {
+  flex: 0 0 auto;
+}
+
 .composer-hint {
   color: #a2a6ad;
   font-size: 9px;
+}
+
+.composer-footer-leading {
+  min-width: 0;
+  flex: 1 1 auto;
+  overflow: hidden;
+}
+
+.composer-session-meta {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  overflow: hidden;
+}
+
+.composer-session-meta[hidden] {
+  display: none;
+}
+
+.session-meta-item,
+.session-context {
+  min-width: 0;
+  min-height: 29px;
+  padding: 5px 8px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: #656a73;
+  background: #f5f6f7;
+  border: 1px solid #e3e5e8;
+  border-radius: 9px;
+  font-size: 9px;
+  line-height: 1.2;
+  white-space: nowrap;
+}
+
+button.session-meta-item {
+  overflow: hidden;
+  font-weight: 680;
+  text-overflow: ellipsis;
+}
+
+button.session-meta-item:hover {
+  color: #30343a;
+  background: #eef0f2;
+  border-color: #d4d7dc;
+}
+
+button.session-meta-item:focus-visible,
+.session-context:focus-visible {
+  outline: 2px solid #dc694340;
+  outline-offset: 1px;
+}
+
+.permission-meta {
+  flex: 0 1 auto;
+  max-width: 245px;
+  color: #5b5551;
+  background: #fff7f2;
+  border-color: #edd5c9;
+}
+
+.permission-meta > span:nth-child(2) {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.permission-meta.read-only {
+  color: #52616f;
+  background: #f2f6f8;
+  border-color: #d8e1e6;
+}
+
+.permission-meta.dangerous {
+  color: #a13c25;
+  background: #fff0ea;
+  border-color: #e9ac97;
+}
+
+.permission-meta.dangerous .session-meta-icon {
+  color: #c64c2e;
+}
+
+.session-meta-icon {
+  flex: none;
+  color: var(--accent);
+  font-size: 13px;
+  line-height: 1;
+}
+
+.permission-meta > small {
+  flex: none;
+  padding: 2px 5px;
+  color: #97502f;
+  background: #ffe2d4;
+  border-radius: 999px;
+  font-size: 7px;
+  font-weight: 760;
+}
+
+.permission-meta > small[hidden] {
+  display: none;
+}
+
+.model-meta {
+  flex: 0 1 auto;
+  max-width: 190px;
+}
+
+.model-meta > span:not(.session-meta-separator) {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.session-meta-separator {
+  color: #a1a5ac;
+}
+
+.session-context {
+  flex: 0 0 auto;
+  padding: 3px 7px 3px 5px;
+  cursor: help;
+}
+
+.context-ring {
+  --context-progress: 0deg;
+  --context-ring-color: var(--accent);
+  position: relative;
+  width: 22px;
+  height: 22px;
+  flex: 0 0 22px;
+  background: conic-gradient(
+    var(--context-ring-color) var(--context-progress),
+    #dfe2e6 0
+  );
+  border-radius: 50%;
+  transition: background 220ms ease;
+}
+
+.context-ring::after {
+  position: absolute;
+  inset: 4px;
+  content: "";
+  background: #f5f6f7;
+  border-radius: 50%;
+}
+
+.session-context.unknown .context-ring {
+  background: transparent;
+  border: 2px dashed #c8ccd2;
+}
+
+.session-context.unknown .context-ring::after {
+  inset: 3px;
+}
+
+.session-context.warning {
+  color: #7e5b1c;
+  background: #fff8e8;
+  border-color: #ead7a7;
+}
+
+.session-context.warning .context-ring {
+  --context-ring-color: #d3972d;
+}
+
+.session-context.warning .context-ring::after {
+  background: #fff8e8;
+}
+
+.session-context.danger {
+  color: #a23b2f;
+  background: #fff0ed;
+  border-color: #e7b0a8;
+}
+
+.session-context.danger .context-ring {
+  --context-ring-color: #d8584c;
+}
+
+.session-context.danger .context-ring::after {
+  background: #fff0ed;
+}
+
+.context-copy {
+  display: grid;
+  gap: 0;
+}
+
+.context-copy strong {
+  color: currentColor;
+  font-size: 9px;
+  font-weight: 760;
+}
+
+.context-copy small {
+  color: #969ba3;
+  font-size: 7px;
+  font-weight: 650;
+}
+
+.session-context.warning .context-copy small,
+.session-context.danger .context-copy small {
+  color: currentColor;
 }
 
 .queue-action {
@@ -3508,6 +3640,14 @@ button.thread-fact {
   .new-session-button span {
     margin-right: 10px;
   }
+
+  .permission-meta {
+    max-width: 180px;
+  }
+
+  .model-meta {
+    max-width: 120px;
+  }
 }
 
 @media (max-width: 650px) {
@@ -3556,7 +3696,7 @@ button.thread-fact {
   }
 
   .content {
-    grid-template-rows: 76px auto auto minmax(0, 1fr) auto;
+    grid-template-rows: 64px auto minmax(0, 1fr) auto;
   }
 
   .thread-header {
@@ -3571,10 +3711,6 @@ button.thread-fact {
 
   .codex-status {
     display: block;
-  }
-
-  .codex-status > span {
-    display: none;
   }
 
   .codex-status .pill {
@@ -3595,11 +3731,6 @@ button.thread-fact {
 
   .thread-cwd-line > span {
     display: none;
-  }
-
-  .thread-overview {
-    gap: 18px;
-    padding: 8px 12px;
   }
 
   .ssh-handoff-banner {
@@ -3648,6 +3779,41 @@ button.thread-fact {
 
   .composer-hint {
     display: none;
+  }
+
+  .composer-session-meta {
+    gap: 3px;
+  }
+
+  .session-meta-item,
+  .session-context {
+    padding-right: 6px;
+    padding-left: 6px;
+  }
+
+  .permission-meta {
+    max-width: 128px;
+  }
+
+  .model-meta {
+    max-width: 72px;
+  }
+
+  .model-meta .session-meta-separator,
+  .model-meta #thread-info-effort {
+    display: none;
+  }
+
+  .session-context {
+    padding-right: 5px;
+  }
+
+  .context-copy strong {
+    display: none;
+  }
+
+  .context-copy small {
+    font-size: 8px;
   }
 
   .composer-footer {
@@ -3715,6 +3881,16 @@ button.thread-fact {
 
   .toast {
     width: 100%;
+  }
+}
+
+@media (max-width: 380px) {
+  .model-meta {
+    display: none;
+  }
+
+  .permission-meta {
+    max-width: 118px;
   }
 }
 
@@ -4086,36 +4262,6 @@ button.thread-fact {
   border-bottom-color: var(--line);
 }
 
-:root[data-theme="dark"] .thread-overview {
-  color: var(--muted);
-  background: #17181bd9;
-  border-bottom-color: var(--line);
-}
-
-:root[data-theme="dark"] .thread-fact > strong {
-  color: var(--ink);
-}
-
-:root[data-theme="dark"] .permission-fact {
-  color: var(--muted);
-  background: #30201b !important;
-  border-color: #563126 !important;
-  box-shadow: none;
-}
-
-:root[data-theme="dark"] .permission-fact:hover {
-  background: #3a251f !important;
-  border-color: #7c4636 !important;
-}
-
-:root[data-theme="dark"] .permission-fact > small {
-  color: #d7977d;
-}
-
-:root[data-theme="dark"] .context-meter {
-  background: #343840;
-}
-
 :root[data-theme="dark"] .session-settings-action {
   color: #f4a486;
   background: #30201b;
@@ -4361,6 +4507,88 @@ button.thread-fact {
   box-shadow:
     0 10px 30px #0000004d,
     0 1px 5px #00000042;
+}
+
+:root[data-theme="dark"] .session-meta-item,
+:root[data-theme="dark"] .session-context {
+  color: #b8bdc6;
+  background: #23262c;
+  border-color: #353941;
+}
+
+:root[data-theme="dark"] button.session-meta-item:hover {
+  color: #f0f1f3;
+  background: #2a2e35;
+  border-color: #444952;
+}
+
+:root[data-theme="dark"] .permission-meta {
+  color: #e0b09e;
+  background: #2e211d;
+  border-color: #53362c;
+}
+
+:root[data-theme="dark"] .permission-meta.read-only {
+  color: #b7c8d5;
+  background: #202a30;
+  border-color: #364751;
+}
+
+:root[data-theme="dark"] .permission-meta.dangerous {
+  color: #ffad94;
+  background: #3a211d;
+  border-color: #744236;
+}
+
+:root[data-theme="dark"] .permission-meta > small {
+  color: #ffc3aa;
+  background: #5b3025;
+}
+
+:root[data-theme="dark"] .context-ring {
+  background: conic-gradient(
+    var(--context-ring-color) var(--context-progress),
+    #434851 0
+  );
+}
+
+:root[data-theme="dark"] .context-ring::after {
+  background: #23262c;
+}
+
+:root[data-theme="dark"] .session-context.unknown .context-ring {
+  background: transparent;
+  border-color: #59606b;
+}
+
+:root[data-theme="dark"] .session-context.warning {
+  color: #e7c376;
+  background: #302817;
+  border-color: #594823;
+}
+
+:root[data-theme="dark"] .session-context.warning .context-ring::after {
+  background: #302817;
+}
+
+:root[data-theme="dark"] .session-context.danger {
+  color: #ff9d92;
+  background: #351d1f;
+  border-color: #663137;
+}
+
+:root[data-theme="dark"] .session-context.danger .context-ring::after {
+  background: #351d1f;
+}
+
+:root[data-theme="dark"] .thread-settings-section {
+  background: #202329;
+  border-color: #343840;
+}
+
+:root[data-theme="dark"] .thread-settings-section.permission-section {
+  background: #2b211d;
+  border-color: #50362d;
 }
 
 :root[data-theme="dark"] .slash-command-menu {
@@ -5815,12 +6043,11 @@ button.thread-fact {
   }
 }
 
-/* Keep optional thread chrome from changing timeline/composer placement. */
+/* Keep optional handoff chrome from changing timeline/composer placement. */
 .content {
   position: relative;
   grid-template-areas:
     "thread-header"
-    "thread-overview"
     "ssh-handoff"
     "timeline"
     "composer";
@@ -5830,7 +6057,6 @@ button.thread-fact {
   grid-template-columns: minmax(0, 1fr) 242px;
   grid-template-areas:
     "thread-header thread-header"
-    "thread-overview thread-overview"
     "ssh-handoff ssh-handoff"
     "timeline outline"
     "composer outline";
@@ -5838,10 +6064,6 @@ button.thread-fact {
 
 .thread-header {
   grid-area: thread-header;
-}
-
-.thread-overview {
-  grid-area: thread-overview;
 }
 
 .ssh-handoff-banner {
@@ -6184,7 +6406,6 @@ button.thread-fact {
     grid-template-columns: minmax(0, 1fr);
     grid-template-areas:
       "thread-header"
-      "thread-overview"
       "ssh-handoff"
       "timeline"
       "composer";
