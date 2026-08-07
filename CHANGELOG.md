@@ -4,6 +4,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- rootless Agent 安装器不再把目标已限制在 bundle 内的标准 pnpm 符号链接按 Linux 固定的 `0777` 链接模式误判为全局可写；链接目标本身仍继续接受路径逃逸与写权限检查。
+
 ## [0.3.0-alpha.3] - 2026-08-07
 
 ### Fixed
