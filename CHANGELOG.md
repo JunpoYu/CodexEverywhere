@@ -37,6 +37,7 @@
 
 ### Security
 
+- GitHub CI、制品上传/下载与 provenance actions 升级到官方当前版本并固定完整 commit SHA，避免可变 action tag 和已弃用 Actions Node runtime 进入发布信任链。
 - rootless self-provision 以请求文件的内核所有者 UID 为身份依据，通过 NSS 复核 Unix 账号，并用绑定 request ID、时效和 provisioner 公钥的 Noise 握手加密每个 grant；认证异常不会降级到旧 sudo helper。
 - 管理员与普通用户使用不同的 Relay principal、route capability purpose、keyed login ID、Noise user ID、Passkey/OPAQUE 身份域、状态库和浏览器 Host Profile。
 - 管理变更采用 revision 并发保护、request ID 幂等和 root-only 审计；停用 Agent 不会停止用户的 Codex app-server、SSH、TUI 或活动 turn。
