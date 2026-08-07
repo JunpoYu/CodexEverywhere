@@ -34,7 +34,7 @@ describe("user self-service provisioning", () => {
       ...selfProvisioningGrant("bob", 2025),
       defaultCodexNetwork: {
         mode: "proxy" as const,
-        httpsProxy: "http://127.0.0.1:7890",
+        httpsProxy: "http://proxy.example.com:8080",
       },
     };
 
@@ -55,7 +55,7 @@ describe("user self-service provisioning", () => {
       },
       network: {
         mode: "proxy",
-        httpsProxy: "http://127.0.0.1:7890",
+        httpsProxy: "http://proxy.example.com:8080",
       },
     });
   });
@@ -71,7 +71,7 @@ describe("user self-service provisioning", () => {
       ...selfProvisioningGrant("bob", 2025),
       defaultCodexNetwork: {
         mode: "proxy" as const,
-        httpsProxy: "http://127.0.0.1:7890",
+        httpsProxy: "http://proxy.example.com:8080",
       },
     };
 

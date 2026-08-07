@@ -35,4 +35,8 @@ if [ "$(stat -c %u "$install_root")" -ne "$(id -u)" ]; then
 fi
 
 ln -sfn "releases/$release_id" "$install_root/current"
+active_release=$install_root/.active-release.$$
+printf '%s\n' "$release_id" >"$active_release"
+chmod 0644 "$active_release"
+mv "$active_release" "$install_root/active-release"
 echo "Activated rootless Agent release: $release_id"

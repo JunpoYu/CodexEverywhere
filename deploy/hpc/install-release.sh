@@ -128,4 +128,9 @@ fi
   "$install_root" \
   "$runtime_directory"
 
+release_manifest=$install_root/releases/$version/.release-manifest.$$
+cp "$temporary_directory/manifest.json" "$release_manifest"
+chmod 0644 "$release_manifest"
+mv "$release_manifest" "$install_root/releases/$version/release-manifest.json"
+
 echo "Installed verified CodexEverywhere release $version from $repository"

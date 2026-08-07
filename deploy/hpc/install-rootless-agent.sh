@@ -99,6 +99,10 @@ exec '$runtime_directory/bin/node' '$install_root/current/dist/cli.js' "\$@"
 EOF
 chmod 0755 "$wrapper"
 mv "$wrapper" "$install_root/bin/ce"
+active_release=$install_root/.active-release.$$
+printf '%s\n' "$release_id" >"$active_release"
+chmod 0644 "$active_release"
+mv "$active_release" "$install_root/active-release"
 trap - EXIT HUP INT TERM
 
 echo "Rootless Agent installed: $release_directory"
