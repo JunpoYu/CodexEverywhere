@@ -77,7 +77,12 @@ find "$agent_bundle" -type l -print | while IFS= read -r link_path; do
   esac
 done
 
-unsafe_path=$(find "$agent_bundle" -xdev \( -perm -002 -o -perm -020 \) -print -quit)
+# Symlink mode bits are not meaningful on Linux and normally appear as 0777.
+# Their resolved targets were already constrained to the bundle above; the
+# target files and directories are still visited and checked here.
+unsafe_path=$(
+  find "$agent_bundle" -xdev ! -type l \( -perm -002 -o -perm -020 \) -print -quit
+)
 if [ -n "$unsafe_path" ]; then
   echo "Release contains a group/world-writable path: $unsafe_path" >&2
   exit 1
