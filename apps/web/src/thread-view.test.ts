@@ -9,6 +9,7 @@ import {
   isInternalTimelineEventType,
   isReasoningEventType,
   isVisibleThreadItem,
+  localUserReconciledByTurns,
   mcpServerStartupNotice,
   queuedMessageText,
   shouldFollowTimeline,
@@ -265,5 +266,13 @@ describe("composer delivery", () => {
     expect(TRANSIENT_TIMELINE_SELECTOR).toContain("[data-queue-id]");
     expect(TRANSIENT_TIMELINE_SELECTOR).toContain("[data-request-id]");
     expect(TRANSIENT_TIMELINE_SELECTOR).toContain(".timeline-entry.streaming");
+    expect(TRANSIENT_TIMELINE_SELECTOR).toContain("[data-local-user]");
+  });
+
+  it("drops the optimistic user card only after its authoritative turn arrives", () => {
+    const turns = [{ id: "turn-old" }, { id: "turn-new" }];
+    expect(localUserReconciledByTurns(undefined, turns)).toBe(false);
+    expect(localUserReconciledByTurns("turn-pending", turns)).toBe(false);
+    expect(localUserReconciledByTurns("turn-new", turns)).toBe(true);
   });
 });

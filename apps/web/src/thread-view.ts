@@ -88,7 +88,14 @@ export function threadSnapshotRevision(response: ThreadReadResponse): string {
 }
 
 export const TRANSIENT_TIMELINE_SELECTOR =
-  "[data-queue-id], [data-request-id], .timeline-entry.streaming";
+  "[data-queue-id], [data-request-id], [data-local-user], .timeline-entry.streaming";
+
+export function localUserReconciledByTurns(
+  localTurnId: string | undefined,
+  turns: ReadonlyArray<Pick<Turn, "id">>,
+): boolean {
+  return Boolean(localTurnId && turns.some((turn) => turn.id === localTurnId));
+}
 
 const FOLLOW_LATEST_THRESHOLD_PX = 64;
 
@@ -394,11 +401,13 @@ export class ThreadTimelineView {
         TRANSIENT_TIMELINE_SELECTOR,
       ),
     );
+    for (const card of transientCards) card.remove();
     for (const turn of turns) {
       const replacement = this.#turnElement(turn);
       const existing = this.#container.querySelector<HTMLElement>(
         `[data-turn-id="${CSS.escape(turn.id)}"]`,
       );
+      this.#removeLooseTurnItems(turn);
       if (existing) {
         if (replacement) existing.replaceWith(replacement);
         else existing.remove();
@@ -407,6 +416,7 @@ export class ThreadTimelineView {
       }
     }
     for (const card of transientCards) {
+      if (localUserReconciledByTurns(card.dataset.localTurnId, turns)) continue;
       const itemId = card.dataset.itemId;
       const snapshotCard = itemId ? this.#findItem(itemId) : undefined;
       if (snapshotCard) snapshotCard.replaceWith(card);
@@ -428,6 +438,13 @@ export class ThreadTimelineView {
     );
     this.#replaceSnapshot(response);
     for (const card of transientCards) {
+      if (
+        localUserReconciledByTurns(
+          card.dataset.localTurnId,
+          response.thread.turns,
+        )
+      )
+        continue;
       const itemId = card.dataset.itemId;
       const snapshotCard = itemId ? this.#findItem(itemId) : undefined;
       if (snapshotCard) snapshotCard.replaceWith(card);
@@ -452,6 +469,12 @@ export class ThreadTimelineView {
     const card = this.#findItem(id);
     if (card) card.dataset.localUser = "true";
     this.followLatest();
+  }
+
+  bindLocalUserToTurn(turnId: string): void {
+    const card =
+      this.#container.querySelector<HTMLElement>("[data-local-user]");
+    if (card) card.dataset.localTurnId = turnId;
   }
 
   removeLocalUser(): void {
@@ -708,10 +731,11 @@ export class ThreadTimelineView {
     if (item.type === "userMessage" && !item.id.startsWith("local-")) {
       this.#container.querySelector<HTMLElement>("[data-local-user]")?.remove();
     }
-    const existing = this.#findItem(item.id);
+    const [existing, ...duplicates] = this.#findItems(item.id);
     const replacement = this.#itemElement(item);
     if (existing) existing.replaceWith(replacement);
     else this.#container.append(replacement);
+    for (const duplicate of duplicates) duplicate.remove();
   }
 
   #appendDelta(
@@ -752,9 +776,26 @@ export class ThreadTimelineView {
   }
 
   #findItem(itemId: string): HTMLElement | undefined {
+    return this.#findItems(itemId)[0];
+  }
+
+  #findItems(itemId: string): HTMLElement[] {
     return Array.from(
       this.#container.querySelectorAll<HTMLElement>("[data-item-id]"),
-    ).find((candidate) => candidate.dataset.itemId === itemId);
+    ).filter((candidate) => candidate.dataset.itemId === itemId);
+  }
+
+  #removeLooseTurnItems(turn: Turn): void {
+    const itemIds = new Set(
+      turn.items.filter(isVisibleThreadItem).map((item: ThreadItem) => item.id),
+    );
+    if (itemIds.size === 0) return;
+    for (const card of this.#container.querySelectorAll<HTMLElement>(
+      "[data-item-id]",
+    )) {
+      if (card.dataset.itemId && itemIds.has(card.dataset.itemId))
+        card.remove();
+    }
   }
 
   #itemElement(item: VisibleThreadItem): HTMLElement {

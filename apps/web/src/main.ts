@@ -3856,6 +3856,7 @@ async function sendTurn(
   });
   if (client !== targetClient || activeThreadId !== threadId) return;
   activeTurnId = response.turn.id;
+  timelineView.bindLocalUserToTurn(response.turn.id);
   setThreadStatus({ type: "active", activeFlags: [] });
   lastRealtimeEventAt = Date.now();
   startThreadSync();
