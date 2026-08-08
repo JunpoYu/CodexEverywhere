@@ -99,6 +99,27 @@ export function localUserReconciledByTurns(
 
 export type StreamingTimelineKind = "agent" | "plan" | "tool";
 
+export type StreamingTimelineIdentity = {
+  turnId: string | undefined;
+  itemId: string | undefined;
+  kind: StreamingTimelineKind | undefined;
+};
+
+export function completedStreamingCandidateId(
+  completedTurnId: string | undefined,
+  completedKind: StreamingTimelineKind | undefined,
+  candidates: ReadonlyArray<StreamingTimelineIdentity>,
+): string | undefined {
+  if (!completedTurnId || !completedKind) return undefined;
+  const matches = candidates.filter(
+    (candidate) =>
+      candidate.turnId === completedTurnId &&
+      candidate.kind === completedKind &&
+      candidate.itemId,
+  );
+  return matches.length === 1 ? matches[0]?.itemId : undefined;
+}
+
 export function streamingItemCandidateId(
   streamTurnId: string | undefined,
   streamItemId: string | undefined,
@@ -551,7 +572,13 @@ export class ThreadTimelineView {
     ) {
       if (isThreadItem(payload.item)) {
         const followLatest = this.#isNearLatest();
-        this.#upsertItem(payload.item);
+        this.#upsertItem(
+          payload.item,
+          event.type === "codex/item/completed" &&
+            typeof payload.turnId === "string"
+            ? payload.turnId
+            : undefined,
+        );
         this.#finishContentUpdate(followLatest);
         return true;
       }
@@ -700,16 +727,27 @@ export class ThreadTimelineView {
     return section.childElementCount > 0 ? section : undefined;
   }
 
-  #upsertItem(item: ThreadItem): void {
+  #upsertItem(item: ThreadItem, completedTurnId?: string): void {
     if (!isVisibleThreadItem(item)) return;
     this.#container.querySelector(".empty")?.remove();
     if (item.type === "userMessage" && !item.id.startsWith("local-")) {
       this.#container.querySelector<HTMLElement>("[data-local-user]")?.remove();
     }
     const [existing, ...duplicates] = this.#findItems(item.id);
+    const completedStreamId = completedStreamingCandidateId(
+      completedTurnId,
+      itemTimelineKind(item),
+      this.#streamingIdentities(),
+    );
+    const completedStream = completedStreamId
+      ? this.#findItem(completedStreamId)
+      : undefined;
     const replacement = this.#itemElement(item);
     if (existing) existing.replaceWith(replacement);
+    else if (completedStream) completedStream.replaceWith(replacement);
     else this.#container.append(replacement);
+    if (existing && completedStream && completedStream !== existing)
+      completedStream.remove();
     for (const duplicate of duplicates) duplicate.remove();
   }
 
@@ -762,6 +800,18 @@ export class ThreadTimelineView {
     return Array.from(
       this.#container.querySelectorAll<HTMLElement>("[data-item-id]"),
     ).filter((candidate) => candidate.dataset.itemId === itemId);
+  }
+
+  #streamingIdentities(): StreamingTimelineIdentity[] {
+    return Array.from(
+      this.#container.querySelectorAll<HTMLElement>(
+        ".timeline-entry.streaming",
+      ),
+    ).map((candidate) => ({
+      turnId: candidate.dataset.streamTurnId,
+      itemId: candidate.dataset.itemId,
+      kind: streamingKind(candidate.dataset.streamKind),
+    }));
   }
 
   #removeLooseTurnItems(turn: Turn): void {
@@ -888,6 +938,24 @@ export class ThreadTimelineView {
     card.append(body);
     return card;
   }
+}
+
+function itemTimelineKind(
+  item: VisibleThreadItem,
+): StreamingTimelineKind | undefined {
+  if (item.type === "agentMessage") return "agent";
+  if (item.type === "plan") return "plan";
+  if (item.type === "commandExecution" || item.type === "fileChange")
+    return "tool";
+  return undefined;
+}
+
+function streamingKind(
+  value: string | undefined,
+): StreamingTimelineKind | undefined {
+  return value === "agent" || value === "plan" || value === "tool"
+    ? value
+    : undefined;
 }
 
 function statusTone(status: string): string {

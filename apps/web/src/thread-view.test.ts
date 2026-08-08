@@ -2,6 +2,7 @@ import type { ThreadItem } from "@codex-everywhere/codex-app-server-schema/v2";
 import { describe, expect, it } from "vitest";
 
 import {
+  completedStreamingCandidateId,
   describeThreadItem,
   FileChangeDisclosureState,
   fileChangeItemFromPatchUpdate,
@@ -317,6 +318,32 @@ describe("composer delivery", () => {
     ).toBeUndefined();
     expect(
       streamingItemCandidateId("turn-new", "unknown-tool-stream", turns),
+    ).toBeUndefined();
+  });
+
+  it("reconciles a changed completed id only to one unambiguous active stream", () => {
+    const candidates = [
+      { turnId: "turn-old", itemId: "old-stream", kind: "agent" as const },
+      { turnId: "turn-new", itemId: "active-stream", kind: "agent" as const },
+    ];
+
+    expect(completedStreamingCandidateId("turn-new", "agent", candidates)).toBe(
+      "active-stream",
+    );
+    expect(
+      completedStreamingCandidateId("turn-new", "plan", candidates),
+    ).toBeUndefined();
+    expect(
+      completedStreamingCandidateId("turn-other", "agent", candidates),
+    ).toBeUndefined();
+  });
+
+  it("does not guess between multiple active streams of the same turn and kind", () => {
+    expect(
+      completedStreamingCandidateId("turn-new", "agent", [
+        { turnId: "turn-new", itemId: "stream-1", kind: "agent" },
+        { turnId: "turn-new", itemId: "stream-2", kind: "agent" },
+      ]),
     ).toBeUndefined();
   });
 });
