@@ -20,6 +20,10 @@ import {
 } from "@simplewebauthn/browser";
 
 import { saveHost, type SavedHost } from "./storage.js";
+import {
+  gatewayReconnectMode,
+  type GatewayReconnectMode,
+} from "./login-preferences.js";
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
@@ -75,6 +79,13 @@ export type ConnectionTarget = {
   endpoint: string;
 };
 
+export class TemporaryPasswordReauthenticationRequired extends Error {
+  constructor() {
+    super("Temporary password sessions require interactive login");
+    this.name = "TemporaryPasswordReauthenticationRequired";
+  }
+}
+
 export class GatewayClient {
   readonly host: SavedHost;
   readonly transport: "direct" | "relay";
@@ -90,6 +101,7 @@ export class GatewayClient {
   >();
   readonly #eventListeners = new Set<(event: EventEnvelope) => void>();
   readonly #connectionListeners = new Set<(error: Error) => void>();
+  #reconnectMode: GatewayReconnectMode = "trusted-device";
   #usable = true;
 
   private constructor(
@@ -298,6 +310,10 @@ export class GatewayClient {
       rememberDevice: options.rememberDevice,
     });
     await client.#authenticate(false, true);
+    client.#reconnectMode = gatewayReconnectMode(
+      "passkey",
+      options.rememberDevice,
+    );
     if (options.rememberDevice) await saveHost(host);
     return client;
   }
@@ -348,6 +364,10 @@ export class GatewayClient {
       rememberDevice: options.rememberDevice,
     });
     await gateway.#authenticatePassword(options.password);
+    gateway.#reconnectMode = gatewayReconnectMode(
+      "password",
+      options.rememberDevice,
+    );
     if (options.rememberDevice) await saveHost(host);
     return gateway;
   }
@@ -410,6 +430,10 @@ export class GatewayClient {
       authenticated: true;
       recoveryCodes: string[];
     }>("auth/register/verify", { response });
+    client.#reconnectMode = gatewayReconnectMode(
+      "recovery",
+      options.rememberDevice,
+    );
     if (options.rememberDevice) await saveHost(host);
     return { client, recoveryCodes: result.recoveryCodes };
   }
@@ -696,6 +720,20 @@ export class GatewayClient {
     }
   }
 
+  async reconnect(): Promise<GatewayClient> {
+    if (this.#reconnectMode === "temporary-password") {
+      throw new TemporaryPasswordReauthenticationRequired();
+    }
+    if (this.#reconnectMode === "temporary-passkey") {
+      return GatewayClient.loginWithPasskey(hostDocument(this.host), {
+        loginName: this.host.loginName ?? this.host.name,
+        deviceName: this.host.deviceName,
+        rememberDevice: false,
+      });
+    }
+    return GatewayClient.connect(this.host);
+  }
+
   close(): void {
     this.#invalidate(new Error("Host connection closed"));
   }
@@ -822,6 +860,35 @@ function assertWebSocketEndpoint(endpoint: string): void {
   const value = new URL(endpoint);
   if (value.protocol !== "wss:" && value.protocol !== "ws:")
     throw new Error("Direct Gateway 必须使用 wss:// 或 ws://");
+}
+
+function hostDocument(host: SavedHost): HostDocument {
+  if (host.transport === "direct") {
+    return {
+      version: 1,
+      transport: "direct",
+      endpoint: host.directEndpoint ?? host.endpoint,
+      ...(host.relayEndpoint ? { relayEndpoint: host.relayEndpoint } : {}),
+      ...(host.routeId ? { routeId: host.routeId } : {}),
+      nodeId: host.nodeId,
+      userId: host.userId,
+      hostPublicKey: host.hostPublicKey,
+      hostFingerprint: host.hostFingerprint,
+    };
+  }
+  if (!host.routeId) throw new Error("Relay route is missing");
+  return {
+    version: 1,
+    ...(host.kind === "admin" ? { principal: "host-admin" as const } : {}),
+    transport: "relay",
+    endpoint: host.relayEndpoint ?? host.endpoint,
+    ...(host.directEndpoint ? { directEndpoint: host.directEndpoint } : {}),
+    routeId: host.routeId,
+    nodeId: host.nodeId,
+    userId: host.userId,
+    hostPublicKey: host.hostPublicKey,
+    hostFingerprint: host.hostFingerprint,
+  };
 }
 
 export function connectionTargets(host: SavedHost): ConnectionTarget[] {

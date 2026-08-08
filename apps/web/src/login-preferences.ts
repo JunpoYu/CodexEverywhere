@@ -1,5 +1,7 @@
 export type WebLoginMethod = "passkey" | "password" | "recovery";
 export type DevicePersistenceMode = "temporary" | "existing" | "new";
+export type GatewayReconnectMode =
+  "trusted-device" | "temporary-passkey" | "temporary-password";
 
 export function rememberDeviceForLogin(
   method: WebLoginMethod,
@@ -15,4 +17,12 @@ export function devicePersistenceMode(
 ): DevicePersistenceMode {
   if (!rememberDevice) return "temporary";
   return existingDeviceName?.trim() ? "existing" : "new";
+}
+
+export function gatewayReconnectMode(
+  method: WebLoginMethod,
+  rememberDevice: boolean,
+): GatewayReconnectMode {
+  if (rememberDevice) return "trusted-device";
+  return method === "password" ? "temporary-password" : "temporary-passkey";
 }
