@@ -89,6 +89,8 @@ export class GatewayClient {
     }
   >();
   readonly #eventListeners = new Set<(event: EventEnvelope) => void>();
+  readonly #connectionListeners = new Set<(error: Error) => void>();
+  #usable = true;
 
   private constructor(
     host: SavedHost,
@@ -101,14 +103,12 @@ export class GatewayClient {
     this.#socket = socket;
     this.#session = session;
     socket.addEventListener("message", (event) => this.#handleMessage(event));
-    socket.addEventListener("close", () => {
-      const error = new Error("Host connection closed");
-      for (const pending of this.#pending.values()) {
-        clearTimeout(pending.timeout);
-        pending.reject(error);
-      }
-      this.#pending.clear();
-    });
+    socket.addEventListener("close", () =>
+      this.#invalidate(new Error("Host connection closed"), false),
+    );
+    socket.addEventListener("error", () =>
+      this.#invalidate(new Error("Host connection failed")),
+    );
   }
 
   static async pair(
@@ -625,6 +625,9 @@ export class GatewayClient {
     payload: unknown,
     options: { timeoutMs?: number } = {},
   ): Promise<T> {
+    if (!this.#usable || this.#socket.readyState !== WebSocket.OPEN) {
+      return Promise.reject(new Error("Host connection is unavailable"));
+    }
     const requestId = crypto.randomUUID();
     const frames = this.#session.encryptMessage(
       encoder.encode(
@@ -640,14 +643,29 @@ export class GatewayClient {
     return new Promise<T>((resolve, reject) => {
       const timeout = setTimeout(() => {
         this.#pending.delete(requestId);
-        reject(new Error(`Host request timed out: ${method}`));
+        const error = new Error(`Host request timed out: ${method}`);
+        reject(error);
+        // A timed-out request may have been written to a half-open tunnel.
+        // Never reuse that transport and never retry the request implicitly:
+        // state-changing methods may already have reached the Host.
+        this.#invalidate(error);
       }, options.timeoutMs ?? 30_000);
       this.#pending.set(requestId, {
         resolve: (value) => resolve(value as T),
         reject,
         timeout,
       });
-      for (const frame of frames) this.#socket.send(encodeFrame(frame));
+      try {
+        for (const frame of frames) this.#socket.send(encodeFrame(frame));
+      } catch {
+        this.#pending.delete(requestId);
+        clearTimeout(timeout);
+        const error = new Error(
+          `Host connection failed while sending: ${method}`,
+        );
+        reject(error);
+        this.#invalidate(error);
+      }
     });
   }
 
@@ -656,8 +674,54 @@ export class GatewayClient {
     return () => this.#eventListeners.delete(listener);
   }
 
+  onConnectionLost(listener: (error: Error) => void): () => void {
+    this.#connectionListeners.add(listener);
+    return () => this.#connectionListeners.delete(listener);
+  }
+
+  async healthCheck(timeoutMs = 4_000): Promise<void> {
+    try {
+      await this.request("host/ping", {}, { timeoutMs });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      // Receiving a structured "unknown method" response from an older Agent
+      // still proves that the encrypted transport is alive.
+      if (
+        /Unsupported gateway method:\s*host\/ping|method not found|unknown method/iu.test(
+          message,
+        )
+      )
+        return;
+      throw error;
+    }
+  }
+
   close(): void {
-    this.#socket.close();
+    this.#invalidate(new Error("Host connection closed"));
+  }
+
+  #invalidate(error: Error, closeSocket = true): void {
+    if (!this.#usable) return;
+    this.#usable = false;
+    for (const pending of this.#pending.values()) {
+      clearTimeout(pending.timeout);
+      pending.reject(error);
+    }
+    this.#pending.clear();
+    for (const listener of this.#connectionListeners) {
+      try {
+        listener(error);
+      } catch {
+        // Connection cleanup must complete even if a UI listener fails.
+      }
+    }
+    if (
+      closeSocket &&
+      (this.#socket.readyState === WebSocket.OPEN ||
+        this.#socket.readyState === WebSocket.CONNECTING)
+    ) {
+      this.#socket.close();
+    }
   }
 
   #handleMessage(event: MessageEvent): void {

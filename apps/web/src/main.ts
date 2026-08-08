@@ -190,6 +190,9 @@ Commit & Pull Request Guidelines
 const app = requiredElement<HTMLDivElement>("app");
 const themeController = initializeTheme();
 let client: GatewayClient | undefined;
+let unsubscribeClientConnection: (() => void) | undefined;
+let connectionRecovery: Promise<void> | undefined;
+let pageHiddenAt: number | undefined;
 let activeThreadId: string | undefined;
 let activeThreadCwd: string | undefined;
 let selectedWorkspaceScope: string | undefined;
@@ -1142,6 +1145,24 @@ userCodeOutput.addEventListener("click", () => userCodeOutput.select());
 
 void renderSavedHosts();
 renderDevicePersistence();
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) {
+    pageHiddenAt = Date.now();
+    return;
+  }
+  const wasHiddenLongEnough =
+    pageHiddenAt !== undefined && Date.now() - pageHiddenAt >= 10_000;
+  pageHiddenAt = undefined;
+  if (wasHiddenLongEnough) void verifyActiveConnection();
+});
+window.addEventListener("pageshow", (event) => {
+  if (event.persisted) void verifyActiveConnection();
+});
+window.addEventListener("offline", () => {
+  setStatus("offline", "网络已断开");
+  client?.close();
+});
+window.addEventListener("online", () => void verifyActiveConnection());
 if (
   import.meta.env.DEV &&
   new URLSearchParams(window.location.search).get("preview") === "codex-login"
@@ -1614,8 +1635,17 @@ async function activate(nextClient: GatewayClient): Promise<void> {
   conversationOutlineView.setThreadActive(false);
   jumpToLatestButton.hidden = true;
   renderComposerSessionMeta();
-  client?.close();
+  unsubscribeClientConnection?.();
+  unsubscribeClientConnection = undefined;
+  const previousClient = client;
   client = nextClient;
+  previousClient?.close();
+  unsubscribeClientConnection = nextClient.onConnectionLost(() => {
+    if (client !== nextClient || document.hidden || !navigator.onLine) return;
+    window.setTimeout(() => {
+      if (client === nextClient) void recoverConnection(nextClient);
+    }, 250);
+  });
   appServerRestartRequired = false;
   client.onEvent(renderEvent);
   setup.hidden = true;
@@ -1632,6 +1662,52 @@ async function activate(nextClient: GatewayClient): Promise<void> {
       : "Relay · 端到端加密",
   );
   await continueAfterHostAuthentication();
+}
+
+async function verifyActiveConnection(): Promise<void> {
+  const currentClient = client;
+  if (
+    !currentClient ||
+    document.hidden ||
+    !navigator.onLine ||
+    connectionRecovery
+  )
+    return;
+  try {
+    await currentClient.healthCheck();
+  } catch {
+    if (client === currentClient) await recoverConnection(currentClient);
+  }
+}
+
+async function recoverConnection(previous: GatewayClient): Promise<void> {
+  if (connectionRecovery) return connectionRecovery;
+  const threadId = activeThreadId;
+  connectionRecovery = (async () => {
+    setStatus("connecting", "连接已失效，正在重新连接…");
+    try {
+      const nextClient = await GatewayClient.connect(previous.host);
+      if (client !== previous) {
+        nextClient.close();
+        return;
+      }
+      await activate(nextClient);
+      if (threadId) {
+        const thread = threadsCache.find(
+          (candidate) => candidate.id === threadId,
+        );
+        if (thread) await openThread(thread);
+      }
+      showToast("连接已恢复", "success");
+    } catch (error) {
+      if (client !== previous) return;
+      setStatus("offline", "连接已断开");
+      showToast(`自动重连失败：${errorMessage(error)}`, "error");
+    }
+  })().finally(() => {
+    connectionRecovery = undefined;
+  });
+  return connectionRecovery;
 }
 
 async function continueAfterHostAuthentication(): Promise<void> {
@@ -2101,6 +2177,11 @@ async function reconnectAfterCodexRestart(
     } catch {
       await new Promise((resolve) => window.setTimeout(resolve, 600));
     }
+  }
+  if (client === previous) {
+    unsubscribeClientConnection?.();
+    unsubscribeClientConnection = undefined;
+    client = undefined;
   }
   previous.close();
   window.location.reload();

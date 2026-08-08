@@ -16,11 +16,13 @@ const ACCEPT_TIMEOUT_MS = 10_000;
 const MAX_RELAY_SOCKETS = 4_096;
 const MAX_PENDING_CONNECTIONS = 1_024;
 const MAX_CONNECTIONS_PER_ROUTE = 32;
+const TUNNEL_HEARTBEAT_MS = 15_000;
 
 export type RelayServerOptions = {
   host: string;
   port: number;
   signingKey: Uint8Array;
+  tunnelHeartbeatMs?: number;
 };
 
 type PendingConnection = {
@@ -268,8 +270,11 @@ export class RelayServer extends EventEmitter<{ listening: [number] }> {
         if (pending.browser.readyState !== WebSocket.OPEN)
           throw new Error("Browser connection closed");
         this.#incrementRoute(pending.routeId);
-        bridge(pending.browser, socket, () =>
-          this.#decrementRoute(pending.routeId),
+        bridge(
+          pending.browser,
+          socket,
+          () => this.#decrementRoute(pending.routeId),
+          this.#options.tunnelHeartbeatMs ?? TUNNEL_HEARTBEAT_MS,
         );
         pending.browser.send(
           JSON.stringify({ type: "relay/ready", version: 1 }),
@@ -347,13 +352,37 @@ function validDirectEndpoint(value: string): string {
   return endpoint.toString();
 }
 
-function bridge(left: WebSocket, right: WebSocket, onClose: () => void): void {
+function bridge(
+  left: WebSocket,
+  right: WebSocket,
+  onClose: () => void,
+  heartbeatMs: number,
+): void {
   let closed = false;
+  let leftAlive = true;
+  let rightAlive = true;
+  const heartbeat = setInterval(() => {
+    if (!leftAlive) left.terminate();
+    if (!rightAlive) right.terminate();
+    if (!leftAlive || !rightAlive) return;
+    leftAlive = false;
+    rightAlive = false;
+    if (left.readyState === WebSocket.OPEN) left.ping();
+    if (right.readyState === WebSocket.OPEN) right.ping();
+  }, heartbeatMs);
+  heartbeat.unref?.();
   const finish = () => {
     if (closed) return;
     closed = true;
+    clearInterval(heartbeat);
     onClose();
   };
+  left.on("pong", () => {
+    leftAlive = true;
+  });
+  right.on("pong", () => {
+    rightAlive = true;
+  });
   left.on("message", (data, isBinary) => forward(right, data, isBinary));
   right.on("message", (data, isBinary) => forward(left, data, isBinary));
   left.once("close", (code, reason) => {

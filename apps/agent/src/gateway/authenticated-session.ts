@@ -236,6 +236,10 @@ export class AuthenticatedGatewaySession implements GatewaySession {
         await this.#finishAuthentication();
         return { authenticated: true };
       }
+      case "host/ping":
+        if (!this.#authenticated)
+          throw new Error("Passkey authentication required");
+        return { version: 1, ok: true, serverTime: Date.now() };
       default:
         if (!this.#authenticated)
           throw new Error("Passkey authentication required");
