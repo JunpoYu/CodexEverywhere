@@ -3764,8 +3764,9 @@ async function executeWebSlashCommand(
       await showAccountUsage(targetClient, args);
       return;
     case "theme":
+      await openSettingsCenter();
       themePreferenceSelect.focus();
-      showToast("请在右上角选择跟随系统、浅色或深色", "success");
+      showToast("请在外观设置中选择跟随系统、浅色或深色", "success");
       return;
     case "mcp":
       await showMcpServers(targetClient, threadId, args);

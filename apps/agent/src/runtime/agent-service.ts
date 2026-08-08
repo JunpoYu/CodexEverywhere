@@ -67,10 +67,10 @@ export async function runAgentService(paths: HostPaths): Promise<void> {
     );
     const direct = directTransport(config.transport);
     const relayConfig = relayTransport(config.transport);
-    const setup = new HostSetupService(paths);
     const workspaces = new WorkspaceRegistry(state);
     const queue = new QueueRegistry(state);
     const preferences = new UserPreferencesRegistry(state);
+    const setup = new HostSetupService(paths, { preferences });
     const authenticatedSessions = new AuthenticatedSessionRegistry();
     const authenticationRateLimiter = new AuthenticationRateLimiter();
     const ensureCodexReady = async (): Promise<void> => {
@@ -152,7 +152,6 @@ export async function runAgentService(paths: HostPaths): Promise<void> {
               socketPath: paths.appServerSocket,
               workspaces,
               queue,
-              preferences,
               queueDispatcher: activeQueueDispatcher,
               nodeStatus: async () => ({
                 nodeId: config.nodeId,

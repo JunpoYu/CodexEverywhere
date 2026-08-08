@@ -8,7 +8,12 @@ import initSqlJs, { type Database, type SqlJsStatic } from "sql.js";
 import { isProcessAlive, readProcessRecord } from "./process-files.js";
 
 const require = createRequire(import.meta.url);
-const SCHEMA_VERSION = 5;
+// user_preferences is an additive table that schema-4 Agents safely ignore.
+// Keep the persisted marker at 4 so a release rollback can still open the
+// database. Version 5 was used briefly by the unreleased implementation and
+// is normalized back to 4 when encountered.
+const SCHEMA_VERSION = 4;
+const ROLLBACK_COMPATIBLE_DRAFT_VERSION = 5;
 let sqlModule: Promise<SqlJsStatic> | undefined;
 
 export class HostStateStore {
@@ -82,12 +87,16 @@ export class HostStateStore {
     const version = Number(
       this.#database.exec("PRAGMA user_version")[0]?.values[0]?.[0] ?? 0,
     );
-    if (version > SCHEMA_VERSION) {
+    if (
+      version > SCHEMA_VERSION &&
+      version !== ROLLBACK_COMPATIBLE_DRAFT_VERSION
+    ) {
       throw new Error(
         `Host state schema ${version} is newer than supported ${SCHEMA_VERSION}`,
       );
     }
-    if (version === SCHEMA_VERSION) return;
+    if (version === SCHEMA_VERSION && this.#hasTable("user_preferences"))
+      return;
 
     this.#database.run("BEGIN IMMEDIATE");
     try {
@@ -98,6 +107,18 @@ export class HostStateStore {
     } catch (error) {
       this.#database.run("ROLLBACK");
       throw error;
+    }
+  }
+
+  #hasTable(name: string): boolean {
+    const statement = this.#database.prepare(
+      "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ? LIMIT 1",
+    );
+    try {
+      statement.bind([name]);
+      return statement.step();
+    } finally {
+      statement.free();
     }
   }
 

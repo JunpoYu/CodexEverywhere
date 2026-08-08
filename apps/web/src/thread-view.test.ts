@@ -277,7 +277,7 @@ describe("composer delivery", () => {
     expect(localUserReconciledByTurns("turn-new", turns)).toBe(true);
   });
 
-  it("reconciles a streaming first reply by turn and kind when item ids differ", () => {
+  it("reconciles streaming cards only after the authoritative item id appears", () => {
     const turns = [
       {
         id: "turn-new",
@@ -292,6 +292,12 @@ describe("composer delivery", () => {
           },
           {
             type: "agentMessage",
+            id: "agent-earlier",
+            text: "较早回复",
+            phase: null,
+          },
+          {
+            type: "agentMessage",
             id: "agent-authoritative",
             text: "首次回复",
             phase: null,
@@ -301,26 +307,16 @@ describe("composer delivery", () => {
     ] as never;
 
     expect(
-      streamingItemCandidateId("turn-new", "agent-streaming", "agent", turns),
-    ).toBe("agent-authoritative");
-    expect(
-      streamingItemCandidateId(
-        "turn-new",
-        "agent-authoritative",
-        "agent",
-        turns,
-      ),
-    ).toBe("agent-authoritative");
-    expect(
-      streamingItemCandidateId("turn-other", "agent-streaming", "agent", turns),
+      streamingItemCandidateId("turn-new", "agent-streaming", turns),
     ).toBeUndefined();
     expect(
-      streamingItemCandidateId(
-        "turn-new",
-        "unknown-tool-stream",
-        "tool",
-        turns,
-      ),
+      streamingItemCandidateId("turn-new", "agent-authoritative", turns),
+    ).toBe("agent-authoritative");
+    expect(
+      streamingItemCandidateId("turn-other", "agent-streaming", turns),
+    ).toBeUndefined();
+    expect(
+      streamingItemCandidateId("turn-new", "unknown-tool-stream", turns),
     ).toBeUndefined();
   });
 });

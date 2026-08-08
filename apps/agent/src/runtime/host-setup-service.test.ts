@@ -256,6 +256,55 @@ describe("HostSetupService", () => {
     });
   });
 
+  it("handles host preferences without starting or probing Codex", async () => {
+    const readSessionPermissionDefaults = vi.fn(async () => ({
+      version: 1 as const,
+      sandbox: "workspace-write" as const,
+      approvalPolicy: "on-request" as const,
+    }));
+    const updateSessionPermissionDefaults = vi.fn(async () => ({
+      version: 1 as const,
+      sandbox: "read-only" as const,
+      approvalPolicy: "never" as const,
+      updatedAt: "2026-08-08T00:00:00.000Z",
+    }));
+    const probeCodex = vi.fn();
+    const service = new HostSetupService(resolveHostPaths(), {
+      dependencies: { probeCodex },
+      preferences: {
+        readSessionPermissionDefaults,
+        updateSessionPermissionDefaults,
+      },
+    });
+
+    await expect(
+      service.request(envelope("preferences/read", {})),
+    ).resolves.toEqual({
+      handled: true,
+      value: {
+        version: 1,
+        sandbox: "workspace-write",
+        approvalPolicy: "on-request",
+      },
+    });
+    await expect(
+      service.request(
+        envelope("preferences/session-permissions/update", {
+          sandbox: "read-only",
+          approvalPolicy: "never",
+        }),
+      ),
+    ).resolves.toMatchObject({
+      handled: true,
+      value: { sandbox: "read-only", approvalPolicy: "never" },
+    });
+    expect(updateSessionPermissionDefaults).toHaveBeenCalledWith({
+      sandbox: "read-only",
+      approvalPolicy: "never",
+    });
+    expect(probeCodex).not.toHaveBeenCalled();
+  });
+
   it("rejects unversioned Codex auth imports", async () => {
     const importCodexAuth = vi.fn(async () => ({ replacedExisting: false }));
     const service = new HostSetupService(resolveHostPaths(), {

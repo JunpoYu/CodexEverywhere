@@ -100,6 +100,44 @@ describe("HostStateStore", () => {
     await first.close();
     await second.close();
   });
+
+  it("adds rollback-compatible tables without bumping a schema-4 database", async () => {
+    const path = join(await temporaryDirectory(), "state.sqlite");
+    const seeded = await HostStateStore.open(path);
+    await seeded.transaction((database) => {
+      database.run("DROP TABLE user_preferences");
+      database.run("PRAGMA user_version = 4");
+    });
+    await seeded.close();
+
+    const migrated = await HostStateStore.open(path);
+    await expect(
+      migrated.read((database) => ({
+        version: database.exec("PRAGMA user_version")[0]?.values[0]?.[0],
+        tables: database.exec(
+          "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'user_preferences'",
+        )[0]?.values,
+      })),
+    ).resolves.toEqual({ version: 4, tables: [["user_preferences"]] });
+    await migrated.close();
+  });
+
+  it("normalizes the unreleased schema-5 marker for safe release rollback", async () => {
+    const path = join(await temporaryDirectory(), "state.sqlite");
+    const seeded = await HostStateStore.open(path);
+    await seeded.transaction((database) =>
+      database.run("PRAGMA user_version = 5"),
+    );
+    await seeded.close();
+
+    const migrated = await HostStateStore.open(path);
+    await expect(
+      migrated.read(
+        (database) => database.exec("PRAGMA user_version")[0]?.values[0]?.[0],
+      ),
+    ).resolves.toBe(4);
+    await migrated.close();
+  });
 });
 
 async function temporaryDirectory(): Promise<string> {

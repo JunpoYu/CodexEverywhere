@@ -22,4 +22,10 @@ describe("user settings center", () => {
     expect(styles).toContain(".settings-center-grid");
     expect(styles).toContain(".settings-default-fields");
   });
+
+  it("opens the settings center before focusing the /theme control", () => {
+    expect(source).toContain(
+      'case "theme":\n      await openSettingsCenter();\n      themePreferenceSelect.focus();',
+    );
+  });
 });

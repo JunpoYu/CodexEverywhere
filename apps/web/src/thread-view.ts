@@ -102,26 +102,16 @@ export type StreamingTimelineKind = "agent" | "plan" | "tool";
 export function streamingItemCandidateId(
   streamTurnId: string | undefined,
   streamItemId: string | undefined,
-  streamKind: StreamingTimelineKind | undefined,
   turns: ReadonlyArray<Turn>,
 ): string | undefined {
-  if (!streamTurnId || !streamKind) return undefined;
+  if (!streamTurnId || !streamItemId) return undefined;
   const turn = turns.find((candidate) => candidate.id === streamTurnId);
   if (!turn) return undefined;
-  if (
-    streamItemId &&
-    turn.items.some(
-      (item: ThreadItem) =>
-        isVisibleThreadItem(item) && item.id === streamItemId,
-    )
+  return turn.items.some(
+    (item: ThreadItem) => isVisibleThreadItem(item) && item.id === streamItemId,
   )
-    return streamItemId;
-  if (streamKind === "tool") return undefined;
-  const candidates = turn.items.filter(
-    (item: ThreadItem): item is VisibleThreadItem =>
-      isVisibleThreadItem(item) && itemTimelineKind(item) === streamKind,
-  );
-  return candidates.at(-1)?.id;
+    ? streamItemId
+    : undefined;
 }
 
 const FOLLOW_LATEST_THRESHOLD_PX = 64;
@@ -443,7 +433,6 @@ export class ThreadTimelineView {
       const candidateId = streamingItemCandidateId(
         card.dataset.streamTurnId,
         card.dataset.itemId,
-        streamingKind(card.dataset.streamKind),
         turns,
       );
       const snapshotCard = candidateId
@@ -478,7 +467,6 @@ export class ThreadTimelineView {
       const candidateId = streamingItemCandidateId(
         card.dataset.streamTurnId,
         card.dataset.itemId,
-        streamingKind(card.dataset.streamKind),
         response.thread.turns,
       );
       const snapshotCard = candidateId
@@ -563,10 +551,7 @@ export class ThreadTimelineView {
     ) {
       if (isThreadItem(payload.item)) {
         const followLatest = this.#isNearLatest();
-        this.#upsertItem(
-          payload.item,
-          typeof payload.turnId === "string" ? payload.turnId : undefined,
-        );
+        this.#upsertItem(payload.item);
         this.#finishContentUpdate(followLatest);
         return true;
       }
@@ -589,8 +574,7 @@ export class ThreadTimelineView {
 
     if (event.type === "codex/turn/completed" && isTurn(payload.turn)) {
       const followLatest = this.#isNearLatest();
-      for (const item of payload.turn.items)
-        this.#upsertItem(item, payload.turn.id);
+      for (const item of payload.turn.items) this.#upsertItem(item);
       if (payload.turn.error) {
         this.#appendNoticeElement(
           "Codex 错误",
@@ -716,24 +700,17 @@ export class ThreadTimelineView {
     return section.childElementCount > 0 ? section : undefined;
   }
 
-  #upsertItem(item: ThreadItem, turnId?: string): void {
+  #upsertItem(item: ThreadItem): void {
     if (!isVisibleThreadItem(item)) return;
     this.#container.querySelector(".empty")?.remove();
     if (item.type === "userMessage" && !item.id.startsWith("local-")) {
       this.#container.querySelector<HTMLElement>("[data-local-user]")?.remove();
     }
     const [existing, ...duplicates] = this.#findItems(item.id);
-    const aliases = turnId
-      ? this.#streamingAliases(turnId, itemTimelineKind(item)).filter(
-          (candidate) => candidate !== existing,
-        )
-      : [];
     const replacement = this.#itemElement(item);
     if (existing) existing.replaceWith(replacement);
-    else if (aliases[0]) aliases[0].replaceWith(replacement);
     else this.#container.append(replacement);
     for (const duplicate of duplicates) duplicate.remove();
-    for (const alias of aliases.slice(existing ? 0 : 1)) alias.remove();
   }
 
   #appendDelta(
@@ -785,22 +762,6 @@ export class ThreadTimelineView {
     return Array.from(
       this.#container.querySelectorAll<HTMLElement>("[data-item-id]"),
     ).filter((candidate) => candidate.dataset.itemId === itemId);
-  }
-
-  #streamingAliases(
-    turnId: string,
-    kind: StreamingTimelineKind | undefined,
-  ): HTMLElement[] {
-    if (!kind || kind === "tool") return [];
-    return Array.from(
-      this.#container.querySelectorAll<HTMLElement>(
-        ".timeline-entry.streaming",
-      ),
-    ).filter(
-      (candidate) =>
-        candidate.dataset.streamTurnId === turnId &&
-        candidate.dataset.streamKind === kind,
-    );
   }
 
   #removeLooseTurnItems(turn: Turn): void {
@@ -927,24 +888,6 @@ export class ThreadTimelineView {
     card.append(body);
     return card;
   }
-}
-
-function itemTimelineKind(
-  item: VisibleThreadItem,
-): StreamingTimelineKind | undefined {
-  if (item.type === "agentMessage") return "agent";
-  if (item.type === "plan") return "plan";
-  if (item.type === "commandExecution" || item.type === "fileChange")
-    return "tool";
-  return undefined;
-}
-
-function streamingKind(
-  value: string | undefined,
-): StreamingTimelineKind | undefined {
-  return value === "agent" || value === "plan" || value === "tool"
-    ? value
-    : undefined;
 }
 
 function statusTone(status: string): string {
