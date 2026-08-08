@@ -109,8 +109,9 @@ export function completedStreamingCandidateId(
   completedTurnId: string | undefined,
   completedKind: StreamingTimelineKind | undefined,
   candidates: ReadonlyArray<StreamingTimelineIdentity>,
+  exactItemPresent = false,
 ): string | undefined {
-  if (!completedTurnId || !completedKind) return undefined;
+  if (exactItemPresent || !completedTurnId || !completedKind) return undefined;
   const matches = candidates.filter(
     (candidate) =>
       candidate.turnId === completedTurnId &&
@@ -738,6 +739,7 @@ export class ThreadTimelineView {
       completedTurnId,
       itemTimelineKind(item),
       this.#streamingIdentities(),
+      Boolean(existing),
     );
     const completedStream = completedStreamId
       ? this.#findItem(completedStreamId)
@@ -746,8 +748,6 @@ export class ThreadTimelineView {
     if (existing) existing.replaceWith(replacement);
     else if (completedStream) completedStream.replaceWith(replacement);
     else this.#container.append(replacement);
-    if (existing && completedStream && completedStream !== existing)
-      completedStream.remove();
     for (const duplicate of duplicates) duplicate.remove();
   }
 

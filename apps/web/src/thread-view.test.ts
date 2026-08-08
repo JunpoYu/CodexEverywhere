@@ -346,4 +346,21 @@ describe("composer delivery", () => {
       ]),
     ).toBeUndefined();
   });
+
+  it("does not alias an exact completed item to a sibling stream", () => {
+    expect(
+      completedStreamingCandidateId(
+        "turn-new",
+        "tool",
+        [
+          {
+            turnId: "turn-new",
+            itemId: "still-streaming",
+            kind: "tool",
+          },
+        ],
+        true,
+      ),
+    ).toBeUndefined();
+  });
 });

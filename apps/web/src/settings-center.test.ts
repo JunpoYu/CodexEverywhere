@@ -23,6 +23,24 @@ describe("user settings center", () => {
     expect(styles).toContain(".settings-default-fields");
   });
 
+  it("refreshes host defaults before populating a new session", () => {
+    const start = source.indexOf("async function openNewSession()");
+    const end = source.indexOf("function renderReasoningEfforts()", start);
+    const openNewSession = source.slice(start, end);
+    expect(openNewSession).toContain(
+      "await loadSessionPermissionDefaults(currentClient);",
+    );
+    expect(
+      openNewSession.indexOf(
+        "await loadSessionPermissionDefaults(currentClient);",
+      ),
+    ).toBeLessThan(
+      openNewSession.indexOf(
+        'requiredElement<HTMLSelectElement>("new-session-sandbox").value',
+      ),
+    );
+  });
+
   it("opens the settings center before focusing the /theme control", () => {
     expect(source).toContain(
       'case "theme":\n      await openSettingsCenter();\n      themePreferenceSelect.focus();',

@@ -3187,6 +3187,15 @@ async function openNewSession(): Promise<void> {
     renderWorkspaceManager();
     return;
   }
+  const currentClient = client;
+  if (!currentClient) return;
+  try {
+    await loadSessionPermissionDefaults(currentClient);
+  } catch (error) {
+    showToast(`无法读取最新默认权限，请重试：${errorMessage(error)}`, "error");
+    return;
+  }
+  if (client !== currentClient) return;
   if (
     selectedWorkspaceScope &&
     selectedWorkspaceScope !== ALL_WORKSPACES &&
@@ -3201,11 +3210,15 @@ async function openNewSession(): Promise<void> {
   renderNewSessionPermissions();
   newSessionDialog.showModal();
   requiredElement<HTMLTextAreaElement>("new-prompt").focus();
-  if (codexModels.length > 0 || !client) return;
+  if (codexModels.length > 0) return;
   try {
-    const result = await client.request<{ data: Model[] }>("model/list", {
-      limit: 100,
-    });
+    const result = await currentClient.request<{ data: Model[] }>(
+      "model/list",
+      {
+        limit: 100,
+      },
+    );
+    if (client !== currentClient) return;
     codexModels = result.data.filter((model) => !model.hidden);
     const modelSelect = requiredElement<HTMLSelectElement>("new-session-model");
     modelSelect.replaceChildren(option("", "Codex 默认"));
