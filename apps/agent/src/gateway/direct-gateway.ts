@@ -558,6 +558,7 @@ function isReadMethod(method: string): boolean {
     "node/status",
     "workspace/list",
     "workspace/browse",
+    "preferences/read",
     "model/list",
     "thread/list",
     "thread/read",

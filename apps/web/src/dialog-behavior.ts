@@ -2,6 +2,7 @@ const EXPLICIT_CLOSE_DIALOGS = new Set([
   "password-dialog",
   "recovery-dialog",
   "network-settings-dialog",
+  "settings-dialog",
 ]);
 
 export function shouldDismissDialogFromBackdrop(dialogId: string): boolean {

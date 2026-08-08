@@ -13,6 +13,8 @@ describe("dialog dismissal", () => {
       false,
     );
     expect(shouldPreventDialogCancel("network-settings-dialog")).toBe(true);
+    expect(shouldDismissDialogFromBackdrop("settings-dialog")).toBe(false);
+    expect(shouldPreventDialogCancel("settings-dialog")).toBe(true);
   });
 
   it("keeps backdrop dismissal for ordinary dialogs", () => {

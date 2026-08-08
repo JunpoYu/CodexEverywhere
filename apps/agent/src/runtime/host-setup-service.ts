@@ -24,6 +24,7 @@ import {
   createProxyNetworkConfig,
 } from "../host/network.js";
 import type { HostPaths } from "../host/paths.js";
+import type { UserPreferencesRegistry } from "../host/user-preferences.js";
 import type { AuthenticatedRequestResult } from "../gateway/authenticated-session.js";
 import {
   installCodexForCurrentUser,
@@ -74,6 +75,11 @@ type InstallationOperation = {
   listeners: Set<InstallProgressListener>;
 };
 
+type HostPreferencesRegistry = Pick<
+  UserPreferencesRegistry,
+  "readSessionPermissionDefaults" | "updateSessionPermissionDefaults"
+>;
+
 const defaultDependencies: HostSetupDependencies = {
   readConfig: readHostConfig,
   writeConfig: writeHostConfig,
@@ -89,6 +95,7 @@ export class HostSetupService {
   readonly #paths: HostPaths;
   readonly #userHome: string;
   readonly #dependencies: HostSetupDependencies;
+  readonly #preferences: HostPreferencesRegistry | undefined;
   #installation: Promise<CodexInstallation> | undefined;
   #installationOperation: InstallationOperation | undefined;
   #progressCursor = 0;
@@ -98,11 +105,13 @@ export class HostSetupService {
     options: {
       userHome?: string;
       dependencies?: Partial<HostSetupDependencies>;
+      preferences?: HostPreferencesRegistry;
     } = {},
   ) {
     this.#paths = paths;
     this.#userHome = options.userHome ?? homedir();
     this.#dependencies = { ...defaultDependencies, ...options.dependencies };
+    this.#preferences = options.preferences;
   }
 
   async request(
@@ -129,9 +138,30 @@ export class HostSetupService {
         };
       case "setup/app-server/restart":
         return { handled: true, value: await this.#restartAppServer() };
+      case "preferences/read":
+        return {
+          handled: true,
+          value:
+            await this.#requiredPreferences().readSessionPermissionDefaults(),
+        };
+      case "preferences/session-permissions/update":
+        return {
+          handled: true,
+          value:
+            await this.#requiredPreferences().updateSessionPermissionDefaults({
+              sandbox: payload.sandbox,
+              approvalPolicy: payload.approvalPolicy,
+            }),
+        };
       default:
         return { handled: false };
     }
+  }
+
+  #requiredPreferences(): HostPreferencesRegistry {
+    if (!this.#preferences)
+      throw new Error("Host preferences are not configured");
+    return this.#preferences;
   }
 
   async codexEnvironment(): Promise<NodeJS.ProcessEnv> {

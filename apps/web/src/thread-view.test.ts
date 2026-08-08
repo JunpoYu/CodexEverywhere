@@ -2,6 +2,7 @@ import type { ThreadItem } from "@codex-everywhere/codex-app-server-schema/v2";
 import { describe, expect, it } from "vitest";
 
 import {
+  completedStreamingCandidateId,
   describeThreadItem,
   FileChangeDisclosureState,
   fileChangeItemFromPatchUpdate,
@@ -13,6 +14,7 @@ import {
   mcpServerStartupNotice,
   queuedMessageText,
   shouldFollowTimeline,
+  streamingItemCandidateId,
   TRANSIENT_TIMELINE_SELECTOR,
   threadSnapshotRevision,
   threadSendMode,
@@ -262,9 +264,9 @@ describe("composer delivery", () => {
     expect(threadSnapshotRevision(response as never)).not.toBe(before);
   });
 
-  it("preserves queued messages and approval cards during snapshot repair", () => {
-    expect(TRANSIENT_TIMELINE_SELECTOR).toContain("[data-queue-id]");
-    expect(TRANSIENT_TIMELINE_SELECTOR).toContain("[data-request-id]");
+  it("preserves optimistic cards during snapshot repair", () => {
+    expect(TRANSIENT_TIMELINE_SELECTOR).not.toContain("[data-queue-id]");
+    expect(TRANSIENT_TIMELINE_SELECTOR).not.toContain("[data-request-id]");
     expect(TRANSIENT_TIMELINE_SELECTOR).toContain(".timeline-entry.streaming");
     expect(TRANSIENT_TIMELINE_SELECTOR).toContain("[data-local-user]");
   });
@@ -274,5 +276,91 @@ describe("composer delivery", () => {
     expect(localUserReconciledByTurns(undefined, turns)).toBe(false);
     expect(localUserReconciledByTurns("turn-pending", turns)).toBe(false);
     expect(localUserReconciledByTurns("turn-new", turns)).toBe(true);
+  });
+
+  it("reconciles streaming cards only after the authoritative item id appears", () => {
+    const turns = [
+      {
+        id: "turn-new",
+        status: "inProgress",
+        error: null,
+        items: [
+          {
+            type: "userMessage",
+            id: "user-authoritative",
+            clientId: null,
+            content: [{ type: "text", text: "你好", text_elements: [] }],
+          },
+          {
+            type: "agentMessage",
+            id: "agent-earlier",
+            text: "较早回复",
+            phase: null,
+          },
+          {
+            type: "agentMessage",
+            id: "agent-authoritative",
+            text: "首次回复",
+            phase: null,
+          },
+        ],
+      },
+    ] as never;
+
+    expect(
+      streamingItemCandidateId("turn-new", "agent-streaming", turns),
+    ).toBeUndefined();
+    expect(
+      streamingItemCandidateId("turn-new", "agent-authoritative", turns),
+    ).toBe("agent-authoritative");
+    expect(
+      streamingItemCandidateId("turn-other", "agent-streaming", turns),
+    ).toBeUndefined();
+    expect(
+      streamingItemCandidateId("turn-new", "unknown-tool-stream", turns),
+    ).toBeUndefined();
+  });
+
+  it("reconciles a changed completed id only to one unambiguous active stream", () => {
+    const candidates = [
+      { turnId: "turn-old", itemId: "old-stream", kind: "agent" as const },
+      { turnId: "turn-new", itemId: "active-stream", kind: "agent" as const },
+    ];
+
+    expect(completedStreamingCandidateId("turn-new", "agent", candidates)).toBe(
+      "active-stream",
+    );
+    expect(
+      completedStreamingCandidateId("turn-new", "plan", candidates),
+    ).toBeUndefined();
+    expect(
+      completedStreamingCandidateId("turn-other", "agent", candidates),
+    ).toBeUndefined();
+  });
+
+  it("does not guess between multiple active streams of the same turn and kind", () => {
+    expect(
+      completedStreamingCandidateId("turn-new", "agent", [
+        { turnId: "turn-new", itemId: "stream-1", kind: "agent" },
+        { turnId: "turn-new", itemId: "stream-2", kind: "agent" },
+      ]),
+    ).toBeUndefined();
+  });
+
+  it("does not alias an exact completed item to a sibling stream", () => {
+    expect(
+      completedStreamingCandidateId(
+        "turn-new",
+        "tool",
+        [
+          {
+            turnId: "turn-new",
+            itemId: "still-streaming",
+            kind: "tool",
+          },
+        ],
+        true,
+      ),
+    ).toBeUndefined();
   });
 });

@@ -55,6 +55,18 @@ export type CodexVersionStatus = {
   relation: CodexVersionRelation;
 };
 
+export type SessionSandboxDefault =
+  "read-only" | "workspace-write" | "danger-full-access";
+
+export type SessionApprovalDefault = "untrusted" | "on-request" | "never";
+
+export type SessionPermissionDefaults = {
+  version: 1;
+  sandbox: SessionSandboxDefault;
+  approvalPolicy: SessionApprovalDefault;
+  updatedAt?: string;
+};
+
 export type CodexAuthImportRequest = {
   version: 1;
   content: string;
