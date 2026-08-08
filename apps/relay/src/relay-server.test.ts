@@ -106,6 +106,62 @@ describe("RelayServer", () => {
     control.close();
   });
 
+  it("terminates a tunnel endpoint that stops answering heartbeat pings", async () => {
+    const signingKey = generateRelaySigningKey();
+    const route = issueRouteCapability(signingKey, { loginName: "alice" });
+    relay = await RelayServer.start({
+      host: "127.0.0.1",
+      port: 0,
+      signingKey,
+      tunnelHeartbeatMs: 20,
+    });
+    const endpoint = `ws://127.0.0.1:${relay.port}`;
+    const control = await open(endpoint);
+    control.send(
+      JSON.stringify({
+        type: "relay/register",
+        version: 1,
+        capability: route.capability,
+        profile: {
+          nodeId: "node-1",
+          userId: "unix:1003",
+          hostPublicKey: "A".repeat(43),
+          hostFingerprint: `sha256:${"B".repeat(43)}`,
+        },
+      }),
+    );
+    await next(control);
+
+    const browser = await open(endpoint);
+    browser.send(
+      JSON.stringify({
+        type: "relay/connect",
+        version: 1,
+        routeId: route.payload.routeId,
+      }),
+    );
+    const incoming = JSON.parse(await next(control)) as {
+      connectionId: string;
+    };
+    const tunnel = await open(endpoint, false);
+    tunnel.send(
+      JSON.stringify({
+        type: "relay/accept",
+        version: 1,
+        capability: route.capability,
+        connectionId: incoming.connectionId,
+      }),
+    );
+    await next(tunnel);
+    tunnel.send(JSON.stringify({ type: "relay/tunnel-ready", version: 1 }));
+    await next(browser);
+
+    await closed(tunnel);
+    await closed(browser);
+    expect(control.readyState).toBe(WebSocket.OPEN);
+    control.close();
+  });
+
   it("discovers a self-provisioned Unix user by login name", async () => {
     const signingKey = generateRelaySigningKey();
     const provisioner = issueHostProvisionerCredential(signingKey, {
@@ -209,9 +265,12 @@ describe("RelayServer", () => {
   });
 });
 
-function open(endpoint: string): Promise<WebSocket> {
+function open(endpoint: string, autoPong = true): Promise<WebSocket> {
   return new Promise((resolve, reject) => {
-    const socket = new WebSocket(endpoint, { perMessageDeflate: false });
+    const socket = new WebSocket(endpoint, {
+      perMessageDeflate: false,
+      autoPong,
+    });
     socket.once("open", () => resolve(socket));
     socket.once("error", reject);
   });

@@ -23,11 +23,17 @@ import {
 
 import {
   GatewayClient,
+  TemporaryPasswordReauthenticationRequired,
   type HostDocument,
   type PairingDocument,
 } from "./gateway-client.js";
 import { ApprovalSubmissionTracker } from "./approval-submission.js";
 import { createCoalescedTask } from "./coalesced-task.js";
+import {
+  CONNECTION_RECOVERY_DELAYS_MS,
+  isRetryableConnectionFailure,
+  shouldVerifyAfterVisibilityChange,
+} from "./connection-recovery.js";
 import { ConversationOutlineView } from "./conversation-outline.js";
 import {
   codexVersionFromCliOutput,
@@ -190,6 +196,9 @@ Commit & Pull Request Guidelines
 const app = requiredElement<HTMLDivElement>("app");
 const themeController = initializeTheme();
 let client: GatewayClient | undefined;
+let unsubscribeClientConnection: (() => void) | undefined;
+let connectionRecovery: Promise<void> | undefined;
+let connectionRecoveryRetryTimer: number | undefined;
 let activeThreadId: string | undefined;
 let activeThreadCwd: string | undefined;
 let selectedWorkspaceScope: string | undefined;
@@ -1142,6 +1151,18 @@ userCodeOutput.addEventListener("click", () => userCodeOutput.select());
 
 void renderSavedHosts();
 renderDevicePersistence();
+document.addEventListener("visibilitychange", () => {
+  if (shouldVerifyAfterVisibilityChange(document.hidden))
+    void verifyActiveConnection();
+});
+window.addEventListener("pageshow", (event) => {
+  if (event.persisted) void verifyActiveConnection();
+});
+window.addEventListener("offline", () => {
+  setStatus("offline", "网络已断开");
+  client?.close();
+});
+window.addEventListener("online", () => void verifyActiveConnection());
 if (
   import.meta.env.DEV &&
   new URLSearchParams(window.location.search).get("preview") === "codex-login"
@@ -1587,6 +1608,7 @@ async function connectSaved(host: SavedHost): Promise<void> {
 }
 
 async function activate(nextClient: GatewayClient): Promise<void> {
+  clearConnectionRecoveryRetry();
   stopThreadSync();
   stopCodexLoginMonitoring();
   clearSelectedCodexAuthFile();
@@ -1614,8 +1636,17 @@ async function activate(nextClient: GatewayClient): Promise<void> {
   conversationOutlineView.setThreadActive(false);
   jumpToLatestButton.hidden = true;
   renderComposerSessionMeta();
-  client?.close();
+  unsubscribeClientConnection?.();
+  unsubscribeClientConnection = undefined;
+  const previousClient = client;
   client = nextClient;
+  previousClient?.close();
+  unsubscribeClientConnection = nextClient.onConnectionLost(() => {
+    if (client !== nextClient || document.hidden || !navigator.onLine) return;
+    window.setTimeout(() => {
+      if (client === nextClient) void recoverConnection(nextClient);
+    }, 250);
+  });
   appServerRestartRequired = false;
   client.onEvent(renderEvent);
   setup.hidden = true;
@@ -1632,6 +1663,123 @@ async function activate(nextClient: GatewayClient): Promise<void> {
       : "Relay · 端到端加密",
   );
   await continueAfterHostAuthentication();
+}
+
+async function verifyActiveConnection(): Promise<void> {
+  const currentClient = client;
+  if (
+    !currentClient ||
+    document.hidden ||
+    !navigator.onLine ||
+    connectionRecovery
+  )
+    return;
+  try {
+    await currentClient.healthCheck();
+  } catch {
+    if (client === currentClient) await recoverConnection(currentClient);
+  }
+}
+
+async function recoverConnection(previous: GatewayClient): Promise<void> {
+  if (connectionRecovery) return connectionRecovery;
+  const threadId = activeThreadId;
+  connectionRecovery = (async () => {
+    let lastError: unknown;
+    try {
+      for (const [
+        attempt,
+        delayMs,
+      ] of CONNECTION_RECOVERY_DELAYS_MS.entries()) {
+        if (delayMs > 0) {
+          setStatus(
+            "connecting",
+            `连接暂不可用，${formatRetryDelay(delayMs)}后重试…`,
+          );
+          await new Promise((resolve) => window.setTimeout(resolve, delayMs));
+        } else {
+          setStatus("connecting", "连接已失效，正在重新连接…");
+        }
+        if (client !== previous || document.hidden || !navigator.onLine) return;
+        try {
+          const nextClient = await previous.reconnect();
+          if (client !== previous) {
+            nextClient.close();
+            return;
+          }
+          await activate(nextClient);
+          if (threadId) {
+            const thread = threadsCache.find(
+              (candidate) => candidate.id === threadId,
+            );
+            if (thread) await openThread(thread);
+          }
+          showToast("连接已恢复", "success");
+          return;
+        } catch (error) {
+          if (error instanceof TemporaryPasswordReauthenticationRequired) {
+            showTemporaryPasswordReauthentication(previous);
+            return;
+          }
+          lastError = error;
+          if (!isRetryableConnectionFailure(error)) throw error;
+          if (attempt === CONNECTION_RECOVERY_DELAYS_MS.length - 1) {
+            scheduleConnectionRecovery(previous);
+          }
+        }
+      }
+      if (lastError) throw lastError;
+    } catch (error) {
+      if (client !== previous) return;
+      setStatus("offline", "连接已断开");
+      showToast(`自动重连失败：${errorMessage(error)}`, "error");
+    }
+  })().finally(() => {
+    connectionRecovery = undefined;
+  });
+  return connectionRecovery;
+}
+
+function scheduleConnectionRecovery(previous: GatewayClient): void {
+  clearConnectionRecoveryRetry();
+  connectionRecoveryRetryTimer = window.setTimeout(() => {
+    connectionRecoveryRetryTimer = undefined;
+    if (client === previous) void verifyActiveConnection();
+  }, 30_000);
+}
+
+function clearConnectionRecoveryRetry(): void {
+  if (connectionRecoveryRetryTimer === undefined) return;
+  window.clearTimeout(connectionRecoveryRetryTimer);
+  connectionRecoveryRetryTimer = undefined;
+}
+
+function formatRetryDelay(milliseconds: number): string {
+  return milliseconds < 1_000
+    ? `${milliseconds} 毫秒`
+    : `${milliseconds / 1_000} 秒`;
+}
+
+function showTemporaryPasswordReauthentication(previous: GatewayClient): void {
+  if (client !== previous) return;
+  clearConnectionRecoveryRetry();
+  unsubscribeClientConnection?.();
+  unsubscribeClientConnection = undefined;
+  client = undefined;
+  stopThreadSync();
+  stopCodexLoginMonitoring();
+  provisioning.hidden = true;
+  workspace.hidden = true;
+  setup.hidden = false;
+  showLogin();
+  loginName.value = previous.host.loginName ?? previous.host.name;
+  alternativeLogin.open = true;
+  rememberDevice.checked = false;
+  renderDevicePersistence();
+  setStatus("offline", "临时会话已断开，请重新登录");
+  setupError.textContent =
+    "临时登录不会保存专用密码。连接恢复后，请重新输入密码或改用 Passkey。";
+  window.setTimeout(() => loginPasswordInput.focus(), 0);
 }
 
 async function continueAfterHostAuthentication(): Promise<void> {
@@ -2101,6 +2249,11 @@ async function reconnectAfterCodexRestart(
     } catch {
       await new Promise((resolve) => window.setTimeout(resolve, 600));
     }
+  }
+  if (client === previous) {
+    unsubscribeClientConnection?.();
+    unsubscribeClientConnection = undefined;
+    client = undefined;
   }
   previous.close();
   window.location.reload();

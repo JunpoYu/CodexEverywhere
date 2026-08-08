@@ -57,6 +57,7 @@ CodexEverywhere 的目标不是提供 Web Terminal，也不是替代 SSH、Slurm
 - **Codex 安装、更新与登录引导**：接受当前账号中任何可运行的 Codex 版本；版本设置会分别显示当前安装版本和 npm 最新稳定版，并明确提示是否存在可用更新。用户可把最新版安装到自己的 `~/.local`，更新后自行决定何时重启 app-server，并可使用官方设备码或经 E2EE 导入已有的 `~/.codex/auth.json`。
 - **Passkey 与专用密码**：Web 身份由 Codex 宿主机验证；CodexEverywhere 不收集、复用或验证 SSH 密码。专用密码默认临时登录，只有显式保存新设备时才需要设备名称；当前浏览器已有同一用户记录时沿用原名称。
 - **Direct 优先、Relay 回退**：浏览器可直连时使用 HTTPS/WSS Direct Gateway；不可达时通过可选无状态 Relay 转发 Noise 端到端密文。
+- **休眠与断网恢复**：Relay 会用 WebSocket ping/pong 淘汰半开 tunnel；页面每次从后台或断网状态恢复时先探测 Host，并以有界退避重建和重新同步。临时 Passkey 会重新验证，临时密码会明确返回登录界面；可能已经执行的消息、审批或配置变更绝不自动重发。
 - **适配老旧 HPC**：首个目标环境是 CentOS 7、glibc 2.17、Node.js 20；用户服务兼容 tmux、crontab watchdog、PID 文件和文件锁。
 - **响应式 PWA**：支持桌面与移动端布局、浅色/深色模式、可安装应用外壳和临时设备模式。
 - **统一设置中心**：右上角集中管理外观、新会话默认权限、工作目录、Codex 网络与版本，以及 Passkey、专用密码和恢复码，避免全局设置散落在页面各处。

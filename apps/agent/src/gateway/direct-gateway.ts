@@ -555,6 +555,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function isReadMethod(method: string): boolean {
   return new Set([
+    "host/ping",
     "node/status",
     "workspace/list",
     "workspace/browse",

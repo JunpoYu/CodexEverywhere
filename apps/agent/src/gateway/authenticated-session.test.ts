@@ -69,6 +69,32 @@ describe("AuthenticatedGatewaySession", () => {
     expect(createInner).not.toHaveBeenCalled();
   });
 
+  it("answers an authenticated health check without creating a Codex session", async () => {
+    const createInner = vi.fn(async () => ({ request: async () => "codex" }));
+    const passkeys = {
+      count: vi.fn(async () => 1),
+      authenticationOptions: vi.fn(async () => ({ challenge: "login" })),
+      verifyAuthentication: vi.fn(async () => undefined),
+    } as unknown as PasskeyRegistry;
+    const session = new AuthenticatedGatewaySession({
+      createInner,
+      passkeys,
+      newlyPaired: false,
+    });
+
+    await expect(session.request(envelope("host/ping", {}))).rejects.toThrow(
+      "Passkey authentication required",
+    );
+    await session.request(envelope("auth/login/options", {}));
+    await session.request(
+      envelope("auth/login/verify", { response: { id: "passkey" } }),
+    );
+    await expect(session.request(envelope("host/ping", {}))).resolves.toEqual(
+      expect.objectContaining({ version: 1, ok: true }),
+    );
+    expect(createInner).not.toHaveBeenCalled();
+  });
+
   it("forwards setup progress only after authentication", async () => {
     const passkeys = {
       count: vi.fn(async () => 1),

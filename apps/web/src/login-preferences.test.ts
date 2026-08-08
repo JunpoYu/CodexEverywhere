@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   devicePersistenceMode,
+  gatewayReconnectMode,
   rememberDeviceForLogin,
 } from "./login-preferences.js";
 
@@ -45,5 +46,20 @@ describe("login device naming", () => {
 
   it("asks for a name only when remembering a new device", () => {
     expect(devicePersistenceMode(true)).toBe("new");
+  });
+});
+
+describe("connection recovery authentication", () => {
+  it("reuses enrolled devices through the trusted connection path", () => {
+    expect(gatewayReconnectMode("password", true)).toBe("trusted-device");
+  });
+
+  it("re-authenticates temporary Passkey and recovery sessions", () => {
+    expect(gatewayReconnectMode("passkey", false)).toBe("temporary-passkey");
+    expect(gatewayReconnectMode("recovery", false)).toBe("temporary-passkey");
+  });
+
+  it("returns temporary password sessions to interactive login", () => {
+    expect(gatewayReconnectMode("password", false)).toBe("temporary-password");
   });
 });
