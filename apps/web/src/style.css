@@ -3116,12 +3116,15 @@ dialog::backdrop {
 .message-time {
   flex: 0 0 auto;
   margin-left: auto;
-  color: currentColor;
+  color: #606772;
   font-variant-numeric: tabular-nums;
   font-weight: 560;
   letter-spacing: 0;
-  opacity: 0.78;
   white-space: nowrap;
+}
+
+.timeline-entry.user .message-time {
+  color: #c7cbd2;
 }
 
 .timeline-entry.user {
@@ -4899,6 +4902,10 @@ button.session-meta-item:focus-visible,
   color: #dce0e6;
   background: var(--surface);
   border-color: var(--line);
+}
+
+:root[data-theme="dark"] .message-time {
+  color: #b7bdc7;
 }
 
 :root[data-theme="dark"] .timeline-entry.user {

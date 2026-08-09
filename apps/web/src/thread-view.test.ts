@@ -12,6 +12,7 @@ import {
   isVisibleThreadItem,
   localUserReconciledByTurns,
   mcpServerStartupNotice,
+  preferredMessageTimestamp,
   queuedMessageText,
   relativeMessageTime,
   shouldFollowTimeline,
@@ -37,6 +38,20 @@ describe("relativeMessageTime", () => {
     );
     expect(relativeMessageTime(now - 360 * 24 * 60 * 60_000, now)).toBe(
       "12 个月前",
+    );
+  });
+});
+
+describe("preferredMessageTimestamp", () => {
+  it("keeps an item lifecycle timestamp during turn reconciliation", () => {
+    expect(preferredMessageTimestamp(20_000, 12_000, true, 30_000)).toBe(
+      12_000,
+    );
+  });
+
+  it("allows a lifecycle completion event to replace its started time", () => {
+    expect(preferredMessageTimestamp(20_000, 12_000, false, 30_000)).toBe(
+      20_000,
     );
   });
 });

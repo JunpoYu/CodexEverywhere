@@ -49,6 +49,17 @@ export function relativeMessageTime(
   return `${String(Math.floor(days / 365))} 年前`;
 }
 
+export function preferredMessageTimestamp(
+  proposedTimestampMs: number | undefined,
+  existingTimestampMs: number | undefined,
+  preserveExisting: boolean,
+  nowMs = Date.now(),
+): number {
+  return preserveExisting
+    ? (existingTimestampMs ?? proposedTimestampMs ?? nowMs)
+    : (proposedTimestampMs ?? existingTimestampMs ?? nowMs);
+}
+
 export type McpServerStartupNotice = {
   kind: "warning";
   title: string;
@@ -650,6 +661,7 @@ export class ThreadTimelineView {
           item,
           undefined,
           turnItemTimestamp(payload.turn, item),
+          true,
         );
       }
       if (payload.turn.error) {
@@ -794,6 +806,7 @@ export class ThreadTimelineView {
     item: ThreadItem,
     completedTurnId?: string,
     timestampMs?: number,
+    preserveExistingTimestamp = false,
   ): void {
     if (!isVisibleThreadItem(item)) return;
     this.#container.querySelector(".empty")?.remove();
@@ -810,12 +823,15 @@ export class ThreadTimelineView {
     const completedStream = completedStreamId
       ? this.#findItem(completedStreamId)
       : undefined;
+    const existingTimestampMs =
+      cardTimestamp(existing) ?? cardTimestamp(completedStream);
     const replacement = this.#itemElement(
       item,
-      timestampMs ??
-        cardTimestamp(existing) ??
-        cardTimestamp(completedStream) ??
-        Date.now(),
+      preferredMessageTimestamp(
+        timestampMs,
+        existingTimestampMs,
+        preserveExistingTimestamp,
+      ),
     );
     if (existing) existing.replaceWith(replacement);
     else if (completedStream) completedStream.replaceWith(replacement);
