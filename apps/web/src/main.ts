@@ -397,7 +397,7 @@ app.innerHTML = `
       <div id="thread-list" class="thread-list"></div>
     </aside>
     <section id="conversation-content" class="content">
-      <div class="thread-header"><button id="back-to-sessions" class="back-to-sessions" type="button" aria-label="返回会话列表">←</button><div class="thread-heading"><p class="eyebrow">Codex session</p><h2 id="thread-title">选择一个会话</h2><small class="thread-cwd-line"><span>当前会话目录</span><code id="thread-cwd"></code></small></div><div class="thread-controls"><div class="codex-status"><strong id="thread-state" class="pill idle" role="status" aria-live="polite">空闲</strong></div><div class="thread-actions"><button id="thread-outline-button" class="thread-outline-action compact-action" type="button" aria-controls="conversation-outline" aria-expanded="false" hidden><span aria-hidden="true">☷</span> 大纲</button><button id="tui-handoff-button" class="ssh-handoff-action compact-action" type="button" title="通过 SSH 在官方 TUI 中继续同一个会话" hidden><span aria-hidden="true">›_</span> SSH 接力</button><button id="thread-settings-button" class="session-settings-action compact-action icon-only-action" type="button" aria-label="打开会话设置" title="会话设置" hidden><span aria-hidden="true">⚙</span></button></div></div></div>
+      <div class="thread-header"><button id="back-to-sessions" class="back-to-sessions" type="button" aria-label="返回会话列表">←</button><div class="thread-heading"><p class="eyebrow">Codex session</p><h2 id="thread-title">选择一个会话</h2><small class="thread-cwd-line"><span>当前会话目录</span><code id="thread-cwd"></code></small></div><div class="thread-controls"><div class="codex-status"><strong id="thread-state" class="pill idle" role="status" aria-live="polite">空闲</strong></div><div class="thread-actions"><button id="thread-outline-button" class="thread-outline-action compact-action" type="button" aria-controls="conversation-outline" aria-expanded="false" hidden><span aria-hidden="true">☷</span> 大纲</button><button id="tui-handoff-button" class="ssh-handoff-action compact-action" type="button" title="通过 SSH 在官方 TUI 中继续同一个会话" hidden><span aria-hidden="true">›_</span> SSH 接力</button></div></div></div>
       <aside id="ssh-handoff-banner" class="ssh-handoff-banner" aria-label="SSH 接力提示" hidden>
         <div class="ssh-handoff-banner-copy"><span class="ssh-terminal-mark" aria-hidden="true">›_</span><div><strong>也可以通过 SSH 访问同一个会话</strong><span>登录运行 Codex 的 HPC 后，用 <code>ce tui</code> 继续；Web、SSH TUI 可随时切换，当前任务不会中断。</span></div></div>
         <div class="ssh-handoff-banner-actions"><button id="ssh-handoff-banner-button" type="button">查看方法 <span aria-hidden="true">→</span></button><button id="dismiss-ssh-handoff-banner" class="ssh-handoff-banner-dismiss" type="button" title="以后不再显示这条说明">不再提示</button></div>
@@ -1006,10 +1006,6 @@ tuiHandoffCommandOutput.addEventListener("click", () =>
 tuiPickerCommandOutput.addEventListener("click", () =>
   tuiPickerCommandOutput.select(),
 );
-requiredElement("thread-settings-button").addEventListener(
-  "click",
-  () => void openThreadSettings(),
-);
 requiredElement("thread-permission-summary").addEventListener(
   "click",
   () => void openThreadSettings("permissions"),
@@ -1229,7 +1225,6 @@ if (import.meta.env.DEV) {
       workspace.classList.add("thread-open");
       requiredElement("thread-title").textContent = "斜杠指令预览";
       requiredElement("thread-cwd").textContent = activeThreadCwd;
-      requiredElement("thread-settings-button").hidden = false;
       timelineView.clear("输入 / 查看 Codex 默认斜杠指令");
       conversationOutlineView.setThreadActive(true);
       messageInput.disabled = false;
@@ -3177,7 +3172,6 @@ function closeActiveThreadView(): void {
   jumpToLatestButton.hidden = true;
   requiredElement("thread-title").textContent = "选择一个会话";
   requiredElement("thread-cwd").textContent = "";
-  requiredElement("thread-settings-button").hidden = true;
   setTuiHandoffVisible(false);
   renderComposerSessionMeta();
   messageInput.disabled = true;
@@ -3249,7 +3243,6 @@ async function openThread(thread: ThreadSummary): Promise<void> {
   clearApprovalTray();
   queuedItems.clear();
   renderComposerQueue();
-  requiredElement("thread-settings-button").hidden = true;
   setTuiHandoffVisible(false);
   renderComposerSessionMeta();
   lastRealtimeEventAt = Date.now();
@@ -3303,7 +3296,6 @@ async function openThread(thread: ThreadSummary): Promise<void> {
       sandboxPolicy: detail.sandbox,
     };
     setTuiHandoffVisible(true);
-    requiredElement("thread-settings-button").hidden = false;
     renderComposerSessionMeta();
     await renderQueuedMessages(thread.id, sequence);
     if (
@@ -3598,7 +3590,6 @@ async function startTask(): Promise<void> {
       sandboxPolicy: started.sandbox,
     };
     setTuiHandoffVisible(true);
-    requiredElement("thread-settings-button").hidden = false;
     activeThreadTokenUsage = undefined;
     renderComposerSessionMeta();
     setThreadStatus({ type: "active" });

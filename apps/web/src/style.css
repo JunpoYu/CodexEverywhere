@@ -2610,13 +2610,6 @@ dialog::backdrop {
   box-shadow: 0 1px 2px #1113180a;
 }
 
-.icon-only-action {
-  width: 30px;
-  padding-right: 0;
-  padding-left: 0;
-  justify-content: center;
-}
-
 .codex-status .pill::before {
   left: 10px;
   width: 6px;
@@ -2633,24 +2626,6 @@ dialog::backdrop {
   min-height: 31px;
   padding: 6px 10px;
   font-size: 10px;
-}
-
-.session-settings-action {
-  color: #a84221;
-  background: #fff0e9;
-  border: 1px solid #f0c9b9;
-  box-shadow: 0 1px 2px #a842210f;
-}
-
-.session-settings-action:hover {
-  color: #8f3317;
-  background: #ffe5da;
-  border-color: #e6ac95;
-}
-
-.session-settings-action > span {
-  margin-right: 3px;
-  font-size: 11px;
 }
 
 .ssh-handoff-action {
@@ -4741,18 +4716,6 @@ button.session-meta-item:focus-visible,
 :root[data-theme="dark"] .thread-header {
   background: #14171cdb;
   border-bottom-color: var(--line);
-}
-
-:root[data-theme="dark"] .session-settings-action {
-  color: #f4a486;
-  background: #30201b;
-  border-color: #563126;
-}
-
-:root[data-theme="dark"] .session-settings-action:hover {
-  color: #ffc0a7;
-  background: #3a241d;
-  border-color: #754431;
 }
 
 :root[data-theme="dark"] .ssh-handoff-action {
