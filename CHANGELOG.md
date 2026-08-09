@@ -4,6 +4,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- 对话时间线为用户、Codex、工具与系统消息显示自动更新的相对时间；悬停可查看本地精确时间，历史记录优先使用 turn 时间并兼容 UUIDv7 回退。
+
 ### Fixed
 
 - 会话创建时或之后明确修改的审批策略、审批 reviewer 与 sandbox 权限会保存在该 Linux 用户自己的 Host 状态中；Web、后台 Queue 和所有 `ce tui` 入口共享同一同步与恢复逻辑，Agent 或 Codex app-server 重启后不再回落为“按需审批 + 可写工作目录”。未知新版权限值仍会正常转发，但不会以旧值覆盖 Codex。

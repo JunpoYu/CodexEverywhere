@@ -3113,6 +3113,17 @@ dialog::backdrop {
   font-size: 9px;
 }
 
+.message-time {
+  flex: 0 0 auto;
+  margin-left: auto;
+  color: currentColor;
+  font-variant-numeric: tabular-nums;
+  font-weight: 560;
+  letter-spacing: 0;
+  opacity: 0.78;
+  white-space: nowrap;
+}
+
 .timeline-entry.user {
   width: fit-content;
   max-width: 78%;
