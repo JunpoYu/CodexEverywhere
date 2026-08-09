@@ -54,6 +54,12 @@ describe("preferredMessageTimestamp", () => {
       20_000,
     );
   });
+
+  it("uses the snapshot timestamp when no rendered item exists", () => {
+    expect(preferredMessageTimestamp(20_000, undefined, true, 30_000)).toBe(
+      20_000,
+    );
+  });
 });
 
 describe("mcpServerStartupNotice", () => {

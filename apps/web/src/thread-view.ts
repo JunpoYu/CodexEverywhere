@@ -474,6 +474,7 @@ export class ThreadTimelineView {
 
   mergeRecentTurns(turns: Turn[]): void {
     const followLatest = this.#isNearLatest();
+    const existingTimestamps = this.#itemTimestamps();
     const transientCards = Array.from(
       this.#container.querySelectorAll<HTMLElement>(
         TRANSIENT_TIMELINE_SELECTOR,
@@ -481,7 +482,7 @@ export class ThreadTimelineView {
     );
     for (const card of transientCards) card.remove();
     for (const turn of turns) {
-      const replacement = this.#turnElement(turn);
+      const replacement = this.#turnElement(turn, existingTimestamps);
       const existing = this.#container.querySelector<HTMLElement>(
         `[data-turn-id="${CSS.escape(turn.id)}"]`,
       );
@@ -515,12 +516,13 @@ export class ThreadTimelineView {
     if (revision === this.#snapshotRevision) return false;
     const followLatest = this.#isNearLatest();
     const previousScrollTop = this.#container.scrollTop;
+    const existingTimestamps = this.#itemTimestamps();
     const transientCards = Array.from(
       this.#container.querySelectorAll<HTMLElement>(
         TRANSIENT_TIMELINE_SELECTOR,
       ),
     );
-    this.#replaceSnapshot(response);
+    this.#replaceSnapshot(response, existingTimestamps);
     for (const card of transientCards) {
       if (
         localUserReconciledByTurns(
@@ -722,11 +724,14 @@ export class ThreadTimelineView {
     this.#setFollowingLatest(true);
   }
 
-  #replaceSnapshot(response: ThreadReadResponse): void {
+  #replaceSnapshot(
+    response: ThreadReadResponse,
+    existingTimestamps?: ReadonlyMap<string, number>,
+  ): void {
     this.#snapshotRevision = threadSnapshotRevision(response);
     this.#container.replaceChildren();
     for (const turn of response.thread.turns) {
-      const section = this.#turnElement(turn);
+      const section = this.#turnElement(turn, existingTimestamps);
       if (section) this.#container.append(section);
     }
     if (this.#container.childElementCount === 0) {
@@ -772,13 +777,25 @@ export class ThreadTimelineView {
     this.#onFollowLatestChanged?.(following);
   }
 
-  #turnElement(turn: Turn): HTMLElement | undefined {
+  #turnElement(
+    turn: Turn,
+    existingTimestamps?: ReadonlyMap<string, number>,
+  ): HTMLElement | undefined {
     const section = document.createElement("section");
     section.className = "turn-block";
     section.dataset.turnId = turn.id;
     for (const item of turn.items) {
       if (isVisibleThreadItem(item)) {
-        section.append(this.#itemElement(item, turnItemTimestamp(turn, item)));
+        section.append(
+          this.#itemElement(
+            item,
+            preferredMessageTimestamp(
+              turnItemTimestamp(turn, item),
+              existingTimestamps?.get(item.id),
+              true,
+            ),
+          ),
+        );
       }
     }
     if (turn.error) {
@@ -901,6 +918,20 @@ export class ThreadTimelineView {
       itemId: candidate.dataset.itemId,
       kind: streamingKind(candidate.dataset.streamKind),
     }));
+  }
+
+  #itemTimestamps(): Map<string, number> {
+    const timestamps = new Map<string, number>();
+    for (const card of this.#container.querySelectorAll<HTMLElement>(
+      "[data-item-id]",
+    )) {
+      const itemId = card.dataset.itemId;
+      const timestampMs = cardTimestamp(card);
+      if (itemId && timestampMs !== undefined) {
+        timestamps.set(itemId, timestampMs);
+      }
+    }
+    return timestamps;
   }
 
   #removeLooseTurnItems(turn: Turn): void {
