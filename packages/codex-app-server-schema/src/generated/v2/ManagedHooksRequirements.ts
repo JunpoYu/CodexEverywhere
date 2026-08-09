@@ -12,6 +12,7 @@ export type ManagedHooksRequirements = {
   PreCompact: Array<ConfiguredHookMatcherGroup>;
   PostCompact: Array<ConfiguredHookMatcherGroup>;
   SessionStart: Array<ConfiguredHookMatcherGroup>;
+  SessionEnd: Array<ConfiguredHookMatcherGroup>;
   UserPromptSubmit: Array<ConfiguredHookMatcherGroup>;
   SubagentStart: Array<ConfiguredHookMatcherGroup>;
   SubagentStop: Array<ConfiguredHookMatcherGroup>;

@@ -11,4 +11,5 @@ export type ExternalAgentConfigMigrationItemType =
   | "SUBAGENTS"
   | "HOOKS"
   | "COMMANDS"
+  | "MEMORY"
   | "SESSIONS";

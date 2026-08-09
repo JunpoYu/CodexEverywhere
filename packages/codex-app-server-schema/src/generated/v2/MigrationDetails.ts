@@ -17,4 +17,5 @@ export type MigrationDetails = {
   hooks: Array<HookMigration>;
   subagents: Array<SubagentMigration>;
   commands: Array<CommandMigration>;
+  memory?: Array<string>;
 };

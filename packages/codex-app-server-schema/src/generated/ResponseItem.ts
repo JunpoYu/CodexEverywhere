@@ -10,12 +10,13 @@ import type { LocalShellStatus } from "./LocalShellStatus";
 import type { MessagePhase } from "./MessagePhase";
 import type { ReasoningItemContent } from "./ReasoningItemContent";
 import type { ReasoningItemReasoningSummary } from "./ReasoningItemReasoningSummary";
+import type { ResponseItemId } from "./ResponseItemId";
 import type { WebSearchAction } from "./WebSearchAction";
 
 export type ResponseItem =
   | {
       type: "message";
-      id?: string;
+      id?: ResponseItemId;
       role: string;
       content: Array<ContentItem>;
       phase?: MessagePhase;
@@ -23,7 +24,7 @@ export type ResponseItem =
     }
   | {
       type: "agent_message";
-      id?: string;
+      id?: ResponseItemId;
       author: string;
       recipient: string;
       content: Array<AgentMessageInputContent>;
@@ -31,7 +32,7 @@ export type ResponseItem =
     }
   | {
       type: "reasoning";
-      id?: string;
+      id?: ResponseItemId;
       summary: Array<ReasoningItemReasoningSummary>;
       content?: Array<ReasoningItemContent>;
       encrypted_content: string | null;
@@ -42,7 +43,7 @@ export type ResponseItem =
       /**
        * Legacy id field retained for compatibility with older payloads.
        */
-      id?: string;
+      id?: ResponseItemId;
       /**
        * Set when using the Responses API.
        */
@@ -53,16 +54,17 @@ export type ResponseItem =
     }
   | {
       type: "function_call";
-      id?: string;
+      id?: ResponseItemId;
       name: string;
       namespace?: string;
       arguments: string;
+      encrypted_function_args?: Array<string>;
       call_id: string;
       internal_chat_message_metadata_passthrough?: InternalChatMessageMetadataPassthrough;
     }
   | {
       type: "tool_search_call";
-      id?: string;
+      id?: ResponseItemId;
       call_id: string | null;
       status?: string;
       execution: string;
@@ -71,14 +73,14 @@ export type ResponseItem =
     }
   | {
       type: "function_call_output";
-      id?: string;
+      id?: ResponseItemId;
       call_id: string;
       output: FunctionCallOutputBody;
       internal_chat_message_metadata_passthrough?: InternalChatMessageMetadataPassthrough;
     }
   | {
       type: "custom_tool_call";
-      id?: string;
+      id?: ResponseItemId;
       status?: string;
       call_id: string;
       name: string;
@@ -88,7 +90,7 @@ export type ResponseItem =
     }
   | {
       type: "custom_tool_call_output";
-      id?: string;
+      id?: ResponseItemId;
       call_id: string;
       name?: string;
       output: FunctionCallOutputBody;
@@ -96,7 +98,7 @@ export type ResponseItem =
     }
   | {
       type: "tool_search_output";
-      id?: string;
+      id?: ResponseItemId;
       call_id: string | null;
       status: string;
       execution: string;
@@ -105,14 +107,14 @@ export type ResponseItem =
     }
   | {
       type: "web_search_call";
-      id?: string;
+      id?: ResponseItemId;
       status?: string;
       action?: WebSearchAction;
       internal_chat_message_metadata_passthrough?: InternalChatMessageMetadataPassthrough;
     }
   | {
       type: "image_generation_call";
-      id?: string;
+      id?: ResponseItemId;
       status: string;
       revised_prompt?: string;
       result: string;
@@ -120,14 +122,14 @@ export type ResponseItem =
     }
   | {
       type: "compaction";
-      id?: string;
+      id?: ResponseItemId;
       encrypted_content: string;
       internal_chat_message_metadata_passthrough?: InternalChatMessageMetadataPassthrough;
     }
   | { type: "compaction_trigger" }
   | {
       type: "context_compaction";
-      id?: string;
+      id?: ResponseItemId;
       encrypted_content?: string;
       internal_chat_message_metadata_passthrough?: InternalChatMessageMetadataPassthrough;
     }

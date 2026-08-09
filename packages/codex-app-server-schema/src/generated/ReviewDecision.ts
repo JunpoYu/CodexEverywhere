@@ -20,6 +20,6 @@ export type ReviewDecision =
         network_policy_amendment: NetworkPolicyAmendment;
       };
     }
-  | "denied"
+  | { denied: { rejection: string } }
   | "timed_out"
   | "abort";

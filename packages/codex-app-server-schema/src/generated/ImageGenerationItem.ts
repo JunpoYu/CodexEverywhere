@@ -8,5 +8,6 @@ export type ImageGenerationItem = {
   status: string;
   revisedPrompt: string | null;
   result: string;
+  transparentBackground?: boolean;
   savedPath?: AbsolutePathBuf;
 };
