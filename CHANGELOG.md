@@ -4,6 +4,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- 会话创建时或之后明确修改的审批与 sandbox 权限会保存在该 Linux 用户自己的 Host 状态中；Agent 或 Codex app-server 重启后恢复会话时会自动补回，不再回落为“按需审批 + 可写工作目录”。
+
 ## [0.3.0-alpha.5] - 2026-08-09
 
 ### Added

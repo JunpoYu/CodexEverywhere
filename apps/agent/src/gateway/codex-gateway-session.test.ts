@@ -12,6 +12,7 @@ import { WebSocketServer } from "ws";
 
 import { HostStateStore } from "../host/state-store.js";
 import { QueueRegistry } from "../host/queue.js";
+import { ThreadPermissionRegistry } from "../host/thread-permissions.js";
 import { WorkspaceRegistry } from "../host/workspaces.js";
 import {
   CodexGatewaySession,
@@ -51,6 +52,10 @@ describe("CodexGatewaySession notifications", () => {
     const workspaces = new WorkspaceRegistry(state);
     await workspaces.add(workspacePath);
     const queue = new QueueRegistry(state);
+    const threadPermissions = new ThreadPermissionRegistry(state);
+    await threadPermissions.save("thread-1", "never", {
+      type: "dangerFullAccess",
+    });
     const queued = await queue.add({
       workspacePath,
       threadId: "thread-1",
@@ -65,6 +70,7 @@ describe("CodexGatewaySession notifications", () => {
     let unsubscribePayload: Record<string, unknown> | undefined;
     let initializePayload: Record<string, unknown> | undefined;
     let threadListPayload: Record<string, unknown> | undefined;
+    let threadResumePayload: Record<string, unknown> | undefined;
     const slashMethodPayloads = new Map<string, unknown>();
     httpServer.on("upgrade", (request, socket, head) => {
       webSocketServer.handleUpgrade(request, socket, head, (webSocket) => {
@@ -104,6 +110,21 @@ describe("CodexGatewaySession notifications", () => {
               nextCursor: null,
             },
           });
+        } else if (message.method === "thread/resume") {
+          threadResumePayload = message.params as Record<string, unknown>;
+          sendToClient?.({
+            id: message.id,
+            result: {
+              thread: {
+                id: "thread-1",
+                cwd: workspacePath,
+                status: { type: "idle" },
+                turns: [],
+              },
+              approvalPolicy: "never",
+              sandbox: { type: "dangerFullAccess" },
+            },
+          });
         } else if (message.method === "turn/steer") {
           steerPayload = message.params as Record<string, unknown>;
           sendToClient?.({
@@ -132,6 +153,8 @@ describe("CodexGatewaySession notifications", () => {
                 status: { type: "idle" },
                 turns: [],
               },
+              approvalPolicy: "never",
+              sandbox: { type: "dangerFullAccess" },
             },
           });
         } else if (
@@ -163,12 +186,43 @@ describe("CodexGatewaySession notifications", () => {
       socketPath,
       workspaces,
       queue,
+      threadPermissions,
       nodeStatus: () => ({}),
     });
     const events: EventEnvelope[] = [];
     session.onEvent((event) => events.push(event));
     expect(initializePayload).toMatchObject({
       capabilities: { experimentalApi: true },
+    });
+    await expect(
+      session.request({
+        version: PROTOCOL_VERSION,
+        requestId: "resume-1",
+        idempotencyKey: "resume-1",
+        method: "thread/resume",
+        payload: { threadId: "thread-1" },
+      }),
+    ).resolves.toMatchObject({ thread: { id: "thread-1" } });
+    expect(threadResumePayload).toEqual({
+      threadId: "thread-1",
+      approvalPolicy: "never",
+      sandbox: "danger-full-access",
+    });
+    await session.request({
+      version: PROTOCOL_VERSION,
+      requestId: "resume-explicit",
+      idempotencyKey: "resume-explicit",
+      method: "thread/resume",
+      payload: {
+        threadId: "thread-1",
+        approvalPolicy: "on-request",
+        sandbox: "read-only",
+      },
+    });
+    expect(threadResumePayload).toEqual({
+      threadId: "thread-1",
+      approvalPolicy: "on-request",
+      sandbox: "read-only",
     });
     await session.request({
       version: PROTOCOL_VERSION,
@@ -218,19 +272,23 @@ describe("CodexGatewaySession notifications", () => {
       params: {
         threadId: "thread-1",
         threadSettings: {
-          approvalPolicy: "never",
-          sandboxPolicy: { type: "dangerFullAccess" },
+          approvalPolicy: "on-request",
+          sandboxPolicy: { type: "readOnly", networkAccess: false },
         },
       },
     });
     await new Promise((resolve) => setTimeout(resolve, 10));
+    await expect(threadPermissions.read("thread-1")).resolves.toMatchObject({
+      approvalPolicy: "on-request",
+      sandbox: "read-only",
+    });
     expect(events.at(-1)).toMatchObject({
       type: "codex/thread/settings/updated",
       payload: {
         threadId: "thread-1",
         threadSettings: {
-          approvalPolicy: "never",
-          sandboxPolicy: { type: "dangerFullAccess" },
+          approvalPolicy: "on-request",
+          sandboxPolicy: { type: "readOnly", networkAccess: false },
         },
       },
     });
@@ -278,7 +336,7 @@ describe("CodexGatewaySession notifications", () => {
     }
     await new Promise((resolve) => setTimeout(resolve, 20));
 
-    expect(threadReads).toBe(3);
+    expect(threadReads).toBe(5);
     expect(events.map((event) => event.payload)).toEqual([
       expect.objectContaining({ delta: "A" }),
       expect.objectContaining({ delta: "B" }),

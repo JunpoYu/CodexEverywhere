@@ -106,6 +106,7 @@ describe("HostStateStore", () => {
     const seeded = await HostStateStore.open(path);
     await seeded.transaction((database) => {
       database.run("DROP TABLE user_preferences");
+      database.run("DROP TABLE thread_permissions");
       database.run("PRAGMA user_version = 4");
     });
     await seeded.close();
@@ -115,10 +116,16 @@ describe("HostStateStore", () => {
       migrated.read((database) => ({
         version: database.exec("PRAGMA user_version")[0]?.values[0]?.[0],
         tables: database.exec(
-          "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'user_preferences'",
+          `SELECT name FROM sqlite_master
+             WHERE type = 'table'
+               AND name IN ('thread_permissions', 'user_preferences')
+             ORDER BY name`,
         )[0]?.values,
       })),
-    ).resolves.toEqual({ version: 4, tables: [["user_preferences"]] });
+    ).resolves.toEqual({
+      version: 4,
+      tables: [["thread_permissions"], ["user_preferences"]],
+    });
     await migrated.close();
   });
 
