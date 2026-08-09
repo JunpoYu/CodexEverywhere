@@ -6,6 +6,7 @@ import type { AppSummary } from "./AppSummary";
 import type { AppTemplateSummary } from "./AppTemplateSummary";
 import type { PluginHookSummary } from "./PluginHookSummary";
 import type { PluginSummary } from "./PluginSummary";
+import type { ScheduledTaskSummary } from "./ScheduledTaskSummary";
 import type { SkillSummary } from "./SkillSummary";
 
 export type PluginDetail = {
@@ -19,4 +20,5 @@ export type PluginDetail = {
   apps: Array<AppSummary>;
   appTemplates: Array<AppTemplateSummary>;
   mcpServers: Array<string>;
+  scheduledTasks: Array<ScheduledTaskSummary> | null;
 };

@@ -8,4 +8,8 @@ export type ExternalAgentConfigImportItemTypeSuccess = {
   cwd: string | null;
   source: string | null;
   target: string | null;
+  /**
+   * Original title for an imported session; null for other item types.
+   */
+  title: string | null;
 };

@@ -7,6 +7,5 @@ export type McpToolCallAppContext = {
   linkId: string | null;
   resourceUri: string | null;
   appName: string | null;
-  templateId: string | null;
   actionName: string | null;
 };

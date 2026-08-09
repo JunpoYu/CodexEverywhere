@@ -15,4 +15,8 @@ export type PluginListParams = {
    * the default remote catalog when enabled by feature flag.
    */
   marketplaceKinds?: Array<PluginListMarketplaceKind> | null;
+  /**
+   * Whether the client requests a fresh remote plugin catalog fetch.
+   */
+  forceRefetch?: boolean;
 };

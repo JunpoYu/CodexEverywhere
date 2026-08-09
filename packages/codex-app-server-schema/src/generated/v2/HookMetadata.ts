@@ -15,6 +15,11 @@ export type HookMetadata = {
   command: string | null;
   timeoutSec: bigint;
   statusMessage: string | null;
+  /**
+   * Configured `additionalContext` spill threshold.
+   * `null` uses 2,500 tokens; `0` disables spilling.
+   */
+  additionalContextLimit: number | null;
   sourcePath: AbsolutePathBuf;
   source: HookSource;
   pluginId: string | null;

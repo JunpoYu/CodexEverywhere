@@ -16,6 +16,7 @@ export type Model = {
   availabilityNux: ModelAvailabilityNux | null;
   displayName: string;
   description: string;
+  modelSpecialty: string | null;
   hidden: boolean;
   supportedReasoningEfforts: Array<ReasoningEffortOption>;
   defaultReasoningEffort: ReasoningEffort;

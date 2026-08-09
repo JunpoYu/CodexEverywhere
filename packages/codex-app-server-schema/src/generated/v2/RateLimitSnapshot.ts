@@ -14,6 +14,10 @@ export type RateLimitSnapshot = {
   secondary: RateLimitWindow | null;
   credits: CreditsSnapshot | null;
   individualLimit: SpendControlLimitSnapshot | null;
+  /**
+   * Backend-reported spend-control state. `None` is unavailable, not a sparse-update recovery.
+   */
+  spendControlReached: boolean | null;
   planType: PlanType | null;
   rateLimitReachedType: RateLimitReachedType | null;
 };

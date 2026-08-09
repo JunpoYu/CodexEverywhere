@@ -13,6 +13,7 @@ import type { CommandExecutionOutputDeltaNotification } from "./v2/CommandExecut
 import type { ConfigWarningNotification } from "./v2/ConfigWarningNotification";
 import type { ContextCompactedNotification } from "./v2/ContextCompactedNotification";
 import type { DeprecationNoticeNotification } from "./v2/DeprecationNoticeNotification";
+import type { EnvironmentConnectionNotification } from "./v2/EnvironmentConnectionNotification";
 import type { ErrorNotification } from "./v2/ErrorNotification";
 import type { ExternalAgentConfigImportCompletedNotification } from "./v2/ExternalAgentConfigImportCompletedNotification";
 import type { ExternalAgentConfigImportProgressNotification } from "./v2/ExternalAgentConfigImportProgressNotification";
@@ -35,6 +36,7 @@ import type { ModelVerificationNotification } from "./v2/ModelVerificationNotifi
 import type { PlanDeltaNotification } from "./v2/PlanDeltaNotification";
 import type { ProcessExitedNotification } from "./v2/ProcessExitedNotification";
 import type { ProcessOutputDeltaNotification } from "./v2/ProcessOutputDeltaNotification";
+import type { RawResponseCompletedNotification } from "./v2/RawResponseCompletedNotification";
 import type { RawResponseItemCompletedNotification } from "./v2/RawResponseItemCompletedNotification";
 import type { ReasoningSummaryPartAddedNotification } from "./v2/ReasoningSummaryPartAddedNotification";
 import type { ReasoningSummaryTextDeltaNotification } from "./v2/ReasoningSummaryTextDeltaNotification";
@@ -87,6 +89,14 @@ export type ServerNotification =
   | { method: "thread/goal/updated"; params: ThreadGoalUpdatedNotification }
   | { method: "thread/goal/cleared"; params: ThreadGoalClearedNotification }
   | {
+      method: "thread/environment/connected";
+      params: EnvironmentConnectionNotification;
+    }
+  | {
+      method: "thread/environment/disconnected";
+      params: EnvironmentConnectionNotification;
+    }
+  | {
       method: "thread/settings/updated";
       params: ThreadSettingsUpdatedNotification;
     }
@@ -113,6 +123,10 @@ export type ServerNotification =
   | {
       method: "rawResponseItem/completed";
       params: RawResponseItemCompletedNotification;
+    }
+  | {
+      method: "rawResponse/completed";
+      params: RawResponseCompletedNotification;
     }
   | { method: "item/agentMessage/delta"; params: AgentMessageDeltaNotification }
   | { method: "item/plan/delta"; params: PlanDeltaNotification }

@@ -5,6 +5,7 @@ import type { ImageGenerationItem } from "../ImageGenerationItem";
 import type { LegacyAppPathString } from "../LegacyAppPathString";
 import type { MessagePhase } from "../MessagePhase";
 import type { ReasoningEffort } from "../ReasoningEffort";
+import type { SleepItem } from "../SleepItem";
 import type { WebSearchItem } from "../WebSearchItem";
 import type { JsonValue } from "../serde_json/JsonValue";
 import type { CollabAgentState } from "./CollabAgentState";
@@ -51,6 +52,14 @@ export type ThreadItem =
   | {
       type: "commandExecution";
       id: string;
+      /**
+       * Trusted first-party plugin id when this command resolves to one plugin script.
+       */
+      pluginId: string | null;
+      /**
+       * Safe plugin-relative path when this command resolves to one plugin script.
+       */
+      scriptPath: string | null;
       /**
        * The command to be executed.
        */
@@ -103,6 +112,7 @@ export type ThreadItem =
        */
       mcpAppResourceUri?: string;
       pluginId: string | null;
+      readOnlyHint: boolean | null;
       result: McpToolCallResult | null;
       error: McpToolCallError | null;
       /**
@@ -173,7 +183,7 @@ export type ThreadItem =
     }
   | ({ type: "webSearch" } & WebSearchItem)
   | { type: "imageView"; id: string; path: LegacyAppPathString }
-  | { type: "sleep"; id: string; durationMs: number }
+  | ({ type: "sleep" } & SleepItem)
   | ({ type: "imageGeneration" } & ImageGenerationItem)
   | { type: "enteredReviewMode"; id: string; review: string }
   | { type: "exitedReviewMode"; id: string; review: string }

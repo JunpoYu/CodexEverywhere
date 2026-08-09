@@ -6,6 +6,7 @@ import type { ExternalAgentConfigMigrationItemType } from "./ExternalAgentConfig
 export type ExternalAgentConfigImportItemTypeFailure = {
   itemType: ExternalAgentConfigMigrationItemType;
   errorType: string | null;
+  subErrorType: string | null;
   failureStage: string;
   message: string;
   cwd: string | null;

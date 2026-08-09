@@ -15,4 +15,5 @@ export type PluginShareContext = {
   creatorAccountUserId: string | null;
   creatorName: string | null;
   sharePrincipals: Array<PluginSharePrincipal> | null;
+  canPublishToWorkspace: boolean | null;
 };

@@ -14,7 +14,6 @@ export type AppMetadata = {
   version: string | null;
   versionId: string | null;
   versionNotes: string | null;
-  firstPartyType: string | null;
   firstPartyRequiresInstall: boolean | null;
   showInComposerWhenUnlinked: boolean | null;
 };

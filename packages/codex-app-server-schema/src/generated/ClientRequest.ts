@@ -7,7 +7,9 @@ import type { GetConversationSummaryParams } from "./GetConversationSummaryParam
 import type { GitDiffToRemoteParams } from "./GitDiffToRemoteParams";
 import type { InitializeParams } from "./InitializeParams";
 import type { RequestId } from "./RequestId";
+import type { AppsInstalledParams } from "./v2/AppsInstalledParams";
 import type { AppsListParams } from "./v2/AppsListParams";
+import type { AppsReadParams } from "./v2/AppsReadParams";
 import type { CancelLoginAccountParams } from "./v2/CancelLoginAccountParams";
 import type { CommandExecParams } from "./v2/CommandExecParams";
 import type { CommandExecResizeParams } from "./v2/CommandExecResizeParams";
@@ -20,6 +22,7 @@ import type { ConsumeAccountRateLimitResetCreditParams } from "./v2/ConsumeAccou
 import type { ExperimentalFeatureEnablementSetParams } from "./v2/ExperimentalFeatureEnablementSetParams";
 import type { ExperimentalFeatureListParams } from "./v2/ExperimentalFeatureListParams";
 import type { ExternalAgentConfigDetectParams } from "./v2/ExternalAgentConfigDetectParams";
+import type { ExternalAgentConfigImportHistoryRecordParams } from "./v2/ExternalAgentConfigImportHistoryRecordParams";
 import type { ExternalAgentConfigImportParams } from "./v2/ExternalAgentConfigImportParams";
 import type { FeedbackUploadParams } from "./v2/FeedbackUploadParams";
 import type { FsCopyParams } from "./v2/FsCopyParams";
@@ -75,6 +78,11 @@ import type { ThreadMetadataUpdateParams } from "./v2/ThreadMetadataUpdateParams
 import type { ThreadReadParams } from "./v2/ThreadReadParams";
 import type { ThreadResumeParams } from "./v2/ThreadResumeParams";
 import type { ThreadRollbackParams } from "./v2/ThreadRollbackParams";
+import type { ThreadSectionCreateParams } from "./v2/ThreadSectionCreateParams";
+import type { ThreadSectionDeleteParams } from "./v2/ThreadSectionDeleteParams";
+import type { ThreadSectionListParams } from "./v2/ThreadSectionListParams";
+import type { ThreadSectionMoveParams } from "./v2/ThreadSectionMoveParams";
+import type { ThreadSectionUpdateParams } from "./v2/ThreadSectionUpdateParams";
 import type { ThreadSetNameParams } from "./v2/ThreadSetNameParams";
 import type { ThreadShellCommandParams } from "./v2/ThreadShellCommandParams";
 import type { ThreadStartParams } from "./v2/ThreadStartParams";
@@ -113,6 +121,11 @@ export type ClientRequest =
       id: RequestId;
       params: ThreadMetadataUpdateParams;
     }
+  | {
+      method: "thread/section/move";
+      id: RequestId;
+      params: ThreadSectionMoveParams;
+    }
   | { method: "thread/unarchive"; id: RequestId; params: ThreadUnarchiveParams }
   | {
       method: "thread/compact/start";
@@ -131,6 +144,26 @@ export type ClientRequest =
     }
   | { method: "thread/rollback"; id: RequestId; params: ThreadRollbackParams }
   | { method: "thread/list"; id: RequestId; params: ThreadListParams }
+  | {
+      method: "threadSection/list";
+      id: RequestId;
+      params: ThreadSectionListParams;
+    }
+  | {
+      method: "threadSection/create";
+      id: RequestId;
+      params: ThreadSectionCreateParams;
+    }
+  | {
+      method: "threadSection/update";
+      id: RequestId;
+      params: ThreadSectionUpdateParams;
+    }
+  | {
+      method: "threadSection/delete";
+      id: RequestId;
+      params: ThreadSectionDeleteParams;
+    }
   | {
       method: "thread/loaded/list";
       id: RequestId;
@@ -193,7 +226,9 @@ export type ClientRequest =
       id: RequestId;
       params: PluginShareDeleteParams;
     }
+  | { method: "app/read"; id: RequestId; params: AppsReadParams }
   | { method: "app/list"; id: RequestId; params: AppsListParams }
+  | { method: "app/installed"; id: RequestId; params: AppsInstalledParams }
   | { method: "fs/readFile"; id: RequestId; params: FsReadFileParams }
   | { method: "fs/writeFile"; id: RequestId; params: FsWriteFileParams }
   | {
@@ -317,6 +352,11 @@ export type ClientRequest =
       method: "externalAgentConfig/import";
       id: RequestId;
       params: ExternalAgentConfigImportParams;
+    }
+  | {
+      method: "externalAgentConfig/import/recordHistory";
+      id: RequestId;
+      params: ExternalAgentConfigImportHistoryRecordParams;
     }
   | {
       method: "externalAgentConfig/import/readHistories";

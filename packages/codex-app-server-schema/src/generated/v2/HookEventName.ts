@@ -9,6 +9,7 @@ export type HookEventName =
   | "preCompact"
   | "postCompact"
   | "sessionStart"
+  | "sessionEnd"
   | "userPromptSubmit"
   | "subagentStart"
   | "subagentStop"
