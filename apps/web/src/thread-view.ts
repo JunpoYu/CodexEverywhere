@@ -21,6 +21,45 @@ export type ThreadItemPresentation = {
   summary: string;
 };
 
+const MESSAGE_TIME_REFRESH_MS = 30_000;
+const ABSOLUTE_MESSAGE_TIME_FORMAT = new Intl.DateTimeFormat("zh-CN", {
+  year: "numeric",
+  month: "2-digit",
+  day: "2-digit",
+  hour: "2-digit",
+  minute: "2-digit",
+  second: "2-digit",
+  hour12: false,
+});
+
+export function relativeMessageTime(
+  timestampMs: number,
+  nowMs = Date.now(),
+): string {
+  const elapsedSeconds = Math.max(0, Math.floor((nowMs - timestampMs) / 1_000));
+  if (elapsedSeconds < 60) return "刚刚";
+  const minutes = Math.floor(elapsedSeconds / 60);
+  if (minutes < 60) return `${String(minutes)} 分钟前`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${String(hours)} 小时前`;
+  const days = Math.floor(hours / 24);
+  if (days < 30) return `${String(days)} 天前`;
+  const months = Math.floor(days / 30);
+  if (days < 365) return `${String(months)} 个月前`;
+  return `${String(Math.floor(days / 365))} 年前`;
+}
+
+export function preferredMessageTimestamp(
+  proposedTimestampMs: number | undefined,
+  existingTimestampMs: number | undefined,
+  preserveExisting: boolean,
+  nowMs = Date.now(),
+): number {
+  return preserveExisting
+    ? (existingTimestampMs ?? proposedTimestampMs ?? nowMs)
+    : (proposedTimestampMs ?? existingTimestampMs ?? nowMs);
+}
+
 export type McpServerStartupNotice = {
   kind: "warning";
   title: string;
@@ -382,6 +421,10 @@ export class ThreadTimelineView {
       () => this.#setFollowingLatest(this.#isNearLatest()),
       { passive: true },
     );
+    window.setInterval(
+      () => this.#refreshMessageTimes(),
+      MESSAGE_TIME_REFRESH_MS,
+    );
   }
 
   clear(message = "选择一个会话查看内容"): void {
@@ -431,6 +474,7 @@ export class ThreadTimelineView {
 
   mergeRecentTurns(turns: Turn[]): void {
     const followLatest = this.#isNearLatest();
+    const existingTimestamps = this.#itemTimestamps();
     const transientCards = Array.from(
       this.#container.querySelectorAll<HTMLElement>(
         TRANSIENT_TIMELINE_SELECTOR,
@@ -438,7 +482,7 @@ export class ThreadTimelineView {
     );
     for (const card of transientCards) card.remove();
     for (const turn of turns) {
-      const replacement = this.#turnElement(turn);
+      const replacement = this.#turnElement(turn, existingTimestamps);
       const existing = this.#container.querySelector<HTMLElement>(
         `[data-turn-id="${CSS.escape(turn.id)}"]`,
       );
@@ -472,12 +516,13 @@ export class ThreadTimelineView {
     if (revision === this.#snapshotRevision) return false;
     const followLatest = this.#isNearLatest();
     const previousScrollTop = this.#container.scrollTop;
+    const existingTimestamps = this.#itemTimestamps();
     const transientCards = Array.from(
       this.#container.querySelectorAll<HTMLElement>(
         TRANSIENT_TIMELINE_SELECTOR,
       ),
     );
-    this.#replaceSnapshot(response);
+    this.#replaceSnapshot(response, existingTimestamps);
     for (const card of transientCards) {
       if (
         localUserReconciledByTurns(
@@ -507,12 +552,16 @@ export class ThreadTimelineView {
 
   appendLocalUser(input: UserInput[]): void {
     const id = `local-${crypto.randomUUID()}`;
-    this.#upsertItem({
-      type: "userMessage",
-      id,
-      clientId: id,
-      content: input,
-    });
+    this.#upsertItem(
+      {
+        type: "userMessage",
+        id,
+        clientId: id,
+        content: input,
+      },
+      undefined,
+      Date.now(),
+    );
     const card = this.#findItem(id);
     if (card) card.dataset.localUser = "true";
     this.followLatest();
@@ -544,12 +593,18 @@ export class ThreadTimelineView {
     this.#finishContentUpdate(followLatest);
   }
 
-  #appendNoticeElement(title: string, content: string, kind: string): void {
+  #appendNoticeElement(
+    title: string,
+    content: string,
+    kind: string,
+    timestampMs = Date.now(),
+  ): void {
     this.#container.querySelector(".empty")?.remove();
     const card = document.createElement("article");
     card.className = `timeline-entry ${kind}`;
     const heading = document.createElement("header");
     heading.textContent = title;
+    heading.append(messageTimeElement(timestampMs));
     const body = document.createElement("div");
     body.className = "message-text";
     body.textContent = content;
@@ -579,6 +634,7 @@ export class ThreadTimelineView {
             typeof payload.turnId === "string"
             ? payload.turnId
             : undefined,
+          lifecycleItemTimestamp(event.type, payload, payload.item),
         );
         this.#finishContentUpdate(followLatest);
         return true;
@@ -602,7 +658,14 @@ export class ThreadTimelineView {
 
     if (event.type === "codex/turn/completed" && isTurn(payload.turn)) {
       const followLatest = this.#isNearLatest();
-      for (const item of payload.turn.items) this.#upsertItem(item);
+      for (const item of payload.turn.items) {
+        this.#upsertItem(
+          item,
+          undefined,
+          turnItemTimestamp(payload.turn, item),
+          true,
+        );
+      }
       if (payload.turn.error) {
         this.#appendNoticeElement(
           "Codex 错误",
@@ -610,6 +673,7 @@ export class ThreadTimelineView {
             payload.turn.error as unknown as Record<string, unknown>,
           ),
           "error",
+          turnTimestamp(payload.turn, "completed") ?? Date.now(),
         );
       }
       this.#finishContentUpdate(followLatest);
@@ -660,11 +724,14 @@ export class ThreadTimelineView {
     this.#setFollowingLatest(true);
   }
 
-  #replaceSnapshot(response: ThreadReadResponse): void {
+  #replaceSnapshot(
+    response: ThreadReadResponse,
+    existingTimestamps?: ReadonlyMap<string, number>,
+  ): void {
     this.#snapshotRevision = threadSnapshotRevision(response);
     this.#container.replaceChildren();
     for (const turn of response.thread.turns) {
-      const section = this.#turnElement(turn);
+      const section = this.#turnElement(turn, existingTimestamps);
       if (section) this.#container.append(section);
     }
     if (this.#container.childElementCount === 0) {
@@ -710,25 +777,54 @@ export class ThreadTimelineView {
     this.#onFollowLatestChanged?.(following);
   }
 
-  #turnElement(turn: Turn): HTMLElement | undefined {
+  #turnElement(
+    turn: Turn,
+    existingTimestamps?: ReadonlyMap<string, number>,
+  ): HTMLElement | undefined {
     const section = document.createElement("section");
     section.className = "turn-block";
     section.dataset.turnId = turn.id;
     for (const item of turn.items) {
-      if (isVisibleThreadItem(item)) section.append(this.#itemElement(item));
+      if (isVisibleThreadItem(item)) {
+        section.append(
+          this.#itemElement(
+            item,
+            preferredMessageTimestamp(
+              turnItemTimestamp(turn, item),
+              existingTimestamps?.get(item.id),
+              true,
+            ),
+          ),
+        );
+      }
     }
     if (turn.error) {
       const error = document.createElement("article");
       error.className = "timeline-entry error";
-      error.textContent = messageFromPayload(
+      const heading = document.createElement("header");
+      heading.textContent = "Codex 错误";
+      heading.append(
+        messageTimeElement(
+          turnTimestamp(turn, "completed") ?? turnItemTimestamp(turn),
+        ),
+      );
+      const body = document.createElement("div");
+      body.className = "message-text";
+      body.textContent = messageFromPayload(
         turn.error as unknown as Record<string, unknown>,
       );
+      error.append(heading, body);
       section.append(error);
     }
     return section.childElementCount > 0 ? section : undefined;
   }
 
-  #upsertItem(item: ThreadItem, completedTurnId?: string): void {
+  #upsertItem(
+    item: ThreadItem,
+    completedTurnId?: string,
+    timestampMs?: number,
+    preserveExistingTimestamp = false,
+  ): void {
     if (!isVisibleThreadItem(item)) return;
     this.#container.querySelector(".empty")?.remove();
     if (item.type === "userMessage" && !item.id.startsWith("local-")) {
@@ -744,7 +840,16 @@ export class ThreadTimelineView {
     const completedStream = completedStreamId
       ? this.#findItem(completedStreamId)
       : undefined;
-    const replacement = this.#itemElement(item);
+    const existingTimestampMs =
+      cardTimestamp(existing) ?? cardTimestamp(completedStream);
+    const replacement = this.#itemElement(
+      item,
+      preferredMessageTimestamp(
+        timestampMs,
+        existingTimestampMs,
+        preserveExistingTimestamp,
+      ),
+    );
     if (existing) existing.replaceWith(replacement);
     else if (completedStream) completedStream.replaceWith(replacement);
     else this.#container.append(replacement);
@@ -766,6 +871,7 @@ export class ThreadTimelineView {
       const heading = document.createElement("header");
       heading.textContent =
         kind === "agent" ? "Codex" : kind === "plan" ? "计划" : "执行输出";
+      heading.append(messageTimeElement(Date.now()));
       const body = document.createElement("div");
       body.className = "message-text stream-target";
       card.append(heading, body);
@@ -814,6 +920,20 @@ export class ThreadTimelineView {
     }));
   }
 
+  #itemTimestamps(): Map<string, number> {
+    const timestamps = new Map<string, number>();
+    for (const card of this.#container.querySelectorAll<HTMLElement>(
+      "[data-item-id]",
+    )) {
+      const itemId = card.dataset.itemId;
+      const timestampMs = cardTimestamp(card);
+      if (itemId && timestampMs !== undefined) {
+        timestamps.set(itemId, timestampMs);
+      }
+    }
+    return timestamps;
+  }
+
   #removeLooseTurnItems(turn: Turn): void {
     const itemIds = new Set(
       turn.items.filter(isVisibleThreadItem).map((item: ThreadItem) => item.id),
@@ -827,7 +947,7 @@ export class ThreadTimelineView {
     }
   }
 
-  #itemElement(item: VisibleThreadItem): HTMLElement {
+  #itemElement(item: VisibleThreadItem, timestampMs: number): HTMLElement {
     const presentation = describeThreadItem(item);
     const card = document.createElement("article");
     card.className = `timeline-entry ${presentation.kind}`;
@@ -843,6 +963,7 @@ export class ThreadTimelineView {
       status.textContent = statusLabel(presentation.status);
       heading.append(status);
     }
+    heading.append(messageTimeElement(timestampMs));
     card.append(heading);
 
     if (item.type === "commandExecution") {
@@ -938,6 +1059,90 @@ export class ThreadTimelineView {
     card.append(body);
     return card;
   }
+
+  #refreshMessageTimes(): void {
+    for (const time of this.#container.querySelectorAll<HTMLTimeElement>(
+      "time.message-time[data-timestamp-ms]",
+    )) {
+      updateMessageTimeElement(time);
+    }
+  }
+}
+
+function turnItemTimestamp(turn: Turn, item?: ThreadItem): number {
+  const phase = item?.type === "userMessage" ? "started" : "completed";
+  return turnTimestamp(turn, phase) ?? Date.now();
+}
+
+function turnTimestamp(
+  turn: Turn,
+  phase: "started" | "completed",
+): number | undefined {
+  const timestamp =
+    phase === "completed"
+      ? (turn.completedAt ?? turn.startedAt)
+      : turn.startedAt;
+  return unixTimestampMs(timestamp) ?? uuidV7TimestampMs(turn.id);
+}
+
+function lifecycleItemTimestamp(
+  eventType: string,
+  payload: Record<string, unknown>,
+  item: ThreadItem,
+): number | undefined {
+  if (eventType === "codex/item/started") {
+    return unixTimestampMs(payload.startedAtMs);
+  }
+  // A completed user item replaces its optimistic/started card, so retaining
+  // that card's timestamp better represents when the user sent the message.
+  if (item.type === "userMessage") return undefined;
+  return unixTimestampMs(payload.completedAtMs);
+}
+
+function unixTimestampMs(value: unknown): number | undefined {
+  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
+    return undefined;
+  }
+  return value < 100_000_000_000 ? value * 1_000 : value;
+}
+
+function uuidV7TimestampMs(value: string): number | undefined {
+  const match =
+    /^([0-9a-f]{8})-([0-9a-f]{4})-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu.exec(
+      value,
+    );
+  if (!match) return undefined;
+  const timestamp = Number.parseInt(`${match[1]}${match[2]}`, 16);
+  return Number.isSafeInteger(timestamp) ? timestamp : undefined;
+}
+
+function messageTimeElement(timestampMs: number): HTMLTimeElement {
+  const time = document.createElement("time");
+  time.className = "message-time";
+  time.dataset.timestampMs = String(timestampMs);
+  updateMessageTimeElement(time);
+  return time;
+}
+
+function updateMessageTimeElement(time: HTMLTimeElement): void {
+  const timestampMs = Number(time.dataset.timestampMs);
+  if (!Number.isFinite(timestampMs) || timestampMs <= 0) return;
+  const date = new Date(timestampMs);
+  const relative = relativeMessageTime(timestampMs);
+  const absolute = ABSOLUTE_MESSAGE_TIME_FORMAT.format(date);
+  time.dateTime = date.toISOString();
+  time.textContent = relative;
+  time.title = absolute;
+  time.setAttribute("aria-label", `${relative}，${absolute}`);
+}
+
+function cardTimestamp(card: HTMLElement | undefined): number | undefined {
+  const raw = card?.querySelector<HTMLTimeElement>(
+    "time.message-time[data-timestamp-ms]",
+  )?.dataset.timestampMs;
+  if (raw === undefined) return undefined;
+  const value = Number(raw);
+  return Number.isFinite(value) && value > 0 ? value : undefined;
 }
 
 function itemTimelineKind(

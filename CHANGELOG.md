@@ -4,8 +4,13 @@
 
 ## [Unreleased]
 
+### Added
+
+- 对话时间线为用户、Codex、工具与系统消息显示自动更新的相对时间；悬停可查看本地精确时间，历史记录优先使用 turn 时间并兼容 UUIDv7 回退。
+
 ### Fixed
 
+- turn 完成、后台近期 turn 合并及 snapshot 同步都会保留每个 item 已收到的准确生命周期时间，不再把 Codex 与工具卡片重置为 turn 起止时间；消息时间在明暗主题下使用满足小字号可读性的高对比配色。
 - 会话创建时或之后明确修改的审批策略、审批 reviewer 与 sandbox 权限会保存在该 Linux 用户自己的 Host 状态中；Web、后台 Queue 和所有 `ce tui` 入口共享同一同步与恢复逻辑，Agent 或 Codex app-server 重启后不再回落为“按需审批 + 可写工作目录”。未知新版权限值仍会正常转发，但不会以旧值覆盖 Codex。
 
 ### Changed

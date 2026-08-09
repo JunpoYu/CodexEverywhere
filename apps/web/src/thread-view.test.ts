@@ -12,13 +12,55 @@ import {
   isVisibleThreadItem,
   localUserReconciledByTurns,
   mcpServerStartupNotice,
+  preferredMessageTimestamp,
   queuedMessageText,
+  relativeMessageTime,
   shouldFollowTimeline,
   streamingItemCandidateId,
   TRANSIENT_TIMELINE_SELECTOR,
   threadSnapshotRevision,
   threadSendMode,
 } from "./thread-view.js";
+
+describe("relativeMessageTime", () => {
+  const now = Date.UTC(2026, 7, 9, 10, 0, 0);
+
+  it("uses compact Chinese labels for recent messages", () => {
+    expect(relativeMessageTime(now - 30_000, now)).toBe("刚刚");
+    expect(relativeMessageTime(now - 5 * 60_000, now)).toBe("5 分钟前");
+    expect(relativeMessageTime(now - 2 * 60 * 60_000, now)).toBe("2 小时前");
+  });
+
+  it("keeps older messages readable without exact dates in every card", () => {
+    expect(relativeMessageTime(now - 3 * 24 * 60 * 60_000, now)).toBe("3 天前");
+    expect(relativeMessageTime(now - 65 * 24 * 60 * 60_000, now)).toBe(
+      "2 个月前",
+    );
+    expect(relativeMessageTime(now - 360 * 24 * 60 * 60_000, now)).toBe(
+      "12 个月前",
+    );
+  });
+});
+
+describe("preferredMessageTimestamp", () => {
+  it("keeps an item lifecycle timestamp during turn reconciliation", () => {
+    expect(preferredMessageTimestamp(20_000, 12_000, true, 30_000)).toBe(
+      12_000,
+    );
+  });
+
+  it("allows a lifecycle completion event to replace its started time", () => {
+    expect(preferredMessageTimestamp(20_000, 12_000, false, 30_000)).toBe(
+      20_000,
+    );
+  });
+
+  it("uses the snapshot timestamp when no rendered item exists", () => {
+    expect(preferredMessageTimestamp(20_000, undefined, true, 30_000)).toBe(
+      20_000,
+    );
+  });
+});
 
 describe("mcpServerStartupNotice", () => {
   it("turns a codex_apps transport failure into a safe, readable warning", () => {

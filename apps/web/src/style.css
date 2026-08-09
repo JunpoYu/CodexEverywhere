@@ -3113,6 +3113,20 @@ dialog::backdrop {
   font-size: 9px;
 }
 
+.message-time {
+  flex: 0 0 auto;
+  margin-left: auto;
+  color: #606772;
+  font-variant-numeric: tabular-nums;
+  font-weight: 560;
+  letter-spacing: 0;
+  white-space: nowrap;
+}
+
+.timeline-entry.user .message-time {
+  color: #c7cbd2;
+}
+
 .timeline-entry.user {
   width: fit-content;
   max-width: 78%;
@@ -4888,6 +4902,10 @@ button.session-meta-item:focus-visible,
   color: #dce0e6;
   background: var(--surface);
   border-color: var(--line);
+}
+
+:root[data-theme="dark"] .message-time {
+  color: #b7bdc7;
 }
 
 :root[data-theme="dark"] .timeline-entry.user {
