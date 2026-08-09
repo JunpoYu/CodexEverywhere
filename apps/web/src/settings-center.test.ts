@@ -46,4 +46,11 @@ describe("user settings center", () => {
       'case "theme":\n      await openSettingsCenter();\n      themePreferenceSelect.focus();',
     );
   });
+
+  it("keeps thread settings next to the composer without a duplicate header action", () => {
+    expect(source).not.toContain('id="thread-settings-button"');
+    expect(source).toContain('id="thread-permission-summary"');
+    expect(source).toContain('id="thread-model-summary"');
+    expect(styles).not.toContain(".session-settings-action");
+  });
 });
