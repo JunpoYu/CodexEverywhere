@@ -7,7 +7,7 @@ import {
   PROTOCOL_VERSION,
   type EventEnvelope,
 } from "@codex-everywhere/protocol";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { WebSocketServer } from "ws";
 
 import { HostStateStore } from "../host/state-store.js";
@@ -53,8 +53,10 @@ describe("CodexGatewaySession notifications", () => {
     await workspaces.add(workspacePath);
     const queue = new QueueRegistry(state);
     const threadPermissions = new ThreadPermissionRegistry(state);
-    await threadPermissions.save("thread-1", "never", {
-      type: "dangerFullAccess",
+    await threadPermissions.save("thread-1", {
+      approvalPolicy: "never",
+      approvalsReviewer: "user",
+      sandboxPolicy: { type: "dangerFullAccess" },
     });
     const queued = await queue.add({
       workspacePath,
@@ -122,6 +124,7 @@ describe("CodexGatewaySession notifications", () => {
                 turns: [],
               },
               approvalPolicy: "never",
+              approvalsReviewer: "user",
               sandbox: { type: "dangerFullAccess" },
             },
           });
@@ -154,6 +157,7 @@ describe("CodexGatewaySession notifications", () => {
                 turns: [],
               },
               approvalPolicy: "never",
+              approvalsReviewer: "user",
               sandbox: { type: "dangerFullAccess" },
             },
           });
@@ -206,6 +210,7 @@ describe("CodexGatewaySession notifications", () => {
     expect(threadResumePayload).toEqual({
       threadId: "thread-1",
       approvalPolicy: "never",
+      approvalsReviewer: "user",
       sandbox: "danger-full-access",
     });
     await session.request({
@@ -222,6 +227,7 @@ describe("CodexGatewaySession notifications", () => {
     expect(threadResumePayload).toEqual({
       threadId: "thread-1",
       approvalPolicy: "on-request",
+      approvalsReviewer: "user",
       sandbox: "read-only",
     });
     await session.request({
@@ -273,6 +279,7 @@ describe("CodexGatewaySession notifications", () => {
         threadId: "thread-1",
         threadSettings: {
           approvalPolicy: "on-request",
+          approvalsReviewer: "auto_review",
           sandboxPolicy: { type: "readOnly", networkAccess: false },
         },
       },
@@ -280,6 +287,7 @@ describe("CodexGatewaySession notifications", () => {
     await new Promise((resolve) => setTimeout(resolve, 10));
     await expect(threadPermissions.read("thread-1")).resolves.toMatchObject({
       approvalPolicy: "on-request",
+      approvalsReviewer: "auto_review",
       sandbox: "read-only",
     });
     expect(events.at(-1)).toMatchObject({
@@ -288,9 +296,36 @@ describe("CodexGatewaySession notifications", () => {
         threadId: "thread-1",
         threadSettings: {
           approvalPolicy: "on-request",
+          approvalsReviewer: "auto_review",
           sandboxPolicy: { type: "readOnly", networkAccess: false },
         },
       },
+    });
+    sendToClient?.({
+      method: "thread/settings/updated",
+      params: {
+        threadId: "thread-1",
+        threadSettings: {
+          approvalPolicy: "future-policy",
+          approvalsReviewer: "user",
+          sandboxPolicy: {
+            type: "externalSandbox",
+            networkAccess: "restricted",
+          },
+        },
+      },
+    });
+    await vi.waitFor(() =>
+      expect(events.at(-1)).toMatchObject({
+        type: "codex/thread/settings/updated",
+        payload: {
+          threadSettings: { approvalPolicy: "future-policy" },
+        },
+      }),
+    );
+    await expect(threadPermissions.read("thread-1")).resolves.toEqual({
+      approvalsReviewer: "user",
+      updatedAt: expect.any(String),
     });
     events.length = 0;
     await expect(

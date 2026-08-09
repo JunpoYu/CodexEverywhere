@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { QueueRegistry } from "../host/queue.js";
 import { HostStateStore } from "../host/state-store.js";
+import { ThreadPermissionRegistry } from "../host/thread-permissions.js";
 import { WorkspaceRegistry } from "../host/workspaces.js";
 import type { CodexAppServerClient } from "./codex-app-server-client.js";
 import { QueueDispatcher } from "./queue-dispatcher.js";
@@ -27,7 +28,13 @@ describe("QueueDispatcher", () => {
     state = await HostStateStore.open(join(directory, "state.sqlite"));
     const queue = new QueueRegistry(state);
     const workspaces = new WorkspaceRegistry(state);
+    const threadPermissions = new ThreadPermissionRegistry(state);
     await workspaces.add(workspacePath);
+    await threadPermissions.save("thread-1", {
+      approvalPolicy: "never",
+      approvalsReviewer: "user",
+      sandboxPolicy: { type: "readOnly", networkAccess: false },
+    });
     const item = await queue.add({
       workspacePath,
       threadId: "thread-1",
@@ -41,6 +48,9 @@ describe("QueueDispatcher", () => {
             cwd: workspacePath,
             status: { type: "idle" },
           },
+          approvalPolicy: "never",
+          approvalsReviewer: "user",
+          sandbox: { type: "readOnly", networkAccess: false },
         };
       }
       if (method === "turn/start") return { turn: { id: "turn-2" } };
@@ -53,6 +63,7 @@ describe("QueueDispatcher", () => {
     const dispatcher = new QueueDispatcher({
       queue,
       workspaces,
+      threadPermissions,
       connectClient: async () => client,
     });
     const events: string[] = [];
@@ -60,6 +71,12 @@ describe("QueueDispatcher", () => {
 
     await dispatcher.start();
 
+    expect(request).toHaveBeenCalledWith("thread/resume", {
+      threadId: "thread-1",
+      approvalPolicy: "never",
+      approvalsReviewer: "user",
+      sandbox: "read-only",
+    });
     expect(request).toHaveBeenCalledWith("turn/start", {
       input: [{ type: "text", text: "next" }],
       threadId: "thread-1",

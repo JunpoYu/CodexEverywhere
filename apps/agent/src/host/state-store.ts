@@ -99,13 +99,19 @@ export class HostStateStore {
     if (
       version === SCHEMA_VERSION &&
       this.#hasTable("user_preferences") &&
-      this.#hasTable("thread_permissions")
+      this.#hasTable("thread_permissions") &&
+      this.#hasColumn("thread_permissions", "approvals_reviewer")
     )
       return;
 
     this.#database.run("BEGIN IMMEDIATE");
     try {
       this.#database.run(SCHEMA_V1);
+      if (!this.#hasColumn("thread_permissions", "approvals_reviewer")) {
+        this.#database.run(
+          "ALTER TABLE thread_permissions ADD COLUMN approvals_reviewer TEXT NOT NULL DEFAULT ''",
+        );
+      }
       this.#database.run(`PRAGMA user_version = ${SCHEMA_VERSION}`);
       this.#database.run("COMMIT");
       await this.#persist();
@@ -125,6 +131,11 @@ export class HostStateStore {
     } finally {
       statement.free();
     }
+  }
+
+  #hasColumn(table: string, column: string): boolean {
+    const result = this.#database.exec(`PRAGMA table_info(${table})`);
+    return (result[0]?.values ?? []).some((row) => row[1] === column);
   }
 
   async #persist(): Promise<void> {
@@ -265,6 +276,7 @@ CREATE TABLE IF NOT EXISTS user_preferences (
 CREATE TABLE IF NOT EXISTS thread_permissions (
   thread_id TEXT PRIMARY KEY,
   approval_policy_json TEXT NOT NULL,
+  approvals_reviewer TEXT NOT NULL,
   sandbox_mode TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );

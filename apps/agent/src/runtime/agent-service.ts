@@ -95,6 +95,7 @@ export async function runAgentService(paths: HostPaths): Promise<void> {
     const activeQueueDispatcher = new QueueDispatcher({
       queue,
       workspaces,
+      threadPermissions,
       connectClient: connectCodexClient,
     });
     queueDispatcher = activeQueueDispatcher;

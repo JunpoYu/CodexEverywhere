@@ -8,6 +8,7 @@ import type {
 
 import { QueueRegistry } from "../host/queue.js";
 import { WorkspaceRegistry } from "../host/workspaces.js";
+import { ThreadPermissionRegistry } from "../host/thread-permissions.js";
 import {
   CodexAppServerClient,
   type CodexNotification,
@@ -26,6 +27,7 @@ type QueueDispatcherEvents = {
 export class QueueDispatcher {
   readonly #queue: QueueRegistry;
   readonly #workspaces: WorkspaceRegistry;
+  readonly #threadPermissions: ThreadPermissionRegistry;
   readonly #connectClient: () => Promise<CodexAppServerClient>;
   readonly #events = new EventEmitter<QueueDispatcherEvents>();
   readonly #desiredThreads = new Set<string>();
@@ -40,10 +42,12 @@ export class QueueDispatcher {
   constructor(options: {
     queue: QueueRegistry;
     workspaces: WorkspaceRegistry;
+    threadPermissions: ThreadPermissionRegistry;
     connectClient(): Promise<CodexAppServerClient>;
   }) {
     this.#queue = options.queue;
     this.#workspaces = options.workspaces;
+    this.#threadPermissions = options.threadPermissions;
     this.#connectClient = options.connectClient;
   }
 
@@ -119,11 +123,15 @@ export class QueueDispatcher {
         includeTurns: false,
       });
       await this.#workspaces.resolve(read.thread.cwd);
+      const resumePayload = await this.#threadPermissions.applyToResume({
+        threadId,
+      });
       const resumed = await client.request<ThreadResumeResponse>(
         "thread/resume",
-        { threadId },
+        resumePayload,
       );
       await this.#workspaces.resolve(resumed.thread.cwd);
+      await this.#threadPermissions.saveResponse(resumed);
       if (resumed.thread.status.type === "idle") {
         await this.#drain(threadId, client);
       }
@@ -139,6 +147,11 @@ export class QueueDispatcher {
       notificationThreadId &&
       this.#desiredThreads.has(notificationThreadId)
     ) {
+      if (notification.method === "thread/settings/updated") {
+        await this.#threadPermissions
+          .saveSettingsNotification(notification.params)
+          .catch(() => undefined);
+      }
       this.#emit(
         `codex/${notification.method}`,
         asPayload(notification.params),

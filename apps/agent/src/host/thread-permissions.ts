@@ -1,7 +1,7 @@
 import type {
+  ApprovalsReviewer,
   AskForApproval,
   SandboxMode,
-  SandboxPolicy,
 } from "@codex-everywhere/codex-app-server-schema/v2";
 
 import type { HostStateStore } from "./state-store.js";
@@ -11,10 +11,22 @@ const SANDBOX_MODES = new Set<SandboxMode>([
   "workspace-write",
   "danger-full-access",
 ]);
+const APPROVAL_REVIEWERS = new Set<ApprovalsReviewer>([
+  "user",
+  "auto_review",
+  "guardian_subagent",
+]);
+
+export type ThreadPermissionSnapshot = {
+  approvalPolicy: unknown;
+  approvalsReviewer: unknown;
+  sandboxPolicy: unknown;
+};
 
 export type StoredThreadPermissions = {
-  approvalPolicy: AskForApproval;
-  sandbox: SandboxMode;
+  approvalPolicy?: AskForApproval;
+  approvalsReviewer?: ApprovalsReviewer;
+  sandbox?: SandboxMode;
   updatedAt: string;
 };
 
@@ -29,25 +41,30 @@ export class ThreadPermissionRegistry {
     requireThreadId(threadId);
     return this.#state.read((database) => {
       const statement = database.prepare(
-        `SELECT approval_policy_json, sandbox_mode, updated_at
+        `SELECT approval_policy_json, approvals_reviewer, sandbox_mode, updated_at
            FROM thread_permissions WHERE thread_id = ?`,
       );
       try {
         statement.bind([threadId]);
         if (!statement.step()) return undefined;
-        const [approvalJson, sandbox, updatedAt] = statement.get();
+        const [approvalJson, reviewer, sandbox, updatedAt] = statement.get();
         if (
           typeof approvalJson !== "string" ||
+          typeof reviewer !== "string" ||
           typeof sandbox !== "string" ||
-          !isSandboxMode(sandbox) ||
           typeof updatedAt !== "string"
         ) {
           throw new Error("Stored thread permissions are invalid");
         }
-        const approvalPolicy: unknown = JSON.parse(approvalJson);
-        if (!isApprovalPolicy(approvalPolicy))
-          throw new Error("Stored thread approval policy is invalid");
-        return { approvalPolicy, sandbox, updatedAt };
+        const approvalPolicy = parseApprovalPolicy(approvalJson);
+        return {
+          ...(approvalPolicy ? { approvalPolicy } : {}),
+          ...(isApprovalsReviewer(reviewer)
+            ? { approvalsReviewer: reviewer }
+            : {}),
+          ...(isSandboxMode(sandbox) ? { sandbox } : {}),
+          updatedAt,
+        };
       } finally {
         statement.free();
       }
@@ -56,27 +73,91 @@ export class ThreadPermissionRegistry {
 
   async save(
     threadId: string,
-    approvalPolicy: AskForApproval,
-    sandboxPolicy: SandboxPolicy,
-  ): Promise<StoredThreadPermissions | undefined> {
+    snapshot: ThreadPermissionSnapshot,
+  ): Promise<StoredThreadPermissions> {
     requireThreadId(threadId);
-    if (!isApprovalPolicy(approvalPolicy))
-      throw new Error("Invalid thread approval policy");
-    const sandbox = sandboxModeFromPolicy(sandboxPolicy);
-    if (!sandbox) {
-      await this.remove(threadId);
-      return undefined;
-    }
+    const approvalPolicy = isApprovalPolicy(snapshot.approvalPolicy)
+      ? snapshot.approvalPolicy
+      : undefined;
+    const approvalsReviewer = isApprovalsReviewer(snapshot.approvalsReviewer)
+      ? snapshot.approvalsReviewer
+      : undefined;
+    const sandbox = sandboxModeFromPolicy(snapshot.sandboxPolicy);
     const updatedAt = new Date().toISOString();
     await this.#state.transaction((database) => {
       database.run(
         `INSERT OR REPLACE INTO thread_permissions
-          (thread_id, approval_policy_json, sandbox_mode, updated_at)
-         VALUES (?, ?, ?, ?)`,
-        [threadId, JSON.stringify(approvalPolicy), sandbox, updatedAt],
+          (thread_id, approval_policy_json, approvals_reviewer, sandbox_mode, updated_at)
+         VALUES (?, ?, ?, ?, ?)`,
+        [
+          threadId,
+          JSON.stringify(approvalPolicy ?? null),
+          approvalsReviewer ?? "",
+          sandbox ?? "",
+          updatedAt,
+        ],
       );
     });
-    return { approvalPolicy, sandbox, updatedAt };
+    return {
+      ...(approvalPolicy ? { approvalPolicy } : {}),
+      ...(approvalsReviewer ? { approvalsReviewer } : {}),
+      ...(sandbox ? { sandbox } : {}),
+      updatedAt,
+    };
+  }
+
+  saveResponse(
+    response: unknown,
+  ): Promise<StoredThreadPermissions | undefined> {
+    if (
+      !isRecord(response) ||
+      !isRecord(response.thread) ||
+      typeof response.thread.id !== "string"
+    ) {
+      return Promise.resolve(undefined);
+    }
+    return this.save(response.thread.id, {
+      approvalPolicy: response.approvalPolicy,
+      approvalsReviewer: response.approvalsReviewer,
+      sandboxPolicy: response.sandbox,
+    });
+  }
+
+  saveSettingsNotification(
+    params: unknown,
+  ): Promise<StoredThreadPermissions | undefined> {
+    if (
+      !isRecord(params) ||
+      typeof params.threadId !== "string" ||
+      !isRecord(params.threadSettings)
+    ) {
+      return Promise.resolve(undefined);
+    }
+    return this.save(params.threadId, {
+      approvalPolicy: params.threadSettings.approvalPolicy,
+      approvalsReviewer: params.threadSettings.approvalsReviewer,
+      sandboxPolicy: params.threadSettings.sandboxPolicy,
+    });
+  }
+
+  async applyToResume(
+    payload: Record<string, unknown>,
+  ): Promise<Record<string, unknown>> {
+    const threadId = requiredThreadId(payload.threadId);
+    const stored = await this.read(threadId);
+    if (!stored) return { ...payload };
+    return {
+      ...payload,
+      ...(payload.approvalPolicy === undefined && stored.approvalPolicy
+        ? { approvalPolicy: stored.approvalPolicy }
+        : {}),
+      ...(payload.approvalsReviewer === undefined && stored.approvalsReviewer
+        ? { approvalsReviewer: stored.approvalsReviewer }
+        : {}),
+      ...(payload.sandbox === undefined && stored.sandbox
+        ? { sandbox: stored.sandbox }
+        : {}),
+    };
   }
 
   async remove(threadId: string): Promise<boolean> {
@@ -90,7 +171,8 @@ export class ThreadPermissionRegistry {
   }
 }
 
-function sandboxModeFromPolicy(policy: SandboxPolicy): SandboxMode | undefined {
+function sandboxModeFromPolicy(policy: unknown): SandboxMode | undefined {
+  if (!isRecord(policy) || typeof policy.type !== "string") return undefined;
   switch (policy.type) {
     case "readOnly":
       return "read-only";
@@ -98,13 +180,29 @@ function sandboxModeFromPolicy(policy: SandboxPolicy): SandboxMode | undefined {
       return "workspace-write";
     case "dangerFullAccess":
       return "danger-full-access";
-    case "externalSandbox":
+    default:
       return undefined;
+  }
+}
+
+function parseApprovalPolicy(value: string): AskForApproval | undefined {
+  try {
+    const parsed: unknown = JSON.parse(value);
+    return isApprovalPolicy(parsed) ? parsed : undefined;
+  } catch {
+    return undefined;
   }
 }
 
 function isSandboxMode(value: string): value is SandboxMode {
   return SANDBOX_MODES.has(value as SandboxMode);
+}
+
+function isApprovalsReviewer(value: unknown): value is ApprovalsReviewer {
+  return (
+    typeof value === "string" &&
+    APPROVAL_REVIEWERS.has(value as ApprovalsReviewer)
+  );
 }
 
 function isApprovalPolicy(value: unknown): value is AskForApproval {
@@ -123,6 +221,12 @@ function isApprovalPolicy(value: unknown): value is AskForApproval {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function requiredThreadId(value: unknown): string {
+  if (typeof value !== "string") throw new Error("Thread id must be a string");
+  requireThreadId(value);
+  return value;
 }
 
 function requireThreadId(threadId: string): void {

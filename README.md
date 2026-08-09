@@ -343,7 +343,7 @@ ce tui /absolute/path/to/project --new
 
 在 TUI 中输入 `/quit` 或 `/exit` 只会关闭当前 TUI 客户端，宿主机上的活动 turn 会继续运行。不要把 `Esc` 当成退出操作；它会中断当前任务。
 
-恢复已有会话时，`ce tui` 会让该 Linux 用户 Host 状态中保存的会话权限优先于 TUI 进程自己的启动默认值；Web 创建、恢复和明确修改权限时都会同步这份最小权限元数据，因此 Agent 或 app-server 重启也不会使权限回落。连接动作本身不会改权限；之后在 TUI 使用 `/permissions`，或在 Web 点击对话页的“会话权限”，仍会明确更新该会话后续轮次的默认权限，并同步到其他已打开客户端。`--new` 创建的新会话则使用 TUI 当次选择的权限。
+恢复已有会话时，`ce tui` 会让该 Linux 用户 Host 状态中保存的会话权限优先于 TUI 进程自己的启动默认值；Web、后台 Queue 和所有 `ce tui` 入口会同步审批策略、审批 reviewer 与可恢复的 sandbox 模式，因此 Agent 或 app-server 重启也不会使权限回落。连接动作本身不会改权限；之后在 TUI 使用 `/permissions`，或在 Web 点击对话页的“会话权限”，仍会明确更新该会话后续轮次的默认权限，并同步到其他已打开客户端。`--new` 创建的新会话则使用 TUI 当次选择的权限，并在 app-server 确认后记录到 Host。
 
 ## Monorepo 结构
 

@@ -12,7 +12,6 @@ import type {
   ThreadReadResponse,
   ThreadForkResponse,
   ThreadResumeResponse,
-  ThreadSettingsUpdatedNotification,
   ThreadStartResponse,
   ThreadStatus,
   TurnSteerResponse,
@@ -183,7 +182,7 @@ export class CodexGatewaySession implements GatewaySession {
         );
         await this.#workspaces.resolve(response.thread.cwd);
         this.#authorizedThreads.add(response.thread.id);
-        await this.#rememberPermissions(response);
+        await this.#threadPermissions.saveResponse(response);
         return response;
       }
       case "thread/resume": {
@@ -233,7 +232,7 @@ export class CodexGatewaySession implements GatewaySession {
         );
         await this.#workspaces.resolve(response.thread.cwd);
         this.#authorizedThreads.add(response.thread.id);
-        await this.#rememberPermissions(response);
+        await this.#threadPermissions.saveResponse(response);
         return response;
       }
       case "thread/compact/start":
@@ -327,38 +326,15 @@ export class CodexGatewaySession implements GatewaySession {
     payload: Record<string, unknown>,
   ): Promise<ThreadResumeResponse> {
     const threadId = requiredString(payload, "threadId");
-    const stored = await this.#threadPermissions.read(threadId);
-    const resumePayload = { ...payload };
-    if (stored && resumePayload.approvalPolicy === undefined)
-      resumePayload.approvalPolicy = stored.approvalPolicy;
-    if (
-      stored &&
-      resumePayload.sandbox === undefined &&
-      resumePayload.sandboxPolicy === undefined &&
-      resumePayload.permissions === undefined
-    ) {
-      resumePayload.sandbox = stored.sandbox;
-    }
+    const resumePayload = await this.#threadPermissions.applyToResume(payload);
     const response = await this.#client.request<ThreadResumeResponse>(
       "thread/resume",
       resumePayload,
     );
     await this.#workspaces.resolve(response.thread.cwd);
     this.#authorizedThreads.add(response.thread.id);
-    await this.#rememberPermissions(response);
+    await this.#threadPermissions.saveResponse(response);
     return response;
-  }
-
-  async #rememberPermissions(response: {
-    thread: { id: string };
-    approvalPolicy: ThreadStartResponse["approvalPolicy"];
-    sandbox: ThreadStartResponse["sandbox"];
-  }): Promise<void> {
-    await this.#threadPermissions.save(
-      response.thread.id,
-      response.approvalPolicy,
-      response.sandbox,
-    );
   }
 
   async #listQueue(): Promise<{ items: unknown[] }> {
@@ -509,12 +485,9 @@ export class CodexGatewaySession implements GatewaySession {
       }
     }
     if (notification.method === "thread/settings/updated") {
-      const settings = notification.params as ThreadSettingsUpdatedNotification;
-      await this.#threadPermissions.save(
-        settings.threadId,
-        settings.threadSettings.approvalPolicy,
-        settings.threadSettings.sandboxPolicy,
-      );
+      await this.#threadPermissions
+        .saveSettingsNotification(notification.params)
+        .catch(() => undefined);
     }
     this.#emit(`codex/${notification.method}`, notification.params);
     if (
