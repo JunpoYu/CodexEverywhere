@@ -8,7 +8,8 @@ import initSqlJs, { type Database, type SqlJsStatic } from "sql.js";
 import { isProcessAlive, readProcessRecord } from "./process-files.js";
 
 const require = createRequire(import.meta.url);
-// user_preferences is an additive table that schema-4 Agents safely ignore.
+// user_preferences and thread_permissions are additive tables that schema-4
+// Agents safely ignore.
 // Keep the persisted marker at 4 so a release rollback can still open the
 // database. Version 5 was used briefly by the unreleased implementation and
 // is normalized back to 4 when encountered.
@@ -95,12 +96,22 @@ export class HostStateStore {
         `Host state schema ${version} is newer than supported ${SCHEMA_VERSION}`,
       );
     }
-    if (version === SCHEMA_VERSION && this.#hasTable("user_preferences"))
+    if (
+      version === SCHEMA_VERSION &&
+      this.#hasTable("user_preferences") &&
+      this.#hasTable("thread_permissions") &&
+      this.#hasColumn("thread_permissions", "approvals_reviewer")
+    )
       return;
 
     this.#database.run("BEGIN IMMEDIATE");
     try {
       this.#database.run(SCHEMA_V1);
+      if (!this.#hasColumn("thread_permissions", "approvals_reviewer")) {
+        this.#database.run(
+          "ALTER TABLE thread_permissions ADD COLUMN approvals_reviewer TEXT NOT NULL DEFAULT ''",
+        );
+      }
       this.#database.run(`PRAGMA user_version = ${SCHEMA_VERSION}`);
       this.#database.run("COMMIT");
       await this.#persist();
@@ -120,6 +131,11 @@ export class HostStateStore {
     } finally {
       statement.free();
     }
+  }
+
+  #hasColumn(table: string, column: string): boolean {
+    const result = this.#database.exec(`PRAGMA table_info(${table})`);
+    return (result[0]?.values ?? []).some((row) => row[1] === column);
   }
 
   async #persist(): Promise<void> {
@@ -255,6 +271,13 @@ CREATE TABLE IF NOT EXISTS user_preferences (
   id INTEGER PRIMARY KEY CHECK (id = 1),
   default_sandbox TEXT NOT NULL,
   default_approval_policy TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS thread_permissions (
+  thread_id TEXT PRIMARY KEY,
+  approval_policy_json TEXT NOT NULL,
+  approvals_reviewer TEXT NOT NULL,
+  sandbox_mode TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS trusted_devices (

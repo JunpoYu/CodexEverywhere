@@ -27,6 +27,7 @@ import {
 } from "./host/pairing-config.js";
 import { HostStateStore } from "./host/state-store.js";
 import { WorkspaceRegistry } from "./host/workspaces.js";
+import { ThreadPermissionRegistry } from "./host/thread-permissions.js";
 import { isProcessAlive, readProcessRecord } from "./host/process-files.js";
 import { installWatchdog } from "./host/watchdog.js";
 import { runDoctor } from "./host/doctor.js";
@@ -368,17 +369,24 @@ program
       const runtime = await currentCodexRuntime();
       await ensureAppServer(paths, runtime);
       process.stderr.write(`\n${tuiExitGuidance()}\n\n`);
-      const permissionProxy = options.new
-        ? undefined
-        : await startTuiPermissionProxy({
-            upstreamSocketPath: paths.appServerSocket,
-            runtimeDir: paths.runtimeDir,
-          });
+      const tuiState = await HostStateStore.open(paths.stateFile);
+      let permissionProxy:
+        Awaited<ReturnType<typeof startTuiPermissionProxy>> | undefined;
       try {
+        const threadPermissions = new ThreadPermissionRegistry(tuiState);
+        permissionProxy = await startTuiPermissionProxy({
+          upstreamSocketPath: paths.appServerSocket,
+          runtimeDir: paths.runtimeDir,
+          prepareThreadResume: (params) =>
+            threadPermissions.applyToResume(params),
+          onThreadPermissions: async (observation) => {
+            await threadPermissions.save(observation.threadId, observation);
+          },
+        });
         process.exitCode = await runInteractive(
           runtime.codexBinary,
           tuiArguments({
-            socketPath: permissionProxy?.socketPath ?? paths.appServerSocket,
+            socketPath: permissionProxy.socketPath,
             workspacePath,
             ...(options.thread ? { thread: options.thread } : {}),
             newThread: options.new ?? false,
@@ -387,6 +395,7 @@ program
         );
       } finally {
         await permissionProxy?.close();
+        await tuiState.close();
       }
     },
   );

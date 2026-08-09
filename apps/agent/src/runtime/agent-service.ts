@@ -30,6 +30,7 @@ import {
 import type { TrustedDevice } from "../host/devices.js";
 import { QueueRegistry } from "../host/queue.js";
 import { UserPreferencesRegistry } from "../host/user-preferences.js";
+import { ThreadPermissionRegistry } from "../host/thread-permissions.js";
 import {
   AuthenticatedSessionRegistry,
   AuthenticationRateLimiter,
@@ -70,6 +71,7 @@ export async function runAgentService(paths: HostPaths): Promise<void> {
     const workspaces = new WorkspaceRegistry(state);
     const queue = new QueueRegistry(state);
     const preferences = new UserPreferencesRegistry(state);
+    const threadPermissions = new ThreadPermissionRegistry(state);
     const setup = new HostSetupService(paths, { preferences });
     const authenticatedSessions = new AuthenticatedSessionRegistry();
     const authenticationRateLimiter = new AuthenticationRateLimiter();
@@ -93,6 +95,7 @@ export async function runAgentService(paths: HostPaths): Promise<void> {
     const activeQueueDispatcher = new QueueDispatcher({
       queue,
       workspaces,
+      threadPermissions,
       connectClient: connectCodexClient,
     });
     queueDispatcher = activeQueueDispatcher;
@@ -152,6 +155,7 @@ export async function runAgentService(paths: HostPaths): Promise<void> {
               socketPath: paths.appServerSocket,
               workspaces,
               queue,
+              threadPermissions,
               queueDispatcher: activeQueueDispatcher,
               nodeStatus: async () => ({
                 nodeId: config.nodeId,

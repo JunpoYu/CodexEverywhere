@@ -25,6 +25,7 @@ import {
 } from "../runtime/codex-app-server-client.js";
 import type { GatewaySession } from "./direct-gateway.js";
 import { QueueRegistry } from "../host/queue.js";
+import { ThreadPermissionRegistry } from "../host/thread-permissions.js";
 import type {
   QueueDispatcher,
   QueueDispatcherEvent,
@@ -38,6 +39,7 @@ export type CodexGatewaySessionOptions = {
   workspaces: WorkspaceRegistry;
   nodeStatus(): Promise<unknown> | unknown;
   queue: QueueRegistry;
+  threadPermissions: ThreadPermissionRegistry;
   queueDispatcher?: QueueDispatcher;
 };
 
@@ -46,6 +48,7 @@ export class CodexGatewaySession implements GatewaySession {
   readonly #workspaces: WorkspaceRegistry;
   readonly #nodeStatus: () => Promise<unknown> | unknown;
   readonly #queue: QueueRegistry;
+  readonly #threadPermissions: ThreadPermissionRegistry;
   readonly #queueDispatcher: QueueDispatcher | undefined;
   readonly #events = new EventEmitter<{ event: [EventEnvelope] }>();
   readonly #serverRequests = new Map<string, CodexServerRequest>();
@@ -61,6 +64,7 @@ export class CodexGatewaySession implements GatewaySession {
     this.#workspaces = options.workspaces;
     this.#nodeStatus = options.nodeStatus;
     this.#queue = options.queue;
+    this.#threadPermissions = options.threadPermissions;
     this.#queueDispatcher = options.queueDispatcher;
     this.#unsubscribeQueue = options.queueDispatcher?.onEvent(
       (event) => void this.#forwardQueueEvent(event),
@@ -178,9 +182,14 @@ export class CodexGatewaySession implements GatewaySession {
         );
         await this.#workspaces.resolve(response.thread.cwd);
         this.#authorizedThreads.add(response.thread.id);
+        await this.#threadPermissions.saveResponse(response);
         return response;
       }
-      case "thread/resume":
+      case "thread/resume": {
+        const threadId = requiredString(payload, "threadId");
+        await this.#authorizeThread(threadId);
+        return this.#resumeThread(payload);
+      }
       case "thread/unsubscribe":
       case "thread/name/set":
       case "thread/archive":
@@ -205,6 +214,7 @@ export class CodexGatewaySession implements GatewaySession {
         await this.#authorizeThread(threadId);
         const result = await this.#client.request(request.method, payload);
         this.#authorizedThreads.delete(threadId);
+        await this.#threadPermissions.remove(threadId);
         return result;
       }
       case "thread/fork": {
@@ -222,6 +232,7 @@ export class CodexGatewaySession implements GatewaySession {
         );
         await this.#workspaces.resolve(response.thread.cwd);
         this.#authorizedThreads.add(response.thread.id);
+        await this.#threadPermissions.saveResponse(response);
         return response;
       }
       case "thread/compact/start":
@@ -308,11 +319,22 @@ export class CodexGatewaySession implements GatewaySession {
   async #ensureThreadLoaded(threadId: string): Promise<void> {
     const current = await this.#authorizeThread(threadId);
     if (!threadNeedsResume(current.thread.status)) return;
-    const resumed = await this.#client.request<ThreadResumeResponse>(
+    await this.#resumeThread({ threadId });
+  }
+
+  async #resumeThread(
+    payload: Record<string, unknown>,
+  ): Promise<ThreadResumeResponse> {
+    const threadId = requiredString(payload, "threadId");
+    const resumePayload = await this.#threadPermissions.applyToResume(payload);
+    const response = await this.#client.request<ThreadResumeResponse>(
       "thread/resume",
-      { threadId },
+      resumePayload,
     );
-    await this.#workspaces.resolve(resumed.thread.cwd);
+    await this.#workspaces.resolve(response.thread.cwd);
+    this.#authorizedThreads.add(response.thread.id);
+    await this.#threadPermissions.saveResponse(response);
+    return response;
   }
 
   async #listQueue(): Promise<{ items: unknown[] }> {
@@ -461,6 +483,11 @@ export class CodexGatewaySession implements GatewaySession {
       } catch {
         return;
       }
+    }
+    if (notification.method === "thread/settings/updated") {
+      await this.#threadPermissions
+        .saveSettingsNotification(notification.params)
+        .catch(() => undefined);
     }
     this.#emit(`codex/${notification.method}`, notification.params);
     if (

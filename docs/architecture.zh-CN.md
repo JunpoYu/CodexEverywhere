@@ -47,7 +47,7 @@
 - Web 为刚发送的用户消息创建乐观卡片，但以 `turn/start` 返回的 turn id 绑定身份；如果 `turn/started` 通知和后台快照先到达，绑定阶段必须立即移除已经存在权威用户消息的乐观副本。assistant 流式卡片除 item id 外还记录 turn id 与消息类型；快照或完成事件在生命周期阶段出现不同 item id 时，按同一 turn 内的类型归并并以权威完成项收口，禁止保留刷新后才消失的重复卡片。
 - PWA 切换会话或返回会话列表时调用 `thread/unsubscribe` 释放旧订阅；Agent 级 Queue 在队列耗尽或暂停后也释放自己的订阅。释放订阅不 interrupt 活动 turn，最后一个订阅者离开后由 app-server 自身的无订阅宽限期决定何时卸载内存状态，不另设 24 小时保留定时器或用户“卸载”按钮。
 - 已有会话可修改模型、推理强度、审批策略和文件/命令权限；PWA 通过原生 `thread/settings/update` 保存设置，并用 `thread/settings/updated` 同步其他已订阅客户端。设置由 app-server 用于后续 turn，活动 turn 不会被静默中断；若用户安装的 Codex 尚不提供该方法，adapter 必须返回明确的能力错误。
-- 用户级全局设置集中在右上角设置中心。新会话默认 sandbox 与审批策略通过版本化 `preferences/read`、`preferences/session-permissions/update` 协议保存在该 Linux 用户自己的宿主机状态库中，浏览器只负责展示与修改；初始值为 `workspace-write + on-request`。创建 Web 会话时会明确展示并带入当前默认值，但设置更新不得改写已有 thread，也不得覆盖 TUI 已保存的会话级权限。外观偏好仍只保存在当前浏览器，代理秘密仍只保存在宿主机专用配置中。
+- 用户级全局设置集中在右上角设置中心。新会话默认 sandbox 与审批策略通过版本化 `preferences/read`、`preferences/session-permissions/update` 协议保存在该 Linux 用户自己的宿主机状态库中，浏览器只负责展示与修改；初始值为 `workspace-write + on-request`。创建 Web 会话时会明确展示并带入当前默认值，但设置更新不得改写已有 thread，也不得覆盖已有会话级权限。由于 app-server 重启后不会从 rollout 恢复审批设置，Agent 只额外保存每个 thread 最近一次权威响应中的审批策略、审批 reviewer 与可由 `thread/resume` 表达的 sandbox 模式，并在后续 resume 缺少显式权限时逐项补回；`externalSandbox` 或新版未知字段不会使其他可恢复字段丢失，也不会用旧值覆盖 Codex。会话内容、turn 和运行状态仍完全以 app-server 为唯一事实源。外观偏好仍只保存在当前浏览器，代理秘密仍只保存在宿主机专用配置中。
 - 会话页不再用独立信息卡占用 timeline 上方空间；输入框 footer 以紧凑状态栏常驻显示 sandbox 与审批策略、模型与推理强度，以及 app-server 实时上报的当前上下文窗口和占用比例。权限与模型标签可直接进入对应设置区域；上下文使用环形进度并在 70% 与 90% 分级提示，完整用量保留在可访问文本与悬停说明中。运行中修改设置时显示“下一轮”，设置弹窗必须适配窄屏和低高度视口并可完整滚动。
 - Agent 级持久 Queue，不依赖浏览器连接推进；turn 正常完成后自动启动下一项，失败或中断时暂停，并保留 Queue 转 Steer 失败的原消息。
 - 写请求幂等、Agent/app-server 分离生命周期、官方 remote TUI 接力。
@@ -372,7 +372,7 @@ ce tui /public/home/user/project --new
      -C /public/home/user/project
    ```
 
-Web Agent 和多个 TUI 分别连接同一个 app-server。app-server 原生广播 thread、设置和审批事件，并在客户端 resume 时重放未处理的服务器请求。官方 TUI 在恢复 remote thread 时会携带当前 TUI 进程的审批与 sandbox 启动默认值；`ce tui` 因此只为该 TUI 进程建立一个用户私有的临时 Unix WebSocket 透传层，从每次 `thread/resume` 中移除这些隐式权限覆盖字段。它不保存会话状态、不改写其他方法，并在 TUI 退出后删除；后续显式 `/permissions` 使用的 `thread/settings/update` 原样通过。这样创建时已由 app-server 保存的会话权限优先，Web/TUI 连接动作不会互相覆盖，而明确修改仍由 app-server 作为唯一事实源广播。
+Web Agent、后台 Queue 和多个 TUI 分别连接同一个 app-server。app-server 原生广播 thread、设置和审批事件，并在客户端 resume 时重放未处理的服务器请求。官方 TUI 在恢复 remote thread 时会携带当前 TUI 进程的审批与 sandbox 启动默认值；所有 `ce tui` 启动因此都经过一个用户私有的临时 Unix WebSocket 透传层，它从 `thread/resume` 移除这些隐式权限覆盖字段，再逐项补回 Host 中已有的会话权限，并观察 app-server 对 start、resume、fork 与显式 `/permissions` 的权威结果。代理不保存会话内容、不改写其他方法，并在 TUI 退出后删除。Web Gateway 与 Queue Dispatcher 使用同一 Host 权限注册表和恢复规则。这样 Web、Queue 与 TUI 的连接动作不会互相覆盖，app-server 重启也不会使权限回落，而明确修改仍由 app-server 广播后同步最小权限元数据。
 
 Web 会话头以高对比按钮提供“SSH 接力”入口，并在会话信息下方展示“SSH 可访问同一会话、切换不会中断任务”的说明条；用户可选择“不再提示”，该非敏感界面偏好只保存在当前浏览器，说明条永久隐藏后顶部接力按钮仍始终可用。入口不能只隐藏在会话设置、弱提示或省略菜单中。接力弹窗先以“SSH 登录 HPC → 复制并运行命令 → 在官方 TUI 中继续”的步骤说明建立使用预期，再给出两条路径：包含当前 workspace 与 thread ID 的精确 `ce tui ... --thread ...` 命令可以直接进入当前会话；更短、可长期记住的 `ce tui <workspace>` 会打开官方恢复选择器，用户以后无需先打开 Web，即可从该目录的历史会话中选择要继续的会话。只有显式使用 `--new` 才新建会话。由于进入后的交互界面属于官方 Codex TUI，CodexEverywhere 不 fork 或修改其内部 UI；Web 接力弹窗和 `ce tui --help` / 启动提示必须明确说明退出语义：任务忙碌时输入 `/quit` 或 `/exit` 只关闭当前 TUI 客户端，宿主机上的活动 turn 继续运行；`Esc` 会中断活动 turn，不应作为“仅离开 TUI”的操作。SSH 终端失去响应时，可以在新行输入 `~.` 断开 SSH，活动 turn 仍由长期 app-server 承载。
 

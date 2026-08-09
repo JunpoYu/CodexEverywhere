@@ -54,6 +54,8 @@ describe("TUI permission inheritance proxy", () => {
     const directory = await mkdtemp(join(tmpdir(), "ce-tui-proxy-test-"));
     const upstreamSocketPath = join(directory, "upstream.sock");
     const upstreamMessages: Array<Record<string, unknown>> = [];
+    const observations: Array<Record<string, unknown>> = [];
+    let upstreamClient: WebSocket | undefined;
     const upstreamServer = createServer();
     const upstreamWebSockets = new WebSocketServer({ noServer: true });
     upstreamServer.on("upgrade", (request, socket, head) => {
@@ -62,11 +64,31 @@ describe("TUI permission inheritance proxy", () => {
       });
     });
     upstreamWebSockets.on("connection", (socket) => {
+      upstreamClient = socket;
       socket.on("message", (raw) => {
         const message = JSON.parse(raw.toString()) as Record<string, unknown>;
         upstreamMessages.push(message);
         if (message.id !== undefined) {
-          socket.send(JSON.stringify({ id: message.id, result: {} }));
+          const threadId =
+            message.method === "thread/start" ? "thread-new" : "thread-1";
+          socket.send(
+            JSON.stringify({
+              id: message.id,
+              result:
+                message.method === "thread/start" ||
+                message.method === "thread/resume"
+                  ? {
+                      thread: { id: threadId },
+                      approvalPolicy: "on-request",
+                      approvalsReviewer: "user",
+                      sandbox: {
+                        type: "readOnly",
+                        networkAccess: false,
+                      },
+                    }
+                  : {},
+            }),
+          );
         }
       });
     });
@@ -75,6 +97,15 @@ describe("TUI permission inheritance proxy", () => {
     const proxy = await startTuiPermissionProxy({
       upstreamSocketPath,
       runtimeDir: directory,
+      prepareThreadResume: (params) => ({
+        ...params,
+        approvalPolicy: "never",
+        approvalsReviewer: "guardian_subagent",
+        sandbox: "read-only",
+      }),
+      onThreadPermissions: (observation) => {
+        observations.push(observation);
+      },
     });
     const client = new WebSocket("ws://localhost", {
       createConnection: () => createConnection({ path: proxy.socketPath }),
@@ -96,14 +127,68 @@ describe("TUI permission inheritance proxy", () => {
         },
       }),
     );
+    const settingsNotification = nextMessage(client);
+    upstreamClient?.send(
+      JSON.stringify({
+        method: "thread/settings/updated",
+        params: {
+          threadId: "thread-1",
+          threadSettings: {
+            approvalPolicy: "never",
+            approvalsReviewer: "auto_review",
+            sandboxPolicy: { type: "dangerFullAccess" },
+          },
+        },
+      }),
+    );
+    await settingsNotification;
+    await sendAndWait(
+      client,
+      JSON.stringify({
+        id: 4,
+        method: "thread/start",
+        params: {
+          cwd: "/workspace",
+          approvalPolicy: "on-request",
+          sandbox: "read-only",
+        },
+      }),
+    );
 
     expect(upstreamMessages.map(permissionFields)).toEqual([
-      { id: 1, approvalPolicy: undefined, sandbox: undefined },
-      { id: 2, approvalPolicy: undefined, sandbox: undefined },
+      { id: 1, approvalPolicy: "never", sandbox: "read-only" },
+      { id: 2, approvalPolicy: "never", sandbox: "read-only" },
       {
         id: 3,
         approvalPolicy: "on-request",
         sandbox: { type: "readOnly", networkAccess: false },
+      },
+      { id: 4, approvalPolicy: "on-request", sandbox: "read-only" },
+    ]);
+    expect(observations).toEqual([
+      {
+        threadId: "thread-1",
+        approvalPolicy: "on-request",
+        approvalsReviewer: "user",
+        sandboxPolicy: { type: "readOnly", networkAccess: false },
+      },
+      {
+        threadId: "thread-1",
+        approvalPolicy: "on-request",
+        approvalsReviewer: "user",
+        sandboxPolicy: { type: "readOnly", networkAccess: false },
+      },
+      {
+        threadId: "thread-1",
+        approvalPolicy: "never",
+        approvalsReviewer: "auto_review",
+        sandboxPolicy: { type: "dangerFullAccess" },
+      },
+      {
+        threadId: "thread-new",
+        approvalPolicy: "on-request",
+        approvalsReviewer: "user",
+        sandboxPolicy: { type: "readOnly", networkAccess: false },
       },
     ]);
 

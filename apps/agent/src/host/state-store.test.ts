@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { HostStateStore } from "./state-store.js";
+import { ThreadPermissionRegistry } from "./thread-permissions.js";
 
 const temporaryDirectories: string[] = [];
 afterEach(async () => {
@@ -106,6 +107,19 @@ describe("HostStateStore", () => {
     const seeded = await HostStateStore.open(path);
     await seeded.transaction((database) => {
       database.run("DROP TABLE user_preferences");
+      database.run("DROP TABLE thread_permissions");
+      database.run(`CREATE TABLE thread_permissions (
+        thread_id TEXT PRIMARY KEY,
+        approval_policy_json TEXT NOT NULL,
+        sandbox_mode TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      )`);
+      database.run("INSERT INTO thread_permissions VALUES (?, ?, ?, ?)", [
+        "thread-legacy",
+        '"never"',
+        "read-only",
+        "now",
+      ]);
       database.run("PRAGMA user_version = 4");
     });
     await seeded.close();
@@ -115,10 +129,33 @@ describe("HostStateStore", () => {
       migrated.read((database) => ({
         version: database.exec("PRAGMA user_version")[0]?.values[0]?.[0],
         tables: database.exec(
-          "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'user_preferences'",
+          `SELECT name FROM sqlite_master
+             WHERE type = 'table'
+               AND name IN ('thread_permissions', 'user_preferences')
+             ORDER BY name`,
         )[0]?.values,
+        permissionColumns: database
+          .exec("PRAGMA table_info(thread_permissions)")[0]
+          ?.values.map((row) => row[1]),
       })),
-    ).resolves.toEqual({ version: 4, tables: [["user_preferences"]] });
+    ).resolves.toEqual({
+      version: 4,
+      tables: [["thread_permissions"], ["user_preferences"]],
+      permissionColumns: [
+        "thread_id",
+        "approval_policy_json",
+        "sandbox_mode",
+        "updated_at",
+        "approvals_reviewer",
+      ],
+    });
+    await expect(
+      new ThreadPermissionRegistry(migrated).read("thread-legacy"),
+    ).resolves.toEqual({
+      approvalPolicy: "never",
+      sandbox: "read-only",
+      updatedAt: "now",
+    });
     await migrated.close();
   });
 
