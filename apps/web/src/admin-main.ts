@@ -7,17 +7,40 @@ import type {
 
 import {
   GatewayClient,
+  GatewayReauthenticationRequired,
+  TemporaryPasswordReauthenticationRequired,
   validatePairingDocument,
   type PairingDocument,
   type RelayHostDocument,
 } from "./gateway-client.js";
+import {
+  CONNECTION_KEEPALIVE_INTERVAL_MS,
+  CONNECTION_KEEPALIVE_TIMEOUT_MS,
+  ConnectionRetryWakeup,
+  isRetryableConnectionFailure,
+  reconnectWithUnlimitedAttempts,
+  shouldVerifyAfterVisibilityChange,
+} from "./connection-recovery.js";
 import { deleteHost, listHosts, type SavedHost } from "./storage.js";
 import { initializeTheme } from "./theme.js";
+import { mountPwaUpdatePrompt } from "./pwa-update.js";
 
 const app = requiredElement<HTMLDivElement>("app");
 initializeTheme();
 
 let client: GatewayClient | undefined;
+let reauthenticationClient: GatewayClient | undefined;
+let unsubscribeClientConnection: (() => void) | undefined;
+let connectionRecovery:
+  | {
+      client: GatewayClient;
+      promise: Promise<void>;
+      wakeup: ConnectionRetryWakeup;
+    }
+  | undefined;
+let connectionVerification:
+  { client: GatewayClient; promise: Promise<void> } | undefined;
+let connectionKeepaliveTimer: number | undefined;
 let users: AdminUserSummary[] = [];
 let selectedSection: "overview" | "users" | "audit" | "settings" = "overview";
 
@@ -25,7 +48,7 @@ app.innerHTML = `
   <div class="admin-app">
     <header class="admin-topbar">
       <a class="admin-brand" href="/admin"><span class="brand-mark">CE</span><span><strong>CodexEverywhere</strong><small>HOST ADMIN</small></span></a>
-      <div class="admin-top-actions"><span id="admin-connection" class="admin-connection"><i></i><span>未连接</span></span><a class="ghost admin-user-link" href="/">用户界面</a><button id="admin-logout" class="ghost" type="button" hidden>退出</button></div>
+      <div class="admin-top-actions"><span id="admin-connection" class="admin-connection" role="status" aria-live="polite" aria-atomic="true" aria-label="管理连接状态：未连接"><i aria-hidden="true"></i><b aria-hidden="true">×</b><span>未连接</span></span><a class="ghost admin-user-link" href="/">用户界面</a><button id="admin-logout" class="ghost" type="button" hidden>退出</button></div>
     </header>
 
     <main id="admin-login" class="admin-login-shell">
@@ -195,6 +218,28 @@ for (const button of document.querySelectorAll<HTMLButtonElement>(
   button.addEventListener("click", () => showSection("settings"));
 
 void renderSavedAdmins();
+mountPwaUpdatePrompt();
+document.addEventListener("visibilitychange", () => {
+  if (shouldVerifyAfterVisibilityChange(document.hidden)) {
+    wakeAdminConnectionRecovery();
+    void verifyAdminConnection();
+  }
+});
+window.addEventListener("pageshow", (event) => {
+  if (event.persisted) {
+    wakeAdminConnectionRecovery();
+    void verifyAdminConnection();
+  }
+});
+window.addEventListener("offline", () => {
+  setAdminConnectionState("connecting", "网络状态变化，正在确认管理通道…");
+  wakeAdminConnectionRecovery();
+  void verifyAdminConnection();
+});
+window.addEventListener("online", () => {
+  wakeAdminConnectionRecovery();
+  void verifyAdminConnection();
+});
 
 async function pair(): Promise<void> {
   loginError.textContent = "";
@@ -234,14 +279,23 @@ async function loginWithPasskey(): Promise<void> {
     button,
     "正在验证…",
     async () => {
-      const target = await lookupAdmin();
-      await activate(
-        await GatewayClient.loginWithPasskey(target, {
-          loginName: requiredHandle(),
-          deviceName: "临时管理员浏览器",
-          rememberDevice: false,
-        }),
-      );
+      const reauthentication = adminReauthenticationFor(requiredHandle());
+      if (reauthentication) {
+        await activate(
+          await reauthentication.reauthenticateWithPasskey(
+            rememberInput.checked,
+          ),
+        );
+      } else {
+        const target = await lookupAdmin();
+        await activate(
+          await GatewayClient.loginWithPasskey(target, {
+            loginName: requiredHandle(),
+            deviceName: "临时管理员浏览器",
+            rememberDevice: false,
+          }),
+        );
+      }
     },
     loginError,
   );
@@ -255,18 +309,33 @@ async function loginWithPassword(): Promise<void> {
     "正在登录…",
     async () => {
       if (!passwordInput.value) throw new Error("请输入管理员密码");
-      const target = await lookupAdmin();
-      const next = await GatewayClient.loginWithPassword(target, {
-        loginName: requiredHandle(),
-        password: passwordInput.value,
-        deviceName: rememberInput.checked ? "管理员浏览器" : "临时管理员浏览器",
-        rememberDevice: rememberInput.checked,
-      });
+      const handle = requiredHandle();
+      const reauthentication = adminReauthenticationFor(handle);
+      const next = reauthentication
+        ? await reauthentication.reauthenticateWithPassword(
+            passwordInput.value,
+            rememberInput.checked,
+          )
+        : await GatewayClient.loginWithPassword(await lookupAdmin(), {
+            loginName: handle,
+            password: passwordInput.value,
+            deviceName: rememberInput.checked
+              ? "管理员浏览器"
+              : "临时管理员浏览器",
+            rememberDevice: rememberInput.checked,
+          });
       passwordInput.value = "";
       await activate(next);
     },
     loginError,
   );
+}
+
+function adminReauthenticationFor(handle: string): GatewayClient | undefined {
+  const candidate = reauthenticationClient;
+  if (!candidate) return undefined;
+  const expected = candidate.host.loginName ?? candidate.host.name;
+  return expected === handle ? candidate : undefined;
 }
 
 async function lookupAdmin(): Promise<RelayHostDocument> {
@@ -282,25 +351,174 @@ function requiredHandle(): string {
 }
 
 async function activate(next: GatewayClient): Promise<void> {
-  client?.close();
+  wakeAdminConnectionRecovery();
+  clearAdminConnectionKeepalive();
+  unsubscribeClientConnection?.();
+  unsubscribeClientConnection = undefined;
+  const previous = client;
+  const reauthenticated =
+    reauthenticationClient?.host.deviceId === next.host.deviceId
+      ? reauthenticationClient
+      : undefined;
+  if (reauthenticated) reauthenticationClient = undefined;
   client = next;
+  previous?.close();
+  if (reauthenticated !== previous) reauthenticated?.close();
+  unsubscribeClientConnection = next.onConnectionLost(() => {
+    if (client !== next) return;
+    setAdminConnectionState(
+      navigator.onLine ? "connecting" : "offline",
+      navigator.onLine ? "管理通道已断开" : "网络已断开",
+    );
+    if (document.hidden && !next.canReconnectSilently) return;
+    window.setTimeout(() => {
+      if (client === next) void recoverAdminConnection(next);
+    }, 250);
+  });
+  scheduleAdminConnectionKeepalive(next);
   loginView.hidden = true;
   dashboard.hidden = false;
   requiredElement("admin-logout").hidden = false;
-  connection.classList.add("online");
-  connection.querySelector("span")!.textContent = "管理通道已连接";
+  setAdminConnectionState("online", "管理通道已连接");
   await refreshDashboard();
 }
 
 function logout(): void {
+  wakeAdminConnectionRecovery();
+  clearAdminConnectionKeepalive();
+  unsubscribeClientConnection?.();
+  unsubscribeClientConnection = undefined;
   client?.close();
   client = undefined;
   dashboard.hidden = true;
   loginView.hidden = false;
   requiredElement("admin-logout").hidden = true;
-  connection.classList.remove("online");
-  connection.querySelector("span")!.textContent = "未连接";
+  setAdminConnectionState("offline", "未连接");
   void renderSavedAdmins();
+}
+
+function setAdminConnectionState(
+  state: "online" | "offline" | "connecting",
+  label: string,
+): void {
+  connection.classList.toggle("online", state === "online");
+  connection.classList.toggle("connecting", state === "connecting");
+  connection.querySelector("b")!.textContent =
+    state === "online" ? "✓" : state === "connecting" ? "…" : "×";
+  connection.querySelector("span")!.textContent = label;
+  connection.setAttribute("aria-label", `管理连接状态：${label}`);
+}
+
+async function verifyAdminConnection(): Promise<void> {
+  const current = client;
+  if (
+    !current ||
+    (document.hidden && !current.canReconnectSilently) ||
+    connectionRecovery?.client === current
+  )
+    return;
+  const existing = connectionVerification;
+  if (existing?.client === current) return existing.promise;
+  const verify = async () => {
+    try {
+      await current.healthCheck(CONNECTION_KEEPALIVE_TIMEOUT_MS);
+      if (client === current)
+        setAdminConnectionState("online", "管理通道已连接");
+    } catch {
+      if (client === current) await recoverAdminConnection(current);
+    }
+  };
+  const tracked = verify().finally(() => {
+    if (connectionVerification?.promise === tracked)
+      connectionVerification = undefined;
+  });
+  connectionVerification = { client: current, promise: tracked };
+  return tracked;
+}
+
+async function recoverAdminConnection(previous: GatewayClient): Promise<void> {
+  const existing = connectionRecovery;
+  if (existing?.client === previous) return existing.promise;
+  const wakeup = new ConnectionRetryWakeup();
+  const recovery = async () => {
+    try {
+      const next = await reconnectWithUnlimitedAttempts({
+        isCurrent: () => client === previous,
+        canAttempt: () => !document.hidden || previous.canReconnectSilently,
+        reconnect: () =>
+          previous.reconnect({ canInteract: () => !document.hidden }),
+        isRetryable: (error) =>
+          (document.hidden &&
+            error instanceof GatewayReauthenticationRequired) ||
+          isRetryableConnectionFailure(error),
+        wait: (delayMs) => wakeup.wait(delayMs),
+        waitForAttempt: () => wakeup.wait(30_000),
+        onBeforeAttempt: () =>
+          setAdminConnectionState("connecting", "正在恢复管理通道…"),
+      });
+      if (!next) return;
+      if (client !== previous) {
+        next.close();
+        return;
+      }
+      await activate(next);
+      if (client === next) toast("管理通道已恢复");
+    } catch (error) {
+      if (client !== previous) return;
+      if (error instanceof TemporaryPasswordReauthenticationRequired) {
+        showAdminReauthentication(previous, true);
+        return;
+      }
+      showAdminReauthentication(previous, false);
+    }
+  };
+  const tracked = recovery().finally(() => {
+    if (connectionRecovery?.promise === tracked) connectionRecovery = undefined;
+  });
+  connectionRecovery = { client: previous, promise: tracked, wakeup };
+  return tracked;
+}
+
+function wakeAdminConnectionRecovery(): void {
+  connectionRecovery?.wakeup.wake();
+}
+
+function scheduleAdminConnectionKeepalive(expectedClient: GatewayClient): void {
+  clearAdminConnectionKeepalive();
+  connectionKeepaliveTimer = window.setTimeout(() => {
+    connectionKeepaliveTimer = undefined;
+    void verifyAdminConnection().finally(() => {
+      if (client === expectedClient)
+        scheduleAdminConnectionKeepalive(expectedClient);
+    });
+  }, CONNECTION_KEEPALIVE_INTERVAL_MS);
+}
+
+function clearAdminConnectionKeepalive(): void {
+  if (connectionKeepaliveTimer === undefined) return;
+  window.clearTimeout(connectionKeepaliveTimer);
+  connectionKeepaliveTimer = undefined;
+}
+
+function showAdminReauthentication(
+  previous: GatewayClient,
+  temporaryPassword: boolean,
+): void {
+  if (client !== previous) return;
+  clearAdminConnectionKeepalive();
+  unsubscribeClientConnection?.();
+  unsubscribeClientConnection = undefined;
+  reauthenticationClient = previous;
+  client = undefined;
+  dashboard.hidden = true;
+  loginView.hidden = false;
+  requiredElement("admin-logout").hidden = true;
+  handleInput.value = previous.host.loginName ?? previous.host.name;
+  rememberInput.checked = !temporaryPassword;
+  setAdminConnectionState("offline", "请重新登录");
+  loginError.textContent = temporaryPassword
+    ? "临时管理员密码不会保存在浏览器中。请重新输入密码或使用 Passkey。"
+    : "管理员设备授权或登录状态已失效。请使用 Passkey 或管理员密码重新登录。";
 }
 
 async function refreshDashboard(): Promise<void> {

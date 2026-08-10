@@ -9,6 +9,37 @@ import type {
 import type { HostStateStore } from "../host/state-store.js";
 import type { UnixAccount } from "./unix-accounts.js";
 
+const ADMIN_IDEMPOTENCY_CLAIM_TTL_MS = 2 * 60_000;
+const ADMIN_IDEMPOTENCY_RETENTION_MS = 7 * 86_400_000;
+const INTERRUPTED_ADMIN_OPERATION =
+  "A previous administrator operation was interrupted; its external outcome is unknown and it will not be repeated";
+
+export type AdminIdempotencyState =
+  | { status: "claimed" }
+  | { status: "pending"; expiresAt: string }
+  | { status: "succeeded"; result: unknown }
+  | { status: "failed"; error: { message: string } };
+
+type PersistedAdminIdempotency =
+  | {
+      version: 1;
+      fingerprint: string;
+      result: unknown;
+    }
+  | {
+      version: 2;
+      fingerprint: string;
+      state: "pending";
+      ownerToken: string;
+      expiresAt: string;
+    }
+  | {
+      version: 2;
+      fingerprint: string;
+      state: "failed";
+      error: { message: string };
+    };
+
 export class AdminUserRegistry {
   readonly #state: HostStateStore;
 
@@ -18,15 +49,28 @@ export class AdminUserRegistry {
 
   register(account: UnixAccount): Promise<AdminUserSummary> {
     return this.#state.transaction((database) => {
+      const byUid = findUserByUid(database, account.uid);
+      const byUsername = findUser(database, account.username);
+      if (byUid || byUsername) {
+        const existing = byUid ?? byUsername;
+        if (
+          !existing ||
+          existing.uid !== account.uid ||
+          existing.username !== account.username ||
+          existing.home !== account.home ||
+          (byUid && byUsername && byUid.uid !== byUsername.uid)
+        ) {
+          throw new Error(
+            "Unix account identity conflicts with an existing managed user; explicit administrator reconciliation is required",
+          );
+        }
+        return existing;
+      }
       const now = new Date().toISOString();
       database.run(
         `INSERT INTO admin_managed_users
           (uid, username, home, status, registered_at, updated_at, revision)
-         VALUES (?, ?, ?, 'enabled', ?, ?, 1)
-         ON CONFLICT(uid) DO UPDATE SET
-          username = excluded.username,
-          home = excluded.home,
-          updated_at = excluded.updated_at`,
+         VALUES (?, ?, ?, 'enabled', ?, ?, 1)`,
         [account.uid, account.username, account.home, now, now],
       );
       return requiredUser(database, account.username);
@@ -177,36 +221,287 @@ export class AdminUserRegistry {
     });
   }
 
-  readIdempotent(requestId: string): Promise<unknown | undefined> {
-    return this.#state.read((database) => {
-      const statement = database.prepare(
-        "SELECT result_json FROM admin_idempotency WHERE request_id = ?",
+  claimIdempotent(
+    requestId: string,
+    fingerprint: string,
+    ownerToken: string,
+    now = new Date(),
+  ): Promise<AdminIdempotencyState> {
+    return this.#state.transaction((database) => {
+      cleanupCompletedIdempotency(
+        database,
+        new Date(now.getTime() - ADMIN_IDEMPOTENCY_RETENTION_MS),
       );
-      statement.bind([requestId]);
-      try {
-        if (!statement.step()) return undefined;
-        const value = statement.getAsObject() as { result_json?: unknown };
-        return typeof value.result_json === "string"
-          ? (JSON.parse(value.result_json) as unknown)
-          : undefined;
-      } finally {
-        statement.free();
+      const current = readIdempotency(database, requestId);
+      if (current !== undefined) {
+        return resolveIdempotencyState(
+          database,
+          requestId,
+          fingerprint,
+          current,
+          now,
+        );
       }
+      const pending: PersistedAdminIdempotency = {
+        version: 2,
+        fingerprint,
+        state: "pending",
+        ownerToken,
+        expiresAt: new Date(
+          now.getTime() + ADMIN_IDEMPOTENCY_CLAIM_TTL_MS,
+        ).toISOString(),
+      };
+      database.run(
+        `INSERT INTO admin_idempotency
+          (request_id, result_json, created_at) VALUES (?, ?, ?)`,
+        [requestId, JSON.stringify(pending), now.toISOString()],
+      );
+      return { status: "claimed" };
     });
   }
 
-  saveIdempotent(requestId: string, result: unknown): Promise<void> {
+  async observeIdempotent(
+    requestId: string,
+    fingerprint: string,
+    now = new Date(),
+  ): Promise<Exclude<AdminIdempotencyState, { status: "claimed" }>> {
+    const current = await this.#state.read((database) =>
+      readIdempotency(database, requestId),
+    );
+    if (current === undefined) {
+      throw new Error("Administrator idempotency claim disappeared");
+    }
+    const observed = inspectIdempotencyState(current, fingerprint);
+    if (
+      observed.status !== "pending" ||
+      Date.parse(observed.expiresAt) > now.getTime()
+    ) {
+      return observed;
+    }
     return this.#state.transaction((database) => {
-      database.run(
-        `INSERT OR IGNORE INTO admin_idempotency
-          (request_id, result_json, created_at) VALUES (?, ?, ?)`,
-        [requestId, JSON.stringify(result), new Date().toISOString()],
+      const latest = readIdempotency(database, requestId);
+      if (latest === undefined) {
+        throw new Error("Administrator idempotency claim disappeared");
+      }
+      return resolveIdempotencyState(
+        database,
+        requestId,
+        fingerprint,
+        latest,
+        now,
       );
-      database.run("DELETE FROM admin_idempotency WHERE created_at < ?", [
-        new Date(Date.now() - 7 * 86_400_000).toISOString(),
-      ]);
     });
   }
+
+  completeIdempotent(
+    requestId: string,
+    fingerprint: string,
+    ownerToken: string,
+    result: unknown,
+  ): Promise<void> {
+    return this.#finishIdempotent(requestId, fingerprint, ownerToken, {
+      version: 1,
+      fingerprint,
+      result,
+    });
+  }
+
+  failIdempotent(
+    requestId: string,
+    fingerprint: string,
+    ownerToken: string,
+    error: unknown,
+  ): Promise<void> {
+    return this.#finishIdempotent(requestId, fingerprint, ownerToken, {
+      version: 2,
+      fingerprint,
+      state: "failed",
+      error: { message: adminErrorMessage(error) },
+    });
+  }
+
+  #finishIdempotent(
+    requestId: string,
+    fingerprint: string,
+    ownerToken: string,
+    finalValue: PersistedAdminIdempotency,
+  ): Promise<void> {
+    return this.#state.transaction((database) => {
+      const current = readIdempotency(database, requestId);
+      if (!isPendingIdempotency(current)) {
+        throw new Error("Administrator idempotency claim is no longer pending");
+      }
+      assertIdempotencyFingerprint(current, fingerprint);
+      if (current.ownerToken !== ownerToken) {
+        throw new Error("Administrator idempotency claim is owned elsewhere");
+      }
+      database.run(
+        "UPDATE admin_idempotency SET result_json = ? WHERE request_id = ?",
+        [JSON.stringify(finalValue), requestId],
+      );
+      if (database.getRowsModified() !== 1) {
+        throw new Error("Administrator idempotency claim changed while saving");
+      }
+    });
+  }
+}
+
+function cleanupCompletedIdempotency(
+  database: import("sql.js").Database,
+  cutoff: Date,
+): void {
+  const statement = database.prepare(
+    "SELECT request_id, result_json FROM admin_idempotency WHERE created_at < ?",
+  );
+  statement.bind([cutoff.toISOString()]);
+  const removable: string[] = [];
+  try {
+    while (statement.step()) {
+      const row = statement.getAsObject() as Record<string, unknown>;
+      if (typeof row.result_json !== "string") continue;
+      const value = JSON.parse(row.result_json) as unknown;
+      // Pending and failed version-2 claims are retained: their external
+      // outcome may be unknown and reusing the request ID must never repeat it.
+      if (!isPendingIdempotency(value) && !isFailedIdempotency(value)) {
+        removable.push(String(row.request_id));
+      }
+    }
+  } finally {
+    statement.free();
+  }
+  for (const requestId of removable) {
+    database.run("DELETE FROM admin_idempotency WHERE request_id = ?", [
+      requestId,
+    ]);
+  }
+}
+
+function readIdempotency(
+  database: import("sql.js").Database,
+  requestId: string,
+): unknown | undefined {
+  const statement = database.prepare(
+    "SELECT result_json FROM admin_idempotency WHERE request_id = ?",
+  );
+  statement.bind([requestId]);
+  try {
+    if (!statement.step()) return undefined;
+    const value = statement.getAsObject() as { result_json?: unknown };
+    if (typeof value.result_json !== "string") return undefined;
+    return JSON.parse(value.result_json) as unknown;
+  } finally {
+    statement.free();
+  }
+}
+
+function resolveIdempotencyState(
+  database: import("sql.js").Database,
+  requestId: string,
+  fingerprint: string,
+  value: unknown,
+  now: Date,
+): Exclude<AdminIdempotencyState, { status: "claimed" }> {
+  const current = inspectIdempotencyState(value, fingerprint);
+  if (
+    current.status !== "pending" ||
+    Date.parse(current.expiresAt) > now.getTime()
+  ) {
+    return current;
+  }
+  const failed: PersistedAdminIdempotency = {
+    version: 2,
+    fingerprint,
+    state: "failed",
+    error: { message: INTERRUPTED_ADMIN_OPERATION },
+  };
+  database.run(
+    "UPDATE admin_idempotency SET result_json = ? WHERE request_id = ?",
+    [JSON.stringify(failed), requestId],
+  );
+  if (database.getRowsModified() !== 1) {
+    throw new Error("Administrator idempotency claim changed while expiring");
+  }
+  return { status: "failed", error: failed.error };
+}
+
+function inspectIdempotencyState(
+  value: unknown,
+  fingerprint: string,
+): Exclude<AdminIdempotencyState, { status: "claimed" }> {
+  if (isSucceededIdempotency(value)) {
+    assertIdempotencyFingerprint(value, fingerprint);
+    return { status: "succeeded", result: value.result };
+  }
+  if (isPendingIdempotency(value)) {
+    assertIdempotencyFingerprint(value, fingerprint);
+    return { status: "pending", expiresAt: value.expiresAt };
+  }
+  if (isFailedIdempotency(value)) {
+    assertIdempotencyFingerprint(value, fingerprint);
+    return { status: "failed", error: value.error };
+  }
+  // Compatibility with records written before fingerprints were stored.
+  return { status: "succeeded", result: value };
+}
+
+function assertIdempotencyFingerprint(
+  value: { fingerprint: string },
+  fingerprint: string,
+): void {
+  if (value.fingerprint !== fingerprint) {
+    throw new Error("Administrator request ID was reused with different input");
+  }
+}
+
+function isSucceededIdempotency(
+  value: unknown,
+): value is Extract<PersistedAdminIdempotency, { version: 1 }> {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    (value as Record<string, unknown>).version === 1 &&
+    typeof (value as Record<string, unknown>).fingerprint === "string" &&
+    Object.prototype.hasOwnProperty.call(value, "result")
+  );
+}
+
+function isPendingIdempotency(
+  value: unknown,
+): value is Extract<PersistedAdminIdempotency, { state: "pending" }> {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    (value as Record<string, unknown>).version === 2 &&
+    (value as Record<string, unknown>).state === "pending" &&
+    typeof (value as Record<string, unknown>).fingerprint === "string" &&
+    typeof (value as Record<string, unknown>).ownerToken === "string" &&
+    typeof (value as Record<string, unknown>).expiresAt === "string" &&
+    Number.isFinite(
+      Date.parse((value as Record<string, unknown>).expiresAt as string),
+    )
+  );
+}
+
+function isFailedIdempotency(
+  value: unknown,
+): value is Extract<PersistedAdminIdempotency, { state: "failed" }> {
+  const error = (value as Record<string, unknown> | null)?.error;
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    (value as Record<string, unknown>).version === 2 &&
+    (value as Record<string, unknown>).state === "failed" &&
+    typeof (value as Record<string, unknown>).fingerprint === "string" &&
+    typeof error === "object" &&
+    error !== null &&
+    typeof (error as Record<string, unknown>).message === "string"
+  );
+}
+
+function adminErrorMessage(error: unknown): string {
+  const message =
+    error instanceof Error ? error.message : "Administrator operation failed";
+  return message.slice(0, 4_096);
 }
 
 function requiredUser(database: import("sql.js").Database, username: string) {
@@ -225,6 +520,23 @@ function findUser(
        FROM admin_managed_users WHERE username = ?`,
   );
   statement.bind([username]);
+  try {
+    return statement.step() ? parseUser(statement.getAsObject()) : undefined;
+  } finally {
+    statement.free();
+  }
+}
+
+function findUserByUid(
+  database: import("sql.js").Database,
+  uid: number,
+): AdminUserSummary | undefined {
+  const statement = database.prepare(
+    `SELECT uid, username, home, status, registered_at, updated_at,
+            revision, remove_after
+       FROM admin_managed_users WHERE uid = ?`,
+  );
+  statement.bind([uid]);
   try {
     return statement.step() ? parseUser(statement.getAsObject()) : undefined;
   } finally {

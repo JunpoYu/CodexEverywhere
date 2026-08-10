@@ -13,7 +13,9 @@ import { loadOrCreateHostIdentity } from "../host/identity.js";
 import {
   ProcessLock,
   isProcessAlive,
+  processRecordMatches,
   readProcessRecord,
+  signalRecordedProcess,
   writeProcessRecord,
 } from "../host/process-files.js";
 import { HostStateStore } from "../host/state-store.js";
@@ -27,7 +29,12 @@ import {
   PasswordRegistry,
   loadOrCreateOpaqueServerSetup,
 } from "../host/passwords.js";
-import type { TrustedDevice } from "../host/devices.js";
+import {
+  CachedDeviceTrustVerifier,
+  DeviceRegistry,
+  DeviceTrustError,
+  type TrustedDevice,
+} from "../host/devices.js";
 import { QueueRegistry } from "../host/queue.js";
 import { UserPreferencesRegistry } from "../host/user-preferences.js";
 import { ThreadPermissionRegistry } from "../host/thread-permissions.js";
@@ -41,20 +48,47 @@ import { probeCodexInstallation } from "./codex-install.js";
 import { CodexAppServerClient } from "./codex-app-server-client.js";
 import { QueueDispatcher } from "./queue-dispatcher.js";
 import { assertUserAccessEnabled } from "../admin/access-policy.js";
+import {
+  inspectRelayCapabilityRenewal,
+  renewRelayCapabilityIfNeeded,
+  startRelayCapabilityRenewalLoop,
+} from "./relay-capability-renewal.js";
 
 export async function runAgentService(paths: HostPaths): Promise<void> {
   await assertUserAccessEnabled();
-  const config = await initializeHost(paths);
+  let config = await initializeHost(paths);
   if (config.transport.mode === "unconfigured")
     throw new Error(
       "Configure direct or relay transport before starting Agent",
     );
   if (!config.webAuthn)
     throw new Error("Configure Passkey origin before starting Agent");
+  const startupRelay = relayTransport(config.transport);
+  if (startupRelay) {
+    const status = inspectRelayCapabilityRenewal(startupRelay.routeCapability);
+    if (
+      status.provisioned &&
+      status.remainingMs !== undefined &&
+      status.remainingMs <= 0
+    ) {
+      try {
+        config = (await renewRelayCapabilityIfNeeded(paths)).config;
+      } catch (error) {
+        process.stderr.write(
+          `Relay capability renewal deferred: ${safeServiceError(error)}\n`,
+        );
+      }
+    }
+  }
+  if (!config.webAuthn)
+    throw new Error("Relay renewal returned an invalid Host configuration");
   const lock = await ProcessLock.acquire(paths.agentLockFile);
   const state = await HostStateStore.open(paths.stateFile);
   let gateway: DirectGateway | undefined;
   let relay: RelayConnector | undefined;
+  let activeRelayCapability: string | undefined;
+  let relayRenewalLoop:
+    ReturnType<typeof startRelayCapabilityRenewalLoop> | undefined;
   let queueDispatcher: QueueDispatcher | undefined;
   try {
     const identity = await loadOrCreateHostIdentity(paths.keysDir);
@@ -75,6 +109,9 @@ export async function runAgentService(paths: HostPaths): Promise<void> {
     const setup = new HostSetupService(paths, { preferences });
     const authenticatedSessions = new AuthenticatedSessionRegistry();
     const authenticationRateLimiter = new AuthenticationRateLimiter();
+    const deviceTrust = new CachedDeviceTrustVerifier(
+      new DeviceRegistry(state),
+    );
     const ensureCodexReady = async (): Promise<void> => {
       const env = await setup.codexEnvironment();
       const installation = await probeCodexInstallation({ env });
@@ -117,17 +154,31 @@ export async function runAgentService(paths: HostPaths): Promise<void> {
         : {}),
       state,
       createSession: async (
-        _device: TrustedDevice,
+        device: TrustedDevice,
         context: {
           newlyPaired: boolean;
-          onAuthenticated?: () => Promise<void>;
+          rememberedDevice: boolean;
+          resumeRememberedDeviceInvalid?: boolean;
+          resumeToken?: string;
+          onAuthenticated?: () => Promise<(() => Promise<void> | void) | void>;
         },
-      ) =>
-        new AuthenticatedGatewaySession({
+      ) => {
+        const sessionBinding = {
+          principal: "user" as const,
+          nodeId: config.nodeId,
+          userId,
+          deviceId: device.id,
+          devicePublicKey: Buffer.from(device.publicKey).toString("base64url"),
+          rememberedDevice: context.rememberedDevice,
+        };
+        if (context.resumeRememberedDeviceInvalid)
+          await authenticatedSessions.revokeDevice(sessionBinding);
+        return new AuthenticatedGatewaySession({
           newlyPaired: context.newlyPaired,
           ...(context.onAuthenticated
             ? { onAuthenticated: context.onAuthenticated }
             : {}),
+          ...(context.resumeToken ? { resumeToken: context.resumeToken } : {}),
           passkeys: new PasskeyRegistry(state, {
             ...config.webAuthn!,
             nodeId: config.nodeId,
@@ -144,9 +195,47 @@ export async function runAgentService(paths: HostPaths): Promise<void> {
             server: hostPublicKey,
           },
           consumeAuthAttempt: (kind) => authenticationRateLimiter.consume(kind),
-          registerAuthenticatedSession: (revoke) =>
-            authenticatedSessions.register(revoke),
-          onCredentialsRecovered: () => authenticatedSessions.revokeAll(),
+          captureAuthenticationGeneration: () =>
+            authenticatedSessions.captureGeneration(),
+          registerAuthenticatedSession: (expectedGeneration, revoke) =>
+            authenticatedSessions.register(
+              expectedGeneration,
+              sessionBinding,
+              revoke,
+            ),
+          resumeAuthenticatedSession: (token, revoke) =>
+            authenticatedSessions.resume(token, sessionBinding, revoke),
+          issueResumeTicket: (expectedGeneration) =>
+            authenticatedSessions.issueResumeTicket(
+              expectedGeneration,
+              sessionBinding,
+            ),
+          runCredentialMutation: (expectedGeneration, operation, options) =>
+            authenticatedSessions.runCredentialMutation(
+              expectedGeneration,
+              operation,
+              options,
+            ),
+          ...(context.rememberedDevice
+            ? {
+                assertAuthenticatedSessionCurrent: async () => {
+                  try {
+                    await deviceTrust.verify(device.id, device.publicKey);
+                  } catch (error) {
+                    if (
+                      error instanceof DeviceTrustError &&
+                      (error.code === "REVOKED" || error.code === "NOT_TRUSTED")
+                    ) {
+                      await authenticatedSessions.revokeDevice(sessionBinding);
+                      throw new Error(
+                        "This device was revoked; authentication is required",
+                      );
+                    }
+                    throw error;
+                  }
+                },
+              }
+            : {}),
           handleAuthenticatedRequest: (request, emitEvent) =>
             setup.request(request, emitEvent),
           createInner: async () => {
@@ -165,7 +254,8 @@ export async function runAgentService(paths: HostPaths): Promise<void> {
               }),
             });
           },
-        }),
+        });
+      },
     };
     await activeQueueDispatcher.start();
     if (direct) {
@@ -179,10 +269,33 @@ export async function runAgentService(paths: HostPaths): Promise<void> {
         routeCapability: relayConfig.routeCapability,
         ...(direct ? { directEndpoint: direct.endpoint } : {}),
       });
+      activeRelayCapability = relayConfig.routeCapability;
+      relayRenewalLoop = startRelayCapabilityRenewalLoop(paths, {
+        initialCapability: relayConfig.routeCapability,
+        onConfig: async (currentConfig) => {
+          const currentRelay = relayTransport(currentConfig.transport);
+          if (
+            !relay ||
+            !currentRelay ||
+            currentRelay.routeId !== relayConfig.routeId ||
+            currentRelay.routeCapability === activeRelayCapability
+          ) {
+            return;
+          }
+          await relay.rotateRouteCapability(currentRelay.routeCapability);
+          activeRelayCapability = currentRelay.routeCapability;
+        },
+        onError: (error) => {
+          process.stderr.write(
+            `Relay capability renewal retry scheduled: ${safeServiceError(error)}\n`,
+          );
+        },
+      });
     }
     await writeProcessRecord(paths.agentPidFile);
     await waitForShutdownSignal();
   } finally {
+    await relayRenewalLoop?.close();
     await gateway?.close();
     await relay?.close();
     await queueDispatcher?.close();
@@ -192,13 +305,19 @@ export async function runAgentService(paths: HostPaths): Promise<void> {
   }
 }
 
+function safeServiceError(error: unknown): string {
+  return error instanceof Error
+    ? error.message.slice(0, 1_024)
+    : "unknown failure";
+}
+
 export async function startAgentService(
   paths: HostPaths,
   cliEntryPoint: string,
 ): Promise<{ started: boolean; pid: number }> {
   await assertUserAccessEnabled();
   const existing = await readProcessRecord(paths.agentPidFile);
-  if (existing && isProcessAlive(existing.pid)) {
+  if (existing && (await processRecordMatches(existing))) {
     return { started: false, pid: existing.pid };
   }
   const child = spawn(process.execPath, [cliEntryPoint, "agent", "serve"], {
@@ -212,7 +331,11 @@ export async function startAgentService(
   const deadline = Date.now() + 15_000;
   while (Date.now() < deadline) {
     const record = await readProcessRecord(paths.agentPidFile);
-    if (record && record.pid === child.pid && isProcessAlive(record.pid)) {
+    if (
+      record &&
+      record.pid === child.pid &&
+      (await processRecordMatches(record))
+    ) {
       return { started: true, pid: record.pid };
     }
     if (!isProcessAlive(child.pid)) break;
@@ -223,16 +346,19 @@ export async function startAgentService(
 
 export async function stopAgentService(paths: HostPaths): Promise<boolean> {
   const record = await readProcessRecord(paths.agentPidFile);
-  if (!record || !isProcessAlive(record.pid)) {
+  if (!record || !(await processRecordMatches(record))) {
     await rm(paths.agentPidFile, { force: true });
     return false;
   }
-  process.kill(record.pid, "SIGTERM");
+  await signalRecordedProcess(record, "SIGTERM", {
+    ...(typeof process.getuid === "function" ? { uid: process.getuid() } : {}),
+    commandIncludes: ["agent", "serve"],
+  });
   const deadline = Date.now() + 10_000;
-  while (Date.now() < deadline && isProcessAlive(record.pid)) {
+  while (Date.now() < deadline && (await processRecordMatches(record))) {
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
-  if (isProcessAlive(record.pid)) {
+  if (await processRecordMatches(record)) {
     throw new Error(`Agent PID ${record.pid} did not stop after SIGTERM`);
   }
   return true;

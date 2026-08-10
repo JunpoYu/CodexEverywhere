@@ -58,7 +58,11 @@ type HostSetupDependencies = {
   probeAppServer(socketPath: string): Promise<boolean>;
   restartAppServer(
     paths: HostPaths,
-    options: { codexBinary: string; env: NodeJS.ProcessEnv },
+    options: {
+      codexBinary: string;
+      env: NodeJS.ProcessEnv;
+      force: true;
+    },
   ): Promise<unknown>;
   importCodexAuth(options: {
     userHome: string;
@@ -137,7 +141,10 @@ export class HostSetupService {
           value: await this.#importCodexAuth(payload),
         };
       case "setup/app-server/restart":
-        return { handled: true, value: await this.#restartAppServer() };
+        return {
+          handled: true,
+          value: await this.#restartAppServer(payload),
+        };
       case "preferences/read":
         return {
           handled: true,
@@ -332,7 +339,12 @@ export class HostSetupService {
     });
   }
 
-  async #restartAppServer(): Promise<unknown> {
+  async #restartAppServer(payload: Record<string, unknown>): Promise<unknown> {
+    if (payload.force !== true) {
+      throw new Error(
+        "Restarting Codex app-server requires force: true after explicit user confirmation",
+      );
+    }
     const env = await this.codexEnvironment();
     const installation = await this.#dependencies.probeCodex({
       userHome: this.#userHome,
@@ -343,6 +355,7 @@ export class HostSetupService {
     await this.#dependencies.restartAppServer(this.#paths, {
       codexBinary: installation.binary,
       env,
+      force: true,
     });
     return {
       running: true,

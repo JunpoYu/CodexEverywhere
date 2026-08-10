@@ -1,4 +1,4 @@
-const CACHE = "codex-everywhere-v42";
+const CACHE = "codex-everywhere-v43";
 const CORE = ["/manifest.webmanifest", "/icon.svg"];
 
 self.addEventListener("install", (event) => {
@@ -21,9 +21,14 @@ self.addEventListener("install", (event) => {
           if (asset.ok) await cache.put(url, asset);
         }),
       );
-      await self.skipWaiting();
     })(),
   );
+});
+
+self.addEventListener("message", (event) => {
+  if (event.data?.type === "SKIP_WAITING") {
+    event.waitUntil(self.skipWaiting());
+  }
 });
 
 self.addEventListener("activate", (event) => {

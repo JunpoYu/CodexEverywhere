@@ -8,7 +8,7 @@ Type=simple
 User=codex-relay
 Group=codex-relay
 Environment=CE_RELAY_HOME=/var/lib/codex-everywhere-relay
-ExecStart=/usr/local/bin/node /opt/codex-everywhere/relay/dist/cli.js serve --host 127.0.0.1 --port 7346
+ExecStart=/usr/local/bin/node /opt/codex-everywhere/relay/dist/cli.js serve --installation-id __INSTALLATION_ID__ --host 127.0.0.1 --port 7346 --trust-loopback-proxy
 Restart=on-failure
 RestartSec=2s
 NoNewPrivileges=true

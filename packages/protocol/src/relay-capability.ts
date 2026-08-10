@@ -175,6 +175,21 @@ export function parseHostProvisionerCredential(
   value: unknown,
   now = new Date(),
 ): HostProvisionerCredential {
+  const credential = parseHostProvisionerCredentialRecord(value);
+  if (Date.parse(credential.expiresAt) <= now.getTime()) {
+    throw new Error("Invalid or expired host provisioner credential");
+  }
+  return credential;
+}
+
+/**
+ * Validates only the serialized credential shape. The returned value is not
+ * current authorization and must not be used to issue a new capability until
+ * parseHostProvisionerCredential has also accepted it.
+ */
+export function parseHostProvisionerCredentialRecord(
+  value: unknown,
+): HostProvisionerCredential {
   if (!value || typeof value !== "object") {
     throw new Error("Invalid host provisioner credential");
   }
@@ -188,11 +203,11 @@ export function parseHostProvisionerCredential(
     !validDate(record.issuedAt) ||
     typeof record.expiresAt !== "string" ||
     !validDate(record.expiresAt) ||
-    Date.parse(record.expiresAt) <= now.getTime() ||
+    Date.parse(record.expiresAt) <= Date.parse(record.issuedAt) ||
     typeof record.signingKey !== "string" ||
     Buffer.from(record.signingKey, "base64url").byteLength !== 32
   ) {
-    throw new Error("Invalid or expired host provisioner credential");
+    throw new Error("Invalid host provisioner credential");
   }
   return record as HostProvisionerCredential;
 }
@@ -221,6 +236,21 @@ export function relayPrincipalLoginId(
     .slice(0, 32);
 }
 
+export function relayInstallationPrincipalLoginId(
+  signingKey: Uint8Array,
+  installationId: string,
+  principal: RelayPrincipal,
+  loginName: string,
+): string {
+  assertSigningKey(signingKey);
+  return createHmac("sha256", signingKey)
+    .update(
+      `ce-relay-login-v3\0${normalizeInstallationId(installationId)}\0${principal}\0${normalizeLoginName(loginName)}`,
+    )
+    .digest("base64url")
+    .slice(0, 32);
+}
+
 export function routeCapabilityPrincipal(
   payload: RouteCapabilityPayload,
 ): RelayPrincipal {
@@ -234,15 +264,45 @@ export function routeCapabilityLoginId(
   relaySigningKey: Uint8Array,
 ): string | undefined {
   if (payload.version === RELAY_CAPABILITY_VERSION) {
-    return relayPrincipalLoginId(
+    return relayInstallationPrincipalLoginId(
       relaySigningKey,
+      payload.installationId,
       payload.principal,
       payload.loginName,
     );
   }
-  return payload.version === 3
-    ? relayLoginId(relaySigningKey, payload.loginName)
-    : payload.loginId;
+  if (payload.version === 3) {
+    return relayInstallationPrincipalLoginId(
+      relaySigningKey,
+      payload.installationId,
+      "user",
+      payload.loginName,
+    );
+  }
+  return payload.loginId;
+}
+
+export function routeCapabilityOwnerId(
+  payload: RouteCapabilityPayload,
+  relaySigningKey: Uint8Array,
+): string | undefined {
+  if (payload.version === RELAY_CAPABILITY_VERSION) {
+    return relayInstallationPrincipalLoginId(
+      relaySigningKey,
+      payload.installationId,
+      payload.principal,
+      payload.loginName,
+    );
+  }
+  if (payload.version === 3) {
+    return relayInstallationPrincipalLoginId(
+      relaySigningKey,
+      payload.installationId,
+      "user",
+      payload.loginName,
+    );
+  }
+  return undefined;
 }
 
 export function normalizeLoginName(value: string): string {
@@ -285,24 +345,22 @@ export function verifyRouteCapability(
   if (!isCapabilityPayload(value)) {
     throw new Error("Invalid route capability payload");
   }
-  const signingKey =
-    value.version === RELAY_CAPABILITY_VERSION || value.version === 3
-      ? deriveProvisionerSigningKey(
-          relaySigningKey,
-          value.installationId,
-          value.provisionerExpiresAt,
-        )
-      : relaySigningKey;
-  const prefix =
-    value.version === RELAY_CAPABILITY_VERSION || value.version === 3
-      ? "ce-relay-provisioned-v1"
-      : "ce-relay-v1";
+  const signingKey = isProvisionedCapability(value)
+    ? deriveProvisionerSigningKey(
+        relaySigningKey,
+        value.installationId,
+        value.provisionerExpiresAt,
+      )
+    : relaySigningKey;
+  const prefix = isProvisionedCapability(value)
+    ? "ce-relay-provisioned-v1"
+    : "ce-relay-v1";
   verifySignature(parts[0], parts[1], signingKey, prefix);
   if (value.expiresAt && Date.parse(value.expiresAt) <= now.getTime()) {
     throw new Error("Route capability has expired");
   }
   if (
-    (value.version === RELAY_CAPABILITY_VERSION || value.version === 3) &&
+    isProvisionedCapability(value) &&
     Date.parse(value.provisionerExpiresAt) <= now.getTime()
   ) {
     throw new Error("Host provisioner credential has expired");
@@ -310,16 +368,67 @@ export function verifyRouteCapability(
   return value;
 }
 
-export function routeIdFromCapability(capability: string): string {
-  const body = capability.split(".")[0];
-  if (!body) throw new Error("Invalid Relay capability");
-  const value: unknown = JSON.parse(
-    Buffer.from(body, "base64url").toString("utf8"),
-  );
-  if (!isCapabilityPayload(value)) {
-    throw new Error("Invalid Relay capability payload");
+/**
+ * Verifies a still-valid provisioned user capability with the exact
+ * provisioner credential that signed it. This is intended only to migrate an
+ * existing random route into the provisioner's UID-bound route registry. Both
+ * the capability and credential remain subject to their original expiry.
+ */
+export function verifyProvisionedUserRouteForRenewal(
+  capability: string,
+  credentialValue: unknown,
+  options: { loginName: string },
+  now = new Date(),
+): LegacyProvisionedRouteCapabilityPayload | ProvisionedRouteCapabilityPayload {
+  const credential = parseHostProvisionerCredential(credentialValue, now);
+  const { body, signature, payload } = parseCapabilityParts(capability);
+  if (!isProvisionedCapability(payload)) {
+    throw new Error("Relay capability was not issued by a host provisioner");
   }
-  return value.routeId;
+  const principal =
+    payload.version === RELAY_CAPABILITY_VERSION ? payload.principal : "user";
+  if (
+    principal !== "user" ||
+    payload.purpose !== "agent-route" ||
+    payload.installationId !== credential.installationId ||
+    payload.provisionerExpiresAt !== credential.expiresAt ||
+    payload.loginName !== normalizeLoginName(options.loginName)
+  ) {
+    throw new Error("Relay capability does not belong to this Unix user");
+  }
+  verifySignature(
+    body,
+    signature,
+    Buffer.from(credential.signingKey, "base64url"),
+    "ce-relay-provisioned-v1",
+  );
+  assertCapabilityCurrent(payload, now);
+  return payload;
+}
+
+/** Returns validated-but-unverified capability metadata for local diagnostics. */
+export function inspectRouteCapability(
+  capability: string,
+): RouteCapabilityPayload {
+  return parseCapabilityParts(capability).payload;
+}
+
+export function routeCapabilityEffectiveExpiration(
+  capability: string,
+): string | undefined {
+  const payload = inspectRouteCapability(capability);
+  const expirations = [
+    payload.expiresAt,
+    ...(isProvisionedCapability(payload) ? [payload.provisionerExpiresAt] : []),
+  ].filter((value): value is string => value !== undefined);
+  if (expirations.length === 0) return undefined;
+  return expirations.reduce((earliest, value) =>
+    Date.parse(value) < Date.parse(earliest) ? value : earliest,
+  );
+}
+
+export function routeIdFromCapability(capability: string): string {
+  return inspectRouteCapability(capability).routeId;
 }
 
 export function relayKeyFingerprint(signingKey: Uint8Array): string {
@@ -370,6 +479,40 @@ function verifySignature(
   }
 }
 
+function parseCapabilityParts(capability: string): {
+  body: string;
+  signature: string;
+  payload: RouteCapabilityPayload;
+} {
+  const parts = capability.split(".");
+  if (parts.length !== 2 || !parts[0] || !parts[1]) {
+    throw new Error("Invalid route capability");
+  }
+  let value: unknown;
+  try {
+    value = JSON.parse(Buffer.from(parts[0], "base64url").toString("utf8"));
+  } catch {
+    throw new Error("Invalid route capability payload");
+  }
+  if (!isCapabilityPayload(value)) {
+    throw new Error("Invalid route capability payload");
+  }
+  return { body: parts[0], signature: parts[1], payload: value };
+}
+
+function assertCapabilityCurrent(
+  value:
+    LegacyProvisionedRouteCapabilityPayload | ProvisionedRouteCapabilityPayload,
+  now: Date,
+): void {
+  if (value.expiresAt && Date.parse(value.expiresAt) <= now.getTime()) {
+    throw new Error("Route capability has expired");
+  }
+  if (Date.parse(value.provisionerExpiresAt) <= now.getTime()) {
+    throw new Error("Host provisioner credential has expired");
+  }
+}
+
 function isCapabilityPayload(value: unknown): value is RouteCapabilityPayload {
   if (!value || typeof value !== "object") return false;
   const record = value as Record<string, unknown>;
@@ -417,6 +560,13 @@ function isCapabilityPayload(value: unknown): value is RouteCapabilityPayload {
     typeof record.provisionerExpiresAt === "string" &&
     validDate(record.provisionerExpiresAt)
   );
+}
+
+function isProvisionedCapability(
+  value: RouteCapabilityPayload,
+): value is
+  LegacyProvisionedRouteCapabilityPayload | ProvisionedRouteCapabilityPayload {
+  return value.version === 3 || value.version === RELAY_CAPABILITY_VERSION;
 }
 
 function isNormalizedInstallationId(value: string): boolean {

@@ -28,11 +28,18 @@ import {
 import {
   ProcessLock,
   isProcessAlive,
+  processRecordMatches,
   readProcessRecord,
+  signalRecordedProcess,
   writeProcessRecord,
 } from "../host/process-files.js";
 import { HostStateStore } from "../host/state-store.js";
-import type { TrustedDevice } from "../host/devices.js";
+import {
+  CachedDeviceTrustVerifier,
+  DeviceRegistry,
+  DeviceTrustError,
+  type TrustedDevice,
+} from "../host/devices.js";
 
 const RECENT_AUTHENTICATION_MS = 5 * 60 * 1_000;
 
@@ -63,6 +70,9 @@ export async function runAdminControllerService(): Promise<void> {
     );
     const sessions = new AuthenticatedSessionRegistry();
     const limiter = new AuthenticationRateLimiter();
+    const deviceTrust = new CachedDeviceTrustVerifier(
+      new DeviceRegistry(state),
+    );
     const helper = new AdminHelperClient();
     const gatewayOptions = {
       host: "127.0.0.1",
@@ -77,18 +87,32 @@ export async function runAdminControllerService(): Promise<void> {
       relayRouteId: config.routeId,
       allowedOrigin: config.origin,
       state,
-      createSession: (
+      createSession: async (
         device: TrustedDevice,
         context: {
           newlyPaired: boolean;
-          onAuthenticated?: () => Promise<void>;
+          rememberedDevice: boolean;
+          resumeRememberedDeviceInvalid?: boolean;
+          resumeToken?: string;
+          onAuthenticated?: () => Promise<(() => Promise<void> | void) | void>;
         },
-      ) =>
-        new AuthenticatedGatewaySession({
+      ) => {
+        const sessionBinding = {
+          principal: "host-admin" as const,
+          nodeId: config.nodeId,
+          userId: `admin:${config.installationId}`,
+          deviceId: device.id,
+          devicePublicKey: Buffer.from(device.publicKey).toString("base64url"),
+          rememberedDevice: context.rememberedDevice,
+        };
+        if (context.resumeRememberedDeviceInvalid)
+          await sessions.revokeDevice(sessionBinding);
+        return new AuthenticatedGatewaySession({
           newlyPaired: context.newlyPaired,
           ...(context.onAuthenticated
             ? { onAuthenticated: context.onAuthenticated }
             : {}),
+          ...(context.resumeToken ? { resumeToken: context.resumeToken } : {}),
           passkeys: new PasskeyRegistry(state, {
             origin: config.origin,
             rpId: config.rpId,
@@ -106,11 +130,43 @@ export async function runAdminControllerService(): Promise<void> {
             server: hostPublicKey,
           },
           consumeAuthAttempt: (kind) => limiter.consume(kind),
-          registerAuthenticatedSession: (revoke) => sessions.register(revoke),
-          onCredentialsRecovered: () => sessions.revokeAll(),
+          captureAuthenticationGeneration: () => sessions.captureGeneration(),
+          registerAuthenticatedSession: (expectedGeneration, revoke) =>
+            sessions.register(expectedGeneration, sessionBinding, revoke),
+          resumeAuthenticatedSession: (token, revoke) =>
+            sessions.resume(token, sessionBinding, revoke),
+          issueResumeTicket: (expectedGeneration) =>
+            sessions.issueResumeTicket(expectedGeneration, sessionBinding),
+          runCredentialMutation: (expectedGeneration, operation, options) =>
+            sessions.runCredentialMutation(
+              expectedGeneration,
+              operation,
+              options,
+            ),
+          ...(context.rememberedDevice
+            ? {
+                assertAuthenticatedSessionCurrent: async () => {
+                  try {
+                    await deviceTrust.verify(device.id, device.publicKey);
+                  } catch (error) {
+                    if (
+                      error instanceof DeviceTrustError &&
+                      (error.code === "REVOKED" || error.code === "NOT_TRUSTED")
+                    ) {
+                      await sessions.revokeDevice(sessionBinding);
+                      throw new Error(
+                        "This device was revoked; authentication is required",
+                      );
+                    }
+                    throw error;
+                  }
+                },
+              }
+            : {}),
           createInner: async () =>
             new AdminGatewaySession(helper, `device:${device.id}`),
-        }),
+        });
+      },
     };
     relay = await RelayConnector.start({
       ...gatewayOptions,
@@ -135,7 +191,7 @@ export async function startAdminControllerService(
   assertControllerUser(config);
   const paths = resolveAdminControllerPaths(config.home, config.runAsUid);
   const existing = await readProcessRecord(paths.pidFile);
-  if (existing && isProcessAlive(existing.pid))
+  if (existing && (await processRecordMatches(existing)))
     return { started: false, pid: existing.pid };
   const child = spawn(
     process.execPath,
@@ -151,7 +207,11 @@ export async function startAdminControllerService(
   const deadline = Date.now() + 15_000;
   while (Date.now() < deadline) {
     const record = await readProcessRecord(paths.pidFile);
-    if (record && record.pid === child.pid && isProcessAlive(record.pid))
+    if (
+      record &&
+      record.pid === child.pid &&
+      (await processRecordMatches(record))
+    )
       return { started: true, pid: record.pid };
     if (!isProcessAlive(child.pid)) break;
     await new Promise((resolve) => setTimeout(resolve, 50));
@@ -164,15 +224,18 @@ export async function stopAdminControllerService(): Promise<boolean> {
   assertControllerUser(config);
   const paths = resolveAdminControllerPaths(config.home, config.runAsUid);
   const record = await readProcessRecord(paths.pidFile);
-  if (!record || !isProcessAlive(record.pid)) {
+  if (!record || !(await processRecordMatches(record))) {
     await rm(paths.pidFile, { force: true });
     return false;
   }
-  process.kill(record.pid, "SIGTERM");
+  await signalRecordedProcess(record, "SIGTERM", {
+    uid: config.runAsUid,
+    commandIncludes: ["admin", "web", "serve"],
+  });
   const deadline = Date.now() + 10_000;
-  while (Date.now() < deadline && isProcessAlive(record.pid))
+  while (Date.now() < deadline && (await processRecordMatches(record)))
     await new Promise((resolve) => setTimeout(resolve, 50));
-  if (isProcessAlive(record.pid))
+  if (await processRecordMatches(record))
     throw new Error("Administrator Controller did not stop after SIGTERM");
   return true;
 }

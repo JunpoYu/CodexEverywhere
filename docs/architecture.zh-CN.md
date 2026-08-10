@@ -15,7 +15,7 @@
 - Agent 可在 Codex 尚未安装时启动；PWA 首次使用向导可选择直连或用户代理，使用当前账号中任何能够正常报告版本的 Codex，或把 npm 最新稳定版安装到 `~/.local`，并通过官方设备码流程完成登录。已登录用户也可从设置中更新；安装不会立即中断运行中的 app-server，用户在任务空闲时明确确认重启后才应用。安装过程通过端到端加密会话显示“准备、下载与安装、验证、完成”的阶段进度；不向浏览器转发可能包含代理或凭据的 npm 原始输出，也不伪造无法可靠获取的字节百分比。Codex 登录页以分步卡片突出官方验证入口和一次性代码，支持一键复制；页面以 app-server 的 `account/login/completed` / `account/updated` 通知为完成信号并以状态轮询兜底，授权完成后自动进入工作区。已经在本机登录 Codex 的用户也可使用标准位置 `~/.codex/auth.json`：PWA 将标准路径作为主入口并支持一键复制，同时保留按钮式的其他来源文件入口。macOS 文件窗口默认隐藏 `.codex`，界面必须提示用户先复制 `~/.codex/`，再在文件窗口按 `⌘⇧G` 打开“前往文件夹”、粘贴目录并选择 `auth.json`；浏览器安全模型仍要求用户在系统文件窗口确认一次。PWA 只在当前页面内存中读取文件，经过现有端到端加密通道直接原子写入该 Linux 用户的 `~/.codex/auth.json`，随后重启 app-server；Relay 不可见，浏览器不持久化文件内容、访问句柄或回显内容。
 - PWA 将日常登录与首次初始化完全分开：老用户首页只保留已保存设备或“用户名 + Passkey”的主路径，密码、临时设备和 Direct 地址作为次级入口；专用密码登录默认不记住设备且不要求设备名称，只有用户显式勾选保存新设备时才显示命名输入，当前浏览器已有同一用户记录时沿用原名称；每个已保存入口同时显示用户自定义的设备名和对应 Linux 用户名，避免同一浏览器保存多个 HPC 账号时混淆；新用户按“建立 Web 身份 → 网络 → 安装 → Codex 登录”逐步完成引导。
 - Direct WSS 或可选无状态 Relay；两种模式都在应用层使用 Noise IK 端到端加密。
-- Noise 加密传输会在记录层自动分片并重组大型响应与事件；恢复长会话或出现大型工具输出时，不会因单条 Noise 消息的 65,535 字节上限导致 Agent 崩溃。
+- Noise 加密传输会在记录层自动分片并重组大型响应与事件；每个重组同时受单消息大小、跨会话总内存、片间 idle timeout 和不可续期 absolute deadline 限制。恢复长会话或出现大型工具输出时不会受单条 Noise 消息的 65,535 字节上限影响，slow-drip 分片也不能长期占住共享预算。
 - 浏览器在 HPC 内网或宿主机具有安全公网入口时直接连接 Agent；只有宿主机不可达时才经过 Relay。
 - 同一个 Agent 可同时运行 Direct Gateway 和 Relay 出站连接；PWA 保存双端点并按 Direct、Relay 顺序连接。
 - Direct Gateway 提供 `/.well-known/codex-everywhere` 标准发现文档，并只接受已配置 PWA Origin 的浏览器请求。
@@ -47,7 +47,7 @@
 - Web 为刚发送的用户消息创建乐观卡片，但以 `turn/start` 返回的 turn id 绑定身份；如果 `turn/started` 通知和后台快照先到达，绑定阶段必须立即移除已经存在权威用户消息的乐观副本。assistant 流式卡片除 item id 外还记录 turn id 与消息类型；快照或完成事件在生命周期阶段出现不同 item id 时，按同一 turn 内的类型归并并以权威完成项收口，禁止保留刷新后才消失的重复卡片。
 - PWA 切换会话或返回会话列表时调用 `thread/unsubscribe` 释放旧订阅；Agent 级 Queue 在队列耗尽或暂停后也释放自己的订阅。释放订阅不 interrupt 活动 turn，最后一个订阅者离开后由 app-server 自身的无订阅宽限期决定何时卸载内存状态，不另设 24 小时保留定时器或用户“卸载”按钮。
 - 已有会话可修改模型、推理强度、审批策略和文件/命令权限；PWA 通过原生 `thread/settings/update` 保存设置，并用 `thread/settings/updated` 同步其他已订阅客户端。设置由 app-server 用于后续 turn，活动 turn 不会被静默中断；若用户安装的 Codex 尚不提供该方法，adapter 必须返回明确的能力错误。
-- 用户级全局设置集中在右上角设置中心。新会话默认 sandbox 与审批策略通过版本化 `preferences/read`、`preferences/session-permissions/update` 协议保存在该 Linux 用户自己的宿主机状态库中，浏览器只负责展示与修改；初始值为 `workspace-write + on-request`。创建 Web 会话时会明确展示并带入当前默认值，但设置更新不得改写已有 thread，也不得覆盖已有会话级权限。由于 app-server 重启后不会从 rollout 恢复审批设置，Agent 只额外保存每个 thread 最近一次权威响应中的审批策略、审批 reviewer 与可由 `thread/resume` 表达的 sandbox 模式，并在后续 resume 缺少显式权限时逐项补回；`externalSandbox` 或新版未知字段不会使其他可恢复字段丢失，也不会用旧值覆盖 Codex。会话内容、turn 和运行状态仍完全以 app-server 为唯一事实源。外观偏好仍只保存在当前浏览器，代理秘密仍只保存在宿主机专用配置中。
+- 用户级全局设置集中在右上角设置中心。新会话默认 sandbox 与审批策略通过版本化 `preferences/read`、`preferences/session-permissions/update` 协议保存在该 Linux 用户自己的宿主机状态库中，浏览器只负责展示与修改；初始值为 `workspace-write + on-request`。创建 Web 会话时会明确展示并带入当前默认值，但设置更新不得改写已有 thread，也不得覆盖已有会话级权限。由于 app-server 重启后不会从 rollout 恢复审批设置，Agent 只额外保存每个 thread 在受支持的 start、fork、resume、settings 与带权限 turn 请求成功后确认的审批策略、审批 reviewer 与可由 `thread/resume` 表达的 sandbox 模式，并在后续 resume 中把缺失或为 `null` 的字段逐项补回。跨 Agent/TUI 进程以宿主机持久代次和 per-thread coordination fence 串行化 app-server 权限副作用与状态提交，不依赖墙上时钟；无 server revision 的设置广播只用于实时 UI，不作为持久覆盖来源。`externalSandbox`、新版未知字段或缺失字段不会使其他可恢复字段丢失，也不会用旧值覆盖 Codex。会话内容、turn 和运行状态仍完全以 app-server 为唯一事实源。外观偏好仍只保存在当前浏览器，代理秘密仍只保存在宿主机专用配置中。
 - 会话页不再用独立信息卡占用 timeline 上方空间；输入框 footer 以紧凑状态栏常驻显示 sandbox 与审批策略、模型与推理强度，以及 app-server 实时上报的当前上下文窗口和占用比例。权限与模型标签可直接进入对应设置区域；上下文使用环形进度并在 70% 与 90% 分级提示，完整用量保留在可访问文本与悬停说明中。运行中修改设置时显示“下一轮”，设置弹窗必须适配窄屏和低高度视口并可完整滚动。
 - Agent 级持久 Queue，不依赖浏览器连接推进；turn 正常完成后自动启动下一项，失败或中断时暂停，并保留 Queue 转 Steer 失败的原消息。
 - 写请求幂等、Agent/app-server 分离生命周期、官方 remote TUI 接力。
@@ -94,7 +94,10 @@ Relay 模式先由 Relay 运维者在 VPS 签发自包含 capability：
 node apps/relay/dist/cli.js init
 node apps/relay/dist/cli.js issue-route \
   --login-name user --expires-days 365
-node apps/relay/dist/cli.js serve --host 127.0.0.1 --port 7346
+node apps/relay/dist/cli.js serve \
+  --installation-id <installation-id> \
+  --host 127.0.0.1 --port 7346 \
+  --trust-loopback-proxy
 ```
 
 用户只把签发结果中的 capability 配置到自己的 Codex 宿主机；Relay 不创建用户记录：
@@ -145,6 +148,12 @@ ce provisioner install \
   --credential-stdin
 ce provisioner install-service
 ```
+
+credential 到期是 Relay 运维者对这台宿主机授权的安全边界，不是浏览器页面、Noise 会话或 tunnel 的空闲 TTL。`ce provisioner status` 会提前显示到期时间；运维者必须在到期前至少 30 天以相同 `installationId` 签发新 credential，并再次通过 `ce provisioner install ... --credential-stdin` 安装。普通用户永远不能读取 credential，也不能自行延长宿主机授权。
+
+rootless provisioner 首次为用户签发 capability 时，把密码学随机 route ID 与请求文件的内核 owner UID、NSS username/UID/home tuple 和 installation ID 写入专用账号私有的原子 route registry。续签请求仍通过临时 Noise 通道，并再次按请求文件 owner UID 查询 NSS；服务只读取 registry 中已经绑定的 route，不接受用户 payload 指定或替换 route ID。因此重新签发 capability 不改变浏览器 SavedHost。UID、username 或 home 任一发生变化都会拒绝继承；完全相同的 UID/username/home tuple 按 Unix 文件权限模型视为同一安全主体，所以账号生命周期管理不得把保留 home 的原 UID 原用户名直接转授给另一自然人。升级前已经存在但尚未登记的 route 只能在旧 capability 和对应旧 credential 都仍有效时迁入：provisioner 对 installation、principal、login、route、签名与有效期做完整验证；安装新 credential 时只把仍有效的旧 credential 作为迁移验签材料保留到其原始到期时间，后台随后删除，不能用于签发或延长旧授权。越过此窗口后必须由 Relay 运维者在核验用户身份和旧 route ID 后显式恢复，不能降级为“相信用户声明 routeId”。
+
+Agent 在 capability 有效期剩余 30 天时开始 same-route 自助续签；若运维者尚未轮换宿主机 credential，会无限次持续重试并由 `ce doctor` 预警，剩余超过 7 天时重试间隔至多 12 小时、剩余 1–7 天时至多 1 小时、最后 1 天及过期后至多 5 分钟。每档间隔按随机 route 确定性抖动，批量发布或重启不会让所有 UID 同相位冲击 provisioner；任何正剩余寿命还会额外预留 45 秒完成 provisioner 请求、原子写入与 control 注册，进入最后 45 秒时立即尽力，不会让分档延迟跨过截止时间。control 切换失败时仍按内存中旧 capability 的剩余寿命重试，不会因为新 capability 已落盘而错误延后。新 capability 先原子写入用户 Host config，随后只替换 Relay control 注册并原地延长 route 授权；相同 owner 的 capability 代次只能单调前进，延迟到达的旧 control 不能缩短新截止时间或关闭已有 tunnel。rootless descriptor 显式声明续签 feature，新客户端连接旧 provisioner 时失败关闭，不会让旧服务按初始化语义随机生成另一个 route。首次升级必须先重启 provisioner，再滚动重启 Agent，并在旧 credential 到期前完成 route registry 迁移。若宿主机 credential 本身到期且运维者没有重新授权，续签必须失败；Relay 会在 route 的绝对授权截止时间关闭 control、未完成建连与全部 active tunnel，页面继续重试并在重新授权后恢复。这是明确的部署授权边界，不是页面闲置超时。
 
 `--default-codex-proxy` 是可选的非秘密部署默认值。若集群在 Codex 宿主机上统一提供本地代理，provisioner 会在 self-provision grant 中携带该默认网络配置，普通用户进程只在自己的配置尚无网络选择时写入；它不会覆盖已有的 `direct` 或 `proxy` 选择。专用账号以后可用 `ce provisioner set-default-proxy <url>` 更新后续初始化的默认值而不接触 credential。命令行参数不得承载代理用户名或密码；带凭据的代理仍由用户通过 E2EE Web 设置写入。
 
@@ -281,8 +290,8 @@ Codex 宿主机：每个 Linux 用户独立运行
 ├── Passkey / device trust / workspace / queue / schedule / push
 └── codex app-server（私有 Unix socket）
       ├── CodexEverywhere Agent 连接
-      ├── ce TUI 连接
-      └── 其他 codex --remote TUI 连接
+      ├── ce tui 临时权限协调代理连接
+      └── 绕过 ce tui 的 codex --remote 连接（不参与权限 coordination）
 ```
 
 ### 核心原则
@@ -296,15 +305,17 @@ Codex 宿主机：每个 Linux 用户独立运行
 - Direct 是首选数据路径，Relay 只是 NAT/防火墙导致宿主机不可达时的连接回退，不得成为身份、存储或运行依赖。
 - Relay 不理解 Codex 消息，不保存用户或节点数据库。Agent 在线时注册短期的登录名到 opaque route 映射，Relay 只在内存中用它定位连接，并根据自包含 route capability 转发密文。
 - 宿主机具备 HTTPS/WSS 公网入口时，PWA 直接连接 Agent Gateway，Relay 完全退出数据路径；永远不得直接暴露 app-server。
-- PWA 离线时只显示当前设备已经同步并加密缓存的最近内容，不允许发送或审批。
+- PWA 当前只离线缓存应用外壳；离线会话内容缓存尚未实现，断网时不允许发送、审批或读取未在页面内存中的业务数据。
 
 ### 两种连接模式
 
 **Direct** 适合浏览器可通过内网或公网到达、并具有域名和可信 TLS 证书的 Codex 宿主机。Nginx 将 `/.well-known/codex-everywhere` 和 `/gateway` 转发给仅监听 loopback 的 Agent；Gateway 只接受配置的 PWA Origin，并在 E2EE 握手完成前保持预认证权限。app-server Unix socket 始终保持本地私有。
 
-**Relay** 适合 HPC、NAT 或防火墙后的宿主机。Agent 主动连接 Relay 并注册一个稳定的 opaque route ID；浏览器通过相同 route ID 找到在线 Agent。Relay 重启后不恢复任何用户数据库，由 Agent 重新注册在线路由。
+**Relay** 适合 HPC、NAT 或防火墙后的宿主机。Agent 主动连接 Relay 并注册一个稳定的 opaque route ID；浏览器通过相同 route ID 找到在线 Agent。每个 Relay 进程必须通过 `--installation-id` 固定服务一个宿主机 installation，v3/v4 provisioned capability 的 installation 不精确匹配时在注册和 tunnel accept 两条路径都失败关闭；需要服务多个 installation 时应部署彼此隔离的 Relay 实例和入口，不能在一个进程中做首次到达者决定。Relay 重启后不恢复任何用户数据库，由 Agent 重新注册在线路由。生产示例由 Nginx 限制单 IP 连接与建连速率；Relay 只在 loopback 反向代理模式下信任 `X-Real-IP`，并在进程内限制单地址 socket、登录名查询与 tunnel 建连速率、每 route 并发和 tunnel 待发送字节。地址 rate bucket 有硬上限，满表时只检查最老项并失败关闭；转发数据同时预留跨 tunnel 共享的进程级 pending-byte 预算，发送完成或 tunnel 关闭时幂等释放。达到任一预算时连接会失败关闭，而不是无界积压内存。
 
-单用户或兼容路径仍可用 `ce-relay issue-route` 逐个签发 legacy route capability。多用户公共安装改用 `ce-relay issue-provisioner`：Relay 从主签名密钥派生只对一个 `installationId` 和有效期生效的宿主机签名密钥，HPC 专用部署账号只保存该派生 credential，不能还原 Relay 主密钥或为其他 installation 签名。rootless provisioner 为内核认证的请求文件所有者生成 v4 user route capability；管理员安装流程生成 v4 host-admin route capability。两者使用不同 purpose、principal 和 keyed login ID 域，即使登录名相同也不能互相发现或注册。Relay 重启后映射由 Agent 或 Controller 重建，不落盘；旧 v1-v3 用户 route 仍按 user 域验证以兼容已有部署。
+单用户或兼容路径仍可用 `ce-relay issue-route` 逐个签发由 Relay 主密钥签名的 v1/v2 legacy route capability。多用户公共安装改用 `ce-relay issue-provisioner`：Relay 从主签名密钥派生只对一个 `installationId` 和有效期生效的宿主机签名密钥，HPC 专用部署账号只保存该派生 credential，不能还原 Relay 主密钥或为其他 installation 签名。rootless provisioner 为内核认证的请求文件所有者生成 v4 user route capability，并把随机 route 与 UID/NSS tuple 私有绑定以支持同路由续签；管理员安装流程生成 v4 host-admin route capability。v3/v4 的登录发现 namespace 和在线 route owner 同时绑定 installation、principal 与规范登录名；同一个 route 的后续注册和 tunnel accept 必须匹配首次已验签的 owner tuple。user 与 host-admin 即使登录名相同也不能互相发现或替换。Relay 重启后映射由 Agent 或 Controller 重建，不落盘；已有随机 route ID 的 v3/v4 capability 保持可用且升级不会改写 route，主密钥签名的 v1/v2 兼容 route 仍可使用。provisioner credential 的轮换仍由 Relay 运维者完成，普通用户的自动续签只消费当前有效 credential，不会绕过该安全边界。
+
+后续若要让一个 Relay 安全承载多个 installation，必须把不可选择的随机 nonce 与 owner tuple 一起纳入新版 capability，并升级到 v5 后由 Relay 重算 route commitment；不能在 v4 中偷换 route ID 语义。该迁移还需定义旧 SavedHost 的重发现和 capability 轮换流程，当前版本不宣称支持多 installation Relay。
 
 PWA 可以保存多个 host profile，每个 profile 独立记录 direct endpoint、可选 Relay endpoint、route ID、设备密钥和本地缓存。新设备无需预存 profile：可以填写 Direct 地址直接获取公开宿主机资料，也可以通过登录名从 Relay 找到在线 Agent。两种方式都在预认证协议中验证宿主机身份。只要 profile 含 Direct 地址，PWA 就先直连，失败后才回退 Relay。
 
@@ -342,6 +353,8 @@ Passkey 绑定 PWA Origin，而不是 WSS 数据路径。推荐保持一个稳�
 - Queue 由 Agent 级 dispatcher 订阅和推进，不依赖某个浏览器 WebSocket；浏览器关闭后，正常完成的 turn 仍会启动下一条排队消息。Agent 崩溃时已经认领但无法确认是否提交的项目恢复为暂停，避免重复执行。
 - Web、TUI 和 Queue dispatcher 只在实际观看或推进 thread 时保留各自的 app-server 订阅；Web 切换/离开会话及 Queue 耗尽/暂停时执行 `thread/unsubscribe`。活动 turn 不因取消某个客户端订阅而终止；当全部订阅者离开后，使用 app-server 内置的无订阅宽限期自动卸载，磁盘历史和 thread ID 保持不变，重新打开时按需 `thread/resume`。
 - Relay 控制连接使用 ping/pong 检测半开 WebSocket；心跳失联或新隧道建立失败时，Agent 主动清理旧 route 并重新注册，避免 Relay 仍可查询用户但连接持续超时。
+- Direct Gateway、Agent 的 Relay control 与 Relay 的数据 bridge 都以 15 秒为心跳周期，只有连续 4 个周期没有 pong 才判定半开；一次抖动或后台调度延迟不会立即断线。浏览器页面对 transport 恢复不设尝试次数上限，退避最高固定为 30 秒；普通 RPC deadline 只把该请求标为“结果未知”，不关闭仍有心跳的 WebSocket。
+- Relay route authorization 使用 capability 与 provisioner credential 两者中更早的绝对截止时间；same-route 续签只允许截止时间和签发代次单调前进，并保留已经建立的 tunnel。授权真正到期时 Relay 统一关闭 route control、pending/setup 与 active tunnel，防止“窗口一直开着”绕过运维撤权；这与检测闲置连接的心跳超时是不同边界。
 - Relay 数据隧道使用两阶段就绪：Relay 先确认 Agent 已安装 Noise 握手监听器，再向浏览器发送 `relay/ready`，避免浏览器 hello 与隧道 ready 同批到达时被丢弃。
 - sql.js 状态存储在每次操作前重新载入最新的原子落盘文件，并使用用户级跨进程事务锁；Agent 运行期间执行 `ce device pair`、workspace 管理或凭据恢复时，长期进程会立即看到 CLI 写入且并发写入不会互相覆盖。
 - app-server 升级前默认等待所有 thread idle；强制升级必须明确警告可能中断活动任务。
@@ -363,16 +376,16 @@ ce tui /public/home/user/project --new
 
 1. 确认用户 Agent 和 app-server 已运行。
 2. 校验目录位于允许的 workspace root 内。
-3. 调用官方 TUI；默认恢复已有会话，指定 thread 时直接接力：
+3. 创建用户私有的临时权限协调代理，再调用官方 TUI；默认恢复已有会话，指定 thread 时直接接力。下面的随机 socket 由 `ce tui` 生成，不是供用户绕过包装器手工连接的稳定入口：
 
    ```bash
    codex resume <thread-id> \
      --include-non-interactive \
-     --remote unix:///tmp/codex-everywhere-$UID/app-server.sock \
+     --remote unix:///tmp/codex-everywhere-$UID/tui-<random>/app-server.sock \
      -C /public/home/user/project
    ```
 
-Web Agent、后台 Queue 和多个 TUI 分别连接同一个 app-server。app-server 原生广播 thread、设置和审批事件，并在客户端 resume 时重放未处理的服务器请求。官方 TUI 在恢复 remote thread 时会携带当前 TUI 进程的审批与 sandbox 启动默认值；所有 `ce tui` 启动因此都经过一个用户私有的临时 Unix WebSocket 透传层，它从 `thread/resume` 移除这些隐式权限覆盖字段，再逐项补回 Host 中已有的会话权限，并观察 app-server 对 start、resume、fork 与显式 `/permissions` 的权威结果。代理不保存会话内容、不改写其他方法，并在 TUI 退出后删除。Web Gateway 与 Queue Dispatcher 使用同一 Host 权限注册表和恢复规则。这样 Web、Queue 与 TUI 的连接动作不会互相覆盖，app-server 重启也不会使权限回落，而明确修改仍由 app-server 广播后同步最小权限元数据。
+Web Agent、后台 Queue 和多个经 `ce tui` 代理的 TUI 分别连接同一个 app-server。app-server 原生广播 thread、设置和审批事件，并在客户端 resume 时重放未处理的服务器请求。官方 TUI 在恢复 remote thread 时会携带当前 TUI 进程的审批与 sandbox 启动默认值；所有 `ce tui` 启动因此都经过一个用户私有的临时 Unix WebSocket 透传层，它从 `thread/resume` 和普通 `turn/start` 移除这些隐式权限覆盖字段，再逐项补回 Host 中已有的会话权限，并在 per-thread coordination fence 内按 app-server 对 start、resume、fork、delete 与显式 `/permissions` 的成功响应或原始请求 payload 提交最小权限元数据。代理不保存会话内容、不改写其他方法，并在 TUI 退出后删除。Web Gateway 与 Queue Dispatcher 使用同一 Host 权限注册表、持久代次和恢复规则。这样 Web、Queue 与经 `ce tui` 代理的 TUI 连接动作不会互相覆盖，app-server 重启也不会使权限回落；无因果版本的广播仍实时转发给各客户端，但不会反向覆盖已确认的恢复状态。直接以 `codex --remote` 连接原始 app-server socket 的客户端绕过该代理和 coordination fence，虽然可使用官方协议能力，但不在会话权限一致性保证范围内。
 
 Web 会话头以高对比按钮提供“SSH 接力”入口，并在会话信息下方展示“SSH 可访问同一会话、切换不会中断任务”的说明条；用户可选择“不再提示”，该非敏感界面偏好只保存在当前浏览器，说明条永久隐藏后顶部接力按钮仍始终可用。入口不能只隐藏在会话设置、弱提示或省略菜单中。接力弹窗先以“SSH 登录 HPC → 复制并运行命令 → 在官方 TUI 中继续”的步骤说明建立使用预期，再给出两条路径：包含当前 workspace 与 thread ID 的精确 `ce tui ... --thread ...` 命令可以直接进入当前会话；更短、可长期记住的 `ce tui <workspace>` 会打开官方恢复选择器，用户以后无需先打开 Web，即可从该目录的历史会话中选择要继续的会话。只有显式使用 `--new` 才新建会话。由于进入后的交互界面属于官方 Codex TUI，CodexEverywhere 不 fork 或修改其内部 UI；Web 接力弹窗和 `ce tui --help` / 启动提示必须明确说明退出语义：任务忙碌时输入 `/quit` 或 `/exit` 只关闭当前 TUI 客户端，宿主机上的活动 turn 继续运行；`Esc` 会中断活动 turn，不应作为“仅离开 TUI”的操作。SSH 终端失去响应时，可以在新行输入 `~.` 断开 SSH，活动 turn 仍由长期 app-server 承载。
 
@@ -443,16 +456,20 @@ ce tui [directory]
 - HPC Unix 用户名用于定位在线 Agent，不是秘密。Relay 签发 capability 时将区分大小写的规范用户名转换为 keyed opaque login ID 并绑定 route；Agent 上线时只能注册 capability 中的 login ID。Relay 不持久化、不得记录明文用户名或向其他用户枚举映射。单个部署中 Web 登录名必须与 NSS 返回的 Unix 用户名完全一致，不向普通用户暴露集群后缀或 route ID。
 - 新浏览器先生成临时设备密钥，与目标 Agent 建立严格限权的预认证通道。预认证通道只允许 Passkey、专用密码和恢复流程，不能访问任何 Codex 或宿主机数据。
 - Passkey 模式由 Agent 发出与预认证通道绑定的 WebAuthn challenge，并在宿主机本地验证 assertion。
+- WebAuthn 注册/认证 challenge、恢复授权与 OPAQUE server login state 都是当前预认证连接中的一次性中间态，最晚 5 分钟过期；共享的最早到期 timer 会主动擦除敏感值，认证成功、会话撤销或连接关闭也会立即清空。这个限制只约束尚未完成的身份操作，不是已认证页面会话 TTL。
 - 密码模式使用经过公开审查的增强型 PAKE 协议，在不向 PWA 静态服务器或 Relay 暴露密码的前提下完成双向认证并绑定 Agent 公钥；禁止自行设计密码加密协议或直接在普通 WebSocket/Noise XX 通道中发送密码。
 - Agent 只保存 PAKE registration record，不保存可还原的密码。密码与 SSH/Linux 密码完全独立；密码与恢复尝试使用跨 WebSocket 共享的 Agent 级账户限流，重新连接不能清零，Gateway 和 Relay 另设总连接数、待连接数与单 route 上限。
 - Passkey 或密码验证成功后才能创建业务会话；不要求该设备已配对，也不要求旧设备批准。
 - 个人设备可在 Passkey 登录后登记为已记住设备，用于设备名称、通知、加密缓存和撤销管理。设备记录是体验与安全管理对象，不是用户身份的替代品。
+- Passkey、密码或恢复注册完成后，Agent 为当前页面签发 256-bit 随机恢复票据。票据绑定 principal、node ID、Unix user ID、device ID、Noise remote static key 和 remembered/temporary 域；Agent 进程只保存带 `ce-page-session-v1` 域分隔的 SHA-256 摘要，浏览器只保存在 `GatewayClient` 私有内存。票据可重复 resume，避免握手响应丢失把页面锁死；同一设备最多保留 16 个独立页面票据、Agent 全局最多 1024 个，并在成功 resume 时刷新 LRU。它不是可信设备身份，也不会绕过 Passkey/密码的首次认证。
+- 已打开页面在 Direct/Relay transport 被回收后优先用该票据静默恢复；无效、凭据恢复后撤销或 remembered device 被撤销的票据会在 Noise 认证的握手结果中返回结构化 `REAUTH_REQUIRED`，不能依赖可能被代理剥离的 WebSocket close reason。后台页面收到该结果后只等待重新可见，不调用 WebAuthn；可见后至多自动发起一次 Passkey 认证，取消、选择错误或交互后的网络不确定结果都会停止自动弹窗并保留原设备身份进入显式登录界面。凭据恢复撤销所有活动 Web 身份和票据；设备撤销只清理该 Noise device ID 的 remembered 域，之后显式 Passkey 登录建立的 temporary 域仍可用。新 transport 对 remembered 状态执行不缓存的持久查询；已打开会话由 Agent 每 10 秒主动复查并复用 5 秒成功缓存，即使后台页面不发 RPC 也会停止向已撤销设备推送业务事件，同时避免高频 thread RPC 在 HPC 共享 home 上为每次请求重载 SQLite。I/O 暂时失败只使当前检查失败而不永久销毁票据，后续周期继续重试。
 - 临时模式下密码和设备私钥只存在于页面内存，不写入 IndexedDB，不启用离线缓存；退出、登出或关闭页面后失效。PWA 自身不得保存密码，但浏览器或密码管理器的保存行为仍由用户控制。
 - 应允许用户注册多个 Passkey，优先使用可跨设备同步的 Passkey，并支持浏览器提供的“使用另一台设备上的 Passkey”。
 - 恢复码首次注册时由 Agent 生成并通过 E2EE 会话直接一次性展示给用户，管理员不参与日常发放；Agent 只保存哈希，无法重新显示原码。
 - 已认证用户可以自行轮换恢复码；任一时刻仅有一个当前恢复码，轮换会使旧码立即失效，并再次只展示一次新码。
 - 用户遗失全部登录方式和恢复码时，管理员在完成线下身份核验后签发 10 分钟有效的 `CEAR-…` 交接码。签发前停止 Web Agent 以关闭活动管理通道并使全部旧恢复码失效；用户在普通登录页完成新 Passkey 注册时才消费交接码，随后生成的新恢复码只通过用户 E2EE 会话展示，管理员界面不能读取。
 - 使用恢复码注册替代 Passkey 后，旧 Passkey、专用密码、可信设备、Push subscription 和活动 Web 会话全部撤销。恢复流程不影响 Linux、SSH 或 ChatGPT/Codex 凭据。
+- Web 凭据替换、添加 Passkey、轮换恢复码和保存 OPAQUE password record 在所有用户 Gateway 会话共享的 Agent 协调器内串行，并以 challenge/start 时捕获的认证代次在最终写入前做 CAS：先完成的旧 mutation 会随后被 recovery 删除，先完成的 recovery 会阻止旧会话 mutation 落盘。支持的管理员交接只签发持久 handoff ticket，真正的凭据替换仍由用户 Agent 完成；直接绕过 CLI/Agent 修改 SQLite 不属于受支持的并发边界。
 
 ### 通道
 
@@ -483,7 +500,7 @@ E2EE 保证正常运行的 Relay、日志和网络观察者无法读取业务内
 - workspace roots
 - 可信设备
 - direct/relay transport 配置与 route capability
-- 请求幂等键
+- 普通业务请求的持久幂等键；`auth/*`、`codex/account/login/start` 和 `admin/recovery/start` 的原响应只在当前 transport 的 128 项有界内存中保留 5 分钟，请求 payload 只留 SHA-256 指纹，关闭连接或定时到期后清除。升级迁移以 SQLite `secure_delete` 物理清理可能包含 recovery code、resume token、OPAQUE response、device code 或 handoff code 的历史结果
 - Queue
 - Schedule 与运行记录
 - Push subscription 与通知规则
@@ -494,13 +511,13 @@ E2EE 保证正常运行的 Relay、日志和网络观察者无法读取业务内
 
 ### Relay
 
-Relay 不使用用户数据库。磁盘上只允许存在服务自身的部署配置、TLS 材料、Relay 签名密钥和不包含业务标识的运行日志。它在内存中维护在线 route 到 WebSocket 的短期映射，并通过自包含、可验证的 route capability 防止任意客户端抢占路由。进程重启后映射清空，由在线 Agent 自动重新注册。
+Relay 不使用用户数据库。磁盘上只允许存在服务自身的部署配置、TLS 材料、Relay 签名密钥和不包含业务标识的运行日志。它在内存中维护在线 route 到 WebSocket 的短期映射，并通过自包含、可验证的 route capability、固定 installation 边界和 owner tuple 检查防止跨 installation 或跨 principal/login 的在线路由抢占。未认证 lookup/connect 仍会暴露必要的连接元数据，因此入口同时使用反向代理、硬上限地址 bucket 和进程内资源限额；业务密文转发同时受单 tunnel 与全进程 pending-byte 背压预算约束。进程重启后映射清空，由在线 Agent 自动重新注册。
 
 Relay 不保存用户、Passkey、密码验证记录、恢复码、设备、节点、Push subscription、workspace、thread、Queue 或 Schedule。它只在内存中维护在线登录名和 opaque route 的短期映射。Relay 不可用只影响远程连接，不影响 Agent、本地 TUI、自动化或正在运行的 Codex turn。
 
 ### 浏览器
 
-PWA 在用户选择“记住此设备”时使用 IndexedDB 保存 host profile 和设备静态密钥，不使用 `localStorage`。设备密钥只发送其公钥，私钥不离开浏览器。临时模式不写入 host profile、设备私钥或对话缓存；页面关闭后需要重新认证。对话的设备级加密离线缓存尚未实现；当前 Service Worker 在安装时解析构建后的入口并缓存 HTML、hash JS/CSS、manifest、图标等应用外壳，运行时只缓存同源静态资源。
+PWA 在用户选择“记住此设备”时使用 IndexedDB 保存 host profile 和设备静态密钥，不使用 `localStorage`。设备密钥只发送其公钥，私钥不离开浏览器。页面恢复票据无论 remembered 或 temporary 都不进入 IndexedDB、Service Worker、`localStorage` 或 URL；同一页面内可跨 WebSocket 重连复用，刷新、关闭页面或 Agent 重启后丢失并回到正常认证。临时模式也不写入 host profile、设备私钥或对话缓存。对话的设备级加密离线缓存尚未实现；当前 Service Worker 在安装时解析构建后的入口并缓存 HTML、hash JS/CSS、manifest、图标等应用外壳，运行时只缓存同源静态资源。
 
 ## 11. 内部协议
 
@@ -531,6 +548,8 @@ type EventEnvelope = {
   payload: unknown;
 };
 ```
+
+当前跨组件 wire 协议只接受精确的 v1，并未实现 n/n-1 协商。浏览器会在 Noise 握手回复、加密帧以及解密后的 response/event envelope 上同时校验消息类型、版本和必要字段；resume 拒绝作为 Noise 加密 payload 中的结构化 `REAUTH_REQUIRED` 传递，WebSocket close code/reason 只作辅助。Relay 与 Agent 也使用同一组 Relay v1 消息类型和版本解析边界。版本不受支持、字段畸形或 response/event 身份歧义时连接立即 fail closed，未决写请求继续按“结果未知”处理，不得隐式重发。这里的 wire fail-closed 与 Codex app-server 事件的向前兼容是两层边界：通过合法 `EventEnvelope` 到达的未知 Codex 事件仍作为 generic event 保留和展示。
 
 能力分组：
 
@@ -612,18 +631,20 @@ Queue 的推进属于长期 Agent，而不是创建队列项的浏览器连接�
 
 核心工作区交互参考 [HAPI](https://github.com/tiann/hapi) 的移动优先信息架构、会话启动流程和结构化工具卡片，但不复制其 Hub/Runner 状态模型，也不将 HAPI 作为依赖。CodexEverywhere 必须直接使用 Codex app-server 的 thread、turn、item、审批和状态作为事实源。HAPI 中与本项目边界冲突的 Web Terminal、多 Agent 统一抽象、中心 Hub 数据库和自建会话状态机不采用。
 
+本节描述产品体验约束，同时包含当前实现和后续目标；凡明确写为“后续”的能力均不属于当前 PWA。当前能力边界以本文第 0 节和 README 状态表为准。
+
 ### 核心信息架构
 
 - 登录和首次初始化完成后，首页是会话列表，不在同一页面顶部堆叠新建表单、安全配置和连接配置。
 - 桌面端采用“会话列表 + 当前会话”双栏；移动端采用“会话列表 → 全屏会话”的单层导航，并保留明确的返回入口。
-- 会话列表按 workspace 分组，行内显示标题、状态、最近活动时间、目录、模型和等待用户操作标记；支持搜索、active/archived 过滤、重命名、归档和删除。
-- 安全、Passkey、密码、网络、Codex 安装、工作目录和设备管理进入独立设置页，不占用日常会话页面的主要空间。
+- 会话列表按 workspace 分组，行内显示标题、状态、最近活动时间、目录和等待用户操作标记；支持服务端分页、搜索、active/archived 过滤和归档恢复。重命名、归档和删除当前通过受限斜杠指令执行，后续再补行内菜单。
+- 安全、Passkey、密码、网络、Codex 安装和工作目录进入独立设置区域，不占用日常会话页面的主要空间；可信设备撤销与完整设备管理仍是后续能力。
 
 ### 启动会话
 
 - “新建会话”使用独立页面或对话框。主路径只要求选择目录并填写第一条消息；模型和 reasoning effort 默认继承 Codex 配置及上次成功选择。
 - 目录选择提供已登记 workspace、最近目录和受限目录浏览；Agent 必须对最终目录重新执行 `realpath` 与 workspace root 校验。
-- 高级设置折叠展示 model、reasoning effort、service tier、sandbox、approval policy 和 personality；选项来自 app-server 的实际能力，不硬编码不存在的模型或策略。
+- 高级设置当前折叠展示 model、reasoning effort、sandbox 和 approval policy；后续接入 service tier 与 personality 时，选项必须来自 app-server 的实际能力，不硬编码不存在的模型或策略。
 - 点击创建后依次执行 `thread/start` 和首个 `turn/start`，界面立即进入新 thread，并以幂等键避免重复创建。创建失败保留表单内容和明确错误，不生成空白会话。
 
 ### 会话显示与操作
@@ -632,10 +653,10 @@ Queue 的推进属于长期 Agent，而不是创建队列项的浏览器连接�
 - 用户消息、assistant Markdown、计划、命令执行、文件修改、MCP 调用、subagent、审批、用户问题、错误和未知 generic event 使用不同的结构化组件；reasoning item 不在 Web 中展示。
 - 命令与工具默认显示紧凑摘要、运行/成功/失败状态和耗时，展开后查看输入输出；文件修改优先显示文件名、增删统计和 diff。
 - 审批和 `requestUserInput` 在输入框上方固定托盘内处理，同时在会话列表标记“需要操作”；多设备回答后所有界面同步为已处理。托盘不会触发时间线滚动，也不会抢走用户正在阅读的历史位置。
-- 会话头显示标题、目录、状态、模型、reasoning effort 和上下文使用量；次级菜单提供重命名、归档、删除以及后续的 fork/export。
+- 会话头显示标题、目录、状态，输入区状态栏显示模型、reasoning effort 和上下文使用量；重命名、归档、删除和 fork 当前由受限斜杠指令提供，后续再补行内菜单与 export。
 - 输入区固定在底部，明确区分发送、Steer、Queue 和 interrupt。运行中默认 Queue；排队内容固定在输入框上方的 Queue 托盘中，并可对单条消息点击“转为 Steer”立即补充到当前 turn。出现审批时审批托盘优先，Queue 自动压缩但仍可展开查看。
 - 输入区当前只发送文本，不提供图片或文件附件上传。Gateway 必须拒绝 Web 客户端构造的 `localImage` 输入，避免绕过受限文件服务读取宿主机路径。
-- 提供受 workspace 限制的文件树、文件预览和 diff，但不提供 Web Terminal 或任意命令入口。
+- 后续提供受 workspace 限制的文件树、文件预览和完整 diff 浏览，但不提供 Web Terminal 或任意命令入口。当前仅结构化显示 app-server 已返回的文件修改与 unified diff。
 
 主要页面：
 
@@ -645,9 +666,9 @@ Queue 的推进属于长期 Agent，而不是创建队列项的浏览器连接�
 - 实时会话页。
 - 审批与待回答问题收件箱。
 - Queue 管理。
-- 文件与 diff 浏览。
-- Schedule 与运行历史。
-- 设备、Passkey、通知和安全设置。
+- 文件与完整 diff 浏览（后续）。
+- Schedule 与运行历史（后续）。
+- Passkey 与安全设置；可信设备撤销和通知设置后续补充。
 
 通知默认覆盖：
 
@@ -689,9 +710,9 @@ Push subscription 保存在宿主机，Agent 直接调用浏览器 Push service�
 
 - 已重构为移动优先的会话列表/会话详情导航，并将新建会话从当前会话页拆分为独立流程。
 - 已实现 thread 快照与 notification reducer，以及用户消息、assistant、plan、tool、diff、approval、requestUserInput 和 generic event 的结构化渲染；reasoning 事件会被有意忽略。
-- 已完成会话搜索、状态提示和创建；重命名、归档、删除与恢复仍待实现。
+- 已完成会话搜索、状态提示、创建、服务端分页、active/archived 过滤与归档恢复；重命名、归档、删除、恢复和 fork 可通过受限斜杠指令执行，行内操作菜单仍待实现。
 - 已完成 model、reasoning effort 的 app-server 动态选项和 sandbox、approval 启动设置；service tier 与 personality 仍待接入实际能力。
-- 实现 Steer、Queue、interrupt、等待操作提示和离线只读缓存。
+- 已实现 Steer、持久 Queue、interrupt、等待操作提示和断线重同步；Service Worker 当前只缓存应用外壳，设备级加密离线会话缓存仍待实现。
 - 会话输入器当前仅支持文本；图片和文件附件上传不属于当前 PWA 实现，受限文件服务仍属于 Phase 4。
 
 ### Phase 4：完整平台能力
@@ -746,7 +767,7 @@ Push subscription 保存在宿主机，Agent 直接调用浏览器 Push service�
 
 - 忙碌 thread 的计划消息进入 Queue 而非 Steer。
 - 审批暂停、单次补跑和周期跳过规则正确。
-- 离线 PWA 只能读取当前设备缓存，不能发送或审批。
+- 离线 PWA 只能打开应用外壳并保留当前页面内存中已经呈现的内容，不能读取未加载会话、发送或审批；设备级加密业务缓存仍待实现。
 - 网络恢复后增量同步且不重复显示事件。
 - Push subscription 与通知规则只存在宿主机，Push 内容保持设备级密文。
 

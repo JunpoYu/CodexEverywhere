@@ -8,30 +8,47 @@ import {
 
 import {
   NoiseResponder,
+  SecureMessageAssemblyBudget,
   encodePrologue,
   type SecureSession,
   type StaticKeyPair,
 } from "@codex-everywhere/crypto";
 import {
   PROTOCOL_VERSION,
+  parseGatewayAuthenticationPayload,
   type GatewayCipherFrame,
+  type GatewayAuthenticationPayload,
   type EventEnvelope,
   type GatewayHandshakeHello,
-  type LoginHandshakePayload,
-  type PairingHandshakePayload,
   type RequestEnvelope,
   type ResponseEnvelope,
-  type TrustedHandshakePayload,
 } from "@codex-everywhere/protocol";
 import WebSocket, { WebSocketServer, type RawData } from "ws";
 
-import { DeviceRegistry, type TrustedDevice } from "../host/devices.js";
-import { IdempotencyRegistry } from "../host/idempotency.js";
+import {
+  DeviceRegistry,
+  DeviceTrustError,
+  type TrustedDevice,
+} from "../host/devices.js";
+import {
+  EphemeralIdempotencyRegistry,
+  IdempotencyRegistry,
+  usesEphemeralGatewayIdempotency,
+} from "../host/idempotency.js";
 import type { HostStateStore } from "../host/state-store.js";
 
 const MAX_MESSAGE_BYTES = 1024 * 1024;
+const MAX_GATEWAY_REASSEMBLED_MESSAGE_BYTES = 8 * 1024 * 1024;
 const MAX_GATEWAY_CONNECTIONS = 128;
+const MAX_GATEWAY_ASSEMBLY_BYTES = 16 * 1024 * 1024;
+const GATEWAY_FRAGMENT_ASSEMBLY_TIMEOUT_MS = 10_000;
+const GATEWAY_HEARTBEAT_MS = 15_000;
+const GATEWAY_HEARTBEAT_MISS_LIMIT = 4;
 const SLOW_REQUEST_THRESHOLD_MS = 5_000;
+const assemblyBudgets = new WeakMap<
+  DirectGatewayOptions,
+  SecureMessageAssemblyBudget
+>();
 
 export type GatewaySession = {
   request(request: RequestEnvelope): Promise<unknown>;
@@ -53,12 +70,19 @@ export type DirectGatewayOptions = {
   relayEndpoint?: string;
   relayRouteId?: string;
   allowedOrigin?: string;
+  /** WebSocket ping interval. Primarily configurable for deterministic tests. */
+  gatewayHeartbeatMs?: number;
+  /** Consecutive unanswered pings tolerated before terminating the socket. */
+  gatewayHeartbeatMissLimit?: number;
   state: HostStateStore;
   createSession(
     device: TrustedDevice,
     context: {
       newlyPaired: boolean;
-      onAuthenticated?: () => Promise<void>;
+      rememberedDevice: boolean;
+      resumeRememberedDeviceInvalid?: boolean;
+      resumeToken?: string;
+      onAuthenticated?: () => Promise<(() => Promise<void> | void) | void>;
     },
   ): Promise<GatewaySession> | GatewaySession;
 };
@@ -82,6 +106,13 @@ export class DirectGateway extends EventEmitter<{ listening: [number] }> {
   }
 
   static async start(options: DirectGatewayOptions): Promise<DirectGateway> {
+    const heartbeatMs = options.gatewayHeartbeatMs ?? GATEWAY_HEARTBEAT_MS;
+    const heartbeatMissLimit =
+      options.gatewayHeartbeatMissLimit ?? GATEWAY_HEARTBEAT_MISS_LIMIT;
+    if (!Number.isSafeInteger(heartbeatMs) || heartbeatMs <= 0)
+      throw new Error("Gateway heartbeat interval must be positive");
+    if (!Number.isSafeInteger(heartbeatMissLimit) || heartbeatMissLimit <= 0)
+      throw new Error("Gateway heartbeat miss limit must be positive");
     const httpServer = createServer((request, response) =>
       handleHttpRequest(request, response, options),
     );
@@ -130,9 +161,43 @@ export class DirectGateway extends EventEmitter<{ listening: [number] }> {
       return;
     }
     this.#connections.add(socket);
-    socket.once("close", () => this.#connections.delete(socket));
+    const stopHeartbeat = startGatewayHeartbeat(
+      socket,
+      this.#options.gatewayHeartbeatMs ?? GATEWAY_HEARTBEAT_MS,
+      this.#options.gatewayHeartbeatMissLimit ?? GATEWAY_HEARTBEAT_MISS_LIMIT,
+    );
+    socket.once("close", () => {
+      stopHeartbeat();
+      this.#connections.delete(socket);
+    });
     acceptGatewaySocket(socket, this.#options);
   }
+}
+
+function startGatewayHeartbeat(
+  socket: WebSocket,
+  heartbeatMs: number,
+  heartbeatMissLimit: number,
+): () => void {
+  let unansweredPings = 0;
+  const receivedPong = () => {
+    unansweredPings = 0;
+  };
+  socket.on("pong", receivedPong);
+  const heartbeat = setInterval(() => {
+    if (socket.readyState !== WebSocket.OPEN) return;
+    if (unansweredPings >= heartbeatMissLimit) {
+      socket.terminate();
+      return;
+    }
+    unansweredPings += 1;
+    socket.ping();
+  }, heartbeatMs);
+  heartbeat.unref?.();
+  return () => {
+    clearInterval(heartbeat);
+    socket.off("pong", receivedPong);
+  };
 }
 
 export function acceptGatewaySocket(
@@ -167,6 +232,8 @@ function gatewayRejection(error: unknown): {
   if (detail.includes("Pairing grant is invalid or already used"))
     return { reason: "pairing invalid", detail };
   if (detail.includes("Wrong node")) return { reason: "wrong node", detail };
+  if (detail.includes("REAUTH_REQUIRED"))
+    return { reason: "REAUTH_REQUIRED", detail };
   return { reason: "protocol error", detail };
 }
 
@@ -179,6 +246,7 @@ class GatewayConnection {
   #unsubscribe: (() => void) | undefined;
   #receiveQueue: Promise<void> = Promise.resolve();
   #mutationQueue: Promise<void> = Promise.resolve();
+  readonly #ephemeralIdempotency = new EphemeralIdempotencyRegistry();
 
   constructor(socket: WebSocket, options: DirectGatewayOptions) {
     this.#socket = socket;
@@ -195,10 +263,102 @@ class GatewayConnection {
       nodeId: this.#options.nodeId,
       deviceId: hello.deviceId,
     });
-    const handshake = new NoiseResponder(this.#options.identity, prologue);
+    const handshake = new NoiseResponder(this.#options.identity, prologue, {
+      maxReceiveMessageBytes: MAX_GATEWAY_REASSEMBLED_MESSAGE_BYTES,
+      fragmentAssemblyTimeoutMs: GATEWAY_FRAGMENT_ASSEMBLY_TIMEOUT_MS,
+      assemblyBudget: gatewayAssemblyBudget(this.#options),
+    });
     const auth = parseAuthPayload(
       handshake.receive(Buffer.from(hello.message, "base64url")),
     );
+    const remoteStatic = handshake.remoteStatic();
+    const devices = new DeviceRegistry(this.#options.state);
+    let onAuthenticated:
+      (() => Promise<(() => Promise<void> | void) | void>) | undefined;
+    let device: TrustedDevice;
+    let matchedDevice: TrustedDevice | undefined;
+    let resumeRememberedDeviceInvalid = false;
+    if (auth.mode === "pair") {
+      device = await devices.consumePairing({
+        pairingId: auth.pairingId,
+        secret: auth.secret,
+        deviceId: hello.deviceId,
+        deviceName: auth.deviceName,
+        publicKey: remoteStatic,
+      });
+    } else if (auth.mode === "connect") {
+      try {
+        device = await devices.verify(hello.deviceId, remoteStatic);
+      } catch (error) {
+        if (!(error instanceof DeviceTrustError)) throw error;
+        // The Noise initiator has already proved possession of the saved
+        // device key. Complete that encrypted handshake before rejecting the
+        // revoked/missing binding so the browser receives a reliable signal
+        // even when an intermediary strips WebSocket close reasons.
+        await this.#rejectReauthentication(handshake);
+        return;
+      }
+    } else {
+      try {
+        matchedDevice = await devices.match(hello.deviceId, remoteStatic);
+      } catch (error) {
+        if (
+          auth.mode !== "resume" ||
+          !(error instanceof DeviceTrustError) ||
+          error.code !== "KEY_MISMATCH"
+        ) {
+          throw error;
+        }
+        // The remembered identity is definitively unusable, but finish the
+        // authenticated Noise exchange so the browser gets a structured
+        // REAUTH_REQUIRED even when a proxy strips WebSocket close reasons.
+        resumeRememberedDeviceInvalid = true;
+      }
+      device = matchedDevice ?? {
+        id: hello.deviceId,
+        name: auth.mode === "login" ? auth.deviceName : "Resumed Web session",
+        publicKey: remoteStatic,
+        createdAt: new Date().toISOString(),
+      };
+    }
+    if (auth.mode === "login" && auth.rememberDevice) {
+      onAuthenticated = async () => {
+        const remembered = await devices.rememberAuthenticated({
+          deviceId: hello.deviceId,
+          deviceName: auth.deviceName,
+          publicKey: remoteStatic,
+        });
+        return remembered.rollback;
+      };
+    }
+    try {
+      this.#handler = await this.#options.createSession(device, {
+        newlyPaired: auth.mode === "pair",
+        rememberedDevice:
+          auth.mode === "pair" ||
+          auth.mode === "connect" ||
+          (auth.mode === "login" && auth.rememberDevice) ||
+          (auth.mode === "resume" &&
+            matchedDevice !== undefined &&
+            !matchedDevice.revokedAt),
+        ...(auth.mode === "resume" &&
+        (resumeRememberedDeviceInvalid ||
+          !matchedDevice ||
+          matchedDevice.revokedAt)
+          ? { resumeRememberedDeviceInvalid: true }
+          : {}),
+        ...(auth.mode === "resume" ? { resumeToken: auth.resumeToken } : {}),
+        ...(onAuthenticated ? { onAuthenticated } : {}),
+      });
+    } catch (error) {
+      if (
+        auth.mode !== "resume" ||
+        gatewayRejection(error).reason !== "REAUTH_REQUIRED"
+      )
+        throw error;
+      await this.#rejectReauthentication(handshake);
+      return;
+    }
     const completed = handshake.finish(
       Buffer.from(
         JSON.stringify({
@@ -211,51 +371,11 @@ class GatewayConnection {
         }),
       ),
     );
-    const devices = new DeviceRegistry(this.#options.state);
-    let onAuthenticated: (() => Promise<void>) | undefined;
-    const device =
-      auth.mode === "pair"
-        ? await devices.consumePairing({
-            pairingId: auth.pairingId,
-            secret: auth.secret,
-            deviceId: hello.deviceId,
-            deviceName: auth.deviceName,
-            publicKey: completed.remoteStatic,
-          })
-        : auth.mode === "connect"
-          ? await devices.verify(hello.deviceId, completed.remoteStatic)
-          : {
-              id: hello.deviceId,
-              name: auth.deviceName,
-              publicKey: completed.remoteStatic,
-              createdAt: new Date().toISOString(),
-            };
-    if (auth.mode === "login" && auth.rememberDevice) {
-      onAuthenticated = async () => {
-        await devices.enrollAuthenticated({
-          deviceId: hello.deviceId,
-          deviceName: auth.deviceName,
-          publicKey: completed.remoteStatic,
-        });
-      };
-    }
     this.#session = completed.session;
     this.#trustedDeviceId = device.id;
-    this.#handler = await this.#options.createSession(device, {
-      newlyPaired: auth.mode === "pair",
-      ...(onAuthenticated ? { onAuthenticated } : {}),
-    });
     this.#unsubscribe = this.#handler.onEvent?.((event) =>
       this.#sendEncrypted(event),
     );
-    this.#socket.send(
-      JSON.stringify({
-        type: "handshake/reply",
-        version: PROTOCOL_VERSION,
-        message: Buffer.from(completed.message).toString("base64url"),
-      }),
-    );
-
     this.#socket.on("message", (data) => {
       const receivedAt = Date.now();
       this.#receiveQueue = this.#receiveQueue
@@ -264,8 +384,11 @@ class GatewayConnection {
     });
     this.#socket.once("close", () => {
       this.#unsubscribe?.();
+      this.#session?.dispose();
+      this.#ephemeralIdempotency.clear();
       void this.#handler?.close?.();
     });
+    await sendHandshakeReply(this.#socket, completed.message);
   }
 
   #receiveEncrypted(data: RawData, receivedAt: number): void {
@@ -298,11 +421,13 @@ class GatewayConnection {
     const execute = () => this.#handler!.request(request);
     const outcome = readOnly
       ? await captureResult(execute)
-      : await new IdempotencyRegistry(this.#options.state).execute(
-          this.#requiredDeviceId(),
-          request.idempotencyKey,
-          execute,
-        );
+      : usesEphemeralGatewayIdempotency(request.method)
+        ? await this.#ephemeralIdempotency.execute(request, execute)
+        : await new IdempotencyRegistry(this.#options.state).execute(
+            this.#requiredDeviceId(),
+            request.idempotencyKey,
+            execute,
+          );
     const completedAt = Date.now();
     if (completedAt - receivedAt >= SLOW_REQUEST_THRESHOLD_MS) {
       console.warn(
@@ -367,6 +492,51 @@ class GatewayConnection {
       this.#socket.close(1009, "encrypted message too large");
     }
   }
+
+  async #rejectReauthentication(handshake: NoiseResponder): Promise<void> {
+    const rejected = handshake.finish(
+      Buffer.from(
+        JSON.stringify({
+          version: PROTOCOL_VERSION,
+          ok: false,
+          error: { code: "REAUTH_REQUIRED" },
+        }),
+      ),
+    );
+    try {
+      await sendHandshakeReply(this.#socket, rejected.message);
+    } finally {
+      rejected.session.dispose();
+      this.#socket.close(1008, "REAUTH_REQUIRED");
+    }
+  }
+}
+
+function sendHandshakeReply(
+  socket: WebSocket,
+  message: Uint8Array,
+): Promise<void> {
+  return new Promise((resolve, reject) => {
+    socket.send(
+      JSON.stringify({
+        type: "handshake/reply",
+        version: PROTOCOL_VERSION,
+        message: Buffer.from(message).toString("base64url"),
+      }),
+      (error) => (error ? reject(error) : resolve()),
+    );
+  });
+}
+
+function gatewayAssemblyBudget(
+  options: DirectGatewayOptions,
+): SecureMessageAssemblyBudget {
+  let budget = assemblyBudgets.get(options);
+  if (!budget) {
+    budget = new SecureMessageAssemblyBudget(MAX_GATEWAY_ASSEMBLY_BYTES);
+    assemblyBudgets.set(options, budget);
+  }
+  return budget;
 }
 
 function handleHttpRequest(
@@ -494,30 +664,9 @@ function parseHello(raw: string): GatewayHandshakeHello {
   return value as GatewayHandshakeHello;
 }
 
-function parseAuthPayload(
-  bytes: Uint8Array,
-): PairingHandshakePayload | TrustedHandshakePayload | LoginHandshakePayload {
+function parseAuthPayload(bytes: Uint8Array): GatewayAuthenticationPayload {
   const value: unknown = JSON.parse(Buffer.from(bytes).toString("utf8"));
-  if (!isRecord(value)) throw new Error("Invalid authentication payload");
-  if (value.mode === "connect") return { mode: "connect" };
-  if (
-    value.mode === "login" &&
-    typeof value.deviceName === "string" &&
-    value.deviceName.length >= 1 &&
-    value.deviceName.length <= 128 &&
-    typeof value.rememberDevice === "boolean"
-  ) {
-    return value as LoginHandshakePayload;
-  }
-  if (
-    value.mode === "pair" &&
-    typeof value.pairingId === "string" &&
-    typeof value.secret === "string" &&
-    typeof value.deviceName === "string"
-  ) {
-    return value as PairingHandshakePayload;
-  }
-  throw new Error("Invalid authentication payload");
+  return parseGatewayAuthenticationPayload(value);
 }
 
 function parseCipherFrame(raw: string): GatewayCipherFrame {

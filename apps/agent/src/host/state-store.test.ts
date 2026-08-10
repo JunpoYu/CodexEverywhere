@@ -1,9 +1,19 @@
-import { mkdtemp, rm, stat } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { renameSync, writeFileSync } from "node:fs";
+import {
+  mkdtemp,
+  link,
+  readFile,
+  rm,
+  stat,
+  utimes,
+  writeFile,
+} from "node:fs/promises";
+import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { HostStateStore } from "./state-store.js";
+import { writeProcessRecord } from "./process-files.js";
 import { ThreadPermissionRegistry } from "./thread-permissions.js";
 
 const temporaryDirectories: string[] = [];
@@ -33,6 +43,47 @@ describe("HostStateStore", () => {
     );
     expect(rows).toEqual([["/work/project"]]);
     await reopened.close();
+  });
+
+  it("purges historical persistent replay rows containing authentication secrets", async () => {
+    const path = join(await temporaryDirectory(), "state.sqlite");
+    const store = await HostStateStore.open(path);
+    await store.transaction((database) => {
+      database.run("INSERT INTO idempotency_keys VALUES (?, ?, ?)", [
+        "safe",
+        JSON.stringify({ ok: true, result: { removed: true } }),
+        "2099-01-01T00:00:00.000Z",
+      ]);
+      database.run("INSERT INTO idempotency_keys VALUES (?, ?, ?)", [
+        "secret",
+        JSON.stringify({
+          ok: true,
+          result: {
+            recoveryCodes: ["RECOVERY-CODE-PLAINTEXT"],
+            resumeToken: "RESUME-TOKEN-PLAINTEXT",
+          },
+        }),
+        "2099-01-01T00:00:00.000Z",
+      ]);
+    });
+    await store.close();
+
+    const reopened = await HostStateStore.open(path);
+    await expect(
+      reopened.read(
+        (database) =>
+          database.exec("SELECT key FROM idempotency_keys ORDER BY key")[0]
+            ?.values,
+      ),
+    ).resolves.toEqual([["safe"]]);
+    await reopened.close();
+    const persisted = await readFile(path);
+    expect(persisted.includes(Buffer.from("RECOVERY-CODE-PLAINTEXT"))).toBe(
+      false,
+    );
+    expect(persisted.includes(Buffer.from("RESUME-TOKEN-PLAINTEXT"))).toBe(
+      false,
+    );
   });
 
   it("rolls back and does not persist a failed transaction", async () => {
@@ -102,6 +153,161 @@ describe("HostStateStore", () => {
     await second.close();
   });
 
+  it("serializes first-open migration across process-like stores", async () => {
+    const path = join(await temporaryDirectory(), "state.sqlite");
+    const [first, second] = await Promise.all([
+      HostStateStore.open(path),
+      HostStateStore.open(path),
+    ]);
+
+    await Promise.all([
+      first.transaction((database) =>
+        database.run("INSERT INTO workspace_roots VALUES ('/one', 'now')"),
+      ),
+      second.transaction((database) =>
+        database.run("INSERT INTO workspace_roots VALUES ('/two', 'now')"),
+      ),
+    ]);
+    await expect(
+      first.read(
+        (database) =>
+          database.exec("SELECT path FROM workspace_roots ORDER BY path")[0]
+            ?.values,
+      ),
+    ).resolves.toEqual([["/one"], ["/two"]]);
+    await first.close();
+    await second.close();
+  });
+
+  it("reclaims a stale owner through an inode-pinned quarantine", async () => {
+    const path = join(await temporaryDirectory(), "state.sqlite");
+    const lockPath = `${path}.lock`;
+    await writeProcessRecord(lockPath);
+    const currentRecord = JSON.parse(
+      await readFile(lockPath, "utf8"),
+    ) as Record<string, unknown>;
+    await writeFile(
+      lockPath,
+      `${JSON.stringify({
+        ...currentRecord,
+        pid: 2_147_483_647,
+      })}\n`,
+      { mode: 0o600 },
+    );
+
+    const store = await HostStateStore.open(path);
+    await store.transaction((database) =>
+      database.run("INSERT INTO workspace_roots VALUES ('/work', 'now')"),
+    );
+    await expect(stat(lockPath)).rejects.toMatchObject({ code: "ENOENT" });
+    await store.close();
+  });
+
+  it("treats the same hostname with a foreign boot id as a leased foreign owner", async () => {
+    const path = join(await temporaryDirectory(), "state.sqlite");
+    const lockPath = `${path}.lock`;
+    await writeFile(
+      lockPath,
+      `${JSON.stringify({
+        pid: process.pid,
+        startedAt: "2026-08-01T00:00:00.000Z",
+        host: hostname(),
+        bootId: "foreign-boot",
+      })}\n`,
+      { mode: 0o600 },
+    );
+
+    let opened = false;
+    const opening = HostStateStore.open(path).then((store) => {
+      opened = true;
+      return store;
+    });
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(opened).toBe(false);
+
+    const expired = new Date(Date.now() - 2 * 60_000);
+    await utimes(lockPath, expired, expired);
+    const store = await opening;
+    expect(opened).toBe(true);
+    await store.close();
+  });
+
+  it("blocks successor reclaim after an expired writer publishes its commit fence", async () => {
+    const path = join(await temporaryDirectory(), "state.sqlite");
+    const lockPath = `${path}.lock`;
+    const commitFencePath = `${lockPath}.commit`;
+    await writeFile(
+      lockPath,
+      `${JSON.stringify({
+        pid: process.pid,
+        startedAt: "2026-08-01T00:00:00.000Z",
+        host: hostname(),
+        bootId: "foreign-boot-after-assertion",
+      })}\n`,
+      { mode: 0o600 },
+    );
+    await link(lockPath, commitFencePath);
+    const expired = new Date(Date.now() - 2 * 60_000);
+    await utimes(lockPath, expired, expired);
+
+    let opened = false;
+    const opening = HostStateStore.open(path).then((store) => {
+      opened = true;
+      return store;
+    });
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(opened).toBe(false);
+
+    // Model the old writer completing its already-fenced publish. Only after
+    // it releases the commit fence may the successor reclaim the expired lease.
+    await rm(commitFencePath);
+    const store = await opening;
+    expect(opened).toBe(true);
+    await store.close();
+  });
+
+  it("rejects an expired writer without deleting its successor lock", async () => {
+    const path = join(await temporaryDirectory(), "state.sqlite");
+    const lockPath = `${path}.lock`;
+    const displacedPath = `${lockPath}.displaced`;
+    const replacement = {
+      pid: process.pid,
+      startedAt: new Date().toISOString(),
+      token: "successor-owner",
+    };
+    const store = await HostStateStore.open(path);
+
+    await expect(
+      store.transaction((database) => {
+        database.run("INSERT INTO workspace_roots VALUES ('/stale', 'now')");
+        // Model a successor reclaiming an expired lease while this writer was
+        // paused. The old writer resumes after the stable name was replaced.
+        renameSync(lockPath, displacedPath);
+        writeFileSync(lockPath, `${JSON.stringify(replacement)}\n`, {
+          mode: 0o600,
+        });
+      }),
+    ).rejects.toThrow("lease was lost before commit");
+
+    await expect(readFile(lockPath, "utf8")).resolves.toBe(
+      `${JSON.stringify(replacement)}\n`,
+    );
+    await rm(lockPath, { force: true });
+    const successor = await HostStateStore.open(path);
+    await successor.transaction((database) =>
+      database.run("INSERT INTO workspace_roots VALUES ('/successor', 'now')"),
+    );
+    await expect(
+      successor.read(
+        (database) =>
+          database.exec("SELECT path FROM workspace_roots ORDER BY path")[0]
+            ?.values,
+      ),
+    ).resolves.toEqual([["/successor"]]);
+    await successor.close();
+    await store.close();
+  });
+
   it("adds rollback-compatible tables without bumping a schema-4 database", async () => {
     const path = join(await temporaryDirectory(), "state.sqlite");
     const seeded = await HostStateStore.open(path);
@@ -131,7 +337,12 @@ describe("HostStateStore", () => {
         tables: database.exec(
           `SELECT name FROM sqlite_master
              WHERE type = 'table'
-               AND name IN ('thread_permissions', 'user_preferences')
+               AND name IN (
+                 'thread_permission_observation_state',
+                 'thread_permission_observations',
+                 'thread_permissions',
+                 'user_preferences'
+               )
              ORDER BY name`,
         )[0]?.values,
         permissionColumns: database
@@ -140,7 +351,12 @@ describe("HostStateStore", () => {
       })),
     ).resolves.toEqual({
       version: 4,
-      tables: [["thread_permissions"], ["user_preferences"]],
+      tables: [
+        ["thread_permission_observation_state"],
+        ["thread_permission_observations"],
+        ["thread_permissions"],
+        ["user_preferences"],
+      ],
       permissionColumns: [
         "thread_id",
         "approval_policy_json",

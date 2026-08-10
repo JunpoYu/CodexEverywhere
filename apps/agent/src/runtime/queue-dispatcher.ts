@@ -8,7 +8,10 @@ import type {
 
 import { QueueRegistry } from "../host/queue.js";
 import { WorkspaceRegistry } from "../host/workspaces.js";
-import { ThreadPermissionRegistry } from "../host/thread-permissions.js";
+import {
+  resumePermissionRepair,
+  ThreadPermissionRegistry,
+} from "../host/thread-permissions.js";
 import {
   CodexAppServerClient,
   type CodexNotification,
@@ -86,13 +89,38 @@ export class QueueDispatcher {
     this.#emit("queue/steered", { itemId, threadId });
   }
 
-  respondToServerRequest(input: {
+  async respondToServerRequest(input: {
     requestId: string;
     result?: unknown;
     error?: { code: number; message: string };
-  }): boolean {
+  }): Promise<boolean> {
     const pending = this.#serverRequests.get(input.requestId);
     if (!pending) return false;
+    const threadId = extractThreadId(pending.params);
+    if (threadId) {
+      const client = await this.#ensureClient();
+      const read = await client.request<ThreadReadResponse>("thread/read", {
+        threadId,
+        includeTurns: false,
+      });
+      if (
+        !(await this.#validateThreadWorkspace(
+          threadId,
+          read.thread.cwd,
+          client,
+        ))
+      ) {
+        this.#serverRequests.delete(input.requestId);
+        this.#serverRequestPayloads.delete(input.requestId);
+        pending.reject({
+          code: -32_000,
+          message: "Workspace authorization was revoked",
+        });
+        throw new Error(
+          "Workspace authorization was revoked for this server request",
+        );
+      }
+    }
     this.#serverRequests.delete(input.requestId);
     this.#serverRequestPayloads.delete(input.requestId);
     if (input.error) pending.reject(input.error);
@@ -122,16 +150,71 @@ export class QueueDispatcher {
         threadId,
         includeTurns: false,
       });
-      await this.#workspaces.resolve(read.thread.cwd);
-      const resumePayload = await this.#threadPermissions.applyToResume({
+      if (
+        !(await this.#validateThreadWorkspace(
+          threadId,
+          read.thread.cwd,
+          client,
+        ))
+      ) {
+        return;
+      }
+      const resumed = await this.#threadPermissions.serializeMutation(
         threadId,
-      });
-      const resumed = await client.request<ThreadResumeResponse>(
-        "thread/resume",
-        resumePayload,
+        async (): Promise<ThreadResumeResponse | undefined> => {
+          const permissionObservation =
+            await this.#threadPermissions.beginObservation(threadId);
+          let resumePayload = await this.#threadPermissions.applyToResume({
+            threadId,
+          });
+          if (
+            !(await this.#threadPermissions.observationIsCurrent(
+              threadId,
+              permissionObservation,
+            ))
+          ) {
+            resumePayload = { threadId };
+          }
+          let result = await client.request<ThreadResumeResponse>(
+            "thread/resume",
+            resumePayload,
+          );
+          if (
+            !(await this.#validateThreadWorkspace(
+              threadId,
+              result.thread.cwd,
+              client,
+            ))
+          ) {
+            return undefined;
+          }
+          const repair = resumePermissionRepair(resumePayload, result);
+          const repairObservation = repair
+            ? await this.#threadPermissions.claimRepairObservation(
+                threadId,
+                permissionObservation,
+              )
+            : undefined;
+          if (repair && repairObservation) {
+            await client.request("thread/settings/update", {
+              threadId,
+              ...repair.update,
+            });
+            result = repair.response;
+            await this.#threadPermissions.saveResponse(
+              result,
+              repairObservation,
+            );
+          } else {
+            await this.#threadPermissions.saveResponse(
+              result,
+              permissionObservation,
+            );
+          }
+          return result;
+        },
       );
-      await this.#workspaces.resolve(resumed.thread.cwd);
-      await this.#threadPermissions.saveResponse(resumed);
+      if (!resumed) return;
       if (resumed.thread.status.type === "idle") {
         await this.#drain(threadId, client);
       }
@@ -147,11 +230,6 @@ export class QueueDispatcher {
       notificationThreadId &&
       this.#desiredThreads.has(notificationThreadId)
     ) {
-      if (notification.method === "thread/settings/updated") {
-        await this.#threadPermissions
-          .saveSettingsNotification(notification.params)
-          .catch(() => undefined);
-      }
       this.#emit(
         `codex/${notification.method}`,
         asPayload(notification.params),
@@ -193,16 +271,53 @@ export class QueueDispatcher {
   }
 
   async #drain(threadId: string, client: CodexAppServerClient): Promise<void> {
+    const current = await client.request<ThreadReadResponse>("thread/read", {
+      threadId,
+      includeTurns: false,
+    });
+    const currentWorkspace = await this.#validateThreadWorkspace(
+      threadId,
+      current.thread.cwd,
+      client,
+    );
+    if (!currentWorkspace) return;
     const item = await this.#queue.claimNext(threadId);
     if (!item) {
       await this.#releaseThread(threadId, client);
       return;
     }
     try {
-      await client.request("turn/start", {
+      const queuedWorkspace = await this.#workspaces.resolveWithRevision(
+        item.workspacePath,
+      );
+      if (
+        queuedWorkspace.path !== currentWorkspace.path ||
+        queuedWorkspace.revision !== currentWorkspace.revision ||
+        queuedWorkspace.revision !==
+          (await this.#workspaces.authorizationRevision({ fresh: true }))
+      ) {
+        throw new Error(
+          "Queued workspace changed after the message was enqueued",
+        );
+      }
+      const turnPayload = {
         ...item.turnPayload,
         threadId,
-      });
+      };
+      if (hasThreadPermissionUpdate(turnPayload)) {
+        await this.#threadPermissions.serializeMutation(threadId, async () => {
+          const observation =
+            await this.#threadPermissions.beginObservation(threadId);
+          await client.request("turn/start", turnPayload);
+          await this.#threadPermissions.saveSettingsUpdate(
+            threadId,
+            turnPayload,
+            observation,
+          );
+        });
+      } else {
+        await client.request("turn/start", turnPayload);
+      }
       await this.#queue.finish(item.id);
       this.#emit("queue/started", { itemId: item.id, threadId });
     } catch (error) {
@@ -221,6 +336,27 @@ export class QueueDispatcher {
         });
       }
       await this.#releaseThread(threadId, client);
+    }
+  }
+
+  async #validateThreadWorkspace(
+    threadId: string,
+    cwd: string,
+    client: CodexAppServerClient,
+  ): Promise<{ path: string; revision: number } | undefined> {
+    try {
+      return await this.#workspaces.resolveWithRevision(cwd);
+    } catch {
+      const paused = await this.#queue.pausePending(threadId);
+      for (const item of paused) {
+        this.#emit("queue/paused", {
+          itemId: item.id,
+          threadId,
+          reason: "Workspace is no longer registered or accessible",
+        });
+      }
+      await this.#releaseThread(threadId, client);
+      return undefined;
     }
   }
 
@@ -338,4 +474,12 @@ function extractThreadId(value: unknown): string | undefined {
 
 function asPayload(value: unknown): Record<string, unknown> {
   return isRecord(value) ? value : { value };
+}
+
+function hasThreadPermissionUpdate(payload: Record<string, unknown>): boolean {
+  return (
+    payload.approvalPolicy != null ||
+    payload.approvalsReviewer != null ||
+    payload.sandboxPolicy != null
+  );
 }

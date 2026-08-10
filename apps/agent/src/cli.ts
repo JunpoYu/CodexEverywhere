@@ -46,7 +46,10 @@ import {
 } from "./runtime/app-server-supervisor.js";
 import { probeCodexInstallation } from "./runtime/codex-install.js";
 import { tuiArguments, tuiExitGuidance } from "./runtime/tui-launch.js";
-import { startTuiPermissionProxy } from "./runtime/tui-permission-proxy.js";
+import {
+  startTuiPermissionProxy,
+  tuiThreadPermissionOptions,
+} from "./runtime/tui-permission-proxy.js";
 import { inspectSshUnixAccount } from "./admin/unix-accounts.js";
 import {
   bootstrapUnixUser,
@@ -54,6 +57,7 @@ import {
 } from "./admin/user-bootstrap.js";
 import {
   installHostProvisioner,
+  inspectInstalledProvisionerCredential,
   issueSelfProvisioningGrant,
   setHostProvisionerDefaultCodexNetwork,
 } from "./admin/self-provision.js";
@@ -307,13 +311,20 @@ provisioner
   .command("status")
   .description("Show rootless provisioner health")
   .action(async () => {
-    const status = await rootlessProvisionerStatus();
+    const provisionerPaths = resolveRootlessProvisionerPaths();
+    const status = await rootlessProvisionerStatus(provisionerPaths);
     process.stdout.write(
       status.running
         ? `Rootless provisioner is running (PID ${String(status.pid)}).\n`
         : "Rootless provisioner is stopped.\n",
     );
-    if (!status.running) process.exitCode = 1;
+    const credential = await inspectInstalledProvisionerCredential(
+      provisionerPaths.configFile,
+    );
+    process.stdout.write(
+      `${credential.remainingMs <= 30 * 86_400_000 ? "WARN" : "OK"}\tHost provisioner credential\t${credential.installationId} expires at ${credential.expiresAt}\n`,
+    );
+    if (!status.running || credential.remainingMs <= 0) process.exitCode = 1;
   });
 
 provisioner
@@ -377,11 +388,7 @@ program
         permissionProxy = await startTuiPermissionProxy({
           upstreamSocketPath: paths.appServerSocket,
           runtimeDir: paths.runtimeDir,
-          prepareThreadResume: (params) =>
-            threadPermissions.applyToResume(params),
-          onThreadPermissions: async (observation) => {
-            await threadPermissions.save(observation.threadId, observation);
-          },
+          ...tuiThreadPermissionOptions(threadPermissions),
         });
         process.exitCode = await runInteractive(
           runtime.codexBinary,

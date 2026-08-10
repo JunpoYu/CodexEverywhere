@@ -2085,6 +2085,14 @@ h2 {
   border-radius: 99px;
 }
 
+.connection-symbol,
+.admin-connection > b {
+  display: none;
+  color: currentColor;
+  font-size: 11px;
+  line-height: 1;
+}
+
 .dot {
   width: 6px;
   height: 6px;
@@ -2388,12 +2396,73 @@ dialog::backdrop {
     monospace;
 }
 
+.thread-archive-filter {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  flex: none;
+  gap: 3px;
+  margin: 0 12px 9px;
+  padding: 3px;
+  background: #202329;
+  border: 1px solid #292d34;
+  border-radius: 9px;
+}
+
+.thread-archive-filter button {
+  min-height: 27px;
+  padding: 4px 8px;
+  color: #777e89;
+  background: transparent;
+  border-radius: 6px;
+  box-shadow: none;
+  font-size: 9px;
+  font-weight: 680;
+}
+
+.thread-archive-filter button:hover,
+.thread-archive-filter button.active {
+  color: #f0f1f3;
+  background: #30343b;
+}
+
+.thread-archive-filter button.active {
+  box-shadow: inset 0 0 0 1px #414650;
+}
+
 .thread-list {
   flex: 1;
   height: auto;
   min-height: 0;
   padding: 0 8px 20px;
   scrollbar-color: #3d4149 transparent;
+}
+
+.thread-list-footer {
+  display: grid;
+  flex: none;
+  gap: 5px;
+  padding: 0 12px 10px;
+}
+
+.thread-list-footer button {
+  min-height: 30px;
+  color: #b7bcc5;
+  background: #25282e;
+  border: 1px solid #343840;
+  border-radius: 8px;
+  box-shadow: none;
+  font-size: 9px;
+}
+
+.thread-list-footer button:hover:not(:disabled) {
+  color: #fff;
+  background: #30343b;
+}
+
+.thread-list-footer small {
+  color: #cf8b70;
+  font-size: 8px;
+  line-height: 1.4;
 }
 
 .thread-group-heading {
@@ -2509,6 +2578,17 @@ dialog::backdrop {
 .thread-item-heading time {
   color: #606670;
   font-size: 8px;
+}
+
+.thread-item-heading .thread-restore-label {
+  padding: 3px 6px;
+  color: #ef9a78;
+  background: #d65b3518;
+  border: 1px solid #d65b3538;
+  border-radius: 99px;
+  font-size: 8px;
+  font-weight: 720;
+  white-space: nowrap;
 }
 
 .thread-status-dot {
@@ -3142,6 +3222,20 @@ dialog::backdrop {
   color: #9fa4ad;
 }
 
+.timeline-entry.user.outcome-unknown {
+  border-color: #d89b3c;
+  box-shadow: 0 0 0 2px #d89b3c26;
+}
+
+.message-delivery-state {
+  margin-top: 8px;
+  padding-top: 7px;
+  color: #f4d49e;
+  border-top: 1px solid #ffffff20;
+  font-size: 10px;
+  line-height: 1.45;
+}
+
 .timeline-entry.agent {
   margin-right: 5%;
   border-left: 0;
@@ -3533,6 +3627,66 @@ dialog::backdrop {
 .composer-queue-item.paused .composer-queue-status {
   color: #a13f2a;
   background: #fff0eb;
+}
+
+.composer-queue-item.confirming {
+  background: #fffaf1;
+  outline: 1px solid #e8c98f;
+}
+
+.composer-queue-item.confirming .composer-queue-status {
+  color: #805715;
+  background: #ffedc8;
+}
+
+.pwa-update-prompt {
+  position: fixed;
+  z-index: 1000;
+  right: 18px;
+  bottom: 18px;
+  width: min(390px, calc(100vw - 24px));
+  padding: 13px 14px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  color: var(--text, #202226);
+  background: var(--surface, #fff);
+  border: 1px solid var(--line, #e3e4e7);
+  border-radius: 13px;
+  box-shadow: 0 18px 54px #1118272e;
+}
+
+.pwa-update-prompt > div:first-child {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+}
+
+.pwa-update-prompt strong {
+  font-size: 12px;
+}
+
+.pwa-update-prompt span {
+  color: var(--muted, #6f747d);
+  font-size: 10px;
+  line-height: 1.4;
+}
+
+.pwa-update-prompt > div:last-child {
+  flex: 0 0 auto;
+  display: flex;
+  gap: 6px;
+}
+
+.pwa-update-prompt button {
+  min-height: 32px;
+  padding: 6px 9px;
+  font-size: 10px;
+}
+
+.pwa-update-prompt.blocked {
+  border-color: #d89b3c;
 }
 
 .composer-queue-actions {
@@ -5249,6 +5403,11 @@ button.session-meta-item:focus-visible,
   box-shadow: 0 0 0 4px #58c98a1f;
 }
 
+.admin-connection.connecting i {
+  background: #d89b3c;
+  box-shadow: 0 0 0 4px #d89b3c1f;
+}
+
 .admin-login-shell {
   height: calc(100vh - 58px);
   overflow: auto;
@@ -5869,6 +6028,10 @@ button.session-meta-item:focus-visible,
     display: none;
   }
 
+  .admin-connection > b {
+    display: inline;
+  }
+
   .admin-login-card {
     padding: 24px 18px;
   }
@@ -6001,6 +6164,10 @@ button.session-meta-item:focus-visible,
 
   #status-text {
     display: none;
+  }
+
+  .connection-symbol {
+    display: inline;
   }
 }
 
@@ -6865,6 +7032,18 @@ button.session-meta-item:focus-visible,
   background: #3a211d;
 }
 
+:root[data-theme="dark"] .composer-queue-item.confirming {
+  background: #292217;
+  outline-color: #715729;
+}
+
+:root[data-theme="dark"]
+  .composer-queue-item.confirming
+  .composer-queue-status {
+  color: #f2c77f;
+  background: #493719;
+}
+
 :root[data-theme="dark"] .stop-action {
   color: #f0a08d;
   background: #33201d;
@@ -6992,5 +7171,18 @@ button.session-meta-item:focus-visible,
 
   .stop-action strong {
     display: none;
+  }
+}
+
+@media (max-width: 480px) {
+  .pwa-update-prompt {
+    right: 12px;
+    bottom: 12px;
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .pwa-update-prompt > div:last-child {
+    justify-content: flex-end;
   }
 }

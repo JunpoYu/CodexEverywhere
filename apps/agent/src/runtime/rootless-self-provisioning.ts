@@ -15,6 +15,7 @@ import {
   DEFAULT_ROOTLESS_PROVISIONER_USER,
   ROOTLESS_PROVISIONING_MAX_FILE_BYTES,
   ROOTLESS_PROVISIONING_VERSION,
+  ROOTLESS_RELAY_RENEWAL_FEATURE,
   assertFreshProvisioningTimestamp,
   decodeHandshake,
   encodeHandshake,
@@ -36,6 +37,7 @@ export async function requestRootlessSelfProvisioningGrant(
     serviceUsername?: string;
     now?: () => number;
     timeoutMs?: number;
+    renewalCapability?: string;
   } = {},
 ) {
   const serviceUsername =
@@ -96,6 +98,9 @@ export async function requestRootlessSelfProvisioningGrant(
     (responsesStat.mode & 0o7777) !== 0o711
   )
     throw new Error("Unsafe rootless provisioner queue ownership");
+  if (options.renewalCapability) {
+    assertRootlessProvisionerSupportsRelayRenewal(descriptor.features);
+  }
 
   const requestId = randomUUID();
   const createdAt = new Date((options.now ?? Date.now)()).toISOString();
@@ -110,7 +115,17 @@ export async function requestRootlessSelfProvisioningGrant(
     createdAt,
     handshake: encodeHandshake(
       initiator.start(
-        Buffer.from(JSON.stringify({ requestId, createdAt }), "utf8"),
+        Buffer.from(
+          JSON.stringify({
+            requestId,
+            createdAt,
+            operation: options.renewalCapability ? "renew-relay" : "initialize",
+            ...(options.renewalCapability
+              ? { routeCapability: options.renewalCapability }
+              : {}),
+          }),
+          "utf8",
+        ),
       ),
     ),
   };
@@ -155,6 +170,16 @@ export async function requestRootlessSelfProvisioningGrant(
   );
   if (!result.ok) throw new Error(result.error);
   return parseSelfProvisioningGrant(result.grant);
+}
+
+export function assertRootlessProvisionerSupportsRelayRenewal(
+  features: readonly string[] | undefined,
+): void {
+  if (!features?.includes(ROOTLESS_RELAY_RENEWAL_FEATURE)) {
+    throw new RootlessProvisionerUnavailableError(
+      "Rootless provisioner must be restarted on the current release before Relay renewal",
+    );
+  }
 }
 
 async function writeRequest(

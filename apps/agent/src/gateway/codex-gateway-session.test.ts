@@ -73,7 +73,33 @@ describe("CodexGatewaySession notifications", () => {
     let initializePayload: Record<string, unknown> | undefined;
     let threadListPayload: Record<string, unknown> | undefined;
     let threadResumePayload: Record<string, unknown> | undefined;
+    let delayNextResume = false;
+    let delayedResumeMessage: Record<string, unknown> | undefined;
+    let revokedServerRequestResponse: Record<string, unknown> | undefined;
     const slashMethodPayloads = new Map<string, unknown>();
+    const settingsUpdatePayloads: unknown[] = [];
+    const sendResumeResponse = (message: Record<string, unknown>) => {
+      sendToClient?.({
+        id: message.id,
+        result: {
+          thread: {
+            id: "thread-1",
+            cwd: workspacePath,
+            status: { type: "idle" },
+            turns: [],
+          },
+          approvalPolicy: "on-request",
+          approvalsReviewer: "auto_review",
+          sandbox: {
+            type: "workspaceWrite",
+            writableRoots: [],
+            networkAccess: false,
+            excludeTmpdirEnvVar: false,
+            excludeSlashTmp: false,
+          },
+        },
+      });
+    };
     httpServer.on("upgrade", (request, socket, head) => {
       webSocketServer.handleUpgrade(request, socket, head, (webSocket) => {
         webSocketServer.emit("connection", webSocket, request);
@@ -83,7 +109,12 @@ describe("CodexGatewaySession notifications", () => {
       sendToClient = (value) => socket.send(JSON.stringify(value));
       socket.on("message", (raw) => {
         const message = JSON.parse(raw.toString()) as Record<string, unknown>;
-        if (message.method === "initialize") {
+        if (
+          message.method === undefined &&
+          message.id === "approval-after-revocation"
+        ) {
+          revokedServerRequestResponse = message;
+        } else if (message.method === "initialize") {
           initializePayload = message.params as Record<string, unknown>;
           sendToClient?.({ id: message.id, result: {} });
         } else if (message.method === "thread/read") {
@@ -114,20 +145,12 @@ describe("CodexGatewaySession notifications", () => {
           });
         } else if (message.method === "thread/resume") {
           threadResumePayload = message.params as Record<string, unknown>;
-          sendToClient?.({
-            id: message.id,
-            result: {
-              thread: {
-                id: "thread-1",
-                cwd: workspacePath,
-                status: { type: "idle" },
-                turns: [],
-              },
-              approvalPolicy: "never",
-              approvalsReviewer: "user",
-              sandbox: { type: "dangerFullAccess" },
-            },
-          });
+          if (delayNextResume) {
+            delayNextResume = false;
+            delayedResumeMessage = message;
+          } else {
+            sendResumeResponse(message);
+          }
         } else if (message.method === "turn/steer") {
           steerPayload = message.params as Record<string, unknown>;
           sendToClient?.({
@@ -177,6 +200,9 @@ describe("CodexGatewaySession notifications", () => {
           ].includes(String(message.method))
         ) {
           slashMethodPayloads.set(String(message.method), message.params);
+          if (message.method === "thread/settings/update") {
+            settingsUpdatePayloads.push(message.params);
+          }
           sendToClient?.({ id: message.id, result: {} });
         }
       });
@@ -198,20 +224,30 @@ describe("CodexGatewaySession notifications", () => {
     expect(initializePayload).toMatchObject({
       capabilities: { experimentalApi: true },
     });
-    await expect(
-      session.request({
-        version: PROTOCOL_VERSION,
-        requestId: "resume-1",
-        idempotencyKey: "resume-1",
-        method: "thread/resume",
-        payload: { threadId: "thread-1" },
-      }),
-    ).resolves.toMatchObject({ thread: { id: "thread-1" } });
+    const resumed = await session.request({
+      version: PROTOCOL_VERSION,
+      requestId: "resume-1",
+      idempotencyKey: "resume-1",
+      method: "thread/resume",
+      payload: { threadId: "thread-1" },
+    });
+    expect(resumed).toMatchObject({
+      thread: { id: "thread-1" },
+      approvalPolicy: "never",
+      approvalsReviewer: "user",
+      sandbox: { type: "dangerFullAccess" },
+    });
     expect(threadResumePayload).toEqual({
       threadId: "thread-1",
       approvalPolicy: "never",
       approvalsReviewer: "user",
       sandbox: "danger-full-access",
+    });
+    expect(slashMethodPayloads.get("thread/settings/update")).toEqual({
+      threadId: "thread-1",
+      approvalPolicy: "never",
+      approvalsReviewer: "user",
+      sandboxPolicy: { type: "dangerFullAccess" },
     });
     await session.request({
       version: PROTOCOL_VERSION,
@@ -263,15 +299,20 @@ describe("CodexGatewaySession notifications", () => {
         method: "thread/settings/update",
         payload: {
           threadId: "thread-1",
-          approvalPolicy: "never",
-          sandboxPolicy: { type: "dangerFullAccess" },
+          approvalPolicy: "untrusted",
+          sandboxPolicy: { type: "readOnly", networkAccess: false },
         },
       }),
     ).resolves.toEqual({});
     expect(slashMethodPayloads.get("thread/settings/update")).toEqual({
       threadId: "thread-1",
-      approvalPolicy: "never",
-      sandboxPolicy: { type: "dangerFullAccess" },
+      approvalPolicy: "untrusted",
+      sandboxPolicy: { type: "readOnly", networkAccess: false },
+    });
+    await expect(threadPermissions.read("thread-1")).resolves.toMatchObject({
+      approvalPolicy: "untrusted",
+      approvalsReviewer: "user",
+      sandbox: "read-only",
     });
     sendToClient?.({
       method: "thread/settings/updated",
@@ -285,9 +326,12 @@ describe("CodexGatewaySession notifications", () => {
       },
     });
     await new Promise((resolve) => setTimeout(resolve, 10));
+    // Broadcast settings notifications have no server revision and may arrive
+    // out of order on independent Gateway/TUI connections. They are forwarded
+    // to the UI but cannot overwrite the causally persisted explicit request.
     await expect(threadPermissions.read("thread-1")).resolves.toMatchObject({
-      approvalPolicy: "on-request",
-      approvalsReviewer: "auto_review",
+      approvalPolicy: "untrusted",
+      approvalsReviewer: "user",
       sandbox: "read-only",
     });
     expect(events.at(-1)).toMatchObject({
@@ -324,8 +368,74 @@ describe("CodexGatewaySession notifications", () => {
       }),
     );
     await expect(threadPermissions.read("thread-1")).resolves.toEqual({
+      approvalPolicy: "untrusted",
       approvalsReviewer: "user",
+      sandbox: "read-only",
       updatedAt: expect.any(String),
+    });
+
+    await threadPermissions.save("thread-1", {
+      approvalPolicy: "never",
+      approvalsReviewer: "user",
+      sandboxPolicy: { type: "dangerFullAccess" },
+    });
+    const settingsUpdatesBeforeRacingResume = settingsUpdatePayloads.length;
+    delayNextResume = true;
+    const racingResume = session.request({
+      version: PROTOCOL_VERSION,
+      requestId: "resume-racing-notification",
+      idempotencyKey: "resume-racing-notification",
+      method: "thread/resume",
+      payload: { threadId: "thread-1" },
+    });
+    await vi.waitFor(() => expect(delayedResumeMessage).toBeDefined());
+    sendToClient?.({
+      method: "thread/settings/updated",
+      params: {
+        threadId: "thread-1",
+        threadSettings: {
+          approvalPolicy: "on-request",
+          approvalsReviewer: "auto_review",
+          sandboxPolicy: { type: "readOnly", networkAccess: false },
+        },
+      },
+    });
+    await expect(threadPermissions.read("thread-1")).resolves.toMatchObject({
+      approvalPolicy: "never",
+      approvalsReviewer: "user",
+      sandbox: "danger-full-access",
+    });
+    const racingUpdate = session.request({
+      version: PROTOCOL_VERSION,
+      requestId: "settings-after-racing-resume",
+      idempotencyKey: "settings-after-racing-resume",
+      method: "thread/settings/update",
+      payload: {
+        threadId: "thread-1",
+        approvalPolicy: "on-request",
+        approvalsReviewer: "auto_review",
+        sandboxPolicy: { type: "readOnly", networkAccess: false },
+      },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(settingsUpdatePayloads).toHaveLength(
+      settingsUpdatesBeforeRacingResume,
+    );
+    const delayed = delayedResumeMessage;
+    if (!delayed) throw new Error("Expected a delayed resume request");
+    delayedResumeMessage = undefined;
+    sendResumeResponse(delayed);
+    await expect(racingResume).resolves.toMatchObject({
+      thread: { id: "thread-1" },
+    });
+    await expect(racingUpdate).resolves.toEqual({});
+    expect(settingsUpdatePayloads).toHaveLength(
+      settingsUpdatesBeforeRacingResume + 2,
+    );
+    await expect(threadPermissions.read("thread-1")).resolves.toMatchObject({
+      approvalPolicy: "on-request",
+      approvalsReviewer: "auto_review",
+      sandbox: "read-only",
     });
     events.length = 0;
     await expect(
@@ -358,6 +468,7 @@ describe("CodexGatewaySession notifications", () => {
       limit: 100,
       useStateDbOnly: true,
     });
+    const readsBeforeDeltas = threadReads;
     for (const delta of ["A", "B", "C"]) {
       sendToClient?.({
         method: "item/agentMessage/delta",
@@ -371,7 +482,7 @@ describe("CodexGatewaySession notifications", () => {
     }
     await new Promise((resolve) => setTimeout(resolve, 20));
 
-    expect(threadReads).toBe(5);
+    expect(threadReads).toBe(readsBeforeDeltas);
     expect(events.map((event) => event.payload)).toEqual([
       expect.objectContaining({ delta: "A" }),
       expect.objectContaining({ delta: "B" }),
@@ -540,6 +651,56 @@ describe("CodexGatewaySession notifications", () => {
       ).resolves.toEqual({});
       expect(slashMethodPayloads.get(method)).toEqual({});
     }
+
+    sendToClient?.({
+      id: "approval-after-revocation",
+      method: "item/commandExecution/requestApproval",
+      params: {
+        threadId: "thread-1",
+        turnId: "turn-before-revocation",
+        itemId: "item-before-revocation",
+      },
+    });
+    await vi.waitFor(() =>
+      expect(events.at(-1)).toMatchObject({
+        type: "codex/serverRequest",
+        payload: { requestId: "approval-after-revocation" },
+      }),
+    );
+    await workspaces.remove(workspacePath);
+    await expect(
+      session.request({
+        version: PROTOCOL_VERSION,
+        requestId: "respond-after-revocation",
+        idempotencyKey: "respond-after-revocation",
+        method: "codex/server-request/respond",
+        payload: {
+          requestId: "approval-after-revocation",
+          result: { decision: "accept" },
+        },
+      }),
+    ).rejects.toThrow("Workspace authorization was revoked");
+    await vi.waitFor(() =>
+      expect(revokedServerRequestResponse).toMatchObject({
+        id: "approval-after-revocation",
+        error: { message: "Workspace authorization was revoked" },
+      }),
+    );
+    const eventCountBeforeRevocation = events.length;
+    const readsBeforeRevokedDelta = threadReads;
+    sendToClient?.({
+      method: "item/agentMessage/delta",
+      params: {
+        threadId: "thread-1",
+        turnId: "turn-after-revocation",
+        itemId: "item-after-revocation",
+        delta: "must not escape",
+      },
+    });
+    await vi.waitFor(() =>
+      expect(threadReads).toBe(readsBeforeRevokedDelta + 1),
+    );
+    expect(events).toHaveLength(eventCountBeforeRevocation);
 
     await session.close();
     await new Promise<void>((resolve, reject) =>

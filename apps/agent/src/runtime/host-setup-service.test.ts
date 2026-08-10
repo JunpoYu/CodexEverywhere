@@ -210,7 +210,7 @@ describe("HostSetupService", () => {
     });
 
     await expect(
-      service.request(envelope("setup/app-server/restart", {})),
+      service.request(envelope("setup/app-server/restart", { force: true })),
     ).resolves.toEqual({
       handled: true,
       value: { running: true, version: "codex-cli 1.2.3" },
@@ -220,8 +220,21 @@ describe("HostSetupService", () => {
       expect.objectContaining({
         codexBinary: "/home/alice/.local/bin/codex",
         env: expect.objectContaining({ HTTPS_PROXY: "http://proxy:7890" }),
+        force: true,
       }),
     );
+  });
+
+  it("rejects an app-server restart without an explicit force decision", async () => {
+    const restart = vi.fn(async () => undefined);
+    const service = new HostSetupService(resolveHostPaths(), {
+      dependencies: { restartAppServer: restart },
+    });
+
+    await expect(
+      service.request(envelope("setup/app-server/restart", {})),
+    ).rejects.toThrow("force: true");
+    expect(restart).not.toHaveBeenCalled();
   });
 
   it("imports a versioned Codex auth file without returning its contents", async () => {

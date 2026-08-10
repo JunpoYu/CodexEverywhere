@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { lstat, readFile, realpath, rm, stat } from "node:fs/promises";
 import { join, resolve } from "node:path";
 
@@ -10,11 +10,18 @@ import type {
   AdminUserSummary,
 } from "@codex-everywhere/protocol";
 
-import { readProcessRecord, isProcessAlive } from "../host/process-files.js";
+import {
+  processRecordMatches,
+  readProcessRecord,
+  signalRecordedProcess,
+} from "../host/process-files.js";
 import type { HostStateStore } from "../host/state-store.js";
 import { setUserAccessDisabled } from "./access-policy.js";
 import { AdminUserRegistry } from "./registry.js";
-import { inspectSshUnixAccount } from "./unix-accounts.js";
+import {
+  inspectSshUnixAccount,
+  type UnixAccountEligibility,
+} from "./unix-accounts.js";
 
 export const ADMIN_HELPER_PROTOCOL_VERSION = 1 as const;
 
@@ -33,6 +40,13 @@ export class AdminControlService {
   readonly #nodePath: string;
   readonly #cliPath: string;
   readonly #startedAt: string;
+  readonly #inspectUnixAccount: (
+    username: string,
+  ) => Promise<UnixAccountEligibility>;
+  readonly #inflight = new Map<
+    string,
+    { fingerprint: string; promise: Promise<unknown> }
+  >();
 
   constructor(
     state: HostStateStore,
@@ -42,6 +56,9 @@ export class AdminControlService {
       nodePath: string;
       cliPath: string;
       startedAt?: string;
+      inspectUnixAccount?: (
+        username: string,
+      ) => Promise<UnixAccountEligibility>;
     },
   ) {
     this.#registry = new AdminUserRegistry(state);
@@ -50,37 +67,107 @@ export class AdminControlService {
     this.#nodePath = options.nodePath;
     this.#cliPath = options.cliPath;
     this.#startedAt = options.startedAt ?? new Date().toISOString();
+    this.#inspectUnixAccount =
+      options.inspectUnixAccount ?? inspectSshUnixAccount;
   }
 
-  async execute(request: AdminHelperRequest): Promise<unknown> {
+  execute(request: AdminHelperRequest): Promise<unknown> {
     validateHelperRequest(request);
-    const cached = await this.#registry.readIdempotent(request.requestId);
-    if (cached !== undefined) return cached;
-    const targetUsername = payloadUsername(request.payload);
-    try {
-      const result = await this.#dispatch(request.action, request.payload);
-      if (isMutation(request.action)) {
-        await this.#registry.saveIdempotent(request.requestId, result);
-        await this.#registry.audit({
-          requestId: request.requestId,
-          actor: request.actor,
-          action: request.action,
-          ...(targetUsername ? { targetUsername } : {}),
-          result: "succeeded",
-        });
+    const fingerprint = adminRequestFingerprint(request);
+    const inflight = this.#inflight.get(request.requestId);
+    if (inflight) {
+      if (inflight.fingerprint !== fingerprint) {
+        return Promise.reject(
+          new Error("Administrator request ID was reused with different input"),
+        );
       }
+      return inflight.promise;
+    }
+    let operation: Promise<unknown>;
+    operation = this.#executeOnce(request).finally(() => {
+      if (this.#inflight.get(request.requestId)?.promise === operation) {
+        this.#inflight.delete(request.requestId);
+      }
+    });
+    this.#inflight.set(request.requestId, { fingerprint, promise: operation });
+    return operation;
+  }
+
+  async #executeOnce(request: AdminHelperRequest): Promise<unknown> {
+    const fingerprint = adminRequestFingerprint(request);
+    if (!isMutation(request.action)) {
+      return this.#dispatch(request.action, request.payload);
+    }
+    const ownerToken = randomUUID();
+    const claim = await this.#registry.claimIdempotent(
+      request.requestId,
+      fingerprint,
+      ownerToken,
+    );
+    if (claim.status === "succeeded") return claim.result;
+    if (claim.status === "failed") throw new Error(claim.error.message);
+    if (claim.status === "pending") {
+      return this.#waitForIdempotent(request.requestId, fingerprint);
+    }
+    const targetUsername = payloadUsername(request.payload);
+    let result: unknown;
+    try {
+      result = await this.#dispatch(request.action, request.payload);
+    } catch (error) {
+      await this.#registry.failIdempotent(
+        request.requestId,
+        fingerprint,
+        ownerToken,
+        error,
+      );
+      await this.#registry.audit({
+        requestId: request.requestId,
+        actor: request.actor,
+        action: request.action,
+        ...(targetUsername ? { targetUsername } : {}),
+        result: "failed",
+      });
+      throw error;
+    }
+    try {
+      await this.#registry.completeIdempotent(
+        request.requestId,
+        fingerprint,
+        ownerToken,
+        result,
+      );
+      await this.#registry.audit({
+        requestId: request.requestId,
+        actor: request.actor,
+        action: request.action,
+        ...(targetUsername ? { targetUsername } : {}),
+        result: "succeeded",
+      });
       return result;
     } catch (error) {
-      if (isMutation(request.action)) {
-        await this.#registry.audit({
-          requestId: request.requestId,
-          actor: request.actor,
-          action: request.action,
-          ...(targetUsername ? { targetUsername } : {}),
-          result: "failed",
-        });
-      }
+      await this.#registry.audit({
+        requestId: request.requestId,
+        actor: request.actor,
+        action: request.action,
+        ...(targetUsername ? { targetUsername } : {}),
+        result: "failed",
+      });
       throw error;
+    }
+  }
+
+  async #waitForIdempotent(
+    requestId: string,
+    fingerprint: string,
+  ): Promise<unknown> {
+    while (true) {
+      const state = await this.#registry.observeIdempotent(
+        requestId,
+        fingerprint,
+      );
+      if (state.status === "succeeded") return state.result;
+      if (state.status === "failed") throw new Error(state.error.message);
+      await new Promise((resolve) => setTimeout(resolve, 50));
     }
   }
 
@@ -177,7 +264,7 @@ export class AdminControlService {
   }
 
   async #inspect(username: string): Promise<unknown> {
-    const eligibility = await inspectSshUnixAccount(username);
+    const eligibility = await this.#inspectUnixAccount(username);
     return {
       version: 1,
       eligibility,
@@ -186,7 +273,7 @@ export class AdminControlService {
   }
 
   async #register(username: string): Promise<AdminUserSummary> {
-    const eligibility = await inspectSshUnixAccount(username);
+    const eligibility = await this.#inspectUnixAccount(username);
     if (!eligibility.eligible)
       throw new Error(`Unix account is not eligible: ${eligibility.reason}`);
     return this.#registry.register(eligibility.account);
@@ -277,18 +364,12 @@ export class AdminControlService {
       throw new Error(
         `User state changed: expected revision ${input.expectedRevision}, current revision ${current.revision}`,
       );
+    await this.#assertCurrentUnixIdentity(current);
     return current;
   }
 
   async #removeUser(user: AdminUserSummary): Promise<void> {
-    const eligibility = await inspectSshUnixAccount(user.username);
-    if (
-      !eligibility.eligible ||
-      eligibility.account.uid !== user.uid ||
-      resolve(eligibility.account.home) !== resolve(user.home)
-    )
-      throw new Error("Unix account identity changed; removal refused");
-    const realHome = await realpath(user.home);
+    const realHome = await this.#assertCurrentUnixIdentity(user);
     const claimed =
       user.status === "removing"
         ? user
@@ -322,6 +403,36 @@ export class AdminControlService {
       status: "removed",
     });
   }
+
+  async #assertCurrentUnixIdentity(current: AdminUserSummary): Promise<string> {
+    const eligibility = await this.#inspectUnixAccount(current.username);
+    if (
+      !eligibility.eligible ||
+      eligibility.account.username !== current.username ||
+      eligibility.account.uid !== current.uid ||
+      resolve(eligibility.account.home) !== resolve(current.home)
+    ) {
+      throw new Error("Unix account identity changed; operation refused");
+    }
+    let registeredHome: string;
+    let nssHome: string;
+    try {
+      [registeredHome, nssHome] = await Promise.all([
+        realpath(current.home),
+        realpath(eligibility.account.home),
+      ]);
+      const metadata = await stat(nssHome);
+      if (!metadata.isDirectory() || metadata.uid !== current.uid) {
+        throw new Error("unsafe home ownership");
+      }
+    } catch {
+      throw new Error("Unix account identity changed; operation refused");
+    }
+    if (registeredHome !== nssHome) {
+      throw new Error("Unix account identity changed; operation refused");
+    }
+    return registeredHome;
+  }
 }
 
 export class AdminHelperClient {
@@ -334,6 +445,27 @@ export class AdminHelperClient {
   request(value: AdminHelperRequest): Promise<unknown> {
     return runJsonHelper(this.#helperPath, value);
   }
+}
+
+function adminRequestFingerprint(request: AdminHelperRequest): string {
+  const canonical = canonicalizeJson({
+    actor: request.actor,
+    action: request.action,
+    payload: request.payload,
+  });
+  return createHash("sha256").update(JSON.stringify(canonical)).digest("hex");
+}
+
+function canonicalizeJson(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(canonicalizeJson);
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>)
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([key, item]) => [key, canonicalizeJson(item)]),
+    );
+  }
+  return value;
 }
 
 function validateHelperRequest(value: AdminHelperRequest): void {
@@ -405,7 +537,7 @@ async function userAgentOnline(uid: number): Promise<boolean> {
   );
   return Boolean(
     record &&
-    isProcessAlive(record.pid) &&
+    (await processRecordMatches(record, { uid })) &&
     (await processOwnedBy(record.pid, uid)),
   );
 }
@@ -413,17 +545,20 @@ async function userAgentOnline(uid: number): Promise<boolean> {
 async function stopUserAgent(uid: number): Promise<void> {
   const pidFile = `/tmp/codex-everywhere-${uid}/agent.pid`;
   const record = await readProcessRecord(pidFile);
-  if (!record || !isProcessAlive(record.pid)) {
+  if (!record || !(await processRecordMatches(record, { uid }))) {
     await rm(pidFile, { force: true });
     return;
   }
   if (!(await processOwnedBy(record.pid, uid)))
     throw new Error("Agent PID is not owned by the managed Unix user");
-  process.kill(record.pid, "SIGTERM");
+  await signalRecordedProcess(record, "SIGTERM", {
+    uid,
+    commandIncludes: ["agent", "serve"],
+  });
   const deadline = Date.now() + 10_000;
-  while (Date.now() < deadline && isProcessAlive(record.pid))
+  while (Date.now() < deadline && (await processRecordMatches(record, { uid })))
     await new Promise((resolve) => setTimeout(resolve, 50));
-  if (isProcessAlive(record.pid))
+  if (await processRecordMatches(record, { uid }))
     throw new Error(`Agent PID ${record.pid} did not stop after SIGTERM`);
 }
 

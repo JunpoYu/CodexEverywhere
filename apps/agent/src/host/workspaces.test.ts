@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, realpath, symlink } from "node:fs/promises";
+import { mkdtemp, mkdir, realpath, rename, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -95,7 +95,66 @@ describe("WorkspaceRegistry defaults", () => {
     await expect(
       registry.allowedPaths([child, child, outside, join(base, "missing")]),
     ).resolves.toEqual(new Set([child]));
-    expect(read).toHaveBeenCalledTimes(1);
+    // One read captures roots + revision; the second verifies that no external
+    // registry changed the persisted revision during filesystem resolution.
+    expect(read).toHaveBeenCalledTimes(2);
+    await store.close();
+  });
+
+  it("invalidates every authorization snapshot when a root is removed", async () => {
+    const base = await temporaryDirectory();
+    const root = join(base, "root");
+    await mkdir(root);
+    const statePath = join(base, "state.sqlite");
+    const store = await HostStateStore.open(statePath);
+    const registry = new WorkspaceRegistry(store);
+    await registry.add(root);
+    const firstSession = await registry.resolveWithRevision(root);
+    const secondSession = await registry.resolveWithRevision(root);
+    const externalStore = await HostStateStore.open(statePath);
+    const externalRegistry = new WorkspaceRegistry(externalStore);
+
+    await externalRegistry.remove(root);
+
+    await vi.waitFor(async () =>
+      expect(await registry.authorizationRevision()).not.toBe(
+        firstSession.revision,
+      ),
+    );
+    await expect(
+      registry.authorizationRevision({ fresh: true }),
+    ).resolves.not.toBe(secondSession.revision);
+    await expect(registry.resolve(root)).rejects.toThrow(
+      "outside registered workspace roots",
+    );
+    await externalStore.close();
+    await store.close();
+  });
+
+  it("revokes an exact stored root after the directory disappears", async () => {
+    const base = await temporaryDirectory();
+    const root = join(base, "root");
+    const movedRoot = join(base, "moved-root");
+    await mkdir(root);
+    const statePath = join(base, "state.sqlite");
+    const store = await HostStateStore.open(statePath);
+    const registry = new WorkspaceRegistry(store);
+    const storedRoot = (await registry.add(root)).root;
+    const authorized = await registry.resolveWithRevision(storedRoot);
+    await rename(root, movedRoot);
+    const externalStore = await HostStateStore.open(statePath);
+    const externalRegistry = new WorkspaceRegistry(externalStore);
+
+    await expect(externalRegistry.remove(storedRoot)).resolves.toEqual({
+      root: storedRoot,
+      removed: true,
+    });
+
+    await expect(
+      registry.authorizationRevision({ fresh: true }),
+    ).resolves.not.toBe(authorized.revision);
+    await expect(registry.list()).resolves.toEqual([]);
+    await externalStore.close();
     await store.close();
   });
 });

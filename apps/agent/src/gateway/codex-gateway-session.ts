@@ -25,7 +25,10 @@ import {
 } from "../runtime/codex-app-server-client.js";
 import type { GatewaySession } from "./direct-gateway.js";
 import { QueueRegistry } from "../host/queue.js";
-import { ThreadPermissionRegistry } from "../host/thread-permissions.js";
+import {
+  resumePermissionRepair,
+  ThreadPermissionRegistry,
+} from "../host/thread-permissions.js";
 import type {
   QueueDispatcher,
   QueueDispatcherEvent,
@@ -52,7 +55,7 @@ export class CodexGatewaySession implements GatewaySession {
   readonly #queueDispatcher: QueueDispatcher | undefined;
   readonly #events = new EventEmitter<{ event: [EventEnvelope] }>();
   readonly #serverRequests = new Map<string, CodexServerRequest>();
-  readonly #authorizedThreads = new Set<string>();
+  readonly #authorizedThreads = new Map<string, number>();
   readonly #unsubscribeQueue: (() => void) | undefined;
   #cursor = 0;
 
@@ -176,13 +179,20 @@ export class CodexGatewaySession implements GatewaySession {
         if (typeof payload.cwd !== "string")
           throw new Error("thread/start requires cwd");
         const cwd = await this.#workspaces.resolve(payload.cwd);
+        const permissionObservation =
+          await this.#threadPermissions.beginObservation();
         const response = await this.#client.request<ThreadStartResponse>(
           "thread/start",
           { ...payload, cwd },
         );
-        await this.#workspaces.resolve(response.thread.cwd);
-        this.#authorizedThreads.add(response.thread.id);
-        await this.#threadPermissions.saveResponse(response);
+        const authorization = await this.#workspaces.resolveWithRevision(
+          response.thread.cwd,
+        );
+        this.#authorizedThreads.set(response.thread.id, authorization.revision);
+        await this.#threadPermissions.saveResponse(
+          response,
+          permissionObservation,
+        );
         return response;
       }
       case "thread/resume": {
@@ -207,15 +217,27 @@ export class CodexGatewaySession implements GatewaySession {
             throw new Error("thread/settings/update cwd must be a string");
           update.cwd = await this.#workspaces.resolve(update.cwd);
         }
-        return this.#client.request(request.method, update);
+        return this.#threadPermissions.serializeMutation(threadId, async () => {
+          const permissionObservation =
+            await this.#threadPermissions.beginObservation(threadId);
+          const response = await this.#client.request(request.method, update);
+          await this.#threadPermissions.saveSettingsUpdate(
+            threadId,
+            update,
+            permissionObservation,
+          );
+          return response;
+        });
       }
       case "thread/delete": {
         const threadId = requiredString(payload, "threadId");
         await this.#authorizeThread(threadId);
-        const result = await this.#client.request(request.method, payload);
-        this.#authorizedThreads.delete(threadId);
-        await this.#threadPermissions.remove(threadId);
-        return result;
+        return this.#threadPermissions.serializeMutation(threadId, async () => {
+          const result = await this.#client.request(request.method, payload);
+          this.#authorizedThreads.delete(threadId);
+          await this.#threadPermissions.remove(threadId);
+          return result;
+        });
       }
       case "thread/fork": {
         const threadId = requiredString(payload, "threadId");
@@ -226,13 +248,20 @@ export class CodexGatewaySession implements GatewaySession {
             throw new Error("thread/fork cwd must be a string");
           forkPayload.cwd = await this.#workspaces.resolve(forkPayload.cwd);
         }
+        const permissionObservation =
+          await this.#threadPermissions.beginObservation();
         const response = await this.#client.request<ThreadForkResponse>(
           "thread/fork",
           forkPayload,
         );
-        await this.#workspaces.resolve(response.thread.cwd);
-        this.#authorizedThreads.add(response.thread.id);
-        await this.#threadPermissions.saveResponse(response);
+        const authorization = await this.#workspaces.resolveWithRevision(
+          response.thread.cwd,
+        );
+        this.#authorizedThreads.set(response.thread.id, authorization.revision);
+        await this.#threadPermissions.saveResponse(
+          response,
+          permissionObservation,
+        );
         return response;
       }
       case "thread/compact/start":
@@ -256,6 +285,28 @@ export class CodexGatewaySession implements GatewaySession {
         await this.#ensureThreadLoaded(threadId);
         if (request.method !== "turn/interrupt") {
           rejectLocalImageInput(payload.input);
+        }
+        if (
+          request.method === "turn/start" &&
+          hasThreadPermissionUpdate(payload)
+        ) {
+          return this.#threadPermissions.serializeMutation(
+            threadId,
+            async () => {
+              const observation =
+                await this.#threadPermissions.beginObservation(threadId);
+              const response = await this.#client.request(
+                request.method,
+                payload,
+              );
+              await this.#threadPermissions.saveSettingsUpdate(
+                threadId,
+                payload,
+                observation,
+              );
+              return response;
+            },
+          );
         }
         return this.#client.request(request.method, payload);
       }
@@ -285,14 +336,14 @@ export class CodexGatewaySession implements GatewaySession {
             : LEGACY_THREAD_LIST_TIMEOUT_MS,
       },
     );
-    const allowedPaths = await this.#workspaces.allowedPaths(
+    const authorization = await this.#workspaces.allowedPathsWithRevision(
       response.data.map((thread) => thread.cwd),
     );
     return {
       ...response,
       data: response.data.filter((thread) => {
-        if (allowedPaths.has(thread.cwd)) {
-          this.#authorizedThreads.add(thread.id);
+        if (authorization.paths.has(thread.cwd)) {
+          this.#authorizedThreads.set(thread.id, authorization.revision);
           return true;
         }
         return false;
@@ -307,8 +358,10 @@ export class CodexGatewaySession implements GatewaySession {
       "thread/read",
       payload,
     );
-    await this.#workspaces.resolve(response.thread.cwd);
-    this.#authorizedThreads.add(response.thread.id);
+    const authorization = await this.#workspaces.resolveWithRevision(
+      response.thread.cwd,
+    );
+    this.#authorizedThreads.set(response.thread.id, authorization.revision);
     return response;
   }
 
@@ -326,15 +379,58 @@ export class CodexGatewaySession implements GatewaySession {
     payload: Record<string, unknown>,
   ): Promise<ThreadResumeResponse> {
     const threadId = requiredString(payload, "threadId");
-    const resumePayload = await this.#threadPermissions.applyToResume(payload);
-    const response = await this.#client.request<ThreadResumeResponse>(
-      "thread/resume",
-      resumePayload,
-    );
-    await this.#workspaces.resolve(response.thread.cwd);
-    this.#authorizedThreads.add(response.thread.id);
-    await this.#threadPermissions.saveResponse(response);
-    return response;
+    return this.#threadPermissions.serializeMutation(threadId, async () => {
+      const permissionObservation =
+        await this.#threadPermissions.beginObservation(threadId);
+      let resumePayload = await this.#threadPermissions.applyToResume(payload);
+      if (
+        !(await this.#threadPermissions.observationIsCurrent(
+          threadId,
+          permissionObservation,
+        ))
+      ) {
+        // A newer explicit update/notification arrived while this resume was
+        // waiting. Do not inject an older stored snapshot back into app-server.
+        resumePayload = { ...payload };
+      }
+      const response = await this.#client.request<ThreadResumeResponse>(
+        "thread/resume",
+        resumePayload,
+      );
+      const authorization = await this.#workspaces.resolveWithRevision(
+        response.thread.cwd,
+      );
+      this.#authorizedThreads.set(response.thread.id, authorization.revision);
+      const repair = resumePermissionRepair(resumePayload, response);
+      if (!repair) {
+        await this.#threadPermissions.saveResponse(
+          response,
+          permissionObservation,
+        );
+        return response;
+      }
+      const repairObservation =
+        await this.#threadPermissions.claimRepairObservation(
+          threadId,
+          permissionObservation,
+        );
+      if (!repairObservation) {
+        await this.#threadPermissions.saveResponse(
+          response,
+          permissionObservation,
+        );
+        return response;
+      }
+      await this.#client.request("thread/settings/update", {
+        threadId,
+        ...repair.update,
+      });
+      await this.#threadPermissions.saveResponse(
+        repair.response,
+        repairObservation,
+      );
+      return repair.response;
+    });
   }
 
   async #listQueue(): Promise<{ items: unknown[] }> {
@@ -424,10 +520,24 @@ export class CodexGatewaySession implements GatewaySession {
     const item = await this.#queue.claimNext(threadId);
     if (!item) return;
     try {
-      await this.#client.request("turn/start", {
+      const turnPayload = {
         ...item.turnPayload,
         threadId,
-      });
+      };
+      if (hasThreadPermissionUpdate(turnPayload)) {
+        await this.#threadPermissions.serializeMutation(threadId, async () => {
+          const observation =
+            await this.#threadPermissions.beginObservation(threadId);
+          await this.#client.request("turn/start", turnPayload);
+          await this.#threadPermissions.saveSettingsUpdate(
+            threadId,
+            turnPayload,
+            observation,
+          );
+        });
+      } else {
+        await this.#client.request("turn/start", turnPayload);
+      }
       await this.#queue.finish(item.id);
       this.#emit("queue/started", { itemId: item.id, threadId });
     } catch (error) {
@@ -440,9 +550,9 @@ export class CodexGatewaySession implements GatewaySession {
     }
   }
 
-  #respondToServerRequest(payload: Record<string, unknown>): {
-    accepted: true;
-  } {
+  async #respondToServerRequest(
+    payload: Record<string, unknown>,
+  ): Promise<{ accepted: true }> {
     const requestId = requiredString(payload, "requestId");
     const pending = this.#serverRequests.get(requestId);
     if (!pending) {
@@ -453,7 +563,7 @@ export class CodexGatewaySession implements GatewaySession {
           }
         : undefined;
       if (
-        this.#queueDispatcher?.respondToServerRequest({
+        await this.#queueDispatcher?.respondToServerRequest({
           requestId,
           ...(error ? { error } : { result: payload.result }),
         })
@@ -461,6 +571,21 @@ export class CodexGatewaySession implements GatewaySession {
         return { accepted: true };
       }
       throw new Error("Codex server request is no longer pending");
+    }
+    const threadId = extractThreadId(pending.params);
+    if (threadId) {
+      try {
+        await this.#authorizeThread(threadId);
+      } catch {
+        this.#serverRequests.delete(requestId);
+        pending.reject({
+          code: -32_000,
+          message: "Workspace authorization was revoked",
+        });
+        throw new Error(
+          "Workspace authorization was revoked for this server request",
+        );
+      }
     }
     this.#serverRequests.delete(requestId);
     if (isRecord(payload.error)) {
@@ -477,17 +602,12 @@ export class CodexGatewaySession implements GatewaySession {
 
   async #forwardNotification(notification: CodexNotification): Promise<void> {
     const threadId = extractThreadId(notification.params);
-    if (threadId && !this.#authorizedThreads.has(threadId)) {
+    if (threadId && !(await this.#threadAuthorizationIsCurrent(threadId))) {
       try {
         await this.#authorizeThread(threadId);
       } catch {
         return;
       }
-    }
-    if (notification.method === "thread/settings/updated") {
-      await this.#threadPermissions
-        .saveSettingsNotification(notification.params)
-        .catch(() => undefined);
     }
     this.#emit(`codex/${notification.method}`, notification.params);
     if (
@@ -516,7 +636,7 @@ export class CodexGatewaySession implements GatewaySession {
   async #forwardServerRequest(request: CodexServerRequest): Promise<void> {
     const threadId = extractThreadId(request.params);
     if (!threadId) return;
-    if (!this.#authorizedThreads.has(threadId)) {
+    if (!(await this.#threadAuthorizationIsCurrent(threadId))) {
       try {
         await this.#authorizeThread(threadId);
       } catch {
@@ -535,7 +655,7 @@ export class CodexGatewaySession implements GatewaySession {
   async #forwardQueueEvent(event: QueueDispatcherEvent): Promise<void> {
     const threadId =
       extractThreadId(event.payload) ?? extractThreadId(event.payload.params);
-    if (threadId && !this.#authorizedThreads.has(threadId)) {
+    if (threadId && !(await this.#threadAuthorizationIsCurrent(threadId))) {
       try {
         await this.#authorizeThread(threadId);
       } catch {
@@ -543,6 +663,13 @@ export class CodexGatewaySession implements GatewaySession {
       }
     }
     this.#emit(event.type, event.payload);
+  }
+
+  async #threadAuthorizationIsCurrent(threadId: string): Promise<boolean> {
+    return (
+      this.#authorizedThreads.get(threadId) ===
+      (await this.#workspaces.authorizationRevision())
+    );
   }
 
   #emit(type: string, payload: unknown): void {
@@ -567,6 +694,14 @@ function requireAbsoluteWorkspacePath(path: string): void {
 function asRecord(value: unknown): Record<string, unknown> {
   if (!isRecord(value)) throw new Error("Request payload must be an object");
   return value;
+}
+
+function hasThreadPermissionUpdate(payload: Record<string, unknown>): boolean {
+  return (
+    payload.approvalPolicy != null ||
+    payload.approvalsReviewer != null ||
+    payload.sandboxPolicy != null
+  );
 }
 
 function requiredString(value: Record<string, unknown>, key: string): string {

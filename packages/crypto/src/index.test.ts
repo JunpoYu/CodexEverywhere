@@ -1,8 +1,9 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import {
   NoiseInitiator,
   NoiseResponder,
+  SecureMessageAssemblyBudget,
   base64UrlToBytes,
   bytesToBase64Url,
   encodePrologue,
@@ -48,6 +49,7 @@ describe("Noise IK secure session", () => {
     expect(
       textDecoder.decode(responder.receive(initiator.start(pairingSecret))),
     ).toBe("one-time-secret");
+    expect(responder.remoteStatic()).toEqual(clientKeys.publicKey);
     const host = responder.finish(textEncoder.encode("accepted"));
     const client = initiator.finish(host.message);
 
@@ -130,9 +132,81 @@ describe("Noise IK secure session", () => {
     const valid = client.encrypt(textEncoder.encode("still synchronized"));
     expect(textDecoder.decode(host.decrypt(valid))).toBe("still synchronized");
   });
+
+  it("releases an incomplete fragment assembly after its deadline", async () => {
+    const budget = new SecureMessageAssemblyBudget(1_000_000);
+    const { client, host } = connectedSessions({
+      maxReceiveMessageBytes: 1_000_000,
+      fragmentAssemblyTimeoutMs: 20,
+      assemblyBudget: budget,
+    });
+    const frames = client.encryptMessage(new Uint8Array(400_000));
+
+    expect(host.decryptMessage(frames[0]!)).toBeUndefined();
+    expect(budget.reservedBytes).toBe(400_000);
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    expect(budget.reservedBytes).toBe(0);
+    expect(() => host.decryptMessage(frames[1]!)).toThrow(
+      "Unexpected secure message fragment",
+    );
+  });
+
+  it("does not let slow fragments extend the absolute assembly deadline", async () => {
+    vi.useFakeTimers();
+    const budget = new SecureMessageAssemblyBudget(1_000_000);
+    const { client, host } = connectedSessions({
+      maxReceiveMessageBytes: 1_000_000,
+      fragmentAssemblyTimeoutMs: 50,
+      fragmentAssemblyAbsoluteTimeoutMs: 120,
+      assemblyBudget: budget,
+    });
+    const frames = client.encryptMessage(new Uint8Array(400_000));
+
+    try {
+      expect(host.decryptMessage(frames[0]!)).toBeUndefined();
+      await vi.advanceTimersByTimeAsync(40);
+      expect(host.decryptMessage(frames[1]!)).toBeUndefined();
+      await vi.advanceTimersByTimeAsync(40);
+      expect(host.decryptMessage(frames[2]!)).toBeUndefined();
+      expect(budget.reservedBytes).toBe(400_000);
+
+      await vi.advanceTimersByTimeAsync(41);
+      expect(budget.reservedBytes).toBe(0);
+      expect(() => host.decryptMessage(frames[3]!)).toThrow(
+        "Unexpected secure message fragment",
+      );
+    } finally {
+      host.dispose();
+      vi.useRealTimers();
+    }
+  });
+
+  it("enforces an aggregate fragment budget across sessions", () => {
+    const budget = new SecureMessageAssemblyBudget(600_000);
+    const first = connectedSessions({
+      maxReceiveMessageBytes: 1_000_000,
+      assemblyBudget: budget,
+    });
+    const second = connectedSessions({
+      maxReceiveMessageBytes: 1_000_000,
+      assemblyBudget: budget,
+    });
+    const firstFrames = first.client.encryptMessage(new Uint8Array(400_000));
+    const secondFrames = second.client.encryptMessage(new Uint8Array(400_000));
+
+    expect(first.host.decryptMessage(firstFrames[0]!)).toBeUndefined();
+    expect(() => second.host.decryptMessage(secondFrames[0]!)).toThrow(
+      "assembly budget exceeded",
+    );
+    expect(budget.reservedBytes).toBe(400_000);
+    first.host.dispose();
+    expect(budget.reservedBytes).toBe(0);
+  });
 });
 
-function connectedSessions() {
+function connectedSessions(
+  hostOptions: ConstructorParameters<typeof NoiseResponder>[2] = {},
+) {
   const clientKeys = generateStaticKeyPair();
   const hostKeys = generateStaticKeyPair();
   const prologue = encodePrologue({
@@ -146,7 +220,7 @@ function connectedSessions() {
     hostKeys.publicKey,
     prologue,
   );
-  const responder = new NoiseResponder(hostKeys, prologue);
+  const responder = new NoiseResponder(hostKeys, prologue, hostOptions);
   responder.receive(initiator.start());
   const response = responder.finish();
   const host = response.session;
