@@ -1,4 +1,11 @@
-import { mkdtemp, rename, rm, utimes, writeFile } from "node:fs/promises";
+import {
+  mkdtemp,
+  readdir,
+  rename,
+  rm,
+  utimes,
+  writeFile,
+} from "node:fs/promises";
 import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -93,6 +100,30 @@ describe("ProcessLock", () => {
         ),
       ).rejects.toThrow("Refusing to signal");
     }
+  });
+
+  it("keeps the previous complete record when publication is interrupted", async () => {
+    const directory = await temporaryDirectory();
+    const recordPath = join(directory, "agent.pid");
+    const previous = await writeProcessRecord(recordPath);
+
+    await expect(
+      writeProcessRecord(recordPath, process.pid, {
+        beforePublish: async (temporaryPath) => {
+          // Simulate a writer dying after its private temp file was truncated.
+          await writeFile(temporaryPath, "{", "utf8");
+          await expect(readProcessRecord(recordPath)).resolves.toEqual(
+            previous,
+          );
+          throw new Error("injected publication failure");
+        },
+      }),
+    ).rejects.toThrow("injected publication failure");
+
+    await expect(readProcessRecord(recordPath)).resolves.toEqual(previous);
+    expect(
+      (await readdir(directory)).filter((entry) => entry.endsWith(".tmp")),
+    ).toEqual([]);
   });
 });
 

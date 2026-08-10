@@ -43,6 +43,10 @@ import {
 
 const RECENT_AUTHENTICATION_MS = 5 * 60 * 1_000;
 
+type AdminResumeTicketMetadata = {
+  authenticatedAt: number;
+};
+
 export async function runAdminControllerService(): Promise<void> {
   const config = await loadAdminControllerConfig();
   assertControllerUser(config);
@@ -68,7 +72,8 @@ export async function runAdminControllerService(): Promise<void> {
     const hostPublicKey = Buffer.from(identity.keyPair.publicKey).toString(
       "base64url",
     );
-    const sessions = new AuthenticatedSessionRegistry();
+    const sessions =
+      new AuthenticatedSessionRegistry<AdminResumeTicketMetadata>();
     const limiter = new AuthenticationRateLimiter();
     const deviceTrust = new CachedDeviceTrustVerifier(
       new DeviceRegistry(state),
@@ -97,6 +102,7 @@ export async function runAdminControllerService(): Promise<void> {
           onAuthenticated?: () => Promise<(() => Promise<void> | void) | void>;
         },
       ) => {
+        let authenticatedAt: number | undefined;
         const sessionBinding = {
           principal: "host-admin" as const,
           nodeId: config.nodeId,
@@ -133,10 +139,19 @@ export async function runAdminControllerService(): Promise<void> {
           captureAuthenticationGeneration: () => sessions.captureGeneration(),
           registerAuthenticatedSession: (expectedGeneration, revoke) =>
             sessions.register(expectedGeneration, sessionBinding, revoke),
-          resumeAuthenticatedSession: (token, revoke) =>
-            sessions.resume(token, sessionBinding, revoke),
-          issueResumeTicket: (expectedGeneration) =>
-            sessions.issueResumeTicket(expectedGeneration, sessionBinding),
+          resumeAuthenticatedSession: (token, revoke) => {
+            const resumed = sessions.resume(token, sessionBinding, revoke);
+            if (resumed) authenticatedAt = resumed.metadata.authenticatedAt;
+            return resumed;
+          },
+          issueResumeTicket: (expectedGeneration) => {
+            authenticatedAt = Date.now();
+            return sessions.issueResumeTicket(
+              expectedGeneration,
+              sessionBinding,
+              { authenticatedAt },
+            );
+          },
           runCredentialMutation: (expectedGeneration, operation, options) =>
             sessions.runCredentialMutation(
               expectedGeneration,
@@ -163,8 +178,17 @@ export async function runAdminControllerService(): Promise<void> {
                 },
               }
             : {}),
-          createInner: async () =>
-            new AdminGatewaySession(helper, `device:${device.id}`),
+          createInner: async () => {
+            if (authenticatedAt === undefined)
+              throw new Error(
+                "Administrator authentication timestamp is missing",
+              );
+            return new AdminGatewaySession(
+              helper,
+              `device:${device.id}`,
+              authenticatedAt,
+            );
+          },
         });
       },
     };
@@ -240,14 +264,21 @@ export async function stopAdminControllerService(): Promise<boolean> {
   return true;
 }
 
-class AdminGatewaySession implements GatewaySession {
-  readonly #helper: AdminHelperClient;
+export class AdminGatewaySession implements GatewaySession {
+  readonly #helper: Pick<AdminHelperClient, "request">;
   readonly #actor: string;
-  readonly #authenticatedAt = Date.now();
+  readonly #authenticatedAt: number;
 
-  constructor(helper: AdminHelperClient, actor: string) {
+  constructor(
+    helper: Pick<AdminHelperClient, "request">,
+    actor: string,
+    authenticatedAt: number,
+  ) {
+    if (!Number.isSafeInteger(authenticatedAt) || authenticatedAt < 0)
+      throw new Error("Administrator authentication timestamp is invalid");
     this.#helper = helper;
     this.#actor = actor;
+    this.#authenticatedAt = authenticatedAt;
   }
 
   request(request: RequestEnvelope): Promise<unknown> {

@@ -143,13 +143,14 @@ export class ThreadPermissionRegistry {
   serializeMutation<T>(
     threadId: string,
     operation: () => Promise<T>,
+    options: { signal?: AbortSignal } = {},
   ): Promise<T> {
     requireThreadId(threadId);
     const previous = this.#threadMutations.get(threadId);
     const result = (previous ?? Promise.resolve())
       .catch(() => undefined)
       .then(async () => {
-        const lease = await this.acquireMutation(threadId);
+        const lease = await this.acquireMutation(threadId, options);
         try {
           return await operation();
         } finally {
@@ -169,10 +170,16 @@ export class ThreadPermissionRegistry {
     return result;
   }
 
-  acquireMutation(threadId: string): Promise<ThreadPermissionMutationLease> {
+  acquireMutation(
+    threadId: string,
+    options: { signal?: AbortSignal } = {},
+  ): Promise<ThreadPermissionMutationLease> {
     requireThreadId(threadId);
     const digest = createHash("sha256").update(threadId).digest("hex");
-    return this.#state.acquireCoordinationLock(`thread-permission-${digest}`);
+    return this.#state.acquireCoordinationLock(
+      `thread-permission-${digest}`,
+      options,
+    );
   }
 
   async save(

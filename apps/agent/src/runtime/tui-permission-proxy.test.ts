@@ -361,6 +361,66 @@ describe("TUI permission inheritance proxy", () => {
     await rm(directory, { recursive: true, force: true });
   });
 
+  it("closes promptly while a real permission lock acquisition is pending", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "ce-tui-proxy-test-"));
+    const upstreamSocketPath = join(directory, "upstream.sock");
+    const upstreamServer = createServer();
+    const upstreamWebSockets = new WebSocketServer({ noServer: true });
+    let upstreamRequests = 0;
+    upstreamServer.on("upgrade", (request, socket, head) => {
+      upstreamWebSockets.handleUpgrade(request, socket, head, (webSocket) => {
+        upstreamWebSockets.emit("connection", webSocket, request);
+      });
+    });
+    upstreamWebSockets.on("connection", (socket) => {
+      socket.on("message", () => {
+        upstreamRequests += 1;
+      });
+    });
+    await listen(upstreamServer, upstreamSocketPath);
+
+    const statePath = join(directory, "state.sqlite");
+    const ownerState = await HostStateStore.open(statePath);
+    const tuiState = await HostStateStore.open(statePath);
+    const ownerRegistry = new ThreadPermissionRegistry(ownerState);
+    const tuiRegistry = new ThreadPermissionRegistry(tuiState);
+    const heldLease = await ownerRegistry.acquireMutation("thread-1");
+    const permissionOptions = tuiThreadPermissionOptions(tuiRegistry);
+    let acquisitionStarted!: () => void;
+    const acquisitionWasStarted = new Promise<void>((resolve) => {
+      acquisitionStarted = resolve;
+    });
+    const proxy = await startTuiPermissionProxy({
+      upstreamSocketPath,
+      runtimeDir: directory,
+      ...permissionOptions,
+      acquireThreadPermissionMutation: (threadId, options) => {
+        acquisitionStarted();
+        return permissionOptions.acquireThreadPermissionMutation!(
+          threadId,
+          options,
+        );
+      },
+    });
+    const client = new WebSocket("ws://localhost", {
+      createConnection: () => createConnection({ path: proxy.socketPath }),
+      perMessageDeflate: false,
+    });
+    await waitForOpen(client);
+    client.send(resumeRequest(10, "never"));
+    await acquisitionWasStarted;
+
+    await expect(settlesWithin(proxy.close(), 1_000)).resolves.toBeUndefined();
+    expect(upstreamRequests).toBe(0);
+
+    await heldLease.release();
+    await tuiState.close();
+    await ownerState.close();
+    await closeServer(upstreamServer);
+    upstreamWebSockets.close();
+    await rm(directory, { recursive: true, force: true });
+  });
+
   it("retries explicit settings persistence under the lock and surfaces failure", async () => {
     const directory = await mkdtemp(join(tmpdir(), "ce-tui-proxy-test-"));
     const upstreamSocketPath = join(directory, "upstream.sock");
@@ -552,6 +612,25 @@ function listen(server: HttpServer, socketPath: string): Promise<void> {
 function closeServer(server: HttpServer): Promise<void> {
   return new Promise((resolve, reject) => {
     server.close((error) => (error ? reject(error) : resolve()));
+  });
+}
+
+function settlesWithin<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(
+      () => reject(new Error(`Operation did not settle within ${timeoutMs}ms`)),
+      timeoutMs,
+    );
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (error: unknown) => {
+        clearTimeout(timer);
+        reject(error);
+      },
+    );
   });
 }
 

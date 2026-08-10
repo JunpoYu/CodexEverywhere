@@ -420,6 +420,151 @@ describe("RelayServer", () => {
     newerControl.close();
   });
 
+  it("retains a renewed authorization after every route socket disconnects", async () => {
+    const signingKey = generateRelaySigningKey();
+    const clock = new ManualExpirationClock();
+    const provisioner = issueHostProvisionerCredential(signingKey, {
+      installationId,
+      expiresAt: clock.dateAfter(5_000),
+    });
+    const initial = issueProvisionedRouteCapability(
+      provisioner,
+      {
+        loginName: "alice",
+        expiresAt: clock.dateAfter(2_000),
+      },
+      clock.dateAfter(0),
+    );
+    relay = await RelayServer.start({
+      host: "127.0.0.1",
+      port: 0,
+      signingKey,
+      installationId,
+      expirationClock: clock.relayClock,
+      maxRouteAuthorizations: 1,
+    });
+    const endpoint = `ws://127.0.0.1:${relay.port}`;
+    const initialControl = await registerRoute(endpoint, initial.capability);
+
+    clock.advanceBy(100);
+    const renewed = issueProvisionedRouteCapability(
+      provisioner,
+      {
+        loginName: "alice",
+        routeId: initial.payload.routeId,
+        expiresAt: clock.dateAfter(3_000),
+      },
+      clock.dateAfter(0),
+    );
+    const initialControlClosed = closeDetails(initialControl);
+    const renewedControl = await registerRoute(endpoint, renewed.capability);
+    await expect(initialControlClosed).resolves.toEqual({
+      code: 1008,
+      reason: "route registered elsewhere",
+    });
+
+    const active = await openTunnel(
+      endpoint,
+      renewedControl,
+      renewed.capability,
+      renewed.payload.routeId,
+    );
+    const pendingBrowser = await open(endpoint);
+    pendingBrowser.send(
+      JSON.stringify({
+        type: "relay/connect",
+        version: 1,
+        routeId: renewed.payload.routeId,
+      }),
+    );
+    await next(renewedControl);
+
+    const pendingBrowserClosed = closed(pendingBrowser);
+    pendingBrowser.close();
+    await pendingBrowserClosed;
+    const activeTunnelClosed = closed(active.tunnel);
+    active.browser.terminate();
+    await activeTunnelClosed;
+    const renewedControlClosed = closed(renewedControl);
+    renewedControl.close();
+    await renewedControlClosed;
+    await eventLoopTurn();
+
+    const staleControl = await open(endpoint);
+    const staleControlClosed = closeDetails(staleControl);
+    sendRegistration(staleControl, initial.capability, "stale-node");
+    await expect(staleControlClosed).resolves.toEqual({
+      code: 1008,
+      reason: "invalid relay handshake",
+    });
+
+    // An exact retry remains valid when relay/registered was lost.
+    const retriedControl = await registerRoute(endpoint, renewed.capability);
+    expect(retriedControl.readyState).toBe(WebSocket.OPEN);
+    retriedControl.close();
+  });
+
+  it("bounds retained authorizations and releases capacity at expiration", async () => {
+    const signingKey = generateRelaySigningKey();
+    const clock = new ManualExpirationClock();
+    const retained = issueRouteCapability(signingKey, {
+      expiresAt: clock.dateAfter(1_000),
+    });
+    const waiting = issueRouteCapability(signingKey, {
+      expiresAt: clock.dateAfter(2_000),
+    });
+    relay = await RelayServer.start({
+      host: "127.0.0.1",
+      port: 0,
+      signingKey,
+      installationId,
+      expirationClock: clock.relayClock,
+      maxRouteAuthorizations: 1,
+    });
+    const endpoint = `ws://127.0.0.1:${relay.port}`;
+    const retainedControl = await registerRoute(endpoint, retained.capability);
+    const retainedControlClosed = closed(retainedControl);
+    retainedControl.close();
+    await retainedControlClosed;
+    await eventLoopTurn();
+
+    const fullControl = await open(endpoint);
+    const fullControlClosed = closeDetails(fullControl);
+    sendRegistration(fullControl, waiting.capability, "waiting-node");
+    await expect(fullControlClosed).resolves.toEqual({
+      code: 1008,
+      reason: "invalid relay handshake",
+    });
+
+    clock.advanceBy(1_000);
+    const waitingControl = await registerRoute(endpoint, waiting.capability);
+    expect(waitingControl.readyState).toBe(WebSocket.OPEN);
+    waitingControl.close();
+  });
+
+  it("releases an idle unbounded legacy authorization", async () => {
+    const signingKey = generateRelaySigningKey();
+    const first = issueRouteCapability(signingKey);
+    const second = issueRouteCapability(signingKey);
+    relay = await RelayServer.start({
+      host: "127.0.0.1",
+      port: 0,
+      signingKey,
+      installationId,
+      maxRouteAuthorizations: 1,
+    });
+    const endpoint = `ws://127.0.0.1:${relay.port}`;
+    const firstControl = await registerRoute(endpoint, first.capability);
+    const firstControlClosed = closed(firstControl);
+    firstControl.close();
+    await firstControlClosed;
+    await eventLoopTurn();
+
+    const secondControl = await registerRoute(endpoint, second.capability);
+    expect(secondControl.readyState).toBe(WebSocket.OPEN);
+    secondControl.close();
+  });
+
   it("does not replace an unbounded authorization with a finite one", async () => {
     const signingKey = generateRelaySigningKey();
     const clock = new ManualExpirationClock();
@@ -1245,6 +1390,10 @@ function next(socket: WebSocket): Promise<string> {
 function closed(socket: WebSocket): Promise<void> {
   if (socket.readyState === WebSocket.CLOSED) return Promise.resolve();
   return new Promise((resolve) => socket.once("close", () => resolve()));
+}
+
+function eventLoopTurn(): Promise<void> {
+  return new Promise((resolve) => setImmediate(resolve));
 }
 
 function closeCode(socket: WebSocket): Promise<number> {

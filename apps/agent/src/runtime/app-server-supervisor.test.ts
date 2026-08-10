@@ -16,6 +16,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { resolveHostPaths } from "../host/paths.js";
 import {
   isProcessAlive,
+  processRecordMatches,
   readProcessRecord,
   writeProcessRecord,
 } from "../host/process-files.js";
@@ -113,7 +114,7 @@ server.listen(${JSON.stringify(paths.appServerSocket)});
     }
   }, 10_000);
 
-  it("publishes no PID before readiness and reaps a timed-out child", async () => {
+  it("publishes the child identity before readiness and reaps a timed-out child", async () => {
     const directory = await temporaryDirectory();
     const paths = resolveHostPaths({
       CE_HOME: join(directory, "home"),
@@ -145,20 +146,214 @@ server.listen(${JSON.stringify(paths.appServerSocket)});
       },
       { timeout: 4_000 },
     );
-    await expect(readProcessRecord(paths.appServerPidFile)).resolves.toBe(
-      undefined,
-    );
+    const childPid = Number(await readFile(childPidFile, "utf8"));
+    await vi.waitFor(async () => {
+      const record = await readProcessRecord(paths.appServerPidFile);
+      expect(record).toMatchObject({ pid: childPid });
+      if (process.platform === "linux") {
+        expect(record).not.toHaveProperty("executable");
+        expect(record).not.toHaveProperty("cmdline");
+      }
+      await expect(processRecordMatches(record!)).resolves.toBe(true);
+    });
 
     expect(await outcome).toMatchObject({
       message: expect.stringMatching(/Timed out/u),
     });
-    const childPid = Number(await readFile(childPidFile, "utf8"));
     expect(isProcessAlive(childPid)).toBe(false);
     await expect(readProcessRecord(paths.appServerPidFile)).resolves.toBe(
       undefined,
     );
+    await expect(
+      readProcessRecord(`${paths.appServerPidFile}.starting`),
+    ).resolves.toBe(undefined);
   }, 10_000);
+
+  it("does not remove a successor record or socket while cleaning up", async () => {
+    const directory = await temporaryDirectory();
+    const paths = resolveHostPaths({
+      CE_HOME: join(directory, "home"),
+      CE_RUNTIME_DIR: join(directory, "run"),
+    });
+    await mkdir(paths.runtimeDir, { recursive: true });
+    const fakeCodex = join(directory, "timed-out-codex");
+    await writeFile(
+      fakeCodex,
+      "#!/bin/sh\ntrap 'exit 0' TERM INT\nwhile :; do sleep 1; done\n",
+      { mode: 0o700 },
+    );
+    await chmod(fakeCodex, 0o700);
+
+    const starting = ensureAppServer(paths, {
+      codexBinary: fakeCodex,
+      timeoutMs: 500,
+    });
+    const outcome = starting.then(
+      () => undefined,
+      (error: unknown) => error,
+    );
+    await vi.waitFor(async () => {
+      const record = await readProcessRecord(paths.appServerPidFile);
+      expect(record).toBeDefined();
+      expect(record?.pid).not.toBe(process.pid);
+    });
+
+    const successorRecord = await writeProcessRecord(
+      paths.appServerPidFile,
+      process.pid,
+    );
+    await writeFile(paths.appServerSocket, "successor-socket", {
+      mode: 0o600,
+    });
+
+    expect(await outcome).toMatchObject({
+      message: expect.stringMatching(/Timed out/u),
+    });
+    await expect(readProcessRecord(paths.appServerPidFile)).resolves.toEqual(
+      successorRecord,
+    );
+    await expect(readFile(paths.appServerSocket, "utf8")).resolves.toBe(
+      "successor-socket",
+    );
+  }, 10_000);
+
+  it("refuses a second spawn when the supervisor crashes before owner publication", async () => {
+    const directory = await temporaryDirectory();
+    const paths = resolveHostPaths({
+      CE_HOME: join(directory, "home"),
+      CE_RUNTIME_DIR: join(directory, "run"),
+    });
+    await mkdir(paths.runtimeDir, { recursive: true });
+    const childPidFile = join(directory, "startup-child.pid");
+    const fakeCodex = join(directory, "startup-codex");
+    await writeFile(
+      fakeCodex,
+      `#!/bin/sh\nprintf '%s' "$$" > ${JSON.stringify(
+        childPidFile,
+      )}\ntrap 'exit 0' TERM INT\nwhile :; do sleep 1; done\n`,
+      { mode: 0o700 },
+    );
+    await chmod(fakeCodex, 0o700);
+
+    const supervisorModule = new URL(
+      "./app-server-supervisor.ts",
+      import.meta.url,
+    ).href;
+    const pathsModule = new URL("../host/paths.ts", import.meta.url).href;
+    const supervisorScript = join(directory, "startup-supervisor.mjs");
+    const publishPauseMarker = join(directory, "owner-publication-paused");
+    await writeFile(
+      supervisorScript,
+      `import { writeFile } from "node:fs/promises";
+import { resolveHostPaths } from ${JSON.stringify(pathsModule)};
+import { ensureAppServer } from ${JSON.stringify(supervisorModule)};
+const paths = resolveHostPaths(${JSON.stringify({
+        CE_HOME: join(directory, "home"),
+        CE_RUNTIME_DIR: join(directory, "run"),
+      })});
+await ensureAppServer(paths, {
+  codexBinary: ${JSON.stringify(fakeCodex)},
+  timeoutMs: 60_000,
+  hooks: {
+    afterSpawnBeforeOwnerPublish: async () => {
+      await writeFile(${JSON.stringify(publishPauseMarker)}, "paused");
+      await new Promise(() => {});
+    },
+  },
 });
+`,
+      { mode: 0o600 },
+    );
+    const supervisor = spawn(
+      process.execPath,
+      ["--import", import.meta.resolve("tsx"), supervisorScript],
+      { stdio: "ignore" },
+    );
+    const replacementMarker = join(directory, "replacement-spawned");
+    const replacementCodex = join(directory, "replacement-codex");
+    await writeFile(
+      replacementCodex,
+      `#!/bin/sh\nprintf spawned > ${JSON.stringify(replacementMarker)}\n`,
+      { mode: 0o700 },
+    );
+    await chmod(replacementCodex, 0o700);
+
+    let startupOwnerPid: number | undefined;
+    try {
+      await vi.waitFor(
+        async () => {
+          await expect(readFile(publishPauseMarker, "utf8")).resolves.toBe(
+            "paused",
+          );
+          startupOwnerPid = Number(await readFile(childPidFile, "utf8"));
+          expect(isProcessAlive(startupOwnerPid)).toBe(true);
+        },
+        { timeout: 10_000 },
+      );
+      expect(startupOwnerPid).not.toBe(supervisor.pid);
+      await expect(readProcessRecord(paths.appServerPidFile)).resolves.toBe(
+        undefined,
+      );
+      const startupReservation = await readProcessRecord(
+        `${paths.appServerPidFile}.starting`,
+      );
+      expect(startupReservation).toMatchObject({ pid: supervisor.pid });
+      await expect(processRecordMatches(startupReservation!)).resolves.toBe(
+        true,
+      );
+
+      supervisor.kill("SIGKILL");
+      await new Promise<void>((resolve) =>
+        supervisor.once("close", () => resolve()),
+      );
+      const supervisorOwner = await readProcessRecord(
+        `${paths.appServerPidFile}.supervisor.lock`,
+      );
+      expect(supervisorOwner).toMatchObject({ pid: supervisor.pid });
+      await expect(processRecordMatches(supervisorOwner!)).resolves.toBe(false);
+      await expect(processRecordMatches(startupReservation!)).resolves.toBe(
+        false,
+      );
+
+      await expect(
+        ensureAppServer(paths, {
+          codexBinary: replacementCodex,
+          timeoutMs: 100,
+        }),
+      ).rejects.toThrow("refusing to start a second instance");
+      await expect(readFile(replacementMarker, "utf8")).rejects.toMatchObject({
+        code: "ENOENT",
+      });
+      expect(isProcessAlive(startupOwnerPid!)).toBe(true);
+    } finally {
+      if (supervisor.exitCode === null && supervisor.signalCode === null) {
+        supervisor.kill("SIGKILL");
+        await new Promise<void>((resolve) =>
+          supervisor.once("close", () => resolve()),
+        );
+      }
+      if (startupOwnerPid && isProcessAlive(startupOwnerPid)) {
+        await stopTestProcess(startupOwnerPid);
+      }
+    }
+  }, 20_000);
+});
+
+async function stopTestProcess(pid: number): Promise<void> {
+  process.kill(pid, "SIGTERM");
+  const gracefulDeadline = Date.now() + 2_000;
+  while (Date.now() < gracefulDeadline && isProcessAlive(pid)) {
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  if (!isProcessAlive(pid)) return;
+
+  process.kill(pid, "SIGKILL");
+  const forcedDeadline = Date.now() + 2_000;
+  while (Date.now() < forcedDeadline && isProcessAlive(pid)) {
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  expect(isProcessAlive(pid)).toBe(false);
+}
 
 async function temporaryDirectory(): Promise<string> {
   const path = await mkdtemp(join(tmpdir(), "ce-app-supervisor-test-"));

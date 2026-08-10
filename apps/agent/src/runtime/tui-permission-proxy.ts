@@ -53,8 +53,8 @@ export function tuiThreadPermissionOptions(
       registry.beginObservation(threadId),
     claimThreadPermissionRepair: (threadId, expected) =>
       registry.claimRepairObservation(threadId, expected),
-    acquireThreadPermissionMutation: (threadId) =>
-      registry.acquireMutation(threadId),
+    acquireThreadPermissionMutation: (threadId, options) =>
+      registry.acquireMutation(threadId, options),
     onThreadPermissions: async (observation, causalObservation) => {
       const { threadId, ...snapshot } = observation;
       await registry.save(threadId, snapshot, causalObservation);
@@ -106,6 +106,7 @@ export async function startTuiPermissionProxy(options: {
   ): Promise<ThreadPermissionObservation | undefined>;
   acquireThreadPermissionMutation?(
     threadId: string,
+    options?: { signal?: AbortSignal },
   ): Promise<ThreadPermissionMutationLease>;
   internalRepairTimeoutMs?: number;
   onThreadPermissions?(
@@ -135,6 +136,12 @@ export async function startTuiPermissionProxy(options: {
   const webSocketServer = new WebSocketServer({ noServer: true });
   let downstream: WebSocket | undefined;
   let closed = false;
+  const lifecycleAbort = new AbortController();
+  const abortLifecycle = (message: string) => {
+    if (!lifecycleAbort.signal.aborted) {
+      lifecycleAbort.abort(new Error(message));
+    }
+  };
   const permissionRequests = new Map<string, PendingPermissionRequest>();
   let permissionReleaseTail = Promise.resolve();
   let permissionReleaseError: unknown;
@@ -200,8 +207,16 @@ export async function startTuiPermissionProxy(options: {
                     needsMutationLease &&
                     threadId &&
                     options.acquireThreadPermissionMutation
-                      ? await options.acquireThreadPermissionMutation(threadId)
+                      ? await options.acquireThreadPermissionMutation(
+                          threadId,
+                          { signal: lifecycleAbort.signal },
+                        )
                       : undefined;
+                  pending = {
+                    method,
+                    params: message.params,
+                    ...(lease ? { lease } : {}),
+                  };
                   const observation =
                     method !== "thread/delete" &&
                     options.beginThreadPermissionObservation
@@ -212,12 +227,7 @@ export async function startTuiPermissionProxy(options: {
                             : undefined,
                         )
                       : undefined;
-                  pending = {
-                    method,
-                    params: message.params,
-                    ...(observation ? { observation } : {}),
-                    ...(lease ? { lease } : {}),
-                  };
+                  if (observation) pending.observation = observation;
                 }
                 if (
                   message.method === "thread/resume" &&
@@ -251,8 +261,14 @@ export async function startTuiPermissionProxy(options: {
           }
         });
     });
-    socket.on("close", () => upstream.close());
-    socket.on("error", () => upstream.close());
+    socket.on("close", () => {
+      abortLifecycle("TUI connection closed");
+      upstream.close();
+    });
+    socket.on("error", () => {
+      abortLifecycle("TUI connection failed");
+      upstream.close();
+    });
   });
 
   upstream.on("message", (data, isBinary) => {
@@ -402,11 +418,13 @@ export async function startTuiPermissionProxy(options: {
       });
   });
   upstream.on("close", () => {
+    abortLifecycle("App-server connection closed");
     rejectInternalRequests(internalRequests, "App-server connection closed");
     schedulePermissionRequestRelease();
     downstream?.close();
   });
   upstream.on("error", () => {
+    abortLifecycle("App-server connection failed");
     rejectInternalRequests(internalRequests, "App-server connection failed");
     schedulePermissionRequestRelease();
     downstream?.terminate();
@@ -442,6 +460,7 @@ export async function startTuiPermissionProxy(options: {
     async close(): Promise<void> {
       if (closed) return;
       closed = true;
+      abortLifecycle("TUI permission proxy closed");
       downstream?.terminate();
       upstream.terminate();
       rejectInternalRequests(internalRequests, "TUI permission proxy closed");

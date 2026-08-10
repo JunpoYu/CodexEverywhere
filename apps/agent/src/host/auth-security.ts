@@ -22,11 +22,16 @@ export type CredentialMutationRunner = <T>(
   options?: { revokeAllAfter?: boolean },
 ) => Promise<CredentialMutationResult<T>>;
 
-type ResumeTicket = {
+type ResumeTicket<TMetadata> = {
   binding: AuthenticatedSessionBinding;
   deviceKey: string;
   generation: number;
+  metadata: TMetadata;
 };
+
+type ResumeTicketMetadataArguments<TMetadata> = [TMetadata] extends [undefined]
+  ? []
+  : [metadata: TMetadata];
 
 const DEFAULT_MAX_RESUME_TICKETS = 1_024;
 const MAX_RESUME_TICKETS_PER_DEVICE = 16;
@@ -50,12 +55,12 @@ export class AuthenticationRateLimiter {
   }
 }
 
-export class AuthenticatedSessionRegistry {
+export class AuthenticatedSessionRegistry<TResumeMetadata = undefined> {
   readonly #activeSessions = new Map<
     () => void,
     { binding: AuthenticatedSessionBinding; revoke: () => void }
   >();
-  readonly #resumeTickets = new Map<string, ResumeTicket>();
+  readonly #resumeTickets = new Map<string, ResumeTicket<TResumeMetadata>>();
   readonly #resumeTicketsByDevice = new Map<string, Set<string>>();
   readonly #maxResumeTickets: number;
   #generation = 0;
@@ -90,6 +95,7 @@ export class AuthenticatedSessionRegistry {
   issueResumeTicket(
     expectedGeneration: number,
     binding: AuthenticatedSessionBinding,
+    ...metadataArguments: ResumeTicketMetadataArguments<TResumeMetadata>
   ): string | undefined {
     assertBinding(binding);
     if (expectedGeneration !== this.#generation) return undefined;
@@ -121,6 +127,7 @@ export class AuthenticatedSessionRegistry {
       binding: { ...binding },
       deviceKey,
       generation: this.#generation,
+      metadata: metadataArguments[0] as TResumeMetadata,
     });
     deviceTickets.add(digest);
     return token;
@@ -130,12 +137,20 @@ export class AuthenticatedSessionRegistry {
    * Validate a ticket and register the resumed session in one synchronous
    * generation check. Tickets remain reusable so a successful handshake whose
    * response is lost cannot lock the still-open page out of another retry.
+   * Caller-owned metadata is returned unchanged, allowing security properties
+   * such as the original authentication time to survive transport reconnects.
    */
   resume(
     token: string,
     binding: AuthenticatedSessionBinding,
     revoke: () => void,
-  ): { unregister: () => void; generation: number } | undefined {
+  ):
+    | {
+        unregister: () => void;
+        generation: number;
+        metadata: TResumeMetadata;
+      }
+    | undefined {
     assertBinding(binding);
     if (!validResumeToken(token)) return undefined;
     const digest = resumeTicketDigest(token);
@@ -158,6 +173,7 @@ export class AuthenticatedSessionRegistry {
     return {
       unregister: () => this.#activeSessions.delete(revoke),
       generation: this.#generation,
+      metadata: ticket.metadata,
     };
   }
 

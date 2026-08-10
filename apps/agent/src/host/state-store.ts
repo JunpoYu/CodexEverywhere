@@ -34,8 +34,10 @@ let sqlModule: Promise<SqlJsStatic> | undefined;
 
 export class HostStateStore {
   readonly #path: string;
+  readonly #coordinationAcquisitionAbort = new AbortController();
   #database: Database;
   #tail: Promise<void> = Promise.resolve();
+  #closePromise: Promise<void> | undefined;
   #closed = false;
 
   private constructor(path: string, database: Database) {
@@ -101,38 +103,70 @@ export class HostStateStore {
 
   async acquireCoordinationLock(
     name: string,
+    options: { signal?: AbortSignal } = {},
   ): Promise<{ release(): Promise<void> }> {
     this.#assertOpen();
     if (!/^[a-z0-9-]{1,128}$/u.test(name)) {
       throw new Error("Host state coordination lock name is invalid");
     }
-    const lock = await acquireStateLock(`${this.#path}.${name}.lock`);
+    // A TUI or app-server permission update can legitimately outlive the
+    // short transaction-lock budget. Coordination therefore waits until the
+    // live owner releases, while callers may still cancel during shutdown.
+    const signals = [
+      this.#coordinationAcquisitionAbort.signal,
+      ...(options.signal ? [options.signal] : []),
+    ];
+    const lock = await acquireStateLock(`${this.#path}.${name}.lock`, {
+      waitIndefinitely: true,
+      signals,
+    });
     try {
+      // Closing can race the final filesystem operation that acquired the
+      // public lock. Recheck before and after publishing the commit fence so a
+      // caller can never receive a new lease after this store starts closing.
+      assertAbortSignalsActive(signals);
       // Coordination protects an external app-server side effect, so the
       // lease must not become reclaimable while a live owner is paused. The
       // non-leased commit fence is recoverable only after proving the same-host
       // process identity dead and therefore fails closed across long pauses.
       const fence = await lock.beginCommit();
-      let released = false;
-      return {
-        release: async () => {
-          if (released) return;
-          await fence.release();
-          await lock.release();
-          released = true;
-        },
-      };
+      try {
+        assertAbortSignalsActive(signals);
+        let released = false;
+        return {
+          release: async () => {
+            if (released) return;
+            await fence.release();
+            await lock.release();
+            released = true;
+          },
+        };
+      } catch (error) {
+        await fence.release();
+        throw error;
+      }
     } catch (error) {
       await lock.release();
       throw error;
     }
   }
 
-  async close(): Promise<void> {
-    await this.#tail;
-    if (this.#closed) return;
-    this.#closed = true;
-    this.#database.close();
+  close(): Promise<void> {
+    if (!this.#closePromise) {
+      // Abort only acquisitions that have not returned a lease. A successfully
+      // acquired coordination lease remains caller-owned so an in-flight
+      // external side effect cannot be unfenced by store shutdown.
+      this.#coordinationAcquisitionAbort.abort(
+        new Error("Host state store is closed"),
+      );
+      this.#closePromise = (async () => {
+        await this.#tail;
+        if (this.#closed) return;
+        this.#closed = true;
+        this.#database.close();
+      })();
+    }
+    return this.#closePromise;
   }
 
   async #migrate(lock: StateLock): Promise<void> {
@@ -319,15 +353,33 @@ const STATE_LOCK_HEARTBEAT_MS = 5_000;
 const STATE_LOCK_LEASE_MS = 60_000;
 const abandonedStateLockOwners = new Map<string, Set<string>>();
 
-async function acquireStateLock(path: string): Promise<StateLock> {
-  const deadline = Date.now() + STATE_LOCK_TIMEOUT_MS;
+type StateLockWait = {
+  deadline?: number;
+  signals?: readonly AbortSignal[];
+};
+
+async function acquireStateLock(
+  path: string,
+  options: {
+    waitIndefinitely?: boolean;
+    signals?: readonly AbortSignal[];
+  } = {},
+): Promise<StateLock> {
+  const wait: StateLockWait = {
+    ...(options.waitIndefinitely
+      ? {}
+      : { deadline: Date.now() + STATE_LOCK_TIMEOUT_MS }),
+    ...(options.signals ? { signals: options.signals } : {}),
+  };
+  assertStateLockWaitActive(wait);
   await retryAbandonedStateLockReleases(path);
   while (true) {
+    assertStateLockWaitActive(wait);
     if (
-      (await stateCommitFenceIsBlocking(path)) ||
+      (await stateCommitFenceIsBlocking(path, wait)) ||
       (await hasBlockingQuarantine(path))
     ) {
-      await waitForStateLock(deadline);
+      await waitForStateLock(wait);
       continue;
     }
 
@@ -340,8 +392,8 @@ async function acquireStateLock(path: string): Promise<StateLock> {
         published = true;
       } catch (error) {
         if (!isAlreadyExists(error)) throw error;
-        if (!(await reclaimStaleStateLock(path))) {
-          await waitForStateLock(deadline);
+        if (!(await reclaimStaleStateLock(path, wait))) {
+          await waitForStateLock(wait);
         }
         continue;
       }
@@ -353,10 +405,11 @@ async function acquireStateLock(path: string): Promise<StateLock> {
       if (await hasBlockingQuarantine(path)) {
         await relinquishOwnedStateLock(path, ownerPath);
         published = false;
-        await waitForStateLock(deadline);
+        await waitForStateLock(wait);
         continue;
       }
 
+      assertStateLockWaitActive(wait);
       let released = false;
       const stopHeartbeat = startStateLockHeartbeat(ownerPath);
       acquired = true;
@@ -403,8 +456,11 @@ async function createStateLockOwner(path: string): Promise<string> {
   return ownerPath;
 }
 
-async function reclaimStaleStateLock(path: string): Promise<boolean> {
-  if (await stateCommitFenceIsBlocking(path)) return false;
+async function reclaimStaleStateLock(
+  path: string,
+  wait: StateLockWait,
+): Promise<boolean> {
+  if (await stateCommitFenceIsBlocking(path, wait)) return false;
   const proofPath = `${path}.proof.${randomUUID()}`;
   try {
     try {
@@ -436,17 +492,17 @@ async function reclaimStaleStateLock(path: string): Promise<boolean> {
       // that it lost the public name and fails its fencing assertion.
       const current = await readStateLockSnapshot(quarantinePath);
       if (
-        (await stateCommitFenceIsBlocking(path)) ||
+        (await stateCommitFenceIsBlocking(path, wait)) ||
         (current && (await stateLockLeaseIsActive(current)))
       ) {
-        await restoreQuarantinedStateLock(quarantinePath, path);
+        await restoreQuarantinedStateLock(quarantinePath, path, wait);
         return false;
       }
       await rm(quarantinePath, { force: true });
       return true;
     }
 
-    await restoreQuarantinedStateLock(quarantinePath, path);
+    await restoreQuarantinedStateLock(quarantinePath, path, wait);
     return false;
   } finally {
     await rm(proofPath, { force: true });
@@ -480,7 +536,10 @@ async function acquireStateCommitFence(
   };
 }
 
-async function stateCommitFenceIsBlocking(path: string): Promise<boolean> {
+async function stateCommitFenceIsBlocking(
+  path: string,
+  wait: StateLockWait = boundedStateLockWait(),
+): Promise<boolean> {
   const fencePath = stateCommitFencePath(path);
   const proofPath = `${fencePath}.proof.${randomUUID()}`;
   try {
@@ -513,7 +572,7 @@ async function stateCommitFenceIsBlocking(path: string): Promise<boolean> {
       await rm(quarantinePath, { force: true });
       return false;
     }
-    await restoreQuarantinedStateLock(quarantinePath, fencePath);
+    await restoreQuarantinedStateLock(quarantinePath, fencePath, wait);
     return true;
   } finally {
     await rm(proofPath, { force: true });
@@ -668,8 +727,8 @@ async function retryAbandonedStateLockReleases(path: string): Promise<void> {
 async function restoreQuarantinedStateLock(
   quarantinePath: string,
   path: string,
+  wait: StateLockWait = boundedStateLockWait(),
 ): Promise<void> {
-  const deadline = Date.now() + STATE_LOCK_TIMEOUT_MS;
   while (await pathExists(quarantinePath)) {
     try {
       await link(quarantinePath, path);
@@ -683,7 +742,7 @@ async function restoreQuarantinedStateLock(
       await rm(quarantinePath, { force: true });
       return;
     }
-    await waitForStateLock(deadline);
+    await waitForStateLock(wait);
   }
 }
 
@@ -754,10 +813,66 @@ async function pathExists(path: string): Promise<boolean> {
   }
 }
 
-async function waitForStateLock(deadline: number): Promise<void> {
-  if (Date.now() >= deadline)
+function boundedStateLockWait(): StateLockWait {
+  return { deadline: Date.now() + STATE_LOCK_TIMEOUT_MS };
+}
+
+function assertStateLockWaitActive(wait: StateLockWait): void {
+  assertAbortSignalsActive(wait.signals ?? []);
+  if (wait.deadline !== undefined && Date.now() >= wait.deadline)
     throw new Error("Timed out waiting for host state transaction lock");
-  await new Promise((resolve) => setTimeout(resolve, STATE_LOCK_POLL_MS));
+}
+
+function assertAbortSignalsActive(signals: readonly AbortSignal[]): void {
+  const aborted = signals.find((signal) => signal.aborted);
+  if (!aborted) return;
+  throw aborted.reason instanceof Error
+    ? aborted.reason
+    : new Error("Host state lock acquisition was cancelled");
+}
+
+async function waitForStateLock(wait: StateLockWait): Promise<void> {
+  assertStateLockWaitActive(wait);
+  await new Promise<void>((resolve, reject) => {
+    const listeners = new Map<AbortSignal, () => void>();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let settled = false;
+    const cleanup = () => {
+      if (timer) clearTimeout(timer);
+      for (const [signal, listener] of listeners) {
+        signal.removeEventListener("abort", listener);
+      }
+      listeners.clear();
+    };
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      resolve();
+    };
+    const cancel = (signal: AbortSignal) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      reject(
+        signal.reason instanceof Error
+          ? signal.reason
+          : new Error("Host state lock acquisition was cancelled"),
+      );
+    };
+    timer = setTimeout(finish, STATE_LOCK_POLL_MS);
+    for (const signal of wait.signals ?? []) {
+      const listener = () => cancel(signal);
+      listeners.set(signal, listener);
+      signal.addEventListener("abort", listener, { once: true });
+      // AbortSignal does not replay an abort to listeners attached after the
+      // event, so close the check/listener race explicitly.
+      if (signal.aborted) {
+        cancel(signal);
+        break;
+      }
+    }
+  });
 }
 
 async function loadSqlModule(): Promise<SqlJsStatic> {

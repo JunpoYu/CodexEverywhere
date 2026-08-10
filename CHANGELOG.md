@@ -13,15 +13,15 @@
 
 ### Fixed
 
-- 已打开页面不再因固定会话 TTL、单次心跳抖动或普通 RPC deadline 被迫离线：Direct、Relay control 与 tunnel 统一容忍连续 4 个 15 秒心跳周期，页面以最高 30 秒间隔无限重建 transport，并用绑定 Noise 身份的页面内存票据静默恢复已认证状态；同设备多窗口票据彼此独立，失效或已撤销设备通过加密握手中的结构化 `REAUTH_REQUIRED` 可靠回退，后台不触发 WebAuthn，可见后的单次交互若取消或失败会进入显式登录而不是无限重弹，反向代理清除 WebSocket close reason 也不会造成坏票据死循环。
+- 已打开页面不再因固定会话 TTL、单次心跳抖动或普通 RPC deadline 被迫离线：Direct、Relay control 与 tunnel 统一容忍连续 4 个 15 秒心跳周期，页面以最高 30 秒间隔无限重建 transport，并用绑定 Noise 身份的页面内存票据静默恢复已认证状态；同设备多窗口票据彼此独立，失效或已撤销设备通过加密握手中的结构化 `REAUTH_REQUIRED` 可靠回退，后台不触发 WebAuthn，可见后的单次交互若取消或失败会进入显式登录而不是无限重弹，反向代理清除 WebSocket close reason 也不会造成坏票据死循环。管理员页面静默恢复会继承原登录时间，不会刷新危险操作要求的五分钟 recent-auth 窗口。
 - 凭据恢复现在以认证 challenge 开始时的代次做 CAS，并与添加 Passkey、轮换恢复码和设置专用密码串行；恢复完成会撤销活动会话与全部页面票据。CLI 撤销可信设备后，新的 resume 会重新读取持久设备状态并使该设备全部 remembered 多窗口票据失效，同时不误伤之后经 Passkey 建立的临时页面会话。
 - turn 完成、后台近期 turn 合并及 snapshot 同步都会保留每个 item 已收到的准确生命周期时间，不再把 Codex 与工具卡片重置为 turn 起止时间；消息时间在明暗主题下使用满足小字号可读性的高对比配色。
-- 会话创建时或之后明确修改的审批策略、审批 reviewer 与 sandbox 权限会保存在该 Linux 用户自己的 Host 状态中；Web、后台 Queue 和所有 `ce tui` 入口以跨进程持久代次、CAS 与 per-thread coordination fence 串行化权限副作用和保存，Agent 或 Codex app-server 重启后不再回落为“按需审批 + 可写工作目录”。resume 的 `null`/缺失字段按继承处理，未知新版权限值和无版本广播仍会正常转发，但不会清空其他字段或以旧值覆盖 Codex。
+- 会话创建时或之后明确修改的审批策略、审批 reviewer 与 sandbox 权限会保存在该 Linux 用户自己的 Host 状态中；Web、后台 Queue 和所有 `ce tui` 入口以跨进程持久代次、CAS 与 per-thread coordination fence 串行化权限副作用和保存，合法的长时间权限修复可等待前一 owner 完成并在关闭时取消，不再复用普通事务的十秒 acquisition deadline；Agent 或 Codex app-server 重启后不再回落为“按需审批 + 可写工作目录”。resume 的 `null`/缺失字段按继承处理，未知新版权限值和无版本广播仍会正常转发，但不会清空其他字段或以旧值覆盖 Codex。
 - 本次权限协调格式升级要求先重启用户 Agent，再让升级前已经运行的 `ce tui` 退出并重连；关闭 TUI 不会终止活动 turn。旧进程已加载的 JavaScript 无法被新版本的持久代次和 coordination fence 追溯约束，完成重连前不承诺新并发语义。
 - `turn/start` 或 `queue/add` 在连接中断后不再把“结果未知”误报为失败并恢复成可重复发送的草稿；页面保留原 operation/idempotency key，并通过权威 thread 与 Queue 快照确认是否已经提交。
 - Service Worker 更新改为用户确认后的安全激活，不再因 `skipWaiting` 和 `controllerchange` 强制刷新而丢失草稿或一次性恢复码；管理员页面也会在休眠、断网和重新上线后恢复连接。
 - 首个 Passkey 的最终写入增加事务内空表断言；WebAuthn 注册/认证 challenge、恢复授权与 OPAQUE 登录中间态变为五分钟内一次性使用，并在成功、撤销、关闭或定时到期时主动清除，避免并发首次注册和陈旧认证状态。
-- Host 状态迁移与事务统一使用带所有权证明、租约和安全接管的跨进程锁；进程锁和 app-server supervisor 不再仅凭可复用 PID 判断身份，也不会在释放时删除后继 owner。
+- Host 状态迁移与事务统一使用带所有权证明、租约和安全接管的跨进程锁；进程锁和 app-server supervisor 不再仅凭可复用 PID 判断身份，也不会在释放时删除后继 owner。app-server supervisor 会在 spawn 前原子发布带 boot identity 的启动保留记录，再原子发布 child 的不可变进程身份；即使 supervisor 在两者之间崩溃，后继也会失败关闭而不会启动第二实例。
 - 移除 workspace 会持久推进授权 revision；已打开的 Web 会话、待处理审批和后台 Queue 在继续转发或响应前重新验证 thread 的真实 cwd，撤权后暂停并释放订阅。
 - 首屏主题初始化移出内联脚本以符合生产 CSP；流式 Markdown 增量按绘制帧合并，item 更新使用精确 DOM 定位，避免每个传输 delta 重解析累计全文和扫描完整时间线。
 - provisioned Relay capability 续签先原子保存新凭据，再只轮换 control 注册而保留已建立 tunnel；普通用户不能提交或替换 route ID。升级前 route 只允许在旧 capability 与对应旧 credential 仍有效时完整验签迁入，过期验签材料会自动删除。

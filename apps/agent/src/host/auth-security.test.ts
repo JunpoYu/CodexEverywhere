@@ -54,6 +54,22 @@ describe("AuthenticatedSessionRegistry", () => {
     expect(registry.resume(ticket, binding, vi.fn())).toBeUndefined();
   });
 
+  it("preserves typed authentication metadata across silent resume", () => {
+    const registry = new AuthenticatedSessionRegistry<{
+      authenticatedAt: number;
+    }>();
+    const binding = sessionBinding();
+    const ticket = registry.issueResumeTicket(
+      registry.captureGeneration(),
+      binding,
+      { authenticatedAt: 1_786_320_000_000 },
+    )!;
+
+    expect(registry.resume(ticket, binding, vi.fn())?.metadata).toEqual({
+      authenticatedAt: 1_786_320_000_000,
+    });
+  });
+
   it("rejects a resume ticket outside its complete Noise identity binding", () => {
     const registry = new AuthenticatedSessionRegistry();
     const binding = sessionBinding();

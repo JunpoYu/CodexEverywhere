@@ -30,6 +30,14 @@ export type ProcessRecordExpectation = {
   requireIdentity?: boolean;
 };
 
+export type AtomicRecordWriteOptions = {
+  beforePublish?: (temporaryPath: string) => Promise<void> | void;
+};
+
+export type ProcessRecordCaptureOptions = {
+  includeMutableIdentity?: boolean;
+};
+
 let linuxBootId: Promise<string | undefined> | undefined;
 
 type FileIdentity = { dev: bigint; ino: bigint };
@@ -95,15 +103,53 @@ export class ProcessLock {
 export async function writeProcessRecord(
   path: string,
   pid = process.pid,
+  options: AtomicRecordWriteOptions & ProcessRecordCaptureOptions = {},
+): Promise<ProcessRecord> {
+  const record = await captureProcessRecord(pid, options);
+  await writePrivateJsonAtomically(path, record, options);
+  return record;
+}
+
+export async function writePrivateJsonAtomically(
+  path: string,
+  value: unknown,
+  options: AtomicRecordWriteOptions = {},
 ): Promise<void> {
-  const record = await createProcessRecord(pid);
-  const handle = await open(path, "w", 0o600);
+  const temporary = `${path}.${process.pid}.${randomUUID()}.tmp`;
+  let temporaryCreated = false;
+  let published = false;
   try {
-    await handle.writeFile(`${JSON.stringify(record)}\n`, "utf8");
-    await handle.sync();
-  } finally {
-    await handle.close();
+    const handle = await open(temporary, "wx", 0o600);
+    temporaryCreated = true;
+    try {
+      await handle.writeFile(`${JSON.stringify(value)}\n`, "utf8");
+      await handle.sync();
+    } finally {
+      await handle.close();
+    }
+    await options.beforePublish?.(temporary);
+    await rename(temporary, path);
+    published = true;
+    const directory = await open(dirname(path), "r");
+    try {
+      try {
+        await directory.sync();
+      } catch (error) {
+        if (!isUnsupportedDirectorySync(error)) throw error;
+      }
+    } finally {
+      await directory.close();
+    }
+  } catch (error) {
+    if (temporaryCreated && !published) await rm(temporary, { force: true });
+    throw error;
   }
+}
+
+function isUnsupportedDirectorySync(error: unknown): boolean {
+  if (!(error instanceof Error) || !("code" in error)) return false;
+  const code = (error as NodeJS.ErrnoException).code;
+  return code === "EINVAL" || code === "ENOTSUP" || code === "EOPNOTSUPP";
 }
 
 export async function readProcessRecord(
@@ -221,7 +267,7 @@ export async function signalRecordedProcess(
 }
 
 async function createExclusiveRecord(path: string): Promise<void> {
-  const record = await createProcessRecord(process.pid);
+  const record = await captureProcessRecord(process.pid);
   const handle = await open(path, "wx", 0o600);
   try {
     await handle.writeFile(`${JSON.stringify(record)}\n`, "utf8");
@@ -456,7 +502,10 @@ async function pathExists(path: string): Promise<boolean> {
   }
 }
 
-async function createProcessRecord(pid: number): Promise<ProcessRecord> {
+export async function captureProcessRecord(
+  pid: number,
+  options: ProcessRecordCaptureOptions = {},
+): Promise<ProcessRecord> {
   const startedAt = new Date().toISOString();
   const host = hostname();
   if (process.platform !== "linux") return { pid, startedAt, host };
@@ -464,7 +513,11 @@ async function createProcessRecord(pid: number): Promise<ProcessRecord> {
   if (!identity) {
     throw new Error(`Cannot read Linux process identity for PID ${pid}`);
   }
-  return { pid, startedAt, host, ...identity };
+  if (options.includeMutableIdentity ?? true) {
+    return { pid, startedAt, host, ...identity };
+  }
+  const { executable: _executable, cmdline: _cmdline, ...immutable } = identity;
+  return { pid, startedAt, host, ...immutable };
 }
 
 async function readLinuxProcessIdentity(pid: number): Promise<

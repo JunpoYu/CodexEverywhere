@@ -30,6 +30,7 @@ const MAX_RELAY_SOCKETS = 4_096;
 const MAX_SOCKETS_PER_ADDRESS = 128;
 const MAX_PENDING_CONNECTIONS = 1_024;
 const MAX_CONNECTIONS_PER_ROUTE = 32;
+const MAX_ROUTE_AUTHORIZATIONS = 4_096;
 const MAX_CONNECTS_PER_WINDOW = 120;
 const MAX_LOOKUPS_PER_WINDOW = 120;
 const CONNECT_WINDOW_MS = 60_000;
@@ -59,6 +60,7 @@ export type RelayServerOptions = {
   tunnelHeartbeatMs?: number;
   tunnelHeartbeatMissLimit?: number;
   maxSocketsPerAddress?: number;
+  maxRouteAuthorizations?: number;
   maxConnectsPerWindow?: number;
   connectWindowMs?: number;
   maxLookupsPerWindow?: number;
@@ -193,6 +195,14 @@ export class RelayServer extends EventEmitter<{ listening: [number] }> {
       tunnelHeartbeatMissLimit <= 0
     )
       throw new Error("Relay tunnel heartbeat miss limit must be positive");
+    const maxRouteAuthorizations =
+      options.maxRouteAuthorizations ?? MAX_ROUTE_AUTHORIZATIONS;
+    if (
+      !Number.isSafeInteger(maxRouteAuthorizations) ||
+      maxRouteAuthorizations <= 0
+    ) {
+      throw new Error("Relay route authorization limit must be positive");
+    }
     const normalizedOptions = {
       ...options,
       installationId: normalizeInstallationId(options.installationId),
@@ -634,6 +644,13 @@ export class RelayServer extends EventEmitter<{ listening: [number] }> {
     generation: RouteAuthorizationGeneration,
   ): void {
     const previous = this.#routeAuthorizations.get(routeId);
+    if (
+      !previous &&
+      this.#routeAuthorizations.size >=
+        (this.#options.maxRouteAuthorizations ?? MAX_ROUTE_AUTHORIZATIONS)
+    ) {
+      throw new Error("Relay route authorization capacity exceeded");
+    }
     if (previous?.timer) this.#expirationClock.clearTimeout(previous.timer);
     const authorization: RouteAuthorization = {
       ...generation,
@@ -735,8 +752,11 @@ export class RelayServer extends EventEmitter<{ listening: [number] }> {
     }
     const authorization = this.#routeAuthorizations.get(routeId);
     if (!authorization) return;
-    if (authorization.timer)
-      this.#expirationClock.clearTimeout(authorization.timer);
+    // Finite generations are the route's rollback high-water mark. Retain them
+    // until their effective expiration even while the route is completely
+    // offline. Unbounded legacy capabilities cannot be retained forever, so
+    // they are released as soon as the route has no live state.
+    if (authorization.expiresAt !== undefined) return;
     this.#routeAuthorizations.delete(routeId);
   }
 

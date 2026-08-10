@@ -10,7 +10,7 @@ import {
 } from "node:fs/promises";
 import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { HostStateStore } from "./state-store.js";
 import { writeProcessRecord } from "./process-files.js";
@@ -18,6 +18,7 @@ import { ThreadPermissionRegistry } from "./thread-permissions.js";
 
 const temporaryDirectories: string[] = [];
 afterEach(async () => {
+  vi.useRealTimers();
   await Promise.all(
     temporaryDirectories.splice(0).map((path) => rm(path, { recursive: true })),
   );
@@ -150,6 +151,117 @@ describe("HostStateStore", () => {
       ),
     ).resolves.toEqual([["/one"], ["/two"]]);
     await first.close();
+    await second.close();
+  });
+
+  it("queues coordination owners beyond the transaction timeout", async () => {
+    const path = join(await temporaryDirectory(), "state.sqlite");
+    const first = await HostStateStore.open(path);
+    const second = await HostStateStore.open(path);
+    vi.useFakeTimers();
+    const firstLock = await first.acquireCoordinationLock("thread-example");
+    let acquiredSecond = false;
+    const secondAcquisition = second
+      .acquireCoordinationLock("thread-example")
+      .then((lock) => {
+        acquiredSecond = true;
+        return lock;
+      });
+
+    await vi.advanceTimersByTimeAsync(10_025);
+    expect(acquiredSecond).toBe(false);
+
+    await firstLock.release();
+    await vi.advanceTimersByTimeAsync(100);
+    const secondLock = await secondAcquisition;
+    expect(acquiredSecond).toBe(true);
+    await secondLock.release();
+    await first.close();
+    await second.close();
+  });
+
+  it("keeps the ten-second timeout for ordinary transactions", async () => {
+    const path = join(await temporaryDirectory(), "state.sqlite");
+    const store = await HostStateStore.open(path);
+    const lockPath = `${path}.lock`;
+    await writeProcessRecord(lockPath);
+    vi.useFakeTimers();
+    const transaction = store.transaction(() => undefined);
+    const rejected = expect(transaction).rejects.toThrow(
+      "Timed out waiting for host state transaction lock",
+    );
+
+    await vi.advanceTimersByTimeAsync(10_025);
+    await rejected;
+
+    await rm(lockPath, { force: true });
+    await store.close();
+  });
+
+  it("allows a queued coordination acquisition to be cancelled", async () => {
+    const path = join(await temporaryDirectory(), "state.sqlite");
+    const first = await HostStateStore.open(path);
+    const second = await HostStateStore.open(path);
+    const firstLock = await first.acquireCoordinationLock("thread-example");
+    const cancellation = new AbortController();
+    const secondAcquisition = second.acquireCoordinationLock("thread-example", {
+      signal: cancellation.signal,
+    });
+    const rejected = expect(secondAcquisition).rejects.toThrow(
+      "coordination cancelled",
+    );
+
+    cancellation.abort(new Error("coordination cancelled"));
+    await rejected;
+    await firstLock.release();
+    await first.close();
+    await second.close();
+  });
+
+  it("never grants a queued coordination lock after its store closes", async () => {
+    const path = join(await temporaryDirectory(), "state.sqlite");
+    const first = await HostStateStore.open(path);
+    const second = await HostStateStore.open(path);
+    const firstLock = await first.acquireCoordinationLock("thread-example");
+    let acquiredAfterClose = false;
+    const secondAcquisition = second
+      .acquireCoordinationLock("thread-example")
+      .then((lock) => {
+        acquiredAfterClose = true;
+        return lock;
+      });
+    const rejected = expect(secondAcquisition).rejects.toThrow(
+      "Host state store is closed",
+    );
+
+    await second.close();
+    await rejected;
+    await firstLock.release();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(acquiredAfterClose).toBe(false);
+    await first.close();
+  });
+
+  it("keeps an already acquired coordination lease fenced across store close", async () => {
+    const path = join(await temporaryDirectory(), "state.sqlite");
+    const first = await HostStateStore.open(path);
+    const second = await HostStateStore.open(path);
+    const firstLock = await first.acquireCoordinationLock("thread-example");
+    await first.close();
+    let acquiredSecond = false;
+    const secondAcquisition = second
+      .acquireCoordinationLock("thread-example")
+      .then((lock) => {
+        acquiredSecond = true;
+        return lock;
+      });
+
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(acquiredSecond).toBe(false);
+    await firstLock.release();
+    const secondLock = await secondAcquisition;
+    expect(acquiredSecond).toBe(true);
+    await secondLock.release();
     await second.close();
   });
 
