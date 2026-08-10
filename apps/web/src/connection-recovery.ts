@@ -1,3 +1,5 @@
+import { isGatewayRequestOutcomeUnknown } from "./gateway-client.js";
+
 export const CONNECTION_RECOVERY_DELAYS_MS = [
   0, 500, 1_000, 2_000, 4_000, 8_000, 30_000,
 ] as const;
@@ -98,4 +100,14 @@ export function isRetryableConnectionFailure(error: unknown): boolean {
   return /cannot reach host|connection (?:timed out|closed|failed|is unavailable)|relay route (?:timed out|was rejected)|encrypted handshake timed out|closed the connection during handshake|networkerror|websocket/iu.test(
     message,
   );
+}
+
+/** A request deadline is not evidence that the encrypted transport died. */
+export function shouldRecoverAfterHealthCheckFailure(error: unknown): boolean {
+  if (isGatewayRequestOutcomeUnknown(error)) return error.transportLost;
+  // host/ping has no application-level failure mode. A normal Host rejection
+  // can mean that an authenticated session was revoked while its WebSocket was
+  // intentionally left open, so preserve the previous recovery behavior for
+  // every definitive error.
+  return true;
 }

@@ -1,13 +1,6 @@
 import { randomUUID } from "node:crypto";
-import {
-  chmod,
-  chown,
-  mkdir,
-  open,
-  readFile,
-  rename,
-  rm,
-} from "node:fs/promises";
+import { constants, type Stats } from "node:fs";
+import { chown, mkdir, open, readFile, rename, rm } from "node:fs/promises";
 import { hostname } from "node:os";
 import { dirname, join, resolve } from "node:path";
 
@@ -16,12 +9,14 @@ import {
   normalizeLoginName,
 } from "@codex-everywhere/protocol/relay-capability";
 
+import { syncDirectoryForDurability } from "../host/durable-file.js";
 import { loadHostProvisioner } from "./self-provision.js";
 import { inspectSshUnixAccount } from "./unix-accounts.js";
 
 export const ADMIN_INSTALLATION_CONFIG =
   "/etc/codex-everywhere-admin-controller.json";
 export const ADMIN_CONTROLLER_VERSION = 1 as const;
+export const ADMIN_INSTALLATION_VERSION = 2 as const;
 
 export type AdminControllerConfig = {
   version: typeof ADMIN_CONTROLLER_VERSION;
@@ -49,9 +44,8 @@ export type AdminControllerPaths = {
   lockFile: string;
 };
 
-export type AdminInstallation = Pick<
+type AdminInstallationBase = Pick<
   AdminControllerConfig,
-  | "version"
   | "adminHandle"
   | "runAsUser"
   | "runAsUid"
@@ -59,6 +53,18 @@ export type AdminInstallation = Pick<
   | "serverName"
   | "home"
 >;
+
+export type AdminInstallationV1 = AdminInstallationBase & { version: 1 };
+
+export type AdminInstallationV2 = AdminInstallationBase & {
+  version: typeof ADMIN_INSTALLATION_VERSION;
+  runAsGid: number;
+  runAsHome: string;
+  runAsShell: string;
+  routeId: string;
+};
+
+export type AdminInstallation = AdminInstallationV1 | AdminInstallationV2;
 
 export function resolveAdminControllerPaths(
   home: string,
@@ -122,7 +128,7 @@ export async function installAdminController(options: {
       gid: account.gid,
       mode: 0o600,
     });
-    await writePublicInstallation(updated);
+    await writePublicInstallation(updated, account);
     return updated;
   } catch (error) {
     if (!isMissing(error)) throw error;
@@ -152,20 +158,31 @@ export async function installAdminController(options: {
     gid: account.gid,
     mode: 0o600,
   });
-  await writePublicInstallation(config);
+  await writePublicInstallation(config, account);
   return config;
 }
 
-function writePublicInstallation(config: AdminControllerConfig): Promise<void> {
+function writePublicInstallation(
+  config: AdminControllerConfig,
+  account: {
+    gid: number;
+    home: string;
+    shell: string;
+  },
+): Promise<void> {
   return writeJson(
     ADMIN_INSTALLATION_CONFIG,
     {
-      version: 1,
+      version: ADMIN_INSTALLATION_VERSION,
       adminHandle: config.adminHandle,
       runAsUser: config.runAsUser,
       runAsUid: config.runAsUid,
+      runAsGid: account.gid,
+      runAsHome: account.home,
+      runAsShell: account.shell,
       installationId: config.installationId,
       serverName: config.serverName,
+      routeId: config.routeId,
       home: config.home,
     },
     { uid: 0, gid: 0, mode: 0o644 },
@@ -193,24 +210,64 @@ export async function loadAdminControllerConfig(
   return validateAdminControllerConfig(value);
 }
 
-export async function loadAdminInstallation(): Promise<AdminInstallation> {
-  const value: unknown = JSON.parse(
-    await readFile(ADMIN_INSTALLATION_CONFIG, "utf8"),
-  );
+export async function loadAdminInstallation(
+  path = ADMIN_INSTALLATION_CONFIG,
+): Promise<AdminInstallation> {
+  const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+  let value: unknown;
+  try {
+    assertSafeAdminInstallationFile(await handle.stat());
+    value = JSON.parse(await handle.readFile("utf8")) as unknown;
+  } finally {
+    await handle.close();
+  }
+  return validateAdminInstallation(value);
+}
+
+export function validateAdminInstallation(value: unknown): AdminInstallation {
   if (!value || typeof value !== "object")
     throw new Error("Invalid administrator installation");
   const record = value as Record<string, unknown>;
   if (
-    record.version !== 1 ||
+    (record.version !== 1 && record.version !== ADMIN_INSTALLATION_VERSION) ||
     typeof record.adminHandle !== "string" ||
     typeof record.runAsUser !== "string" ||
     !Number.isSafeInteger(record.runAsUid) ||
     typeof record.installationId !== "string" ||
     typeof record.serverName !== "string" ||
-    typeof record.home !== "string"
+    typeof record.home !== "string" ||
+    !record.home.startsWith("/")
   )
     throw new Error("Invalid administrator installation");
-  return record as AdminInstallation;
+  if (record.version === 1) return record as AdminInstallationV1;
+  if (
+    !Number.isSafeInteger(record.runAsGid) ||
+    Number(record.runAsGid) < 0 ||
+    typeof record.runAsHome !== "string" ||
+    !record.runAsHome.startsWith("/") ||
+    typeof record.runAsShell !== "string" ||
+    !record.runAsShell.startsWith("/") ||
+    typeof record.routeId !== "string" ||
+    !/^[A-Za-z0-9_-]{32}$/u.test(record.routeId)
+  ) {
+    throw new Error("Invalid administrator installation");
+  }
+  return record as AdminInstallationV2;
+}
+
+export function assertSafeAdminInstallationFile(
+  file: Pick<Stats, "isFile" | "nlink" | "uid" | "mode">,
+): void {
+  if (
+    !file.isFile() ||
+    file.nlink !== 1 ||
+    file.uid !== 0 ||
+    (file.mode & 0o7777) !== 0o644
+  ) {
+    throw new Error(
+      "Administrator installation must be a single-link root-owned 0644 regular file",
+    );
+  }
 }
 
 export function validateAdminControllerConfig(
@@ -238,26 +295,31 @@ export function validateAdminControllerConfig(
   return record as AdminControllerConfig;
 }
 
-async function writeJson(
+export async function writeJson(
   path: string,
   value: unknown,
   options: { uid: number; gid: number; mode: number },
 ): Promise<void> {
   await mkdir(dirname(path), { recursive: true, mode: 0o755 });
   const temporary = `${path}.${process.pid}.${randomUUID()}.tmp`;
-  const handle = await open(temporary, "wx", options.mode);
+  let temporaryCreated = false;
+  let published = false;
   try {
-    await handle.writeFile(`${JSON.stringify(value, null, 2)}\n`, "utf8");
-    await handle.sync();
-  } finally {
-    await handle.close();
-  }
-  try {
-    await chown(temporary, options.uid, options.gid);
-    await chmod(temporary, options.mode);
+    const handle = await open(temporary, "wx", options.mode);
+    temporaryCreated = true;
+    try {
+      await handle.writeFile(`${JSON.stringify(value, null, 2)}\n`, "utf8");
+      await handle.chown(options.uid, options.gid);
+      await handle.chmod(options.mode);
+      await handle.sync();
+    } finally {
+      await handle.close();
+    }
     await rename(temporary, path);
+    published = true;
+    await syncDirectoryForDurability(dirname(path));
   } catch (error) {
-    await rm(temporary, { force: true });
+    if (temporaryCreated && !published) await rm(temporary, { force: true });
     throw error;
   }
 }

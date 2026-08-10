@@ -1,7 +1,7 @@
-import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
+import { mkdtemp, open, readFile, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   generateRelaySigningKey,
@@ -25,12 +25,88 @@ import { AdminUserRegistry } from "./registry.js";
 
 const temporaryDirectories: string[] = [];
 afterEach(async () => {
+  vi.restoreAllMocks();
   await Promise.all(
     temporaryDirectories.splice(0).map((path) => rm(path, { recursive: true })),
   );
 });
 
 describe("host self-provisioner", () => {
+  it.each(["EINVAL", "ENOTSUP", "EOPNOTSUPP"])(
+    "accepts a published private JSON file when directory fsync returns %s",
+    async (code) => {
+      const home = await temporaryDirectory();
+      const configPath = join(home, "etc", "provisioner.json");
+      await mockNextDirectorySyncFailure(home, code);
+
+      await expect(
+        installHostProvisioner(
+          {
+            origin: "https://codex.example.com",
+            relayEndpoint: "wss://codex.example.com/relay",
+            credential: issueHostProvisionerCredential(
+              generateRelaySigningKey(),
+              {
+                installationId: "hpc-cluster-1",
+                expiresAt: new Date(Date.now() + 86_400_000),
+              },
+            ),
+          },
+          configPath,
+        ),
+      ).resolves.toMatchObject({ version: 1 });
+      await expect(loadHostProvisioner(configPath)).resolves.toMatchObject({
+        credential: { installationId: "hpc-cluster-1" },
+      });
+    },
+  );
+
+  it("still reports a real directory fsync failure after publication", async () => {
+    const home = await temporaryDirectory();
+    const configPath = join(home, "etc", "provisioner.json");
+    await mockNextDirectorySyncFailure(home, "EIO");
+
+    await expect(
+      installHostProvisioner(
+        {
+          origin: "https://codex.example.com",
+          relayEndpoint: "wss://codex.example.com/relay",
+          credential: issueHostProvisionerCredential(
+            generateRelaySigningKey(),
+            {
+              installationId: "hpc-cluster-1",
+              expiresAt: new Date(Date.now() + 86_400_000),
+            },
+          ),
+        },
+        configPath,
+      ),
+    ).rejects.toMatchObject({ code: "EIO" });
+  });
+
+  it("does not mistake an unsupported-looking file fsync error for directory incompatibility", async () => {
+    const home = await temporaryDirectory();
+    const configPath = join(home, "etc", "provisioner.json");
+    await mockNextFileSyncFailure(home, "EINVAL");
+
+    await expect(
+      installHostProvisioner(
+        {
+          origin: "https://codex.example.com",
+          relayEndpoint: "wss://codex.example.com/relay",
+          credential: issueHostProvisionerCredential(
+            generateRelaySigningKey(),
+            {
+              installationId: "hpc-cluster-1",
+              expiresAt: new Date(Date.now() + 86_400_000),
+            },
+          ),
+        },
+        configPath,
+      ),
+    ).rejects.toMatchObject({ code: "EINVAL" });
+  });
+
   it("installs one private host credential and issues for the sudo Unix user", async () => {
     const home = await temporaryDirectory();
     const configPath = join(home, "etc", "provisioner.json");
@@ -499,4 +575,33 @@ function currentAccount(username: string, home: string) {
 
 async function readPrivateJson(path: string): Promise<unknown> {
   return JSON.parse(await readFile(path, "utf8")) as unknown;
+}
+
+async function mockNextDirectorySyncFailure(
+  directory: string,
+  code: string,
+): Promise<void> {
+  const sample = await open(directory, "r");
+  const prototype = Object.getPrototypeOf(sample) as {
+    sync(): Promise<void>;
+  };
+  await sample.close();
+  const error = Object.assign(new Error(`injected ${code}`), { code });
+  vi.spyOn(prototype, "sync")
+    .mockResolvedValueOnce(undefined)
+    .mockRejectedValueOnce(error);
+}
+
+async function mockNextFileSyncFailure(
+  directory: string,
+  code: string,
+): Promise<void> {
+  const sample = await open(directory, "r");
+  const prototype = Object.getPrototypeOf(sample) as {
+    sync(): Promise<void>;
+  };
+  await sample.close();
+  vi.spyOn(prototype, "sync").mockRejectedValueOnce(
+    Object.assign(new Error(`injected ${code}`), { code }),
+  );
 }

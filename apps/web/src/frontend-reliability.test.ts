@@ -40,6 +40,261 @@ describe("frontend reliability contracts", () => {
     );
   });
 
+  it("keeps user and administrator clients after a health-check-only deadline", () => {
+    const userVerification = mainSource.slice(
+      mainSource.indexOf("async function verifyActiveConnection"),
+      mainSource.indexOf("async function recoverConnection"),
+    );
+    const adminVerification = adminSource.slice(
+      adminSource.indexOf("async function verifyAdminConnection"),
+      adminSource.indexOf("async function recoverAdminConnection"),
+    );
+    for (const verification of [userVerification, adminVerification]) {
+      expect(verification).toContain(
+        "shouldRecoverAfterHealthCheckFailure(error)",
+      );
+      expect(verification).not.toContain("catch {");
+    }
+  });
+
+  it("requires explicit acknowledgement before abandoning an indeterminate thread creation", () => {
+    expect(mainSource).toContain('id="inspect-thread-start-outcome"');
+    expect(mainSource).toContain('id="abandon-thread-start-outcome"');
+    const abandon = mainSource.slice(
+      mainSource.indexOf("function abandonIndeterminateThreadStart"),
+      mainSource.indexOf("async function startTask"),
+    );
+    expect(abandon).toContain("window.confirm");
+    expect(abandon).toContain("pendingThreadStartOperation = undefined");
+    expect(abandon.indexOf("window.confirm")).toBeLessThan(
+      abandon.indexOf("pendingThreadStartOperation = undefined"),
+    );
+    const recovery = mainSource.slice(
+      mainSource.indexOf("async function resumePendingThreadStartOperation"),
+      mainSource.indexOf("async function completeStartedTask"),
+    );
+    expect(recovery).toContain("IDEMPOTENCY_OUTCOME_INDETERMINATE");
+    expect(recovery).toContain("operation.manualReviewRequired = true");
+    expect(recovery).toContain("renderIndeterminateThreadStart()");
+  });
+
+  it("keeps an opaque unresolved thread creation marker across same-tab reloads", () => {
+    const openNewSession = mainSource.slice(
+      mainSource.indexOf("async function openNewSession"),
+      mainSource.indexOf("function renderReasoningEfforts"),
+    );
+    const startTask = mainSource.slice(
+      mainSource.indexOf("async function startTask"),
+      mainSource.indexOf("async function resumePendingThreadStartOperation"),
+    );
+    const recovery = mainSource.slice(
+      mainSource.indexOf("async function resumePendingThreadStartOperation"),
+      mainSource.indexOf("async function completeStartedTask"),
+    );
+    const abandon = mainSource.slice(
+      mainSource.indexOf("function abandonIndeterminateThreadStart"),
+      mainSource.indexOf("async function startTask"),
+    );
+
+    expect(mainSource).toContain("hasUnresolvedThreadStartMarker");
+    expect(openNewSession).toContain("threadStartManualReviewRequired()");
+    expect(startTask).toContain("armUnresolvedThreadStartMarker()");
+    expect(recovery).toContain("clearThreadStartSafetyMarker()");
+    expect(abandon).toContain("clearThreadStartSafetyMarker()");
+    expect(mainSource).toContain('"beforeunload"');
+    expect(mainSource).toContain("warnBeforeUnresolvedMutationUnload");
+    const beforeUnload = mainSource.slice(
+      mainSource.indexOf("function warnBeforeUnresolvedMutationUnload"),
+      mainSource.indexOf("function renderIndeterminateThreadStart"),
+    );
+    expect(beforeUnload).toContain("pendingComposerOperations.size > 0");
+    expect(beforeUnload).toContain("inFlightComposerOperations.size > 0");
+  });
+
+  it("uses each pending send's pre-send turn boundary for bounded negative reconciliation", () => {
+    const createOperation = mainSource.slice(
+      mainSource.indexOf("function createPendingComposerOperation"),
+      mainSource.indexOf("function pendingQueueItem"),
+    );
+    const reconcileOperations = mainSource.slice(
+      mainSource.indexOf("function reconcilePendingComposerOperations"),
+      mainSource.indexOf("async function retryPendingComposerOperation"),
+    );
+    expect(createOperation).toContain("activeNewestTurnId");
+    expect(createOperation).toContain("reconciliationBoundaryTurnId");
+    expect(reconcileOperations).toContain(
+      "composerTurnSnapshotCoversOperation",
+    );
+    expect(reconcileOperations).toContain(
+      "boundaryTurnId: operation.reconciliationBoundaryTurnId",
+    );
+    expect(reconcileOperations).toContain(
+      "turnsAvailable: turnsCoverOperation",
+    );
+  });
+
+  it("fails closed into explicit composer review when legacy history cannot be read", () => {
+    expect(mainSource).toContain('id="composer-outcome-review"');
+    expect(mainSource).toContain('id="inspect-composer-outcome"');
+    expect(mainSource).toContain('id="abandon-composer-outcome"');
+    const reconciliation = mainSource.slice(
+      mainSource.indexOf(
+        "async function reconcileAllPendingComposerOperations",
+      ),
+      mainSource.indexOf("function startThreadSync"),
+    );
+    const abandon = mainSource.slice(
+      mainSource.indexOf("function abandonManualComposerOutcome"),
+      mainSource.indexOf("async function retryPendingComposerOperation"),
+    );
+    expect(reconciliation).toContain("snapshot.manualReviewRequired");
+    expect(reconciliation).toContain("markComposerOperationManualReview");
+    expect(abandon).toContain("window.confirm");
+    expect(abandon).toContain("pendingComposerOperations.delete");
+    expect(abandon).not.toContain("messageInput.value = operation.text");
+  });
+
+  it("keeps durable turn and Queue outcomes in manual review instead of restoring or deleting", () => {
+    const firstTurn = mainSource.slice(
+      mainSource.indexOf("async function completeStartedTask"),
+      mainSource.indexOf("function setComposerSubmitting"),
+    );
+    const submission = mainSource.slice(
+      mainSource.indexOf("async function submitComposerMessage"),
+      mainSource.indexOf("async function sendTurn"),
+    );
+    const slashPrompt = mainSource.slice(
+      mainSource.indexOf("async function sendSlashPrompt"),
+      mainSource.indexOf("async function resumeSlashTarget"),
+    );
+    const retry = mainSource.slice(
+      mainSource.indexOf("async function retryPendingComposerOperation"),
+      mainSource.indexOf("function hasAutomaticComposerReconciliation"),
+    );
+    const indeterminate = mainSource.slice(
+      mainSource.indexOf("function markComposerOperationIndeterminate"),
+      mainSource.indexOf("function renderPendingComposerOperation"),
+    );
+
+    expect(firstTurn).toContain("isGatewayMutationOutcomeIndeterminate");
+    expect(firstTurn).toContain("markComposerOperationIndeterminate");
+    expect(
+      firstTurn.indexOf("markComposerOperationIndeterminate"),
+    ).toBeLessThan(
+      firstTurn.indexOf('await taskClient.request("thread/delete"'),
+    );
+    expect(submission).toContain("isGatewayMutationOutcomeIndeterminate");
+    expect(submission).toContain("markComposerOperationIndeterminate");
+    expect(slashPrompt).toContain("isGatewayMutationOutcomeIndeterminate");
+    expect(slashPrompt).toContain("markComposerOperationIndeterminate");
+    expect(
+      slashPrompt.indexOf("markComposerOperationIndeterminate"),
+    ).toBeLessThan(slashPrompt.indexOf("timelineView.removeLocalUser"));
+    expect(retry).toContain("isGatewayMutationOutcomeIndeterminate");
+    expect(retry).toContain("markComposerOperationIndeterminate");
+    expect(indeterminate).toContain("pendingComposerOperations.set");
+    expect(indeterminate).toContain("operation.manualReviewRequired = true");
+    expect(indeterminate).not.toContain("messageInput.value = operation.text");
+    expect(indeterminate).not.toContain("thread/delete");
+  });
+
+  it("registers every composer mutation before the request can cross a reload boundary", () => {
+    const firstTurn = mainSource.slice(
+      mainSource.indexOf("async function completeStartedTask"),
+      mainSource.indexOf("function setComposerSubmitting"),
+    );
+    const slashPrompt = mainSource.slice(
+      mainSource.indexOf("async function sendSlashPrompt"),
+      mainSource.indexOf("async function resumeSlashTarget"),
+    );
+    const submission = mainSource.slice(
+      mainSource.indexOf("async function submitComposerMessage"),
+      mainSource.indexOf("async function sendTurn"),
+    );
+    expect(firstTurn.indexOf("beginComposerOperationRequest")).toBeLessThan(
+      firstTurn.indexOf('"turn/start"'),
+    );
+    expect(slashPrompt.indexOf("beginComposerOperationRequest")).toBeLessThan(
+      slashPrompt.indexOf("await sendTurn"),
+    );
+    expect(submission.indexOf("beginComposerOperationRequest")).toBeLessThan(
+      submission.indexOf('"queue/add"'),
+    );
+    expect(submission.indexOf("beginComposerOperationRequest")).toBeLessThan(
+      submission.indexOf("await sendTurn"),
+    );
+    expect(mainSource).toContain(
+      "inFlightComposerOperations.add(operation.operationId)",
+    );
+    expect(mainSource).toContain(
+      "inFlightComposerOperations.delete(operation.operationId)",
+    );
+    for (const caller of [firstTurn, slashPrompt, submission]) {
+      expect(caller).toContain("finally");
+      expect(caller).toContain("completeComposerOperationRequest");
+      expect(caller.indexOf("markComposerOperationIndeterminate")).toBeLessThan(
+        caller.lastIndexOf("finally"),
+      );
+      expect(caller.indexOf("markComposerOperationUnknown")).toBeLessThan(
+        caller.lastIndexOf("finally"),
+      );
+      expect(caller.lastIndexOf("finally")).toBeLessThan(
+        caller.lastIndexOf("completeComposerOperationRequest"),
+      );
+    }
+  });
+
+  it("uses only a same-pass fresh legacy read as Queue negative evidence", () => {
+    const openThread = mainSource.slice(
+      mainSource.indexOf("async function openThread"),
+      mainSource.indexOf("async function openNewSession"),
+    );
+    const manualInspection = mainSource.slice(
+      mainSource.indexOf("async function inspectManualComposerOutcome"),
+      mainSource.indexOf("function abandonManualComposerOutcome"),
+    );
+    const reconciliation = mainSource.slice(
+      mainSource.indexOf(
+        "async function reconcileAllPendingComposerOperations",
+      ),
+      mainSource.indexOf("function startThreadSync"),
+    );
+    const threadSync = mainSource.slice(
+      mainSource.indexOf("async function syncActiveThread"),
+      mainSource.indexOf("async function renderQueuedMessages"),
+    );
+    const reconcileOperation = mainSource.slice(
+      mainSource.indexOf("function reconcilePendingComposerOperations"),
+      mainSource.indexOf("function manualComposerOperationForActiveThread"),
+    );
+
+    expect(openThread.indexOf("resumeThreadHistory")).toBeLessThan(
+      openThread.indexOf("renderQueuedMessages"),
+    );
+    expect(openThread).toContain("negativeEvidenceAllowed: false");
+    expect(manualInspection.indexOf('"thread/read"')).toBeLessThan(
+      manualInspection.indexOf('"queue/list"'),
+    );
+    expect(manualInspection).toContain("negativeEvidenceAllowed: false");
+    expect(reconciliation).toContain("legacyNegativeEvidenceAllowed");
+    expect(reconciliation.indexOf('"queue/list"')).toBeLessThan(
+      reconciliation.indexOf("composerTurnSnapshotReader.read"),
+    );
+    expect(reconciliation).toContain(
+      'operation.kind === "turn" || queueSnapshot !== undefined',
+    );
+    expect(reconciliation).toContain(
+      "turnsNegativeEvidenceAllowed = snapshot.negativeEvidenceAllowed",
+    );
+    expect(reconciliation).toContain(
+      "negativeEvidenceAllowed: turnsNegativeEvidenceAllowed",
+    );
+    expect(threadSync.match(/negativeEvidenceAllowed: true/g)).toHaveLength(2);
+    expect(reconcileOperation).toContain(
+      "if (!negativeEvidenceAllowed) continue;",
+    );
+  });
+
   it("treats browser network state as a hint and keeps reconnecting without a retry ceiling", () => {
     const userOffline = mainSource.slice(
       mainSource.indexOf('window.addEventListener("offline"'),

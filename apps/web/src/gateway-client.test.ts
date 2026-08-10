@@ -26,6 +26,7 @@ import {
   GatewayClient,
   GatewayInteractiveReauthenticationFailed,
   GatewayReauthenticationRequired,
+  GatewayResponseError,
   GatewayRequestOutcomeUnknownError,
   connectionTargets,
   firstAvailableTarget,
@@ -499,6 +500,48 @@ describe("ambiguous gateway request outcomes", () => {
     expect(isGatewayRequestOutcomeUnknown(new Error("request rejected"))).toBe(
       false,
     );
+  });
+
+  it("preserves the Host protocol error code for safe caller decisions", async () => {
+    const device = generateStaticKeyPair();
+    const hostIdentity = generateStaticKeyPair();
+    const simulation = simulatedHostWebSocket(hostIdentity);
+    vi.stubGlobal("WebSocket", simulation.WebSocketClass);
+    const client = await GatewayClient.connect({
+      id: "node-1",
+      name: "alice",
+      endpoint: "wss://hpc.example/gateway",
+      transport: "direct",
+      nodeId: "node-1",
+      userId: "unix:1000",
+      hostPublicKey: bytesToBase64Url(hostIdentity.publicKey),
+      hostFingerprint: `sha256:${"B".repeat(43)}`,
+      deviceId: "device-1",
+      deviceName: "Browser",
+      devicePublicKey: bytesToBase64Url(device.publicKey),
+      deviceSecretKey: bytesToBase64Url(device.secretKey),
+    });
+    const pending = client.request("thread/start", { cwd: "/work" });
+    const socket = simulation.socket();
+    socket.deliverServerEnvelope({
+      version: 1,
+      requestId: socket.lastRequest?.requestId,
+      ok: false,
+      error: {
+        code: "IDEMPOTENCY_OUTCOME_INDETERMINATE",
+        message: "Outcome cannot be replayed safely",
+        retryable: false,
+      },
+    });
+
+    await expect(pending).rejects.toEqual(
+      expect.objectContaining({
+        name: "GatewayResponseError",
+        code: "IDEMPOTENCY_OUTCOME_INDETERMINATE",
+        retryable: false,
+      }),
+    );
+    await expect(pending).rejects.toBeInstanceOf(GatewayResponseError);
   });
 
   it("fails closed on a malformed decrypted response without losing the idempotency key", async () => {

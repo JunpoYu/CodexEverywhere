@@ -173,6 +173,65 @@ describe("rootless Unix-user provisioner", () => {
     });
   });
 
+  it("routes administrator renewal only to the root-registered UID-bound issuer", async () => {
+    const server = generateStaticKeyPair();
+    const { initiator, raw } = createRequest(server.publicKey, NOW, {
+      operation: "renew-admin-relay",
+      routeCapability: "private-admin-capability",
+    });
+    const issueGrant = vi.fn();
+    const issueAdminGrant = vi.fn(async () => ({
+      version: 1 as const,
+      username: "alice",
+      uid: 1003,
+      adminHandle: "cluster-admin",
+      origin: "https://codex.example.com",
+      relayEndpoint: "wss://codex.example.com/relay",
+      routeId: "A".repeat(32),
+      routeCapability: "renewed-admin-capability",
+    }));
+    const completed = await createRootlessProvisioningResponse(
+      raw,
+      1003,
+      paths(),
+      server,
+      {
+        now: NOW,
+        inspectAccount: async (uid) => ({
+          eligible: true as const,
+          account: {
+            username: "alice",
+            uid,
+            gid: 100,
+            home: "/public/home/alice",
+            shell: "/bin/bash",
+          },
+        }),
+        issueGrant,
+        issueAdminGrant,
+      },
+    );
+
+    expect(issueGrant).not.toHaveBeenCalled();
+    expect(issueAdminGrant).toHaveBeenCalledWith(
+      expect.objectContaining({ username: "alice", uid: 1003 }),
+      expect.objectContaining({
+        adminInstallationPath: "/etc/codex-everywhere-admin-controller.json",
+        adminRouteBindingsPath: "/service/admin-route-bindings.json",
+        renewalCapability: "private-admin-capability",
+      }),
+    );
+    const opened = initiator.finish(
+      decodeHandshake(completed.response.handshake),
+    );
+    expect(JSON.parse(Buffer.from(opened.payload).toString("utf8"))).toEqual({
+      ok: true,
+      grant: expect.objectContaining({
+        routeCapability: "renewed-admin-capability",
+      }),
+    });
+  });
+
   it("rejects expired and clear/authenticated payload mismatches", async () => {
     const server = generateStaticKeyPair();
     const expired = createRequest(server.publicKey, NOW - 2 * 60 * 1_000 - 1);
@@ -231,6 +290,8 @@ function paths(): RootlessProvisionerPaths {
     configFile: "/service/config.json",
     configMutationLock: "/service/config.mutation.lock",
     routeBindingsFile: "/service/route-bindings.json",
+    adminRouteBindingsFile: "/service/admin-route-bindings.json",
+    adminInstallationFile: "/etc/codex-everywhere-admin-controller.json",
     adminStateFile: "/service/admin-state.sqlite",
     keysDirectory: "/service/keys",
     logsDirectory: "/service/logs",

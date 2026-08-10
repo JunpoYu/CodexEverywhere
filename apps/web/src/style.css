@@ -1425,6 +1425,31 @@ button {
 .new-session-dialog {
   width: min(660px, calc(100% - 32px));
 }
+.thread-start-outcome-review {
+  margin: 14px 0;
+  padding: 14px;
+  color: #7a351b;
+  background: #fff3e8;
+  border: 1px solid #efb68f;
+  border-radius: 12px;
+}
+.thread-start-outcome-review p {
+  margin: 0;
+  line-height: 1.55;
+}
+.thread-start-outcome-review .actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+}
+.composer-outcome-review {
+  margin: 0;
+}
+.composer-outcome-review > strong {
+  display: block;
+  margin-bottom: 4px;
+}
 .dialog-heading {
   display: flex;
   align-items: flex-start;
@@ -3639,6 +3664,28 @@ dialog::backdrop {
   background: #ffedc8;
 }
 
+.composer-queue-item.delivering,
+.composer-queue-item.running {
+  background: #f3f6fb;
+  outline: 1px solid #cbd6e8;
+}
+
+.composer-queue-item.delivering .composer-queue-status,
+.composer-queue-item.running .composer-queue-status {
+  color: #3f5f8d;
+  background: #e4ebf7;
+}
+
+.composer-queue-item.indeterminate {
+  background: #fff7f3;
+  outline: 1px solid #e7b7a8;
+}
+
+.composer-queue-item.indeterminate .composer-queue-status {
+  color: #963f2d;
+  background: #ffe5dc;
+}
+
 .pwa-update-prompt {
   position: fixed;
   z-index: 1000;
@@ -3707,6 +3754,12 @@ dialog::backdrop {
   height: 26px;
   color: var(--muted);
   font-size: 15px;
+}
+
+.queue-tray-acknowledge {
+  min-height: 26px;
+  padding: 4px 8px;
+  font-size: 9px;
 }
 
 .slash-command-menu {
@@ -4860,6 +4913,12 @@ button.session-meta-item:focus-visible,
 
 :root[data-theme="dark"] .restart-warning strong {
   color: #ebc46f;
+}
+
+:root[data-theme="dark"] .thread-start-outcome-review {
+  color: #efbd9d;
+  background: #2e211b;
+  border-color: #684333;
 }
 
 :root[data-theme="dark"] .danger {
@@ -7042,6 +7101,30 @@ button.session-meta-item:focus-visible,
   .composer-queue-status {
   color: #f2c77f;
   background: #493719;
+}
+
+:root[data-theme="dark"] .composer-queue-item.delivering,
+:root[data-theme="dark"] .composer-queue-item.running {
+  background: #1c2532;
+  outline-color: #364b68;
+}
+
+:root[data-theme="dark"] .composer-queue-item.delivering .composer-queue-status,
+:root[data-theme="dark"] .composer-queue-item.running .composer-queue-status {
+  color: #a9c2e8;
+  background: #283a54;
+}
+
+:root[data-theme="dark"] .composer-queue-item.indeterminate {
+  background: #2e201c;
+  outline-color: #6b3e32;
+}
+
+:root[data-theme="dark"]
+  .composer-queue-item.indeterminate
+  .composer-queue-status {
+  color: #f1a18f;
+  background: #4a2821;
 }
 
 :root[data-theme="dark"] .stop-action {

@@ -14,6 +14,7 @@ import type {
   ThreadResumeResponse,
   ThreadStartResponse,
   ThreadStatus,
+  TurnStartResponse,
   TurnSteerResponse,
 } from "@codex-everywhere/codex-app-server-schema/v2";
 
@@ -33,6 +34,11 @@ import type {
   QueueDispatcher,
   QueueDispatcherEvent,
 } from "../runtime/queue-dispatcher.js";
+import {
+  consumeQueueItemOnce,
+  QueueConsumptionRepairer,
+  QueueConsumptionOutcomeIndeterminateError,
+} from "../runtime/queue-consumption.js";
 
 const FAST_THREAD_LIST_TIMEOUT_MS = 40_000;
 const LEGACY_THREAD_LIST_TIMEOUT_MS = 110_000;
@@ -44,6 +50,7 @@ export type CodexGatewaySessionOptions = {
   queue: QueueRegistry;
   threadPermissions: ThreadPermissionRegistry;
   queueDispatcher?: QueueDispatcher;
+  consumptionRepairer?: QueueConsumptionRepairer;
 };
 
 export class CodexGatewaySession implements GatewaySession {
@@ -53,10 +60,14 @@ export class CodexGatewaySession implements GatewaySession {
   readonly #queue: QueueRegistry;
   readonly #threadPermissions: ThreadPermissionRegistry;
   readonly #queueDispatcher: QueueDispatcher | undefined;
+  readonly #consumptionRepairer: QueueConsumptionRepairer;
+  readonly #ownsConsumptionRepairer: boolean;
   readonly #events = new EventEmitter<{ event: [EventEnvelope] }>();
   readonly #serverRequests = new Map<string, CodexServerRequest>();
   readonly #authorizedThreads = new Map<string, number>();
   readonly #unsubscribeQueue: (() => void) | undefined;
+  readonly #unsubscribeConsumptionRepair: (() => void) | undefined;
+  readonly #unsubscribeConsumptionPauseRepair: (() => void) | undefined;
   #cursor = 0;
 
   private constructor(
@@ -69,9 +80,34 @@ export class CodexGatewaySession implements GatewaySession {
     this.#queue = options.queue;
     this.#threadPermissions = options.threadPermissions;
     this.#queueDispatcher = options.queueDispatcher;
+    this.#consumptionRepairer =
+      options.consumptionRepairer ??
+      new QueueConsumptionRepairer(options.queue);
+    this.#ownsConsumptionRepairer = options.consumptionRepairer === undefined;
     this.#unsubscribeQueue = options.queueDispatcher?.onEvent(
       (event) => void this.#forwardQueueEvent(event),
     );
+    this.#unsubscribeConsumptionRepair =
+      options.queueDispatcher && options.consumptionRepairer
+        ? undefined
+        : this.#consumptionRepairer.onIndeterminate((identity) => {
+            this.#emit("queue/indeterminate", {
+              itemId: identity.queueItemId,
+              threadId: identity.threadId,
+              reason:
+                "Queue delivery outcome could not be verified; review it before continuing",
+            });
+          });
+    this.#unsubscribeConsumptionPauseRepair =
+      options.queueDispatcher && options.consumptionRepairer
+        ? undefined
+        : this.#consumptionRepairer.onPaused((identity) => {
+            this.#emit("queue/paused", {
+              itemId: identity.queueItemId,
+              threadId: identity.threadId,
+              reason: "Queue delivery claim failed before submission",
+            });
+          });
     client.on(
       "notification",
       (notification) => void this.#forwardNotification(notification),
@@ -317,10 +353,15 @@ export class CodexGatewaySession implements GatewaySession {
     }
   }
 
-  close(): Promise<void> {
+  async close(): Promise<void> {
     this.#unsubscribeQueue?.();
+    this.#unsubscribeConsumptionRepair?.();
+    this.#unsubscribeConsumptionPauseRepair?.();
     this.#serverRequests.clear();
-    return this.#client.close();
+    await this.#client.close();
+    if (this.#ownsConsumptionRepairer) {
+      await this.#consumptionRepairer.close();
+    }
   }
 
   async #listThreads(
@@ -458,13 +499,18 @@ export class CodexGatewaySession implements GatewaySession {
     if (!Array.isArray(turnPayload.input))
       throw new Error("queue/add requires input");
     rejectLocalImageInput(turnPayload.input);
-    const item = await this.#queue.add({
-      workspacePath: thread.thread.cwd,
-      threadId,
-      turnPayload,
-    });
-    void this.#queueDispatcher?.watchThread(threadId).catch(() => undefined);
-    return item;
+    try {
+      return await this.#queue.add({
+        workspacePath: thread.thread.cwd,
+        threadId,
+        turnPayload,
+      });
+    } finally {
+      // The queue row may already be visible if a late durability operation
+      // rejects after atomic publication. An empty wake is harmless, while a
+      // missing wake could otherwise strand that committed message.
+      this.#wakeQueue(threadId);
+    }
   }
 
   async #removeQueueItem(
@@ -474,7 +520,19 @@ export class CodexGatewaySession implements GatewaySession {
     const item = await this.#queue.get(id);
     if (!item) return { removed: false };
     await this.#workspaces.resolve(item.workspacePath);
-    return { removed: await this.#queue.remove(id) };
+    try {
+      return {
+        removed: await this.#queue.remove(id, {
+          acknowledgeIndeterminate: payload.acknowledgeIndeterminate === true,
+        }),
+      };
+    } finally {
+      // A whole-file SQLite publish can become visible before a late
+      // durability error rejects the call. Waking is safe even when no row
+      // changed (the queue barriers simply refuse to advance), and prevents a
+      // committed abandonment/removal from stranding the next idle item.
+      this.#wakeQueue(item.threadId);
+    }
   }
 
   async #steerQueueItem(payload: Record<string, unknown>): Promise<unknown> {
@@ -482,72 +540,149 @@ export class CodexGatewaySession implements GatewaySession {
     const expectedTurnId = requiredString(payload, "expectedTurnId");
     const claim = await this.#queue.claimForSteer(id);
     if (!claim) throw new Error("Queued message is no longer available");
+    let response: { turnId: string };
     try {
       await this.#workspaces.resolve(claim.item.workspacePath);
       await this.#ensureThreadLoaded(claim.item.threadId);
       const input = claim.item.turnPayload.input;
       if (!Array.isArray(input)) throw new Error("Queued message has no input");
-      const response = await this.#client.request<TurnSteerResponse>(
-        "turn/steer",
-        {
-          threadId: claim.item.threadId,
-          expectedTurnId,
-          input,
-          ...(typeof claim.item.turnPayload.clientUserMessageId === "string"
-            ? {
-                clientUserMessageId: claim.item.turnPayload.clientUserMessageId,
-              }
-            : {}),
+      response = await consumeQueueItemOnce({
+        queue: this.#queue,
+        repairer: this.#consumptionRepairer,
+        item: claim.item,
+        operation: "turn/steer",
+        onClaimed: () =>
+          this.#emit("queue/delivering", {
+            itemId: claim.item.id,
+            threadId: claim.item.threadId,
+          }),
+        execute: async (clientUserMessageId) => {
+          const result = await this.#client.request<TurnSteerResponse>(
+            "turn/steer",
+            {
+              threadId: claim.item.threadId,
+              expectedTurnId,
+              input,
+              clientUserMessageId,
+            },
+          );
+          return { turnId: result.turnId };
         },
-      );
-      await this.#queue.finish(claim.item.id);
-      if (this.#queueDispatcher) {
-        this.#queueDispatcher.notifySteered(claim.item.id, claim.item.threadId);
-      } else {
-        this.#emit("queue/steered", {
+      });
+    } catch (error) {
+      if (
+        error instanceof QueueConsumptionOutcomeIndeterminateError &&
+        error.durableOutcome === "indeterminate"
+      ) {
+        this.#emit("queue/indeterminate", {
           itemId: claim.item.id,
           threadId: claim.item.threadId,
+          reason: error.message,
         });
+      } else if (
+        !(error instanceof QueueConsumptionOutcomeIndeterminateError)
+      ) {
+        await this.#queue.restoreSteerClaim(
+          claim.item.id,
+          claim.previousStatus,
+        );
       }
-      return { itemId: claim.item.id, turnId: response.turnId };
-    } catch (error) {
-      await this.#queue.restoreSteerClaim(claim.item.id, claim.previousStatus);
       throw error;
     }
+    // Observer failures happen after the durable completion boundary and
+    // therefore must not enter the restore path above.
+    if (this.#queueDispatcher) {
+      this.#queueDispatcher.notifySteered(claim.item.id, claim.item.threadId);
+    } else {
+      this.#emit("queue/steered", {
+        itemId: claim.item.id,
+        threadId: claim.item.threadId,
+      });
+    }
+    return { itemId: claim.item.id, turnId: response.turnId };
   }
 
   async #drainQueue(threadId: string): Promise<void> {
     const item = await this.#queue.claimNext(threadId);
     if (!item) return;
     try {
-      const turnPayload = {
-        ...item.turnPayload,
-        threadId,
-      };
-      if (hasThreadPermissionUpdate(turnPayload)) {
-        await this.#threadPermissions.serializeMutation(threadId, async () => {
-          const observation =
-            await this.#threadPermissions.beginObservation(threadId);
-          await this.#client.request("turn/start", turnPayload);
-          await this.#threadPermissions.saveSettingsUpdate(
+      await consumeQueueItemOnce({
+        queue: this.#queue,
+        repairer: this.#consumptionRepairer,
+        item,
+        operation: "turn/start",
+        onClaimed: () =>
+          this.#emit("queue/delivering", { itemId: item.id, threadId }),
+        execute: async (clientUserMessageId) => {
+          const turnPayload = {
+            ...item.turnPayload,
             threadId,
-            turnPayload,
-            observation,
+            clientUserMessageId,
+          };
+          const startTurn = async (): Promise<{ turnId: string }> => {
+            const response = await this.#client.request<TurnStartResponse>(
+              "turn/start",
+              turnPayload,
+            );
+            return { turnId: response.turn.id };
+          };
+          if (!hasThreadPermissionUpdate(turnPayload)) return startTurn();
+          return this.#threadPermissions.serializeMutation(
+            threadId,
+            async () => {
+              const observation =
+                await this.#threadPermissions.beginObservation(threadId);
+              const response = await startTurn();
+              await this.#threadPermissions.saveSettingsUpdate(
+                threadId,
+                turnPayload,
+                observation,
+              );
+              return response;
+            },
           );
-        });
-      } else {
-        await this.#client.request("turn/start", turnPayload);
-      }
-      await this.#queue.finish(item.id);
-      this.#emit("queue/started", { itemId: item.id, threadId });
-    } catch (error) {
-      await this.#queue.pause(item.id);
-      this.#emit("queue/paused", {
-        itemId: item.id,
-        threadId,
-        reason: error instanceof Error ? error.message : "Queue start failed",
+        },
       });
+    } catch (error) {
+      if (
+        error instanceof QueueConsumptionOutcomeIndeterminateError &&
+        error.durableOutcome === "indeterminate"
+      ) {
+        this.#emit("queue/indeterminate", {
+          itemId: item.id,
+          threadId,
+          reason: error.message,
+        });
+      } else if (
+        !(error instanceof QueueConsumptionOutcomeIndeterminateError)
+      ) {
+        await this.#queue.pause(item.id);
+        this.#emit("queue/paused", {
+          itemId: item.id,
+          threadId,
+          reason: error instanceof Error ? error.message : "Queue start failed",
+        });
+      }
+      return;
     }
+    this.#emit("queue/started", { itemId: item.id, threadId });
+  }
+
+  #wakeQueue(threadId: string): void {
+    if (this.#queueDispatcher) {
+      void this.#queueDispatcher.watchThread(threadId).catch(() => undefined);
+      return;
+    }
+    // The fallback path has no long-lived dispatcher. Only drain after a
+    // fresh authoritative idle check; an active turn will wake it through the
+    // normal turn/completed notification.
+    void this.#authorizeThread(threadId)
+      .then((current) =>
+        current.thread.status.type === "idle"
+          ? this.#drainQueue(threadId)
+          : undefined,
+      )
+      .catch(() => undefined);
   }
 
   async #respondToServerRequest(

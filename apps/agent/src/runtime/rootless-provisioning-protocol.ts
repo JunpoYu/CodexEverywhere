@@ -11,6 +11,8 @@ export const ROOTLESS_PROVISIONING_MAX_FILE_BYTES = 64 * 1_024;
 export const DEFAULT_ROOTLESS_PROVISIONER_USER = "codexeverywhere";
 export const ROOTLESS_RELAY_RENEWAL_FEATURE =
   "relay-capability-renewal-v1" as const;
+export const ROOTLESS_ADMIN_RELAY_RENEWAL_FEATURE =
+  "admin-relay-capability-renewal-v1" as const;
 
 export type RootlessProvisionerDescriptor = {
   version: typeof ROOTLESS_PROVISIONING_VERSION;

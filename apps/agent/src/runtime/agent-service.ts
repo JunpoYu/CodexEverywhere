@@ -47,6 +47,7 @@ import { HostSetupService } from "./host-setup-service.js";
 import { probeCodexInstallation } from "./codex-install.js";
 import { CodexAppServerClient } from "./codex-app-server-client.js";
 import { QueueDispatcher } from "./queue-dispatcher.js";
+import { QueueConsumptionRepairer } from "./queue-consumption.js";
 import { assertUserAccessEnabled } from "../admin/access-policy.js";
 import {
   inspectRelayCapabilityRenewal,
@@ -90,6 +91,7 @@ export async function runAgentService(paths: HostPaths): Promise<void> {
   let relayRenewalLoop:
     ReturnType<typeof startRelayCapabilityRenewalLoop> | undefined;
   let queueDispatcher: QueueDispatcher | undefined;
+  let queueConsumptionRepairer: QueueConsumptionRepairer | undefined;
   try {
     const identity = await loadOrCreateHostIdentity(paths.keysDir);
     const opaqueServerSetup = await loadOrCreateOpaqueServerSetup(
@@ -104,6 +106,8 @@ export async function runAgentService(paths: HostPaths): Promise<void> {
     const relayConfig = relayTransport(config.transport);
     const workspaces = new WorkspaceRegistry(state);
     const queue = new QueueRegistry(state);
+    const activeQueueConsumptionRepairer = new QueueConsumptionRepairer(queue);
+    queueConsumptionRepairer = activeQueueConsumptionRepairer;
     const preferences = new UserPreferencesRegistry(state);
     const threadPermissions = new ThreadPermissionRegistry(state);
     const setup = new HostSetupService(paths, { preferences });
@@ -134,6 +138,7 @@ export async function runAgentService(paths: HostPaths): Promise<void> {
       workspaces,
       threadPermissions,
       connectClient: connectCodexClient,
+      consumptionRepairer: activeQueueConsumptionRepairer,
     });
     queueDispatcher = activeQueueDispatcher;
     const gatewayOptions = {
@@ -246,6 +251,7 @@ export async function runAgentService(paths: HostPaths): Promise<void> {
               queue,
               threadPermissions,
               queueDispatcher: activeQueueDispatcher,
+              consumptionRepairer: activeQueueConsumptionRepairer,
               nodeStatus: async () => ({
                 nodeId: config.nodeId,
                 transport: config.transport.mode,
@@ -299,6 +305,7 @@ export async function runAgentService(paths: HostPaths): Promise<void> {
     await gateway?.close();
     await relay?.close();
     await queueDispatcher?.close();
+    await queueConsumptionRepairer?.close();
     await state.close();
     await rm(paths.agentPidFile, { force: true });
     await lock.release();

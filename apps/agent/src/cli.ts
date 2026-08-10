@@ -98,6 +98,7 @@ import {
   startAdminControllerService,
   stopAdminControllerService,
 } from "./runtime/admin-controller-service.js";
+import { inspectAdminControllerAuthorizationStatus } from "./runtime/admin-controller-status.js";
 
 const program = new Command();
 const paths = resolveHostPaths();
@@ -732,11 +733,15 @@ adminWeb
       config.runAsUid,
     );
     const record = await readProcessRecord(adminPaths.pidFile);
+    const { relayAuthorization, rootRegistration } =
+      await inspectAdminControllerAuthorizationStatus(config);
     process.stdout.write(
       [
         `Server: ${config.serverName}`,
         `Administrator handle: ${config.adminHandle}`,
         `Controller: ${record && isProcessAlive(record.pid) ? `running (PID ${record.pid})` : "stopped"}`,
+        `Relay authorization: ${relayAuthorization}`,
+        `Root registration: ${rootRegistration}`,
         `State: ${config.home}`,
       ].join("\n") + "\n",
     );

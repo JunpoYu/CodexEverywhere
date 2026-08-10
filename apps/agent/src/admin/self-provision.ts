@@ -1,13 +1,4 @@
-import { randomUUID } from "node:crypto";
-import {
-  chmod,
-  mkdir,
-  open,
-  readFile,
-  rename,
-  rm,
-  stat,
-} from "node:fs/promises";
+import { chmod, mkdir, readFile, stat } from "node:fs/promises";
 import { dirname } from "node:path";
 
 import {
@@ -29,6 +20,7 @@ import {
   type UnixAccount,
 } from "./unix-accounts.js";
 import { HostStateStore } from "../host/state-store.js";
+import { writePrivateJsonAtomically } from "../host/process-files.js";
 import { ADMIN_STATE_FILE } from "./access-policy.js";
 import { AdminUserRegistry } from "./registry.js";
 
@@ -606,27 +598,7 @@ function normalizeRelayEndpoint(value: string): string {
 async function writePrivateJson(path: string, value: unknown): Promise<void> {
   await mkdir(dirname(path), { recursive: true, mode: 0o700 });
   await chmod(dirname(path), 0o700);
-  const temporary = `${path}.${process.pid}.${randomUUID()}.tmp`;
-  const handle = await open(temporary, "wx", 0o600);
-  try {
-    await handle.writeFile(`${JSON.stringify(value, null, 2)}\n`, "utf8");
-    await handle.sync();
-  } finally {
-    await handle.close();
-  }
-  try {
-    await rename(temporary, path);
-    await chmod(path, 0o600);
-    const directory = await open(dirname(path), "r");
-    try {
-      await directory.sync();
-    } finally {
-      await directory.close();
-    }
-  } catch (error) {
-    await rm(temporary, { force: true });
-    throw error;
-  }
+  await writePrivateJsonAtomically(path, value);
 }
 
 function isMissing(error: unknown): boolean {

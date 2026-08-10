@@ -1,12 +1,18 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  GatewayRequestOutcomeUnknownError,
+  GatewayResponseError,
+} from "./gateway-client.js";
+
+import {
   CONNECTION_KEEPALIVE_INTERVAL_MS,
   CONNECTION_RECOVERY_DELAYS_MS,
   ConnectionRetryWakeup,
   connectionRecoveryDelayMs,
   isRetryableConnectionFailure,
   reconnectWithUnlimitedAttempts,
+  shouldRecoverAfterHealthCheckFailure,
   shouldVerifyAfterVisibilityChange,
 } from "./connection-recovery.js";
 
@@ -125,5 +131,41 @@ describe("connection recovery policy", () => {
         new DOMException("User cancelled", "NotAllowedError"),
       ),
     ).toBe(false);
+  });
+
+  it("keeps a healthy client after only the host/ping request deadline", () => {
+    expect(
+      shouldRecoverAfterHealthCheckFailure(
+        new GatewayRequestOutcomeUnknownError(
+          "host/ping",
+          "ping-operation",
+          new Error("request timed out"),
+          { transportLost: false },
+        ),
+      ),
+    ).toBe(false);
+    expect(
+      shouldRecoverAfterHealthCheckFailure(
+        new GatewayRequestOutcomeUnknownError(
+          "host/ping",
+          "ping-operation",
+          new Error("connection closed"),
+          { transportLost: true },
+        ),
+      ),
+    ).toBe(true);
+    expect(
+      shouldRecoverAfterHealthCheckFailure(
+        new Error("Host connection is unavailable"),
+      ),
+    ).toBe(true);
+    expect(
+      shouldRecoverAfterHealthCheckFailure(
+        new GatewayResponseError({
+          code: "REQUEST_FAILED",
+          message: "Passkey authentication required",
+        }),
+      ),
+    ).toBe(true);
   });
 });

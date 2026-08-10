@@ -1,13 +1,99 @@
 import type { RequestEnvelope } from "@codex-everywhere/protocol";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import {
+  generateRelaySigningKey,
+  issueHostProvisionerCredential,
+  issueProvisionedAdminRouteCapability,
+} from "@codex-everywhere/protocol/relay-capability";
 
 import { AuthenticatedGatewaySession } from "../gateway/authenticated-session.js";
 import { AuthenticatedSessionRegistry } from "../host/auth-security.js";
 import type { PasskeyRegistry } from "../host/passkeys.js";
-import { AdminGatewaySession } from "./admin-controller-service.js";
+import {
+  AdminGatewaySession,
+  reloadAdminControllerConfigForStartup,
+} from "./admin-controller-service.js";
+
+const temporaryDirectories: string[] = [];
 
 afterEach(() => {
   vi.useRealTimers();
+  return Promise.all(
+    temporaryDirectories.splice(0).map((path) => rm(path, { recursive: true })),
+  ).then(() => undefined);
+});
+
+describe("Administrator Controller startup renewal", () => {
+  it("reloads a capability durably published by a losing renewal attempt", async () => {
+    vi.useFakeTimers();
+    const now = Date.parse("2026-08-10T00:00:00.000Z");
+    vi.setSystemTime(now);
+    const directory = await mkdtemp(
+      join(tmpdir(), "ce-admin-startup-renewal-"),
+    );
+    temporaryDirectories.push(directory);
+    const configPath = join(directory, "config.json");
+    const relayKey = generateRelaySigningKey();
+    const oldRoute = issueProvisionedAdminRouteCapability(
+      issueHostProvisionerCredential(relayKey, {
+        installationId: "hpc-cluster-1",
+        expiresAt: new Date(now + 60_000),
+      }),
+      { adminHandle: "cluster-admin" },
+      new Date(now),
+    );
+    const renewed = issueProvisionedAdminRouteCapability(
+      issueHostProvisionerCredential(relayKey, {
+        installationId: "hpc-cluster-1",
+        expiresAt: new Date(now + 365 * 86_400_000),
+      }),
+      {
+        adminHandle: "cluster-admin",
+        routeId: oldRoute.payload.routeId,
+      },
+      new Date(now),
+    );
+    const bootstrap = {
+      version: 1 as const,
+      adminHandle: "cluster-admin",
+      runAsUser: "ops",
+      runAsUid: process.getuid?.() ?? 501,
+      installationId: "hpc-cluster-1",
+      serverName: "login-1",
+      origin: "https://codex.example.com",
+      rpId: "codex.example.com",
+      relayEndpoint: "wss://codex.example.com/relay",
+      routeId: oldRoute.payload.routeId,
+      routeCapability: oldRoute.capability,
+      nodeId: "admin-node",
+      home: directory,
+    };
+    await writeFile(configPath, JSON.stringify(bootstrap), { mode: 0o600 });
+    vi.setSystemTime(now + 60_001);
+    const renewalError = vi.fn();
+    const renew = vi.fn(async () => {
+      await writeFile(
+        configPath,
+        JSON.stringify({ ...bootstrap, routeCapability: renewed.capability }),
+        { mode: 0o600 },
+      );
+      throw new Error("configuration changed while applying renewal");
+    });
+
+    const current = await reloadAdminControllerConfigForStartup(
+      configPath,
+      bootstrap,
+      { renew, onRenewalError: renewalError },
+    );
+
+    expect(renew).toHaveBeenCalledOnce();
+    expect(renewalError).toHaveBeenCalledOnce();
+    expect(current.routeCapability).toBe(renewed.capability);
+    expect(current.routeId).toBe(oldRoute.payload.routeId);
+  });
 });
 
 describe("AdminGatewaySession authentication freshness", () => {

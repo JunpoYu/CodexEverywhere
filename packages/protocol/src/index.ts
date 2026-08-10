@@ -5,6 +5,9 @@ const MAX_GATEWAY_CIPHERTEXT_BASE64URL_LENGTH = 128 * 1024;
 
 export type ProtocolVersion = typeof PROTOCOL_VERSION;
 
+export const IDEMPOTENCY_OUTCOME_INDETERMINATE =
+  "IDEMPOTENCY_OUTCOME_INDETERMINATE" as const;
+
 export type RequestEnvelope<T = unknown> = {
   version: ProtocolVersion;
   requestId: string;

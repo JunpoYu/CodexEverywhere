@@ -21,10 +21,12 @@ import {
   readProcessRecord,
   writeProcessRecord,
 } from "./process-files.js";
+import { syncDirectoryForDurability } from "./durable-file.js";
 
 const require = createRequire(import.meta.url);
-// user_preferences and thread_permissions are additive tables that schema-4
-// Agents safely ignore.
+// user_preferences, thread_permissions, durable_mutation_claims,
+// queue_item_states, and queue_consumption_claims are additive tables that
+// schema-4 Agents safely ignore.
 // Keep the persisted marker at 4 so a release rollback can still open the
 // database. Version 5 was used briefly by the unreleased implementation and
 // is normalized back to 4 when encountered.
@@ -181,12 +183,24 @@ export class HostStateStore {
         `Host state schema ${version} is newer than supported ${SCHEMA_VERSION}`,
       );
     }
+    const hasLegacyThreadStartClaims = this.#hasTable("thread_start_claims");
+    const hasQueueConsumptionClaims = this.#hasTable(
+      "queue_consumption_claims",
+    );
+    const hasQueueItemStates = this.#hasTable("queue_item_states");
+    const hasLegacyRawQueueItems =
+      this.#hasTable("queue_items") && this.#hasNonDoneQueueItems();
     const schemaReady =
       version === SCHEMA_VERSION &&
       this.#hasTable("user_preferences") &&
       this.#hasTable("thread_permissions") &&
       this.#hasTable("thread_permission_observation_state") &&
       this.#hasTable("thread_permission_observations") &&
+      this.#hasTable("durable_mutation_claims") &&
+      hasQueueConsumptionClaims &&
+      hasQueueItemStates &&
+      !hasLegacyRawQueueItems &&
+      !hasLegacyThreadStartClaims &&
       this.#hasTable("workspace_authorization_state") &&
       this.#hasColumn("thread_permissions", "approvals_reviewer");
     const sensitiveIdempotencyKeys = this.#sensitiveIdempotencyKeys();
@@ -196,6 +210,87 @@ export class HostStateStore {
     let committed = false;
     try {
       this.#database.run(SCHEMA_V1);
+      // A short-lived unreleased build used a thread/start-specific table.
+      // Preserve its claims in the generic table, then securely remove the old
+      // whole-payload fingerprints. A rollback recreates the additive table
+      // and remains fail-closed through the permanent legacy mirror.
+      if (hasLegacyThreadStartClaims) {
+        this.#database.run("PRAGMA secure_delete = ON");
+        this.#database.run(`
+          INSERT OR IGNORE INTO durable_mutation_claims (
+            key,
+            method,
+            request_fingerprint,
+            result_json,
+            created_at,
+            completed_at
+          )
+          SELECT
+            key,
+            'thread/start',
+            'legacy-thread-start-claim-v1',
+            result_json,
+            created_at,
+            completed_at
+          FROM thread_start_claims
+        `);
+        // The old fingerprint was a permanent hash of the whole payload. It
+        // is neither needed for at-most-once execution nor safe to retain as
+        // an offline oracle for paths or other low-entropy request data. A
+        // rollback recreates this additive table and remains protected by the
+        // permanent idempotency_keys mirror.
+        this.#database.run("DROP TABLE thread_start_claims");
+      }
+      if (hasLegacyRawQueueItems || !hasQueueConsumptionClaims) {
+        // Current Agents keep every Queue row physically `done` from enqueue
+        // onward and store actionable state only in the additive table. Thus
+        // any physical non-done row was created or restored while an old Agent
+        // was running and cannot be proven side-effect free. Quarantine these
+        // rows on every upgrade, including new -> old -> new rollbacks where
+        // the consumption-claim table already exists.
+        const rows = this.#database.prepare(
+          "SELECT id, request_json, created_at FROM queue_items WHERE status IS NOT 'done'",
+        );
+        const now = new Date().toISOString();
+        try {
+          while (rows.step()) {
+            const row = rows.getAsObject() as {
+              id?: unknown;
+              request_json?: unknown;
+              created_at?: unknown;
+            };
+            const itemId = String(row.id);
+            const identity = legacyQueueConsumptionIdentity(
+              itemId,
+              row.request_json,
+            );
+            this.#database.run(
+              "DELETE FROM queue_item_states WHERE queue_item_id = ?",
+              [itemId],
+            );
+            this.#database.run(
+              "INSERT OR IGNORE INTO queue_consumption_claims (queue_item_id, operation, thread_id, client_user_message_id, outcome, turn_id, created_at, completed_at) VALUES (?, 'legacy', ?, ?, 'indeterminate', NULL, ?, ?)",
+              [
+                itemId,
+                identity.threadId,
+                identity.clientUserMessageId,
+                typeof row.created_at === "string" ? row.created_at : now,
+                now,
+              ],
+            );
+            this.#database.run(
+              "UPDATE queue_consumption_claims SET outcome = 'indeterminate', completed_at = ? WHERE queue_item_id = ? AND (outcome IS NULL OR outcome NOT IN ('completed', 'abandoned'))",
+              [now, itemId],
+            );
+            this.#database.run(
+              "UPDATE queue_items SET status = 'done', updated_at = ? WHERE id = ?",
+              [now, itemId],
+            );
+          }
+        } finally {
+          rows.free();
+        }
+      }
       if (!this.#hasColumn("thread_permissions", "approvals_reviewer")) {
         this.#database.run(
           "ALTER TABLE thread_permissions ADD COLUMN approvals_reviewer TEXT NOT NULL DEFAULT ''",
@@ -231,6 +326,17 @@ export class HostStateStore {
   #hasColumn(table: string, column: string): boolean {
     const result = this.#database.exec(`PRAGMA table_info(${table})`);
     return (result[0]?.values ?? []).some((row) => row[1] === column);
+  }
+
+  #hasNonDoneQueueItems(): boolean {
+    const statement = this.#database.prepare(
+      "SELECT 1 FROM queue_items WHERE status IS NOT 'done' LIMIT 1",
+    );
+    try {
+      return statement.step();
+    } finally {
+      statement.free();
+    }
   }
 
   #sensitiveIdempotencyKeys(): string[] {
@@ -285,12 +391,7 @@ export class HostStateStore {
       // snapshot unless the stable lock name still belongs to this owner.
       await lock.assertOwned();
       await rename(temporary, this.#path);
-      const directory = await open(dirname(this.#path), "r");
-      try {
-        await directory.sync();
-      } finally {
-        await directory.close();
-      }
+      await syncDirectoryForDurability(dirname(this.#path));
     } catch (error) {
       await rm(temporary, { force: true });
       throw error;
@@ -927,6 +1028,35 @@ function containsSensitiveIdempotencyResult(value: unknown): boolean {
   return false;
 }
 
+function legacyQueueConsumptionIdentity(
+  itemId: string,
+  requestJson: unknown,
+): { threadId: string; clientUserMessageId: string } {
+  try {
+    if (typeof requestJson !== "string") throw new Error("missing request");
+    const request = JSON.parse(requestJson) as {
+      threadId?: unknown;
+      turnPayload?: { clientUserMessageId?: unknown };
+    };
+    return {
+      threadId:
+        typeof request.threadId === "string" && request.threadId !== ""
+          ? request.threadId
+          : `legacy:${itemId}`,
+      clientUserMessageId:
+        typeof request.turnPayload?.clientUserMessageId === "string" &&
+        request.turnPayload.clientUserMessageId !== ""
+          ? request.turnPayload.clientUserMessageId
+          : `queue:${itemId}`,
+    };
+  } catch {
+    return {
+      threadId: `legacy:${itemId}`,
+      clientUserMessageId: `queue:${itemId}`,
+    };
+  }
+}
+
 const SCHEMA_V1 = `
 CREATE TABLE IF NOT EXISTS workspace_roots (
   path TEXT PRIMARY KEY,
@@ -1004,6 +1134,29 @@ CREATE TABLE IF NOT EXISTS idempotency_keys (
   key TEXT PRIMARY KEY,
   result_json TEXT NOT NULL,
   expires_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS durable_mutation_claims (
+  key TEXT PRIMARY KEY,
+  method TEXT NOT NULL,
+  request_fingerprint TEXT NOT NULL,
+  result_json TEXT,
+  created_at TEXT NOT NULL,
+  completed_at TEXT
+);
+CREATE TABLE IF NOT EXISTS queue_consumption_claims (
+  queue_item_id TEXT PRIMARY KEY,
+  operation TEXT NOT NULL,
+  thread_id TEXT NOT NULL,
+  client_user_message_id TEXT NOT NULL,
+  outcome TEXT,
+  turn_id TEXT,
+  created_at TEXT NOT NULL,
+  completed_at TEXT
+);
+CREATE TABLE IF NOT EXISTS queue_item_states (
+  queue_item_id TEXT PRIMARY KEY,
+  status TEXT NOT NULL,
+  updated_at TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS queue_items (
   id TEXT PRIMARY KEY,

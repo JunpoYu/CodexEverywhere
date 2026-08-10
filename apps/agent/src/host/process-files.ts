@@ -12,6 +12,8 @@ import {
 import { hostname } from "node:os";
 import { basename, dirname, join } from "node:path";
 
+import { syncDirectoryForDurability } from "./durable-file.js";
+
 export type ProcessRecord = {
   pid: number;
   startedAt: string;
@@ -130,26 +132,11 @@ export async function writePrivateJsonAtomically(
     await options.beforePublish?.(temporary);
     await rename(temporary, path);
     published = true;
-    const directory = await open(dirname(path), "r");
-    try {
-      try {
-        await directory.sync();
-      } catch (error) {
-        if (!isUnsupportedDirectorySync(error)) throw error;
-      }
-    } finally {
-      await directory.close();
-    }
+    await syncDirectoryForDurability(dirname(path));
   } catch (error) {
     if (temporaryCreated && !published) await rm(temporary, { force: true });
     throw error;
   }
-}
-
-function isUnsupportedDirectorySync(error: unknown): boolean {
-  if (!(error instanceof Error) || !("code" in error)) return false;
-  const code = (error as NodeJS.ErrnoException).code;
-  return code === "EINVAL" || code === "ENOTSUP" || code === "EOPNOTSUPP";
 }
 
 export async function readProcessRecord(

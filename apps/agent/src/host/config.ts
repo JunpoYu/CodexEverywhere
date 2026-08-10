@@ -2,6 +2,8 @@ import { chmod, mkdir, open, readFile, rename, rm } from "node:fs/promises";
 import { dirname } from "node:path";
 import { randomUUID } from "node:crypto";
 
+import { syncDirectoryForDurability } from "./durable-file.js";
+
 import type { HostPaths } from "./paths.js";
 import {
   validateCodexNetworkConfig,
@@ -144,12 +146,7 @@ export async function writeHostConfig(
   }
   try {
     await rename(temporary, paths.configFile);
-    const directory = await open(dirname(paths.configFile), "r");
-    try {
-      await directory.sync();
-    } finally {
-      await directory.close();
-    }
+    await syncDirectoryForDurability(dirname(paths.configFile));
   } catch (error) {
     await rm(temporary, { force: true });
     throw error;

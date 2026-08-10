@@ -61,7 +61,10 @@ describe("CodexGatewaySession notifications", () => {
     const queued = await queue.add({
       workspacePath,
       threadId: "thread-1",
-      turnPayload: { input: [{ type: "text", text: "urgent context" }] },
+      turnPayload: {
+        input: [{ type: "text", text: "urgent context" }],
+        clientUserMessageId: "operation-steer-1",
+      },
     });
 
     const httpServer = createServer();
@@ -69,6 +72,7 @@ describe("CodexGatewaySession notifications", () => {
     let sendToClient: ((value: unknown) => void) | undefined;
     let threadReads = 0;
     let steerPayload: Record<string, unknown> | undefined;
+    const turnStartPayloads: Record<string, unknown>[] = [];
     let unsubscribePayload: Record<string, unknown> | undefined;
     let initializePayload: Record<string, unknown> | undefined;
     let threadListPayload: Record<string, unknown> | undefined;
@@ -158,6 +162,7 @@ describe("CodexGatewaySession notifications", () => {
             result: { turnId: "turn-1" },
           });
         } else if (message.method === "turn/start") {
+          turnStartPayloads.push(message.params as Record<string, unknown>);
           sendToClient?.({
             id: message.id,
             result: { turn: { id: "turn-2" } },
@@ -537,8 +542,83 @@ describe("CodexGatewaySession notifications", () => {
       threadId: "thread-1",
       expectedTurnId: "turn-1",
       input: [{ type: "text", text: "urgent context" }],
+      clientUserMessageId: "operation-steer-1",
     });
     expect(await queue.get(queued.id)).toMatchObject({ status: "done" });
+
+    const unresolved = await queue.add({
+      workspacePath,
+      threadId: "thread-1",
+      turnPayload: {
+        clientUserMessageId: "operation-unresolved",
+        input: [{ type: "text", text: "possibly accepted" }],
+      },
+    });
+    const following = await queue.add({
+      workspacePath,
+      threadId: "thread-1",
+      turnPayload: {
+        clientUserMessageId: "operation-after-ack",
+        input: [{ type: "text", text: "safe next message" }],
+      },
+    });
+    const unresolvedClaim = await queue.claimNext("thread-1");
+    if (!unresolvedClaim) throw new Error("Expected unresolved queue claim");
+    await queue.beginConsumption(unresolvedClaim, "turn/start");
+    await queue.markConsumptionIndeterminate(unresolvedClaim, "turn/start");
+    await expect(queue.claimNext("thread-1")).resolves.toBeUndefined();
+    const removeAfterPublish = queue.remove.bind(queue);
+    vi.spyOn(queue, "remove").mockImplementationOnce(async (id, options) => {
+      expect(await removeAfterPublish(id, options)).toBe(true);
+      throw new Error("injected remove post-publication durability failure");
+    });
+
+    await expect(
+      session.request({
+        version: PROTOCOL_VERSION,
+        requestId: "queue-ack-1",
+        idempotencyKey: "queue-ack-1",
+        method: "queue/remove",
+        payload: {
+          id: unresolved.id,
+          acknowledgeIndeterminate: true,
+        },
+      }),
+    ).rejects.toThrow("remove post-publication durability failure");
+    await vi.waitFor(async () => {
+      expect(await queue.get(following.id)).toMatchObject({ status: "done" });
+    });
+    expect(turnStartPayloads).toContainEqual({
+      input: [{ type: "text", text: "safe next message" }],
+      threadId: "thread-1",
+      clientUserMessageId: "operation-after-ack",
+    });
+
+    const addAfterPublish = queue.add.bind(queue);
+    vi.spyOn(queue, "add").mockImplementationOnce(async (input) => {
+      await addAfterPublish(input);
+      throw new Error("injected add post-publication durability failure");
+    });
+    await expect(
+      session.request({
+        version: PROTOCOL_VERSION,
+        requestId: "queue-add-post-publish",
+        idempotencyKey: "queue-add-post-publish",
+        method: "queue/add",
+        payload: {
+          threadId: "thread-1",
+          clientUserMessageId: "operation-add-post-publish",
+          input: [{ type: "text", text: "published despite error" }],
+        },
+      }),
+    ).rejects.toThrow("add post-publication durability failure");
+    await vi.waitFor(() =>
+      expect(turnStartPayloads).toContainEqual({
+        input: [{ type: "text", text: "published despite error" }],
+        threadId: "thread-1",
+        clientUserMessageId: "operation-add-post-publish",
+      }),
+    );
     await expect(
       session.request({
         version: PROTOCOL_VERSION,

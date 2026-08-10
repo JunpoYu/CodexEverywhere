@@ -19,6 +19,7 @@ import {
   ConnectionRetryWakeup,
   isRetryableConnectionFailure,
   reconnectWithUnlimitedAttempts,
+  shouldRecoverAfterHealthCheckFailure,
   shouldVerifyAfterVisibilityChange,
 } from "./connection-recovery.js";
 import { deleteHost, listHosts, type SavedHost } from "./storage.js";
@@ -424,8 +425,10 @@ async function verifyAdminConnection(): Promise<void> {
       await current.healthCheck(CONNECTION_KEEPALIVE_TIMEOUT_MS);
       if (client === current)
         setAdminConnectionState("online", "管理通道已连接");
-    } catch {
-      if (client === current) await recoverAdminConnection(current);
+    } catch (error) {
+      if (client === current && shouldRecoverAfterHealthCheckFailure(error)) {
+        await recoverAdminConnection(current);
+      }
     }
   };
   const tracked = verify().finally(() => {

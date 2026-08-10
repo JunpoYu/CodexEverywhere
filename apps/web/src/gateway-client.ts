@@ -16,6 +16,7 @@ import {
   parseGatewayServerEnvelope,
   parseRelayWireMessage,
   type EventEnvelope,
+  type ProtocolError,
 } from "@codex-everywhere/protocol";
 import {
   startAuthentication,
@@ -133,6 +134,18 @@ export class GatewayRequestOutcomeUnknownError extends Error {
     this.method = method;
     this.idempotencyKey = idempotencyKey;
     this.transportLost = transportLost;
+  }
+}
+
+export class GatewayResponseError extends Error {
+  readonly code: string;
+  readonly retryable: boolean;
+
+  constructor(error: ProtocolError) {
+    super(error.message);
+    this.name = "GatewayResponseError";
+    this.code = error.code;
+    this.retryable = error.retryable ?? false;
   }
 }
 
@@ -1025,10 +1038,13 @@ export class GatewayClient {
         this.#pending.delete(envelope.requestId);
         clearTimeout(pending.timeout);
         if (envelope.ok) pending.resolve(envelope.result);
-        else
-          pending.reject(
-            new Error(envelope.error?.message ?? "Host request failed"),
-          );
+        else if (envelope.error) {
+          pending.reject(new GatewayResponseError(envelope.error));
+        } else {
+          // parseGatewayServerEnvelope rejects this shape before it reaches
+          // here; keep the branch exhaustive for protocol evolution.
+          pending.reject(new Error("Host request failed"));
+        }
       } else {
         for (const listener of this.#eventListeners) listener(envelope);
       }

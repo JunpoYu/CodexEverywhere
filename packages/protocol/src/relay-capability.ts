@@ -406,6 +406,42 @@ export function verifyProvisionedUserRouteForRenewal(
   return payload;
 }
 
+/**
+ * Verifies a still-valid provisioned administrator capability with the exact
+ * provisioner credential that signed it. The host provisioner uses this only
+ * to migrate the root-registered Controller route into its UID-bound renewal
+ * registry; later renewals are authorized by that durable binding.
+ */
+export function verifyProvisionedAdminRouteForRenewal(
+  capability: string,
+  credentialValue: unknown,
+  options: { adminHandle: string },
+  now = new Date(),
+): ProvisionedRouteCapabilityPayload {
+  const credential = parseHostProvisionerCredential(credentialValue, now);
+  const { body, signature, payload } = parseCapabilityParts(capability);
+  if (
+    payload.version !== RELAY_CAPABILITY_VERSION ||
+    payload.principal !== "host-admin" ||
+    payload.purpose !== "host-admin-route" ||
+    payload.installationId !== credential.installationId ||
+    payload.provisionerExpiresAt !== credential.expiresAt ||
+    payload.loginName !== normalizeLoginName(options.adminHandle)
+  ) {
+    throw new Error(
+      "Relay capability does not belong to this host administrator",
+    );
+  }
+  verifySignature(
+    body,
+    signature,
+    Buffer.from(credential.signingKey, "base64url"),
+    "ce-relay-provisioned-v1",
+  );
+  assertCapabilityCurrent(payload, now);
+  return payload;
+}
+
 /** Returns validated-but-unverified capability metadata for local diagnostics. */
 export function inspectRouteCapability(
   capability: string,

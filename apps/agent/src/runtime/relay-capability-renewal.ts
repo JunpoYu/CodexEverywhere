@@ -52,11 +52,30 @@ export function inspectRelayCapabilityRenewal(
   now = Date.now(),
   renewalWindowMs = RELAY_CAPABILITY_RENEWAL_WINDOW_MS,
 ): RelayCapabilityRenewalStatus {
+  return inspectProvisionedRelayCapabilityRenewal(
+    capability,
+    { principal: "user", purpose: "agent-route" },
+    now,
+    renewalWindowMs,
+  );
+}
+
+export function inspectProvisionedRelayCapabilityRenewal(
+  capability: string,
+  expected: {
+    principal: "user" | "host-admin";
+    purpose: "agent-route" | "host-admin-route";
+  },
+  now = Date.now(),
+  renewalWindowMs = RELAY_CAPABILITY_RENEWAL_WINDOW_MS,
+): RelayCapabilityRenewalStatus {
   const payload = inspectRouteCapability(capability);
   const provisioned =
     (payload.version === 3 || payload.version === RELAY_CAPABILITY_VERSION) &&
-    payload.purpose === "agent-route" &&
-    (payload.version === 3 || payload.principal === "user");
+    payload.purpose === expected.purpose &&
+    (payload.version === 3
+      ? expected.principal === "user"
+      : payload.principal === expected.principal);
   if (!provisioned) return { provisioned: false, renewalDue: false };
   const expiresAt = routeCapabilityEffectiveExpiration(capability);
   if (!expiresAt) return { provisioned: true, renewalDue: false };

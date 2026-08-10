@@ -146,7 +146,10 @@ describe("DirectGateway", () => {
       hostFingerprint: `sha256:${"A".repeat(43)}`,
       state,
       createSession: () => ({
-        request: async (request: RequestEnvelope) => request.payload,
+        request: async (request: RequestEnvelope) =>
+          request.method === "thread/start"
+            ? { thread: { id: "thread-1" } }
+            : request.payload,
       }),
     };
     const gateway = await DirectGateway.start(options);
@@ -168,6 +171,23 @@ describe("DirectGateway", () => {
     ).resolves.toEqual({
       answer: 42,
     });
+    await expect(
+      requestWithKey(
+        paired.socket,
+        paired.session,
+        "thread/start",
+        { cwd: "/work" },
+        "durable-thread-start-key",
+      ),
+    ).resolves.toEqual({ thread: { id: "thread-1" } });
+    await expect(
+      state.read(
+        (database) =>
+          database.exec(
+            "SELECT count(*) FROM durable_mutation_claims WHERE result_json IS NOT NULL",
+          )[0]?.values[0]?.[0],
+      ),
+    ).resolves.toBe(1);
     const largePayload = "x".repeat(3_500_000);
     await expect(
       roundTrip(paired.socket, paired.session, largePayload),
@@ -190,6 +210,288 @@ describe("DirectGateway", () => {
     await gateway.close();
     await state.close();
   }, 30_000);
+
+  it("fails a rejected claimed thread/start closed without replaying it", async () => {
+    const state = await stateStore();
+    const devices = new DeviceRegistry(state);
+    const grant = await devices.issuePairing();
+    const hostKeys = generateStaticKeyPair();
+    const deviceKeys = generateStaticKeyPair();
+    let calls = 0;
+    const gateway = await DirectGateway.start({
+      host: "127.0.0.1",
+      port: 0,
+      nodeId: "node-1",
+      userId: "unix:1000",
+      identity: hostKeys,
+      hostFingerprint: `sha256:${"A".repeat(43)}`,
+      state,
+      createSession: () => ({
+        request: async () => {
+          calls += 1;
+          throw new Error(
+            "app-server disconnected after accepting thread/start",
+          );
+        },
+      }),
+    });
+    const client = await connectClient({
+      port: gateway.port,
+      deviceKeys,
+      hostPublicKey: hostKeys.publicKey,
+      auth: {
+        mode: "pair",
+        pairingId: grant.pairingId,
+        secret: grant.secret,
+        deviceName: "Test browser",
+      },
+    });
+
+    const first = await requestOutcomeWithKey(
+      client.socket,
+      client.session,
+      "thread/start",
+      { cwd: "/work" },
+      "rejected-thread-start-key",
+    );
+    expect(first).toMatchObject({
+      ok: false,
+      error: {
+        code: "IDEMPOTENCY_OUTCOME_INDETERMINATE",
+        retryable: false,
+      },
+    });
+    if (first.ok) throw new Error("Expected thread/start to fail closed");
+    const retry = await requestOutcomeWithKey(
+      client.socket,
+      client.session,
+      "thread/start",
+      { cwd: "/work" },
+      "rejected-thread-start-key",
+    );
+    expect(retry).toMatchObject({
+      ok: false,
+      error: {
+        code: "IDEMPOTENCY_OUTCOME_INDETERMINATE",
+        retryable: false,
+      },
+    });
+    expect(calls).toBe(1);
+    await expect(
+      state.read(
+        (database) =>
+          database.exec(
+            "SELECT durable_mutation_claims.result_json, idempotency_keys.result_json, idempotency_keys.expires_at FROM durable_mutation_claims JOIN idempotency_keys USING (key)",
+          )[0]?.values[0],
+      ),
+    ).resolves.toEqual([
+      JSON.stringify({ ok: false, error: first.error }),
+      JSON.stringify({ ok: false, error: first.error }),
+      "9999-12-31T23:59:59.999Z",
+    ]);
+
+    client.socket.close();
+    await onceClosed(client.socket);
+    await gateway.close();
+    await state.close();
+  });
+
+  it("returns a claimed turn/queue success once and permanently disables content replay", async () => {
+    const state = await stateStore();
+    const devices = new DeviceRegistry(state);
+    const grant = await devices.issuePairing();
+    const hostKeys = generateStaticKeyPair();
+    const deviceKeys = generateStaticKeyPair();
+    const calls = new Map<string, number>();
+    const gateway = await DirectGateway.start({
+      host: "127.0.0.1",
+      port: 0,
+      nodeId: "node-1",
+      userId: "unix:1000",
+      identity: hostKeys,
+      hostFingerprint: `sha256:${"A".repeat(43)}`,
+      state,
+      createSession: () => ({
+        request: async (request: RequestEnvelope) => {
+          calls.set(request.method, (calls.get(request.method) ?? 0) + 1);
+          const payload = request.payload as Record<string, unknown>;
+          if (request.method === "turn/start") {
+            return {
+              turn: {
+                id: "turn-1",
+                status: "inProgress",
+                items: [{ text: "PRIVATE DIRECT TURN PROMPT" }],
+              },
+            };
+          }
+          if (request.method === "queue/add") {
+            return {
+              id: "queue-1",
+              threadId: payload.threadId,
+              status: "pending",
+              turnPayload: {
+                clientUserMessageId: payload.clientUserMessageId,
+                input: payload.input,
+              },
+            };
+          }
+          return {};
+        },
+      }),
+    });
+    const client = await connectClient({
+      port: gateway.port,
+      deviceKeys,
+      hostPublicKey: hostKeys.publicKey,
+      auth: {
+        mode: "pair",
+        pairingId: grant.pairingId,
+        secret: grant.secret,
+        deviceName: "Test browser",
+      },
+    });
+    const cases = [
+      {
+        method: "turn/start",
+        key: "durable-turn-start-key",
+        payload: {
+          threadId: "thread-1",
+          clientUserMessageId: "operation-turn-1",
+          input: [{ type: "text", text: "PRIVATE DIRECT TURN PROMPT" }],
+        },
+      },
+      {
+        method: "queue/add",
+        key: "durable-queue-add-key",
+        payload: {
+          threadId: "thread-1",
+          clientUserMessageId: "operation-queue-1",
+          input: [{ type: "text", text: "PRIVATE DIRECT QUEUE PROMPT" }],
+        },
+      },
+    ];
+
+    for (const entry of cases) {
+      await expect(
+        requestWithKey(
+          client.socket,
+          client.session,
+          entry.method,
+          entry.payload,
+          entry.key,
+        ),
+      ).resolves.toMatchObject(
+        entry.method === "turn/start"
+          ? { turn: { id: "turn-1" } }
+          : { id: "queue-1", status: "pending" },
+      );
+      await expect(
+        requestOutcomeWithKey(
+          client.socket,
+          client.session,
+          entry.method,
+          entry.payload,
+          entry.key,
+        ),
+      ).resolves.toMatchObject({
+        ok: false,
+        error: {
+          code: "IDEMPOTENCY_OUTCOME_INDETERMINATE",
+          retryable: false,
+        },
+      });
+      expect(calls.get(entry.method)).toBe(1);
+    }
+    const persisted = JSON.stringify(
+      await state.read(
+        (database) =>
+          database.exec(
+            "SELECT durable_mutation_claims.result_json, idempotency_keys.result_json, idempotency_keys.expires_at FROM durable_mutation_claims JOIN idempotency_keys USING (key) WHERE durable_mutation_claims.method IN ('turn/start', 'queue/add') ORDER BY durable_mutation_claims.method",
+          )[0]?.values,
+      ),
+    );
+    expect(persisted).not.toContain("PRIVATE DIRECT TURN PROMPT");
+    expect(persisted).not.toContain("PRIVATE DIRECT QUEUE PROMPT");
+    expect(persisted.match(/IDEMPOTENCY_OUTCOME_INDETERMINATE/gu)).toHaveLength(
+      4,
+    );
+    expect(persisted.match(/9999-12-31T23:59:59.999Z/gu)).toHaveLength(2);
+
+    client.socket.close();
+    await onceClosed(client.socket);
+    await gateway.close();
+    await state.close();
+  });
+
+  it("never replays rejected claimed turn/start and queue/add mutations", async () => {
+    const state = await stateStore();
+    const devices = new DeviceRegistry(state);
+    const grant = await devices.issuePairing();
+    const hostKeys = generateStaticKeyPair();
+    const deviceKeys = generateStaticKeyPair();
+    const calls = new Map<string, number>();
+    const gateway = await DirectGateway.start({
+      host: "127.0.0.1",
+      port: 0,
+      nodeId: "node-1",
+      userId: "unix:1000",
+      identity: hostKeys,
+      hostFingerprint: `sha256:${"A".repeat(43)}`,
+      state,
+      createSession: () => ({
+        request: async (request: RequestEnvelope) => {
+          calls.set(request.method, (calls.get(request.method) ?? 0) + 1);
+          throw new Error(`disconnect after accepting ${request.method}`);
+        },
+      }),
+    });
+    const client = await connectClient({
+      port: gateway.port,
+      deviceKeys,
+      hostPublicKey: hostKeys.publicKey,
+      auth: {
+        mode: "pair",
+        pairingId: grant.pairingId,
+        secret: grant.secret,
+        deviceName: "Test browser",
+      },
+    });
+
+    for (const method of ["turn/start", "queue/add"]) {
+      const payload = {
+        threadId: "thread-1",
+        clientUserMessageId: `operation-${method}`,
+        input: [{ type: "text", text: "PRIVATE REJECTED DIRECT PROMPT" }],
+      };
+      const key = `rejected-${method}-key`;
+      const first = await requestOutcomeWithKey(
+        client.socket,
+        client.session,
+        method,
+        payload,
+        key,
+      );
+      expect(first).toMatchObject({
+        ok: false,
+        error: { code: "IDEMPOTENCY_OUTCOME_INDETERMINATE" },
+      });
+      await expect(
+        requestOutcomeWithKey(
+          client.socket,
+          client.session,
+          method,
+          payload,
+          key,
+        ),
+      ).resolves.toEqual(first);
+      expect(calls.get(method)).toBe(1);
+    }
+
+    client.socket.close();
+    await onceClosed(client.socket);
+    await gateway.close();
+    await state.close();
+  });
 
   it("accepts an unknown device only as a pending login", async () => {
     const state = await stateStore();
@@ -828,6 +1130,31 @@ async function requestWithKey(
   payload: unknown,
   idempotencyKey: string,
 ): Promise<unknown> {
+  const value = await requestOutcomeWithKey(
+    socket,
+    session,
+    method,
+    payload,
+    idempotencyKey,
+  );
+  expect(value.ok).toBe(true);
+  if (!value.ok) throw new Error(`Gateway request failed: ${value.error.code}`);
+  return value.result;
+}
+
+async function requestOutcomeWithKey(
+  socket: WebSocket,
+  session: SecureSession,
+  method: string,
+  payload: unknown,
+  idempotencyKey: string,
+): Promise<
+  | { ok: true; result: unknown }
+  | {
+      ok: false;
+      error: { code: string; message: string; retryable?: boolean };
+    }
+> {
   const requestNumber = ++requestCounter;
   const encrypted = session.encryptMessage(
     Buffer.from(
@@ -854,10 +1181,12 @@ async function requestWithKey(
   }
   const value = JSON.parse(Buffer.from(await response).toString()) as {
     ok: boolean;
-    result: unknown;
+    result?: unknown;
+    error?: { code: string; message: string; retryable?: boolean };
   };
-  expect(value.ok).toBe(true);
-  return value.result;
+  if (value.ok) return { ok: true, result: value.result };
+  if (!value.error) throw new Error("Gateway error response is missing error");
+  return { ok: false, error: value.error };
 }
 
 let requestCounter = 0;

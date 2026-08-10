@@ -27,6 +27,7 @@ import {
   ROOTLESS_PROVISIONING_MAX_FILE_BYTES,
   ROOTLESS_PROVISIONING_RESPONSE_TTL_MS,
   ROOTLESS_PROVISIONING_VERSION,
+  ROOTLESS_ADMIN_RELAY_RENEWAL_FEATURE,
   ROOTLESS_RELAY_RENEWAL_FEATURE,
   assertFreshProvisioningTimestamp,
   decodeHandshake,
@@ -46,6 +47,8 @@ import {
   setHostProvisionerDefaultCodexNetwork,
   type InstalledHostProvisioner,
 } from "./self-provision.js";
+import { issueAdminRouteRenewalGrantForAccount } from "./admin-route-provisioning.js";
+import { ADMIN_INSTALLATION_CONFIG } from "./controller-config.js";
 import { inspectSshUnixAccountByUid } from "./unix-accounts.js";
 
 const POLL_INTERVAL_MS = 200;
@@ -56,6 +59,8 @@ export type RootlessProvisionerPaths = {
   configFile: string;
   configMutationLock: string;
   routeBindingsFile: string;
+  adminRouteBindingsFile: string;
+  adminInstallationFile: string;
   adminStateFile: string;
   keysDirectory: string;
   logsDirectory: string;
@@ -81,6 +86,8 @@ export function resolveRootlessProvisionerPaths(
     configFile: join(home, "config.json"),
     configMutationLock: join(home, "config.mutation.lock"),
     routeBindingsFile: join(home, "route-bindings.json"),
+    adminRouteBindingsFile: join(home, "admin-route-bindings.json"),
+    adminInstallationFile: ADMIN_INSTALLATION_CONFIG,
     adminStateFile: join(home, "admin-state.sqlite"),
     keysDirectory: join(home, "keys"),
     logsDirectory: join(home, "logs"),
@@ -229,6 +236,7 @@ export async function processRequestFile(
   options: {
     now?: number;
     issueGrant?: typeof issueProvisioningGrantForAccount;
+    issueAdminGrant?: typeof issueAdminRouteRenewalGrantForAccount;
     inspectAccount?: typeof inspectSshUnixAccountByUid;
   } = {},
 ): Promise<void> {
@@ -258,6 +266,7 @@ export async function createRootlessProvisioningResponse(
   options: {
     now?: number;
     issueGrant?: typeof issueProvisioningGrantForAccount;
+    issueAdminGrant?: typeof issueAdminRouteRenewalGrantForAccount;
     inspectAccount?: typeof inspectSshUnixAccountByUid;
   } = {},
 ): Promise<{
@@ -286,17 +295,29 @@ export async function createRootlessProvisioningResponse(
     )(ownerUid);
     if (!eligibility.eligible)
       throw new Error(`Unix account is not eligible: ${eligibility.reason}`);
-    const grant = await (
-      options.issueGrant ?? issueProvisioningGrantForAccount
-    )(eligibility.account, {
-      configPath: paths.configFile,
-      adminStatePath: paths.adminStateFile,
-      routeBindingsPath: paths.routeBindingsFile,
-      ...(authenticatedPayload.operation === "renew-relay"
-        ? { renewalCapability: authenticatedPayload.routeCapability }
-        : {}),
-      now: new Date(options.now ?? Date.now()),
-    });
+    const grant =
+      authenticatedPayload.operation === "renew-admin-relay"
+        ? await (
+            options.issueAdminGrant ?? issueAdminRouteRenewalGrantForAccount
+          )(eligibility.account, {
+            configPath: paths.configFile,
+            adminInstallationPath: paths.adminInstallationFile,
+            adminRouteBindingsPath: paths.adminRouteBindingsFile,
+            renewalCapability: authenticatedPayload.routeCapability,
+            now: new Date(options.now ?? Date.now()),
+          })
+        : await (options.issueGrant ?? issueProvisioningGrantForAccount)(
+            eligibility.account,
+            {
+              configPath: paths.configFile,
+              adminStatePath: paths.adminStateFile,
+              routeBindingsPath: paths.routeBindingsFile,
+              ...(authenticatedPayload.operation === "renew-relay"
+                ? { renewalCapability: authenticatedPayload.routeCapability }
+                : {}),
+              now: new Date(options.now ?? Date.now()),
+            },
+          );
     result = { ok: true, grant };
   } catch (error) {
     result = { ok: false, error: safeProvisioningError(error) };
@@ -369,7 +390,10 @@ async function writeDescriptor(
     requestsDirectory: paths.requestsDirectory,
     responsesDirectory: paths.responsesDirectory,
     startedAt: new Date().toISOString(),
-    features: [ROOTLESS_RELAY_RENEWAL_FEATURE],
+    features: [
+      ROOTLESS_RELAY_RENEWAL_FEATURE,
+      ROOTLESS_ADMIN_RELAY_RENEWAL_FEATURE,
+    ],
   };
   await writeFile(paths.descriptorFile, `${JSON.stringify(descriptor)}\n`, {
     encoding: "utf8",
@@ -479,12 +503,20 @@ function safeProvisioningError(error: unknown): string {
   return "Host provisioning failed";
 }
 
-function parseAuthenticatedRequestPayload(value: Uint8Array): {
+type AuthenticatedRequestPayload = {
   requestId: string;
   createdAt: string;
-  operation: "initialize" | "renew-relay";
-  routeCapability?: string;
-} {
+} & (
+  | { operation: "initialize"; routeCapability?: never }
+  | {
+      operation: "renew-relay" | "renew-admin-relay";
+      routeCapability: string;
+    }
+);
+
+function parseAuthenticatedRequestPayload(
+  value: Uint8Array,
+): AuthenticatedRequestPayload {
   const parsed: unknown = JSON.parse(Buffer.from(value).toString("utf8"));
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
     throw new Error("Invalid authenticated provisioning request");
@@ -494,7 +526,8 @@ function parseAuthenticatedRequestPayload(value: Uint8Array): {
     typeof record.createdAt !== "string" ||
     (record.operation !== undefined &&
       record.operation !== "initialize" &&
-      record.operation !== "renew-relay") ||
+      record.operation !== "renew-relay" &&
+      record.operation !== "renew-admin-relay") ||
     (record.routeCapability !== undefined &&
       (typeof record.routeCapability !== "string" ||
         record.routeCapability.length > 8 * 1_024))
@@ -502,7 +535,7 @@ function parseAuthenticatedRequestPayload(value: Uint8Array): {
     throw new Error("Invalid authenticated provisioning request");
   const operation = record.operation ?? "initialize";
   if (
-    (operation === "renew-relay") !==
+    (operation !== "initialize") !==
     (typeof record.routeCapability === "string")
   ) {
     throw new Error("Invalid authenticated provisioning request");
@@ -514,7 +547,7 @@ function parseAuthenticatedRequestPayload(value: Uint8Array): {
     ...(typeof record.routeCapability === "string"
       ? { routeCapability: record.routeCapability }
       : {}),
-  };
+  } as AuthenticatedRequestPayload;
 }
 
 function wait(milliseconds: number): Promise<void> {

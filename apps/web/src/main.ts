@@ -17,6 +17,7 @@ import type {
 import type { ReasoningEffort } from "@codex-everywhere/codex-app-server-schema";
 import {
   CODEX_INSTALL_PROGRESS_EVENT,
+  IDEMPOTENCY_OUTCOME_INDETERMINATE,
   type CodexAuthImportResult,
   type CodexVersionStatus,
   type EventEnvelope,
@@ -26,6 +27,7 @@ import {
 import {
   GatewayClient,
   GatewayReauthenticationRequired,
+  GatewayResponseError,
   GatewayRequestOutcomeUnknownError,
   TemporaryPasswordReauthenticationRequired,
   isGatewayRequestOutcomeUnknown,
@@ -34,8 +36,10 @@ import {
 } from "./gateway-client.js";
 import { ApprovalSubmissionTracker } from "./approval-submission.js";
 import {
+  ComposerTurnSnapshotReader,
   composerOperationOutcome,
   composerReconciliationAction,
+  composerTurnSnapshotCoversOperation,
   type ComposerOperationKind,
 } from "./composer-outcome.js";
 import { createCoalescedTask } from "./coalesced-task.js";
@@ -45,6 +49,7 @@ import {
   ConnectionRetryWakeup,
   isRetryableConnectionFailure,
   reconnectWithUnlimitedAttempts,
+  shouldRecoverAfterHealthCheckFailure,
   shouldVerifyAfterVisibilityChange,
 } from "./connection-recovery.js";
 import { ConversationOutlineView } from "./conversation-outline.js";
@@ -99,12 +104,21 @@ import {
   resumeThreadHistory,
 } from "./thread-history.js";
 import {
+  clearUnresolvedThreadStartMarker,
+  hasUnresolvedThreadStartMarker,
+  markThreadStartUnresolved,
+} from "./thread-start-marker.js";
+import {
   parseSlashCommand,
   slashCommandCompletion,
   slashCommandSuggestions,
   type SlashCommand,
 } from "./slash-commands.js";
 import { mountPwaUpdatePrompt } from "./pwa-update.js";
+import {
+  steerableQueueItemIds,
+  type QueueSteerItemStatus,
+} from "./queue-steer-visibility.js";
 import {
   GatewayMutationRecoveryPendingError,
   requestRecoverableGatewayMutation,
@@ -168,7 +182,7 @@ type QueueItem = {
   id: string;
   threadId: string;
   turnPayload: Record<string, unknown>;
-  status: "pending" | "running" | "paused" | "confirming";
+  status: QueueSteerItemStatus;
 };
 
 type PendingComposerOperation = {
@@ -181,6 +195,9 @@ type PendingComposerOperation = {
   text: string;
   reconciliationStartedAt: number;
   authoritativeChecks: number;
+  reconciliationBoundaryTurnId?: string;
+  manualReviewRequired: boolean;
+  manualReviewReason?: "history-unavailable" | "host-indeterminate";
 };
 
 type PendingThreadStartOperation = {
@@ -192,6 +209,7 @@ type PendingThreadStartOperation = {
   effort: string;
   previousThreadId?: string;
   outcomeUnknown: boolean;
+  manualReviewRequired: boolean;
 };
 
 type ThreadRuntimeSettings = {
@@ -245,6 +263,11 @@ Commit & Pull Request Guidelines
 
 const app = requiredElement<HTMLDivElement>("app");
 const themeController = initializeTheme();
+const threadStartMarkerStorage = availableSessionStorage();
+let threadStartSafetyMarkerArmed = hasUnresolvedThreadStartMarker(
+  threadStartMarkerStorage,
+);
+let threadStartReloadReviewRequired = threadStartSafetyMarkerArmed;
 let client: GatewayClient | undefined;
 let temporaryReauthenticationClient: GatewayClient | undefined;
 let unsubscribeClientConnection: (() => void) | undefined;
@@ -279,6 +302,7 @@ let selectedCodexAuthFile: File | undefined;
 let openThreadSequence = 0;
 let activeThreadStatus: ThreadStatus | undefined;
 let activeTurnId: string | undefined;
+let activeNewestTurnId: string | undefined;
 let threadSyncTimer: number | undefined;
 let threadSyncInFlight = false;
 let activeHistoryNextCursor: string | undefined;
@@ -299,7 +323,9 @@ let composerSubmitting = false;
 let slashCommandSelection = 0;
 const queuedItems = new Map<string, QueueItem>();
 const pendingComposerOperations = new Map<string, PendingComposerOperation>();
+const inFlightComposerOperations = new Set<string>();
 const composerReconciliations = new Set<string>();
+const composerTurnSnapshotReader = new ComposerTurnSnapshotReader();
 let pendingComposerReconciliationTimer: number | undefined;
 let pendingThreadStartOperation: PendingThreadStartOperation | undefined;
 let threadStartReconciliation: Promise<void> | undefined;
@@ -490,6 +516,7 @@ app.innerHTML = `
           <header id="composer-queue-header" role="button" tabindex="0" aria-expanded="true"><div><span class="queue-indicator" aria-hidden="true"></span><strong>待发送</strong><span id="composer-queue-count">0 条</span></div><small id="composer-queue-note">当前任务结束后依次发送</small></header>
           <div id="composer-queue-list" class="composer-queue-list"></div>
         </aside>
+        <aside id="composer-outcome-review" class="thread-start-outcome-review composer-outcome-review" role="status" hidden><strong>发送结果需要人工核对</strong><p id="composer-outcome-review-copy">旧版 app-server 的完整历史读取连续失败，系统已停止自动重试发送。原消息可能已经提交，请刷新当前会话核对；只有确认可以承担重复消息风险后，才能放弃待确认记录。</p><div class="actions"><button id="inspect-composer-outcome" class="secondary" type="button">刷新并核对当前会话</button><button id="abandon-composer-outcome" class="ghost danger" type="button">我已核对，放弃待确认</button></div></aside>
         <div class="composer-shell">
           <div id="slash-command-menu" class="slash-command-menu" role="listbox" aria-label="Codex 斜杠指令" hidden></div>
           <textarea id="message-input" rows="1" placeholder="给 Codex 发送消息，输入 / 查看指令…" aria-autocomplete="list" aria-controls="slash-command-menu" disabled></textarea>
@@ -548,6 +575,7 @@ app.innerHTML = `
       <div class="launch-options"><label>模型<select id="new-session-model"><option value="">Codex 默认</option></select></label><label>推理强度<select id="new-session-effort"><option value="">模型默认</option></select></label></div>
       <details class="session-advanced"><summary><span>本次会话权限</span><small id="new-session-permission-summary">可写工作目录 · 按需审批</small></summary><div class="launch-options"><label>沙箱<select id="new-session-sandbox"><option value="read-only">只读</option><option value="workspace-write">可写工作目录</option><option value="danger-full-access">完全访问</option></select></label><label>审批策略<select id="new-session-approval"><option value="untrusted">仅信任命令免审批</option><option value="on-request">按需审批</option><option value="never">从不询问</option></select></label></div><p class="field-note">已填入全局默认值；这里的修改只影响本次新会话。</p></details>
       <p id="new-session-error" class="error" role="alert"></p>
+      <div id="thread-start-outcome-review" class="thread-start-outcome-review" hidden><p>上次页面在会话创建结果明确前关闭或刷新，或 Agent 在结果落盘前重启；原会话可能已经存在。同一标签页只保存不含消息、目录或身份信息的待核对标记。系统不会按目录或时间猜测，也不会自动重放。请先刷新并核对会话列表；只有确认可以承担重复会话风险后，才能放弃本次待确认记录。</p><div class="actions"><button id="inspect-thread-start-outcome" class="secondary" type="button">刷新并查看会话列表</button><button id="abandon-thread-start-outcome" class="ghost danger" type="button">我已核对，放弃待确认</button></div></div>
       <button id="start-task" class="primary wide-action">创建并发送</button>
     </div>
   </dialog>
@@ -872,6 +900,14 @@ composerQueueHeader.addEventListener("keydown", (event) => {
   event.preventDefault();
   toggleComposerQueueDuringApproval();
 });
+requiredElement("inspect-composer-outcome").addEventListener(
+  "click",
+  () => void inspectManualComposerOutcome(),
+);
+requiredElement("abandon-composer-outcome").addEventListener(
+  "click",
+  abandonManualComposerOutcome,
+);
 
 requiredElement("pair-button").addEventListener("click", () => void pair());
 requiredElement("open-first-use").addEventListener("click", showFirstUse);
@@ -947,9 +983,11 @@ requiredElement("empty-new-session").addEventListener(
   () => void openNewSession(),
 );
 requiredElement("cancel-new-session").addEventListener("click", () =>
-  pendingThreadStartOperation
-    ? showToast("正在确认会话创建结果，暂时不能关闭", "error")
-    : newSessionDialog.close(),
+  pendingThreadStartOperation?.manualReviewRequired
+    ? newSessionDialog.close()
+    : pendingThreadStartOperation
+      ? showToast("正在确认会话创建结果，暂时不能关闭", "error")
+      : newSessionDialog.close(),
 );
 requiredElement("thread-search").addEventListener("input", () =>
   renderThreads(threadsCache),
@@ -1070,6 +1108,15 @@ for (const id of ["new-session-sandbox", "new-session-approval"]) {
   requiredElement(id).addEventListener("change", renderNewSessionPermissions);
 }
 requiredElement("start-task").addEventListener("click", () => void startTask());
+requiredElement("inspect-thread-start-outcome").addEventListener(
+  "click",
+  () => void inspectIndeterminateThreadStart(),
+);
+requiredElement("abandon-thread-start-outcome").addEventListener(
+  "click",
+  abandonIndeterminateThreadStart,
+);
+window.addEventListener("beforeunload", warnBeforeUnresolvedMutationUnload);
 sendMessage.addEventListener("click", () => void continueThread());
 queueMessage.addEventListener("click", () => void queueForThread());
 requiredElement("interrupt-turn").addEventListener(
@@ -1739,6 +1786,7 @@ async function activate(nextClient: GatewayClient): Promise<void> {
   activeThreadCwd = undefined;
   activeThreadStatus = undefined;
   activeTurnId = undefined;
+  activeNewestTurnId = undefined;
   activeHistoryNextCursor = undefined;
   activeHistoryPaged = false;
   olderHistoryLoading = false;
@@ -1826,8 +1874,13 @@ async function verifyActiveConnection(): Promise<void> {
             : "Relay · 端到端加密",
         );
       }
-    } catch {
-      if (client === currentClient) await recoverConnection(currentClient);
+    } catch (error) {
+      if (
+        client === currentClient &&
+        shouldRecoverAfterHealthCheckFailure(error)
+      ) {
+        await recoverConnection(currentClient);
+      }
     }
   };
   const tracked = verify().finally(() => {
@@ -3497,6 +3550,7 @@ function closeActiveThreadView(): void {
   activeThreadCwd = undefined;
   activeThreadStatus = undefined;
   activeTurnId = undefined;
+  activeNewestTurnId = undefined;
   activeHistoryNextCursor = undefined;
   activeHistoryPaged = false;
   olderHistoryLoading = false;
@@ -3576,6 +3630,7 @@ async function openThread(
   activeThreadCwd = thread.cwd;
   renderWorkspaceScopeDescription();
   activeTurnId = undefined;
+  activeNewestTurnId = undefined;
   activeHistoryNextCursor = undefined;
   activeHistoryPaged = false;
   olderHistoryLoading = false;
@@ -3627,6 +3682,7 @@ async function openThread(
     activeTurnId = [...detail.thread.turns]
       .reverse()
       .find((turn) => turn.status === "inProgress")?.id;
+    activeNewestTurnId = detail.thread.turns.at(-1)?.id;
     activeHistoryNextCursor = history.nextCursor;
     activeHistoryPaged = history.paged;
     setThreadStatus(detail.thread.status);
@@ -3655,8 +3711,14 @@ async function openThread(
     reconcilePendingComposerOperations(
       thread.id,
       detail.thread.turns,
+      !history.paged || history.nextCursor === undefined,
       queueSnapshot,
-      currentClient,
+      {
+        // The history snapshot predates queue/list. A queued item can dispatch
+        // between those reads, so this pass is positive evidence only.
+        negativeEvidenceAllowed: false,
+        targetClient: currentClient,
+      },
     );
     messageInput.disabled = false;
     updateComposerSubmitAvailability();
@@ -3674,6 +3736,11 @@ async function openThread(
 
 async function openNewSession(): Promise<void> {
   requiredElement("new-session-error").textContent = "";
+  if (threadStartManualReviewRequired()) {
+    newSessionDialog.showModal();
+    renderIndeterminateThreadStart();
+    return;
+  }
   if (workspaceRoots.length === 0) {
     workspaceDialog.showModal();
     renderWorkspaceManager();
@@ -3888,8 +3955,94 @@ async function saveThreadSettings(): Promise<void> {
   }
 }
 
+function availableSessionStorage(): Storage | undefined {
+  try {
+    return window.sessionStorage;
+  } catch {
+    return undefined;
+  }
+}
+
+function threadStartManualReviewRequired(): boolean {
+  return (
+    threadStartReloadReviewRequired ||
+    Boolean(pendingThreadStartOperation?.manualReviewRequired)
+  );
+}
+
+function armUnresolvedThreadStartMarker(): void {
+  threadStartSafetyMarkerArmed = true;
+  markThreadStartUnresolved(threadStartMarkerStorage);
+}
+
+function clearThreadStartSafetyMarker(): void {
+  threadStartSafetyMarkerArmed = false;
+  threadStartReloadReviewRequired = false;
+  clearUnresolvedThreadStartMarker(threadStartMarkerStorage);
+}
+
+function warnBeforeUnresolvedMutationUnload(event: BeforeUnloadEvent): void {
+  const hasUnresolvedMutation =
+    threadStartSafetyMarkerArmed ||
+    pendingThreadStartOperation !== undefined ||
+    inFlightComposerOperations.size > 0 ||
+    pendingComposerOperations.size > 0;
+  if (!hasUnresolvedMutation) return;
+  event.preventDefault();
+  event.returnValue = "仍有操作结果待确认。";
+}
+
+function renderIndeterminateThreadStart(): void {
+  const manualReviewRequired = threadStartManualReviewRequired();
+  requiredElement("thread-start-outcome-review").hidden = !manualReviewRequired;
+  const start = requiredElement<HTMLButtonElement>("start-task");
+  start.hidden = manualReviewRequired;
+  if (!manualReviewRequired) return;
+  requiredElement("new-session-error").textContent =
+    "上次页面在会话创建结果明确前离开，无法证明会话是否已经创建；已停止自动重放。";
+  requiredElement<HTMLTextAreaElement>("new-prompt").disabled = true;
+}
+
+async function inspectIndeterminateThreadStart(): Promise<void> {
+  if (!threadStartManualReviewRequired()) return;
+  if (threadListArchived) await selectThreadArchiveView(false);
+  else await refresh();
+  if (threadListState.textContent) {
+    showToast("会话列表刷新失败，请恢复连接后再核对。", "error");
+    return;
+  }
+  if (newSessionDialog.open) newSessionDialog.close();
+  showToast("会话列表已刷新；系统未自动认领任何候选会话。", "success");
+}
+
+function abandonIndeterminateThreadStart(): void {
+  if (!threadStartManualReviewRequired()) return;
+  if (
+    !window.confirm(
+      "原会话可能已经创建。确认已核对会话列表，并放弃这条待确认记录？之后再次创建可能产生重复会话。",
+    )
+  )
+    return;
+  pendingThreadStartOperation = undefined;
+  clearThreadStartSafetyMarker();
+  updateMutationOutcomePendingState();
+  requiredElement("thread-start-outcome-review").hidden = true;
+  const start = requiredElement<HTMLButtonElement>("start-task");
+  start.hidden = false;
+  start.disabled = workspaceRoots.length === 0;
+  start.removeAttribute("aria-busy");
+  start.textContent = "创建并发送";
+  requiredElement<HTMLTextAreaElement>("new-prompt").disabled = false;
+  requiredElement("new-session-error").textContent =
+    "已放弃旧的待确认记录；再次创建会使用新的操作编号。";
+}
+
 async function startTask(): Promise<void> {
   const prompt = requiredElement<HTMLTextAreaElement>("new-prompt");
+  if (threadStartManualReviewRequired()) {
+    renderIndeterminateThreadStart();
+    return;
+  }
   if (pendingThreadStartOperation) {
     await resumePendingThreadStartOperation();
     return;
@@ -3908,6 +4061,7 @@ async function startTask(): Promise<void> {
     if (value) threadPayload[key] = value;
   }
   const operationId = crypto.randomUUID();
+  armUnresolvedThreadStartMarker();
   pendingThreadStartOperation = {
     operationId,
     idempotencyKey: operationId,
@@ -3917,6 +4071,7 @@ async function startTask(): Promise<void> {
     effort: requiredElement<HTMLSelectElement>("new-session-effort").value,
     ...(activeThreadId ? { previousThreadId: activeThreadId } : {}),
     outcomeUnknown: false,
+    manualReviewRequired: false,
   };
   updateMutationOutcomePendingState();
   await resumePendingThreadStartOperation();
@@ -3937,6 +4092,11 @@ async function resumePendingThreadStartOperation(): Promise<void> {
   start.setAttribute("aria-busy", "true");
   start.textContent = operation.outcomeUnknown ? "正在确认…" : "正在创建…";
   prompt.disabled = true;
+
+  if (operation.manualReviewRequired) {
+    renderIndeterminateThreadStart();
+    return;
+  }
 
   if (
     operation.outcomeUnknown &&
@@ -3967,10 +4127,21 @@ async function resumePendingThreadStartOperation(): Promise<void> {
           },
         });
       if (pendingThreadStartOperation !== operation) return;
+      clearThreadStartSafetyMarker();
       pendingThreadStartOperation = undefined;
       updateMutationOutcomePendingState();
       await completeStartedTask(recovered.client, recovered.value, operation);
     } catch (cause) {
+      if (
+        cause instanceof GatewayResponseError &&
+        cause.code === IDEMPOTENCY_OUTCOME_INDETERMINATE
+      ) {
+        operation.outcomeUnknown = true;
+        operation.manualReviewRequired = true;
+        updateMutationOutcomePendingState();
+        renderIndeterminateThreadStart();
+        return;
+      }
       if (
         isGatewayRequestOutcomeUnknown(cause) ||
         cause instanceof GatewayMutationRecoveryPendingError
@@ -3981,8 +4152,10 @@ async function resumePendingThreadStartOperation(): Promise<void> {
         updateMutationOutcomePendingState();
         return;
       }
-      if (pendingThreadStartOperation === operation)
+      if (pendingThreadStartOperation === operation) {
+        clearThreadStartSafetyMarker();
         pendingThreadStartOperation = undefined;
+      }
       updateMutationOutcomePendingState();
       error.textContent = errorMessage(cause);
     } finally {
@@ -3992,6 +4165,7 @@ async function resumePendingThreadStartOperation(): Promise<void> {
       else start.removeAttribute("aria-busy");
       start.textContent = pending ? "等待确认…" : "创建并发送";
       prompt.disabled = pending;
+      renderIndeterminateThreadStart();
     }
   })();
   threadStartReconciliation = reconciliation.finally(() => {
@@ -4008,12 +4182,15 @@ async function completeStartedTask(
   const error = requiredElement("new-session-error");
   const prompt = requiredElement<HTMLTextAreaElement>("new-prompt");
   let turnOperation: PendingComposerOperation | undefined;
+  let turnStarted = false;
   try {
     queuedItems.clear();
     renderComposerQueue();
     ++openThreadSequence;
     activeThreadId = started.thread.id;
     activeThreadCwd = started.thread.cwd;
+    activeTurnId = undefined;
+    activeNewestTurnId = undefined;
     activeHistoryNextCursor = undefined;
     activeHistoryPaged = false;
     olderHistoryLoading = false;
@@ -4052,6 +4229,7 @@ async function completeStartedTask(
       input,
       operation.prompt,
     );
+    beginComposerOperationRequest(turnOperation);
     turnPayload.clientUserMessageId = turnOperation.operationId;
     timelineView.appendLocalUser(input, turnOperation.operationId);
     const turnResponse = await taskClient.request<TurnStartResponse>(
@@ -4059,7 +4237,10 @@ async function completeStartedTask(
       turnPayload,
       { idempotencyKey: turnOperation.idempotencyKey },
     );
+    completeComposerOperationRequest(turnOperation);
+    turnStarted = true;
     activeTurnId = turnResponse.turn.id;
+    activeNewestTurnId = turnResponse.turn.id;
     timelineView.bindLocalUserToTurn(
       turnResponse.turn.id,
       turnOperation.operationId,
@@ -4074,6 +4255,21 @@ async function completeStartedTask(
     newSessionDialog.close();
     await refresh();
   } catch (cause) {
+    if (turnStarted) {
+      prompt.value = "";
+      newSessionDialog.close();
+      showToast(
+        `第一条消息已经发送，但后续界面刷新失败：${errorMessage(cause)}`,
+        "error",
+      );
+      return;
+    }
+    if (turnOperation && isGatewayMutationOutcomeIndeterminate(cause)) {
+      prompt.value = "";
+      newSessionDialog.close();
+      markComposerOperationIndeterminate(turnOperation);
+      return;
+    }
     if (turnOperation && isGatewayRequestOutcomeUnknown(cause)) {
       prompt.value = "";
       newSessionDialog.close();
@@ -4089,6 +4285,8 @@ async function completeStartedTask(
     }
     timelineView.removeLocalUser(turnOperation?.operationId);
     error.textContent = errorMessage(cause);
+  } finally {
+    if (turnOperation) completeComposerOperationRequest(turnOperation);
   }
 }
 
@@ -4105,7 +4303,10 @@ function updateComposerSubmitAvailability(): void {
     (operation) => operation.threadId === activeThreadId,
   );
   const unavailable =
-    composerSubmitting || outcomePending || messageInput.disabled;
+    composerSubmitting ||
+    outcomePending ||
+    inFlightComposerOperations.size > 0 ||
+    messageInput.disabled;
   sendMessage.disabled = unavailable;
   queueMessage.disabled = unavailable;
 }
@@ -4113,7 +4314,10 @@ function updateComposerSubmitAvailability(): void {
 function updateMutationOutcomePendingState(): void {
   document.body.classList.toggle(
     "mutation-outcome-pending",
-    pendingComposerOperations.size > 0 || Boolean(pendingThreadStartOperation),
+    pendingComposerOperations.size > 0 ||
+      inFlightComposerOperations.size > 0 ||
+      Boolean(pendingThreadStartOperation) ||
+      threadStartReloadReviewRequired,
   );
 }
 
@@ -4316,6 +4520,7 @@ async function executeWebSlashCommand(
           : { type: "uncommittedChanges" },
       });
       activeTurnId = response.turn.id;
+      activeNewestTurnId = response.turn.id;
       setThreadStatus({ type: "active", activeFlags: [] });
       appendTimeline("event", "代码审查已开始", args || "审查当前未提交修改");
       return;
@@ -4443,16 +4648,23 @@ async function sendSlashPrompt(
     input,
     text,
   );
-  timelineView.appendLocalUser(input, operation.operationId);
+  beginComposerOperationRequest(operation);
   try {
+    timelineView.appendLocalUser(input, operation.operationId);
     await sendTurn(targetClient, operation);
   } catch (error) {
+    if (isGatewayMutationOutcomeIndeterminate(error)) {
+      markComposerOperationIndeterminate(operation);
+      return;
+    }
     if (isGatewayRequestOutcomeUnknown(error)) {
       markComposerOperationUnknown(operation, targetClient, error);
       return;
     }
     timelineView.removeLocalUser(operation.operationId);
     throw error;
+  } finally {
+    completeComposerOperationRequest(operation);
   }
 }
 
@@ -4886,6 +5098,7 @@ async function submitComposerMessage(forceQueue: boolean): Promise<void> {
     input,
     text,
   );
+  beginComposerOperationRequest(operation);
   let messageCleared = false;
   let localMessageAppended = false;
   try {
@@ -4916,7 +5129,9 @@ async function submitComposerMessage(forceQueue: boolean): Promise<void> {
       await sendTurn(targetClient, operation);
     }
   } catch (error) {
-    if (isGatewayRequestOutcomeUnknown(error)) {
+    if (isGatewayMutationOutcomeIndeterminate(error)) {
+      markComposerOperationIndeterminate(operation);
+    } else if (isGatewayRequestOutcomeUnknown(error)) {
       markComposerOperationUnknown(operation, targetClient, error);
     } else {
       if (localMessageAppended)
@@ -4931,6 +5146,7 @@ async function submitComposerMessage(forceQueue: boolean): Promise<void> {
       );
     }
   } finally {
+    completeComposerOperationRequest(operation);
     setComposerSubmitting(false);
   }
 }
@@ -4952,6 +5168,7 @@ async function sendTurn(
   );
   if (client !== targetClient || activeThreadId !== operation.threadId) return;
   activeTurnId = response.turn.id;
+  activeNewestTurnId = response.turn.id;
   timelineView.bindLocalUserToTurn(response.turn.id, operation.operationId);
   setThreadStatus({ type: "active", activeFlags: [] });
   lastRealtimeEventAt = Date.now();
@@ -4976,7 +5193,25 @@ function createPendingComposerOperation(
     text,
     reconciliationStartedAt: Date.now(),
     authoritativeChecks: 0,
+    manualReviewRequired: false,
+    ...(activeThreadId === threadId && activeNewestTurnId
+      ? { reconciliationBoundaryTurnId: activeNewestTurnId }
+      : {}),
   };
+}
+
+function beginComposerOperationRequest(
+  operation: PendingComposerOperation,
+): void {
+  inFlightComposerOperations.add(operation.operationId);
+  updateMutationOutcomePendingState();
+}
+
+function completeComposerOperationRequest(
+  operation: PendingComposerOperation,
+): void {
+  inFlightComposerOperations.delete(operation.operationId);
+  updateMutationOutcomePendingState();
 }
 
 function pendingQueueItem(operation: PendingComposerOperation): QueueItem {
@@ -5014,6 +5249,34 @@ function markComposerOperationUnknown(
     void recoverConnection(targetClient);
 }
 
+function isGatewayMutationOutcomeIndeterminate(
+  error: unknown,
+): error is GatewayResponseError {
+  return (
+    error instanceof GatewayResponseError &&
+    error.code === IDEMPOTENCY_OUTCOME_INDETERMINATE
+  );
+}
+
+function markComposerOperationIndeterminate(
+  operation: PendingComposerOperation,
+): void {
+  pendingComposerOperations.set(operation.operationId, operation);
+  operation.manualReviewRequired = true;
+  operation.manualReviewReason = "host-indeterminate";
+  composerReconciliations.delete(operation.operationId);
+  updateComposerSubmitAvailability();
+  renderPendingComposerOperation(operation);
+  stopPendingComposerReconciliationIfIdle();
+  renderComposerOutcomeReview();
+  showToast(
+    operation.kind === "queue"
+      ? "宿主机无法证明排队结果；已停止自动重试，请人工核对。"
+      : "宿主机无法证明发送结果；已停止自动重试，请人工核对。",
+    "error",
+  );
+}
+
 function renderPendingComposerOperation(
   operation: PendingComposerOperation,
 ): void {
@@ -5039,6 +5302,7 @@ function confirmComposerOperation(
 ): void {
   pendingComposerOperations.delete(operation.operationId);
   composerReconciliations.delete(operation.operationId);
+  composerTurnSnapshotReader.forget(operation.operationId);
   queuedItems.delete(`confirming-${operation.operationId}`);
   if (outcome.kind === "turn" && activeThreadId === operation.threadId) {
     timelineView.bindLocalUserToTurn(outcome.turnId, operation.operationId);
@@ -5047,6 +5311,7 @@ function confirmComposerOperation(
       setThreadStatus({ type: "active", activeFlags: [] });
       startThreadSync();
     }
+    activeNewestTurnId = outcome.turnId;
   } else if (
     outcome.kind === "queue" &&
     activeThreadId === operation.threadId &&
@@ -5072,6 +5337,7 @@ function failComposerOperation(
 ): void {
   pendingComposerOperations.delete(operation.operationId);
   composerReconciliations.delete(operation.operationId);
+  composerTurnSnapshotReader.forget(operation.operationId);
   queuedItems.delete(`confirming-${operation.operationId}`);
   if (operation.kind === "turn" && activeThreadId === operation.threadId)
     timelineView.removeLocalUser(operation.operationId);
@@ -5094,9 +5360,14 @@ function failComposerOperation(
 function reconcilePendingComposerOperations(
   threadId: string,
   turns: Turn[] | undefined,
+  turnsAuthoritative: boolean,
   queueSnapshot: QueueItem[] | undefined,
-  targetClient: GatewayClient,
+  options: {
+    negativeEvidenceAllowed: boolean;
+    targetClient: GatewayClient;
+  },
 ): void {
+  const { negativeEvidenceAllowed, targetClient } = options;
   for (const operation of pendingComposerOperations.values()) {
     if (operation.threadId !== threadId) continue;
     const outcome = composerOperationOutcome(
@@ -5114,14 +5385,25 @@ function reconcilePendingComposerOperations(
       continue;
     }
     renderPendingComposerOperation(operation);
+    if (operation.manualReviewRequired) {
+      renderComposerOutcomeReview();
+      continue;
+    }
+    if (!negativeEvidenceAllowed) continue;
+    const turnsCoverOperation = composerTurnSnapshotCoversOperation({
+      turns,
+      complete: turnsAuthoritative,
+      boundaryTurnId: operation.reconciliationBoundaryTurnId,
+      negativeEvidenceAllowed,
+    });
     const completeSnapshot =
-      turns !== undefined &&
+      turnsCoverOperation &&
       (operation.kind === "turn" || queueSnapshot !== undefined);
     if (completeSnapshot) operation.authoritativeChecks += 1;
     const action = composerReconciliationAction({
       operationKind: operation.kind,
       sameDevice: operation.deviceId === targetClient.host.deviceId,
-      turnsAvailable: turns !== undefined,
+      turnsAvailable: turnsCoverOperation,
       queueAvailable: queueSnapshot !== undefined,
       authoritativeMisses: operation.authoritativeChecks,
       reconciliationAgeMs: Date.now() - operation.reconciliationStartedAt,
@@ -5139,10 +5421,126 @@ function reconcilePendingComposerOperations(
     schedulePendingComposerReconciliation();
 }
 
+function manualComposerOperationForActiveThread():
+  PendingComposerOperation | undefined {
+  return [...pendingComposerOperations.values()].find(
+    (operation) =>
+      operation.manualReviewRequired && operation.threadId === activeThreadId,
+  );
+}
+
+function renderComposerOutcomeReview(): void {
+  const operation = manualComposerOperationForActiveThread();
+  const review = requiredElement("composer-outcome-review");
+  review.hidden = !operation;
+  if (!operation) return;
+  const hostIndeterminate =
+    operation.manualReviewReason === "host-indeterminate";
+  requiredElement("composer-outcome-review-copy").textContent =
+    hostIndeterminate
+      ? operation.kind === "queue"
+        ? "宿主机已锁定这次排队操作，但 app-server 的最终结果无法证明；系统不会自动重放。原消息可能已经进入队列或开始执行，请刷新当前会话核对，只有确认可以承担重复消息风险后，才能放弃待确认记录。"
+        : "宿主机已锁定这次发送操作，但 app-server 的最终结果无法证明；系统不会自动重放。原消息可能已经提交，请刷新当前会话核对，只有确认可以承担重复消息风险后，才能放弃待确认记录。"
+      : operation.kind === "queue"
+        ? "旧版 app-server 的完整历史读取连续失败，系统已停止自动重试排队。原消息可能已经进入队列或开始执行；请刷新当前会话核对，只有确认可以承担重复消息风险后，才能放弃待确认记录。"
+        : "旧版 app-server 的完整历史读取连续失败，系统已停止自动重试发送。原消息可能已经提交；请刷新当前会话核对，只有确认可以承担重复消息风险后，才能放弃待确认记录。";
+}
+
+function markComposerOperationManualReview(
+  operation: PendingComposerOperation,
+): void {
+  if (operation.manualReviewRequired) return;
+  operation.manualReviewRequired = true;
+  operation.manualReviewReason = "history-unavailable";
+  composerReconciliations.delete(operation.operationId);
+  renderPendingComposerOperation(operation);
+  stopPendingComposerReconciliationIfIdle();
+  renderComposerOutcomeReview();
+  updateComposerSubmitAvailability();
+  if (activeThreadId === operation.threadId) {
+    showToast("自动核对已停止，请人工刷新并确认发送结果。", "error");
+  }
+}
+
+async function inspectManualComposerOutcome(): Promise<void> {
+  const operation = manualComposerOperationForActiveThread();
+  const targetClient = client;
+  if (!operation || !targetClient) return;
+  const inspect = requiredElement<HTMLButtonElement>(
+    "inspect-composer-outcome",
+  );
+  inspect.disabled = true;
+  inspect.textContent = "正在刷新…";
+  try {
+    const detail = await targetClient.request<ThreadReadResponse>(
+      "thread/read",
+      { threadId: operation.threadId, includeTurns: true },
+    );
+    let queueSnapshot: QueueItem[] | undefined;
+    if (operation.kind === "queue") {
+      try {
+        queueSnapshot = (
+          await targetClient.request<{ items: QueueItem[] }>("queue/list", {})
+        ).items;
+      } catch {
+        // A full turn match can still positively confirm a dispatched item.
+      }
+    }
+    if (client !== targetClient) return;
+    reconcilePendingComposerOperations(
+      operation.threadId,
+      detail.thread.turns,
+      true,
+      queueSnapshot,
+      {
+        // Manual inspection also reads history before Queue. It may confirm a
+        // match, but absence must never resume automatic mutation replay.
+        negativeEvidenceAllowed: false,
+        targetClient,
+      },
+    );
+    if (pendingComposerOperations.has(operation.operationId)) {
+      showToast(
+        operation.kind === "queue" && queueSnapshot === undefined
+          ? "会话已刷新，但队列读取失败；仍未完成核对。"
+          : "已刷新当前会话；系统未自动重发，也未按文本猜测结果。",
+        "error",
+      );
+    }
+  } catch (error) {
+    showToast(`刷新当前会话失败：${errorMessage(error)}`, "error");
+  } finally {
+    inspect.disabled = false;
+    inspect.textContent = "刷新并核对当前会话";
+  }
+}
+
+function abandonManualComposerOutcome(): void {
+  const operation = manualComposerOperationForActiveThread();
+  if (!operation) return;
+  if (
+    !window.confirm(
+      "原消息可能已经提交。确认已核对当前会话，并放弃这条待确认记录？之后再次发送可能产生重复消息。",
+    )
+  )
+    return;
+  pendingComposerOperations.delete(operation.operationId);
+  composerReconciliations.delete(operation.operationId);
+  composerTurnSnapshotReader.forget(operation.operationId);
+  queuedItems.delete(`confirming-${operation.operationId}`);
+  if (operation.kind === "turn" && activeThreadId === operation.threadId)
+    timelineView.removeLocalUser(operation.operationId);
+  stopPendingComposerReconciliationIfIdle();
+  renderComposerQueue();
+  updateComposerSubmitAvailability();
+  showToast("已放弃待确认记录；系统没有自动恢复或重新发送原消息。", "success");
+}
+
 async function retryPendingComposerOperation(
   operation: PendingComposerOperation,
   targetClient: GatewayClient,
 ): Promise<void> {
+  if (operation.manualReviewRequired) return;
   if (composerReconciliations.has(operation.operationId)) return;
   composerReconciliations.add(operation.operationId);
   try {
@@ -5156,11 +5554,6 @@ async function retryPendingComposerOperation(
         },
         { idempotencyKey: operation.idempotencyKey },
       );
-      if (client !== targetClient) {
-        composerReconciliations.delete(operation.operationId);
-        schedulePendingComposerReconciliation();
-        return;
-      }
       confirmComposerOperation(
         operation,
         { kind: "queue", queueId: item.id },
@@ -5177,11 +5570,6 @@ async function retryPendingComposerOperation(
       },
       { idempotencyKey: operation.idempotencyKey },
     );
-    if (client !== targetClient) {
-      composerReconciliations.delete(operation.operationId);
-      schedulePendingComposerReconciliation();
-      return;
-    }
     confirmComposerOperation(operation, {
       kind: "turn",
       turnId: response.turn.id,
@@ -5189,6 +5577,14 @@ async function retryPendingComposerOperation(
     });
   } catch (error) {
     composerReconciliations.delete(operation.operationId);
+    if (operation.manualReviewRequired) {
+      renderComposerOutcomeReview();
+      return;
+    }
+    if (isGatewayMutationOutcomeIndeterminate(error)) {
+      markComposerOperationIndeterminate(operation);
+      return;
+    }
     const transportLost = isGatewayRequestOutcomeUnknown(error)
       ? error.transportLost
       : isRetryableConnectionFailure(error);
@@ -5206,11 +5602,17 @@ async function retryPendingComposerOperation(
   }
 }
 
+function hasAutomaticComposerReconciliation(): boolean {
+  return [...pendingComposerOperations.values()].some(
+    (operation) => !operation.manualReviewRequired,
+  );
+}
+
 function schedulePendingComposerReconciliation(
   delayMs = COMPOSER_RECONCILIATION_INTERVAL_MS,
 ): void {
   if (
-    pendingComposerOperations.size === 0 ||
+    !hasAutomaticComposerReconciliation() ||
     pendingComposerReconciliationTimer !== undefined
   )
     return;
@@ -5222,7 +5624,7 @@ function schedulePendingComposerReconciliation(
 
 function stopPendingComposerReconciliationIfIdle(): void {
   if (
-    pendingComposerOperations.size > 0 ||
+    hasAutomaticComposerReconciliation() ||
     pendingComposerReconciliationTimer === undefined
   )
     return;
@@ -5236,7 +5638,13 @@ async function reconcileAllPendingComposerOperations(): Promise<void> {
     schedulePendingComposerReconciliation(3_000);
     return;
   }
-  const operations = [...pendingComposerOperations.values()];
+  const operations = [...pendingComposerOperations.values()].filter(
+    (operation) => !operation.manualReviewRequired,
+  );
+  if (operations.length === 0) {
+    stopPendingComposerReconciliationIfIdle();
+    return;
+  }
   let queueSnapshot: QueueItem[] | undefined;
   if (operations.some((operation) => operation.kind === "queue")) {
     try {
@@ -5249,13 +5657,32 @@ async function reconcileAllPendingComposerOperations(): Promise<void> {
   }
   const threadIds = new Set(operations.map((operation) => operation.threadId));
   for (const threadId of threadIds) {
+    const threadOperations = operations.filter(
+      (operation) => operation.threadId === threadId,
+    );
     let turns: Turn[] | undefined;
+    let turnsAuthoritative = false;
+    let turnsNegativeEvidenceAllowed = false;
     try {
-      const detail = await targetClient.request<ThreadReadResponse>(
-        "thread/read",
-        { threadId, includeTurns: true },
+      const snapshot = await composerTurnSnapshotReader.read(
+        targetClient,
+        threadId,
+        threadOperations.map((operation) => operation.operationId),
+        {
+          legacyNegativeEvidenceAllowed: threadOperations.every(
+            (operation) =>
+              operation.kind === "turn" || queueSnapshot !== undefined,
+          ),
+        },
       );
-      turns = detail.thread.turns;
+      turns = snapshot.turns;
+      turnsAuthoritative = snapshot.authoritative;
+      turnsNegativeEvidenceAllowed = snapshot.negativeEvidenceAllowed;
+      if (snapshot.manualReviewRequired) {
+        for (const operation of threadOperations) {
+          markComposerOperationManualReview(operation);
+        }
+      }
     } catch {
       // Keep polling independently from the realtime thread subscription.
     }
@@ -5263,11 +5690,17 @@ async function reconcileAllPendingComposerOperations(): Promise<void> {
     reconcilePendingComposerOperations(
       threadId,
       turns,
+      turnsAuthoritative,
       queueSnapshot,
-      targetClient,
+      {
+        // Only the reader can distinguish a fresh page/full read from stale
+        // cached turns returned during legacy backoff or read failure.
+        negativeEvidenceAllowed: turnsNegativeEvidenceAllowed,
+        targetClient,
+      },
     );
   }
-  if (pendingComposerOperations.size > 0)
+  if (hasAutomaticComposerReconciliation())
     schedulePendingComposerReconciliation();
 }
 
@@ -5374,13 +5807,20 @@ async function syncActiveThread(): Promise<void> {
       activeTurnId = [...recentTurns]
         .reverse()
         .find((turn) => turn.status === "inProgress")?.id;
+      activeNewestTurnId = recentTurns.at(-1)?.id ?? activeNewestTurnId;
       setThreadStatus(metadata.thread.status);
       timelineView.mergeRecentTurns(recentTurns);
       reconcilePendingComposerOperations(
         threadId,
         recentTurns,
+        recent.nextCursor == null,
         undefined,
-        currentClient,
+        {
+          // No Queue snapshot is present, so queue operations cannot become a
+          // negative result; direct turns may use this fresh snapshot.
+          negativeEvidenceAllowed: true,
+          targetClient: currentClient,
+        },
       );
       lastRealtimeEventAt = Date.now();
       if (metadata.thread.status.type !== "active") stopThreadSync();
@@ -5399,13 +5839,20 @@ async function syncActiveThread(): Promise<void> {
     activeTurnId = [...detail.thread.turns]
       .reverse()
       .find((turn) => turn.status === "inProgress")?.id;
+    activeNewestTurnId = detail.thread.turns.at(-1)?.id ?? activeNewestTurnId;
     setThreadStatus(detail.thread.status);
     timelineView.reconcileSnapshot(detail);
     reconcilePendingComposerOperations(
       threadId,
       detail.thread.turns,
+      true,
       undefined,
-      currentClient,
+      {
+        // No Queue snapshot is present, so queue operations cannot become a
+        // negative result; direct turns may use this fresh snapshot.
+        negativeEvidenceAllowed: true,
+        targetClient: currentClient,
+      },
     );
     lastRealtimeEventAt = Date.now();
     if (detail.thread.status.type !== "active") stopThreadSync();
@@ -5434,7 +5881,6 @@ async function renderQueuedMessages(
     );
     queuedItems.clear();
     for (const item of threadItems) {
-      if (item.status === "running") continue;
       const text = queuedMessageText(item.turnPayload);
       if (text) queuedItems.set(item.id, item);
     }
@@ -5448,17 +5894,24 @@ async function renderQueuedMessages(
 
 function renderComposerQueue(): void {
   const items = [...queuedItems.values()];
+  const steerableItemIds = steerableQueueItemIds(items);
   composerQueue.hidden = items.length === 0 || !activeThreadId;
   composerQueueCount.textContent = `${String(items.length)} 条`;
   composerQueueNote.textContent = items.some(
     (item) => item.status === "confirming",
   )
     ? "连接中断，正在向宿主机确认；不会重复排队"
-    : items.some((item) => item.status === "paused")
-      ? "发送已暂停，可移除后重新发送"
-      : activeThreadStatus?.type === "active"
-        ? "当前任务结束后依次发送"
-        : "正在等待发送";
+    : items.some((item) => item.status === "indeterminate")
+      ? "投递结果无法确认；不会自动重发，请核对后再放弃记录"
+      : items.some(
+            (item) => item.status === "delivering" || item.status === "running",
+          )
+        ? "正在提交给 Codex；此时不能移除或转为 Steer"
+        : items.some((item) => item.status === "paused")
+          ? "消息尚未提交，宿主机队列已安全暂停"
+          : activeThreadStatus?.type === "active"
+            ? "当前任务结束后依次发送"
+            : "正在等待发送";
   composerQueueList.replaceChildren();
   for (const item of items) {
     const row = document.createElement("article");
@@ -5471,9 +5924,13 @@ function renderComposerQueue(): void {
     status.textContent =
       item.status === "confirming"
         ? "结果待确认"
-        : item.status === "paused"
-          ? "已暂停"
-          : "排队中";
+        : item.status === "indeterminate"
+          ? "结果待核对"
+          : item.status === "delivering" || item.status === "running"
+            ? "正在提交"
+            : item.status === "paused"
+              ? "已暂停"
+              : "排队中";
     const text = document.createElement("p");
     text.textContent = queuedMessageText(item.turnPayload);
     text.title = text.textContent;
@@ -5481,13 +5938,34 @@ function renderComposerQueue(): void {
 
     const actions = document.createElement("div");
     actions.className = "composer-queue-actions";
-    if (item.status === "confirming") {
+    if (
+      item.status === "confirming" ||
+      item.status === "delivering" ||
+      item.status === "running"
+    ) {
+      row.append(copy, actions);
+      composerQueueList.append(row);
+      continue;
+    }
+    if (item.status === "indeterminate") {
+      const acknowledge = document.createElement("button");
+      acknowledge.type = "button";
+      acknowledge.className = "ghost danger queue-tray-acknowledge";
+      acknowledge.textContent = "核对后放弃记录";
+      acknowledge.title = "仅在核对会话后放弃；再次发送可能产生重复消息";
+      acknowledge.addEventListener(
+        "click",
+        () => void acknowledgeIndeterminateQueuedMessage(item.id),
+      );
+      actions.append(acknowledge);
       row.append(copy, actions);
       composerQueueList.append(row);
       continue;
     }
     const canSteer =
-      activeThreadStatus?.type === "active" && Boolean(activeTurnId);
+      steerableItemIds.has(item.id) &&
+      activeThreadStatus?.type === "active" &&
+      Boolean(activeTurnId);
     if (canSteer) {
       const steer = document.createElement("button");
       steer.type = "button";
@@ -5508,6 +5986,7 @@ function renderComposerQueue(): void {
     row.append(copy, actions);
     composerQueueList.append(row);
   }
+  renderComposerOutcomeReview();
   updateApprovalTray();
 }
 
@@ -5570,6 +6049,39 @@ async function removeQueuedMessage(queueId: string): Promise<void> {
   } catch (error) {
     if (button) button.disabled = false;
     showToast(`移除失败：${errorMessage(error)}`, "error");
+  }
+}
+
+async function acknowledgeIndeterminateQueuedMessage(
+  queueId: string,
+): Promise<void> {
+  if (!client) return;
+  if (
+    !window.confirm(
+      "原消息可能已经提交。请先核对当前会话；放弃记录不会撤回已经发生的发送，之后再次发送可能产生重复消息。确认放弃这条记录？",
+    )
+  ) {
+    return;
+  }
+  const row = composerQueueList.querySelector<HTMLElement>(
+    `[data-queue-id="${CSS.escape(queueId)}"]`,
+  );
+  const button = row?.querySelector<HTMLButtonElement>(
+    ".queue-tray-acknowledge",
+  );
+  if (button) button.disabled = true;
+  try {
+    const result = await client.request<{ removed: boolean }>("queue/remove", {
+      id: queueId,
+      acknowledgeIndeterminate: true,
+    });
+    if (!result.removed) throw new Error("记录已经由其他客户端处理");
+    queuedItems.delete(queueId);
+    renderComposerQueue();
+    showToast("已放弃待核对记录；系统没有自动重新发送原消息", "success");
+  } catch (error) {
+    if (button) button.disabled = false;
+    showToast(`放弃记录失败：${errorMessage(error)}`, "error");
   }
 }
 
@@ -5641,6 +6153,21 @@ function renderEvent(event: EventEnvelope): void {
     const item = queuedItems.get(payload.itemId);
     if (item) {
       item.status = "paused";
+      renderComposerQueue();
+    } else if (activeThreadId) {
+      void renderQueuedMessages(activeThreadId, openThreadSequence);
+    }
+    return;
+  }
+  if (
+    (event.type === "queue/delivering" ||
+      event.type === "queue/indeterminate") &&
+    typeof payload.itemId === "string"
+  ) {
+    const item = queuedItems.get(payload.itemId);
+    if (item) {
+      item.status =
+        event.type === "queue/delivering" ? "delivering" : "indeterminate";
       renderComposerQueue();
     } else if (activeThreadId) {
       void renderQueuedMessages(activeThreadId, openThreadSequence);
@@ -6527,7 +7054,10 @@ function updateThreadActivity(
 ): void {
   if (event.type === "codex/turn/started") {
     const turn = isRecord(payload.turn) ? payload.turn : undefined;
-    if (turn && typeof turn.id === "string") activeTurnId = turn.id;
+    if (turn && typeof turn.id === "string") {
+      activeTurnId = turn.id;
+      activeNewestTurnId = turn.id;
+    }
     activeThreadStatus = { type: "active", activeFlags: [] };
     setThreadActivity("active", "正在处理");
     updateComposerMode();

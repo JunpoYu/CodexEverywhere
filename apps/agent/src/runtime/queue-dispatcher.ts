@@ -4,6 +4,7 @@ import type {
   ThreadReadResponse,
   ThreadResumeResponse,
   TurnCompletedNotification,
+  TurnStartResponse,
 } from "@codex-everywhere/codex-app-server-schema/v2";
 
 import { QueueRegistry } from "../host/queue.js";
@@ -17,6 +18,11 @@ import {
   type CodexNotification,
   type CodexServerRequest,
 } from "./codex-app-server-client.js";
+import {
+  consumeQueueItemOnce,
+  QueueConsumptionRepairer,
+  QueueConsumptionOutcomeIndeterminateError,
+} from "./queue-consumption.js";
 
 export type QueueDispatcherEvent = {
   type: string;
@@ -32,6 +38,10 @@ export class QueueDispatcher {
   readonly #workspaces: WorkspaceRegistry;
   readonly #threadPermissions: ThreadPermissionRegistry;
   readonly #connectClient: () => Promise<CodexAppServerClient>;
+  readonly #consumptionRepairer: QueueConsumptionRepairer;
+  readonly #ownsConsumptionRepairer: boolean;
+  readonly #unsubscribeConsumptionRepair: () => void;
+  readonly #unsubscribeConsumptionPauseRepair: () => void;
   readonly #events = new EventEmitter<QueueDispatcherEvents>();
   readonly #desiredThreads = new Set<string>();
   readonly #threadOperations = new Map<string, Promise<void>>();
@@ -47,11 +57,33 @@ export class QueueDispatcher {
     workspaces: WorkspaceRegistry;
     threadPermissions: ThreadPermissionRegistry;
     connectClient(): Promise<CodexAppServerClient>;
+    consumptionRepairer?: QueueConsumptionRepairer;
   }) {
     this.#queue = options.queue;
     this.#workspaces = options.workspaces;
     this.#threadPermissions = options.threadPermissions;
     this.#connectClient = options.connectClient;
+    this.#consumptionRepairer =
+      options.consumptionRepairer ??
+      new QueueConsumptionRepairer(options.queue);
+    this.#ownsConsumptionRepairer = options.consumptionRepairer === undefined;
+    this.#unsubscribeConsumptionRepair =
+      this.#consumptionRepairer.onIndeterminate((identity) => {
+        this.#emit("queue/indeterminate", {
+          itemId: identity.queueItemId,
+          threadId: identity.threadId,
+          reason:
+            "Queue delivery outcome could not be verified; review it before continuing",
+        });
+      });
+    this.#unsubscribeConsumptionPauseRepair =
+      this.#consumptionRepairer.onPaused((identity) => {
+        this.#emit("queue/paused", {
+          itemId: identity.queueItemId,
+          threadId: identity.threadId,
+          reason: "Queue delivery claim failed before submission",
+        });
+      });
   }
 
   async start(): Promise<void> {
@@ -141,6 +173,12 @@ export class QueueDispatcher {
     this.#serverRequests.clear();
     this.#serverRequestPayloads.clear();
     await client?.close();
+    await Promise.allSettled(this.#threadOperations.values());
+    this.#unsubscribeConsumptionRepair();
+    this.#unsubscribeConsumptionPauseRepair();
+    if (this.#ownsConsumptionRepairer) {
+      await this.#consumptionRepairer.close();
+    }
   }
 
   async #subscribeAndDrain(threadId: string): Promise<void> {
@@ -300,33 +338,63 @@ export class QueueDispatcher {
           "Queued workspace changed after the message was enqueued",
         );
       }
-      const turnPayload = {
-        ...item.turnPayload,
-        threadId,
-      };
-      if (hasThreadPermissionUpdate(turnPayload)) {
-        await this.#threadPermissions.serializeMutation(threadId, async () => {
-          const observation =
-            await this.#threadPermissions.beginObservation(threadId);
-          await client.request("turn/start", turnPayload);
-          await this.#threadPermissions.saveSettingsUpdate(
+      await consumeQueueItemOnce({
+        queue: this.#queue,
+        repairer: this.#consumptionRepairer,
+        item,
+        operation: "turn/start",
+        onClaimed: () =>
+          this.#emit("queue/delivering", { itemId: item.id, threadId }),
+        execute: async (clientUserMessageId) => {
+          const turnPayload = {
+            ...item.turnPayload,
             threadId,
-            turnPayload,
-            observation,
+            clientUserMessageId,
+          };
+          const startTurn = async (): Promise<{ turnId: string }> => {
+            const response = await client.request<TurnStartResponse>(
+              "turn/start",
+              turnPayload,
+            );
+            return { turnId: response.turn.id };
+          };
+          if (!hasThreadPermissionUpdate(turnPayload)) return startTurn();
+          return this.#threadPermissions.serializeMutation(
+            threadId,
+            async () => {
+              const observation =
+                await this.#threadPermissions.beginObservation(threadId);
+              const response = await startTurn();
+              await this.#threadPermissions.saveSettingsUpdate(
+                threadId,
+                turnPayload,
+                observation,
+              );
+              return response;
+            },
           );
-        });
-      } else {
-        await client.request("turn/start", turnPayload);
-      }
-      await this.#queue.finish(item.id);
-      this.#emit("queue/started", { itemId: item.id, threadId });
-    } catch (error) {
-      await this.#queue.pause(item.id);
-      this.#emit("queue/paused", {
-        itemId: item.id,
-        threadId,
-        reason: error instanceof Error ? error.message : "Queue start failed",
+        },
       });
+    } catch (error) {
+      if (
+        error instanceof QueueConsumptionOutcomeIndeterminateError &&
+        error.durableOutcome === "indeterminate"
+      ) {
+        this.#emit("queue/indeterminate", {
+          itemId: item.id,
+          threadId,
+          reason: error.message,
+        });
+      } else if (
+        !(error instanceof QueueConsumptionOutcomeIndeterminateError)
+      ) {
+        await this.#queue.pause(item.id);
+        this.#emit("queue/paused", {
+          itemId: item.id,
+          threadId,
+          reason: error instanceof Error ? error.message : "Queue start failed",
+        });
+      }
       const paused = await this.#queue.pausePending(threadId);
       for (const remaining of paused) {
         this.#emit("queue/paused", {
@@ -336,7 +404,12 @@ export class QueueDispatcher {
         });
       }
       await this.#releaseThread(threadId, client);
+      return;
     }
+    // Keep observers outside the failure path that owns queue state. A
+    // synchronous listener exception after completion must never make this
+    // permanently consumed item (or following items) look retryable.
+    this.#emit("queue/started", { itemId: item.id, threadId });
   }
 
   async #validateThreadWorkspace(

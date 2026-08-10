@@ -33,6 +33,7 @@ import {
 import {
   EphemeralIdempotencyRegistry,
   IdempotencyRegistry,
+  usesDurableMutationClaim,
   usesEphemeralGatewayIdempotency,
 } from "../host/idempotency.js";
 import type { HostStateStore } from "../host/state-store.js";
@@ -427,6 +428,14 @@ class GatewayConnection {
             this.#requiredDeviceId(),
             request.idempotencyKey,
             execute,
+            usesDurableMutationClaim(request.method)
+              ? {
+                  durableClaim: {
+                    method: request.method,
+                    payload: request.payload,
+                  },
+                }
+              : undefined,
           );
     const completedAt = Date.now();
     if (completedAt - receivedAt >= SLOW_REQUEST_THRESHOLD_MS) {
