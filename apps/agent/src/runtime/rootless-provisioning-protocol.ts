@@ -9,6 +9,10 @@ export const ROOTLESS_PROVISIONING_REQUEST_TTL_MS = 2 * 60 * 1_000;
 export const ROOTLESS_PROVISIONING_RESPONSE_TTL_MS = 5 * 60 * 1_000;
 export const ROOTLESS_PROVISIONING_MAX_FILE_BYTES = 64 * 1_024;
 export const DEFAULT_ROOTLESS_PROVISIONER_USER = "codexeverywhere";
+export const ROOTLESS_RELAY_RENEWAL_FEATURE =
+  "relay-capability-renewal-v1" as const;
+export const ROOTLESS_ADMIN_RELAY_RENEWAL_FEATURE =
+  "admin-relay-capability-renewal-v1" as const;
 
 export type RootlessProvisionerDescriptor = {
   version: typeof ROOTLESS_PROVISIONING_VERSION;
@@ -18,6 +22,7 @@ export type RootlessProvisionerDescriptor = {
   requestsDirectory: string;
   responsesDirectory: string;
   startedAt: string;
+  features?: string[];
 };
 
 export type RootlessProvisioningRequest = {
@@ -70,7 +75,12 @@ export function parseRootlessProvisionerDescriptor(
     typeof record.responsesDirectory !== "string" ||
     !record.responsesDirectory.startsWith("/") ||
     typeof record.startedAt !== "string" ||
-    !Number.isFinite(Date.parse(record.startedAt))
+    !Number.isFinite(Date.parse(record.startedAt)) ||
+    (record.features !== undefined &&
+      (!Array.isArray(record.features) ||
+        record.features.some(
+          (feature) => typeof feature !== "string" || feature.length > 64,
+        )))
   ) {
     throw new Error("Invalid rootless provisioner descriptor");
   }

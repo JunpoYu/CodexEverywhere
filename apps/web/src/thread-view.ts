@@ -131,9 +131,25 @@ export const TRANSIENT_TIMELINE_SELECTOR =
 
 export function localUserReconciledByTurns(
   localTurnId: string | undefined,
-  turns: ReadonlyArray<Pick<Turn, "id">>,
+  turns: ReadonlyArray<{
+    id: string;
+    items?: ReadonlyArray<{
+      type: string;
+      clientId?: string | null;
+    }>;
+  }>,
+  localClientId?: string,
 ): boolean {
-  return Boolean(localTurnId && turns.some((turn) => turn.id === localTurnId));
+  if (localTurnId && turns.some((turn) => turn.id === localTurnId)) return true;
+  return Boolean(
+    localClientId &&
+    turns.some((turn) =>
+      turn.items?.some(
+        (item) =>
+          item.type === "userMessage" && item.clientId === localClientId,
+      ),
+    ),
+  );
 }
 
 export type StreamingTimelineKind = "agent" | "plan" | "tool";
@@ -143,6 +159,38 @@ export type StreamingTimelineIdentity = {
   itemId: string | undefined;
   kind: StreamingTimelineKind | undefined;
 };
+
+export type BufferedStreamingDelta = {
+  itemId: string;
+  delta: string;
+  kind: StreamingTimelineKind;
+  turnId: string | undefined;
+};
+
+/** Coalesces adjacent transport deltas so Markdown is parsed at most once per paint. */
+export class StreamingDeltaBuffer {
+  readonly #pending = new Map<string, BufferedStreamingDelta>();
+
+  append(update: BufferedStreamingDelta): void {
+    const key = JSON.stringify([update.itemId, update.kind, update.turnId]);
+    const pending = this.#pending.get(key);
+    if (pending) {
+      pending.delta += update.delta;
+      return;
+    }
+    this.#pending.set(key, { ...update });
+  }
+
+  drain(): BufferedStreamingDelta[] {
+    const updates = [...this.#pending.values()];
+    this.#pending.clear();
+    return updates;
+  }
+
+  clear(): void {
+    this.#pending.clear();
+  }
+}
 
 export function completedStreamingCandidateId(
   completedTurnId: string | undefined,
@@ -401,10 +449,12 @@ export class ThreadTimelineView {
   readonly #onLoadOlder: (() => void) | undefined;
   readonly #onFollowLatestChanged: ((following: boolean) => void) | undefined;
   readonly #fileChangeDisclosures = new FileChangeDisclosureState();
+  readonly #streamingDeltas = new StreamingDeltaBuffer();
   #snapshotRevision = "";
   #followingLatest = true;
   #hasOlderHistory = false;
   #loadingOlderHistory = false;
+  #streamingDeltaFrame: number | undefined;
 
   constructor(
     container: HTMLElement,
@@ -428,6 +478,7 @@ export class ThreadTimelineView {
   }
 
   clear(message = "选择一个会话查看内容"): void {
+    this.#discardStreamingDeltas();
     this.#fileChangeDisclosures.clear();
     this.#hasOlderHistory = false;
     this.#loadingOlderHistory = false;
@@ -439,6 +490,7 @@ export class ThreadTimelineView {
     response: ThreadReadResponse,
     options: { hasOlderHistory?: boolean } = {},
   ): void {
+    this.#flushStreamingDeltas();
     this.#hasOlderHistory = options.hasOlderHistory ?? false;
     this.#loadingOlderHistory = false;
     this.#replaceSnapshot(response);
@@ -451,6 +503,7 @@ export class ThreadTimelineView {
   }
 
   prependTurns(turns: Turn[], hasOlderHistory: boolean): void {
+    this.#flushStreamingDeltas();
     const previousHeight = this.#container.scrollHeight;
     const anchor = this.#container.querySelector(
       ".turn-block, .timeline-entry:not(.history-pagination)",
@@ -473,6 +526,7 @@ export class ThreadTimelineView {
   }
 
   mergeRecentTurns(turns: Turn[]): void {
+    this.#flushStreamingDeltas();
     const followLatest = this.#isNearLatest();
     const existingTimestamps = this.#itemTimestamps();
     const transientCards = Array.from(
@@ -495,7 +549,14 @@ export class ThreadTimelineView {
       }
     }
     for (const card of transientCards) {
-      if (localUserReconciledByTurns(card.dataset.localTurnId, turns)) continue;
+      if (
+        localUserReconciledByTurns(
+          card.dataset.localTurnId,
+          turns,
+          card.dataset.localOperationId,
+        )
+      )
+        continue;
       const candidateId = streamingItemCandidateId(
         card.dataset.streamTurnId,
         card.dataset.itemId,
@@ -512,6 +573,7 @@ export class ThreadTimelineView {
   }
 
   reconcileSnapshot(response: ThreadReadResponse): boolean {
+    this.#flushStreamingDeltas();
     const revision = threadSnapshotRevision(response);
     if (revision === this.#snapshotRevision) return false;
     const followLatest = this.#isNearLatest();
@@ -528,6 +590,7 @@ export class ThreadTimelineView {
         localUserReconciledByTurns(
           card.dataset.localTurnId,
           response.thread.turns,
+          card.dataset.localOperationId,
         )
       )
         continue;
@@ -550,26 +613,38 @@ export class ThreadTimelineView {
     return true;
   }
 
-  appendLocalUser(input: UserInput[]): void {
-    const id = `local-${crypto.randomUUID()}`;
+  appendLocalUser(
+    input: UserInput[],
+    clientUserMessageId: string = crypto.randomUUID(),
+  ): void {
+    this.#flushStreamingDeltas();
+    if (
+      this.#container.querySelector(
+        `[data-local-operation-id="${CSS.escape(clientUserMessageId)}"]`,
+      )
+    )
+      return;
+    const id = `local-${clientUserMessageId}`;
     this.#upsertItem(
       {
         type: "userMessage",
         id,
-        clientId: id,
+        clientId: clientUserMessageId,
         content: input,
       },
       undefined,
       Date.now(),
     );
     const card = this.#findItem(id);
-    if (card) card.dataset.localUser = "true";
+    if (card) {
+      card.dataset.localUser = "true";
+      card.dataset.localOperationId = clientUserMessageId;
+    }
     this.followLatest();
   }
 
-  bindLocalUserToTurn(turnId: string): void {
-    const card =
-      this.#container.querySelector<HTMLElement>("[data-local-user]");
+  bindLocalUserToTurn(turnId: string, clientUserMessageId?: string): void {
+    const card = this.#localUserCard(clientUserMessageId);
     if (!card) return;
     const authoritativeTurn = this.#container.querySelector<HTMLElement>(
       `[data-turn-id="${CSS.escape(turnId)}"]`,
@@ -579,15 +654,41 @@ export class ThreadTimelineView {
       return;
     }
     card.dataset.localTurnId = turnId;
+    card.classList.remove("outcome-unknown");
+    card.querySelector(".message-delivery-state")?.remove();
   }
 
-  removeLocalUser(): void {
+  markLocalUserOutcomeUnknown(clientUserMessageId: string): void {
+    const card = this.#localUserCard(clientUserMessageId);
+    if (!card) return;
+    card.classList.add("outcome-unknown");
+    let state = card.querySelector<HTMLElement>(".message-delivery-state");
+    if (!state) {
+      state = document.createElement("div");
+      state.className = "message-delivery-state";
+      state.setAttribute("role", "status");
+      state.setAttribute("aria-live", "polite");
+      card.append(state);
+    }
+    state.textContent = "连接中断，发送结果待确认；系统不会自动重复发送。";
+  }
+
+  removeLocalUser(clientUserMessageId?: string): void {
     const followLatest = this.#isNearLatest();
-    this.#container.querySelector<HTMLElement>("[data-local-user]")?.remove();
+    this.#localUserCard(clientUserMessageId)?.remove();
     this.#finishContentUpdate(followLatest);
   }
 
+  #localUserCard(clientUserMessageId?: string): HTMLElement | null {
+    return this.#container.querySelector<HTMLElement>(
+      clientUserMessageId
+        ? `[data-local-operation-id="${CSS.escape(clientUserMessageId)}"]`
+        : "[data-local-user]",
+    );
+  }
+
   appendNotice(title: string, content: string, kind = "event"): void {
+    this.#flushStreamingDeltas();
     const followLatest = this.#isNearLatest();
     this.#appendNoticeElement(title, content, kind);
     this.#finishContentUpdate(followLatest);
@@ -627,6 +728,7 @@ export class ThreadTimelineView {
       event.type === "codex/item/completed"
     ) {
       if (isThreadItem(payload.item)) {
+        this.#flushStreamingDeltas();
         const followLatest = this.#isNearLatest();
         this.#upsertItem(
           payload.item,
@@ -643,6 +745,7 @@ export class ThreadTimelineView {
 
     const patchUpdate = fileChangeItemFromPatchUpdate(payload);
     if (event.type === "codex/item/fileChange/patchUpdated" && patchUpdate) {
+      this.#flushStreamingDeltas();
       const followLatest = this.#isNearLatest();
       this.#upsertItem(patchUpdate);
       this.#finishContentUpdate(followLatest);
@@ -657,6 +760,7 @@ export class ThreadTimelineView {
     }
 
     if (event.type === "codex/turn/completed" && isTurn(payload.turn)) {
+      this.#flushStreamingDeltas();
       const followLatest = this.#isNearLatest();
       for (const item of payload.turn.items) {
         this.#upsertItem(
@@ -692,14 +796,12 @@ export class ThreadTimelineView {
       typeof payload.itemId === "string" &&
       typeof payload.delta === "string"
     ) {
-      const followLatest = this.#isNearLatest();
-      this.#appendDelta(
-        payload.itemId,
-        payload.delta,
-        deltaKind,
-        typeof payload.turnId === "string" ? payload.turnId : undefined,
-      );
-      this.#finishContentUpdate(followLatest);
+      this.#queueStreamingDelta({
+        itemId: payload.itemId,
+        delta: payload.delta,
+        kind: deltaKind,
+        turnId: typeof payload.turnId === "string" ? payload.turnId : undefined,
+      });
       return true;
     }
 
@@ -828,7 +930,10 @@ export class ThreadTimelineView {
     if (!isVisibleThreadItem(item)) return;
     this.#container.querySelector(".empty")?.remove();
     if (item.type === "userMessage" && !item.id.startsWith("local-")) {
-      this.#container.querySelector<HTMLElement>("[data-local-user]")?.remove();
+      const local = item.clientId
+        ? this.#localUserCard(item.clientId)
+        : this.#localUserCard();
+      local?.remove();
     }
     const [existing, ...duplicates] = this.#findItems(item.id);
     const completedStreamId = completedStreamingCandidateId(
@@ -898,14 +1003,52 @@ export class ThreadTimelineView {
     }
   }
 
+  #queueStreamingDelta(update: BufferedStreamingDelta): void {
+    this.#streamingDeltas.append(update);
+    if (this.#streamingDeltaFrame !== undefined) return;
+    this.#streamingDeltaFrame = window.requestAnimationFrame(() => {
+      this.#streamingDeltaFrame = undefined;
+      this.#flushStreamingDeltas();
+    });
+  }
+
+  #flushStreamingDeltas(): void {
+    if (this.#streamingDeltaFrame !== undefined) {
+      window.cancelAnimationFrame(this.#streamingDeltaFrame);
+      this.#streamingDeltaFrame = undefined;
+    }
+    const updates = this.#streamingDeltas.drain();
+    if (updates.length === 0) return;
+    const followLatest = this.#isNearLatest();
+    for (const update of updates) {
+      this.#appendDelta(
+        update.itemId,
+        update.delta,
+        update.kind,
+        update.turnId,
+      );
+    }
+    this.#finishContentUpdate(followLatest);
+  }
+
+  #discardStreamingDeltas(): void {
+    if (this.#streamingDeltaFrame !== undefined) {
+      window.cancelAnimationFrame(this.#streamingDeltaFrame);
+      this.#streamingDeltaFrame = undefined;
+    }
+    this.#streamingDeltas.clear();
+  }
+
   #findItem(itemId: string): HTMLElement | undefined {
     return this.#findItems(itemId)[0];
   }
 
   #findItems(itemId: string): HTMLElement[] {
     return Array.from(
-      this.#container.querySelectorAll<HTMLElement>("[data-item-id]"),
-    ).filter((candidate) => candidate.dataset.itemId === itemId);
+      this.#container.querySelectorAll<HTMLElement>(
+        `[data-item-id="${CSS.escape(itemId)}"]`,
+      ),
+    );
   }
 
   #streamingIdentities(): StreamingTimelineIdentity[] {
@@ -952,6 +1095,8 @@ export class ThreadTimelineView {
     const card = document.createElement("article");
     card.className = `timeline-entry ${presentation.kind}`;
     card.dataset.itemId = item.id;
+    if (item.type === "userMessage" && item.clientId)
+      card.dataset.clientUserMessageId = item.clientId;
 
     const heading = document.createElement("header");
     const title = document.createElement("strong");

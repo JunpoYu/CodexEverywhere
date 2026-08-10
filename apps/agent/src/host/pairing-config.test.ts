@@ -5,8 +5,8 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import {
   initializeHost,
+  updateHostConfig,
   withRelayTransport,
-  writeHostConfig,
 } from "./config.js";
 import { readPairingHostConfig } from "./pairing-config.js";
 import { resolveHostPaths } from "./paths.js";
@@ -40,7 +40,7 @@ describe("pairing host configuration", () => {
   it("accepts a fully provisioned host", async () => {
     const paths = await temporaryPaths();
     const config = await initializeHost(paths);
-    await writeHostConfig(paths, {
+    await updateHostConfig(paths, () => ({
       ...config,
       transport: withRelayTransport(config.transport, {
         endpoint: "wss://relay.example.com/relay",
@@ -51,7 +51,7 @@ describe("pairing host configuration", () => {
         origin: "https://codex.example.com",
         rpId: "codex.example.com",
       },
-    });
+    }));
 
     await expect(readPairingHostConfig(paths, "alice")).resolves.toMatchObject({
       transport: { mode: "relay" },

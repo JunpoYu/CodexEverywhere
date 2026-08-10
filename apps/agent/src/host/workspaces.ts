@@ -18,6 +18,13 @@ export type WorkspaceBrowseResponse = {
 };
 
 const MAX_BROWSE_DIRECTORIES = 250;
+const AUTHORIZATION_REVISION_CACHE_MS = 250;
+
+type WorkspaceAuthorizationCache = { revision: number; checkedAt: number };
+const authorizationCaches = new WeakMap<
+  HostStateStore,
+  WorkspaceAuthorizationCache
+>();
 
 export class WorkspaceRegistry {
   readonly #state: HostStateStore;
@@ -28,7 +35,7 @@ export class WorkspaceRegistry {
 
   async add(inputPath: string): Promise<{ root: string; added: boolean }> {
     const root = await resolveExistingDirectory(inputPath);
-    const changed = await this.#state.transaction((database) => {
+    const result = await this.#state.transaction((database) => {
       database.run(
         "INSERT OR IGNORE INTO workspace_roots(path, created_at) VALUES (?, ?)",
         [root, new Date().toISOString()],
@@ -40,14 +47,26 @@ export class WorkspaceRegistry {
           [root],
         );
       }
-      return added;
+      if (added) incrementAuthorizationRevision(database);
+      return { added, revision: readAuthorizationRevision(database) };
     });
-    return { root, added: changed };
+    cacheAuthorizationRevision(this.#state, result.revision);
+    return { root, added: result.added };
   }
 
   async remove(inputPath: string): Promise<{ root: string; removed: boolean }> {
-    const root = await realpath(resolve(inputPath));
-    const changed = await this.#state.transaction((database) => {
+    const absolute = resolve(inputPath);
+    const exactStoredRoot =
+      isAbsolute(inputPath) &&
+      inputPath === absolute &&
+      (await this.list()).includes(absolute)
+        ? absolute
+        : undefined;
+    // Revocation must remain possible after a registered root disappears,
+    // becomes unreadable, or is replaced by a symlink. Only the exact canonical
+    // absolute path previously stored in the registry may bypass realpath.
+    const root = exactStoredRoot ?? (await realpath(absolute));
+    const result = await this.#state.transaction((database) => {
       database.run("DELETE FROM workspace_roots WHERE path = ?", [root]);
       const removed = database.getRowsModified() > 0;
       if (removed && readDefaultRoot(database) === root) {
@@ -61,9 +80,11 @@ export class WorkspaceRegistry {
           database.run("DELETE FROM workspace_settings WHERE id = 1");
         }
       }
-      return removed;
+      if (removed) incrementAuthorizationRevision(database);
+      return { removed, revision: readAuthorizationRevision(database) };
     });
-    return { root, removed: changed };
+    cacheAuthorizationRevision(this.#state, result.revision);
+    return { root, removed: result.removed };
   }
 
   list(): Promise<string[]> {
@@ -101,21 +122,73 @@ export class WorkspaceRegistry {
     return resolveWorkspacePath(await this.list(), inputPath);
   }
 
+  async resolveWithRevision(
+    inputPath: string,
+  ): Promise<{ path: string; revision: number }> {
+    while (true) {
+      const snapshot = await this.#state.read((database) => ({
+        roots: readRoots(database),
+        revision: readAuthorizationRevision(database),
+      }));
+      cacheAuthorizationRevision(this.#state, snapshot.revision);
+      const path = await resolveWorkspacePath(snapshot.roots, inputPath);
+      if (
+        snapshot.revision ===
+        (await this.authorizationRevision({ fresh: true }))
+      ) {
+        return { path, revision: snapshot.revision };
+      }
+    }
+  }
+
+  async authorizationRevision(
+    options: { fresh?: boolean } = {},
+  ): Promise<number> {
+    const cached = authorizationCaches.get(this.#state);
+    if (
+      options.fresh !== true &&
+      cached &&
+      Date.now() - cached.checkedAt < AUTHORIZATION_REVISION_CACHE_MS
+    ) {
+      return cached.revision;
+    }
+    const revision = await this.#state.read(readAuthorizationRevision);
+    cacheAuthorizationRevision(this.#state, revision);
+    return revision;
+  }
+
   async allowedPaths(inputPaths: readonly string[]): Promise<Set<string>> {
-    const roots = await this.list();
-    const allowed = new Set<string>();
-    await Promise.all(
-      [...new Set(inputPaths)].map(async (inputPath) => {
-        try {
-          await resolveWorkspacePath(roots, inputPath);
-          allowed.add(inputPath);
-        } catch {
-          // A history listing silently excludes missing, unreadable, or
-          // out-of-workspace paths without weakening the path boundary.
-        }
-      }),
-    );
-    return allowed;
+    return (await this.allowedPathsWithRevision(inputPaths)).paths;
+  }
+
+  async allowedPathsWithRevision(
+    inputPaths: readonly string[],
+  ): Promise<{ paths: Set<string>; revision: number }> {
+    while (true) {
+      const snapshot = await this.#state.read((database) => ({
+        roots: readRoots(database),
+        revision: readAuthorizationRevision(database),
+      }));
+      cacheAuthorizationRevision(this.#state, snapshot.revision);
+      const allowed = new Set<string>();
+      await Promise.all(
+        [...new Set(inputPaths)].map(async (inputPath) => {
+          try {
+            await resolveWorkspacePath(snapshot.roots, inputPath);
+            allowed.add(inputPath);
+          } catch {
+            // A history listing silently excludes missing, unreadable, or
+            // out-of-workspace paths without weakening the path boundary.
+          }
+        }),
+      );
+      if (
+        snapshot.revision ===
+        (await this.authorizationRevision({ fresh: true }))
+      ) {
+        return { paths: allowed, revision: snapshot.revision };
+      }
+    }
   }
 
   async browse(inputPath?: string): Promise<WorkspaceBrowseResponse> {
@@ -144,6 +217,39 @@ function readDefaultRoot(
   );
   const value = result[0]?.values[0]?.[0];
   return typeof value === "string" ? value : undefined;
+}
+
+function readAuthorizationRevision(
+  database: import("sql.js").Database,
+): number {
+  const result = database.exec(
+    "SELECT revision FROM workspace_authorization_state WHERE id = 1",
+  );
+  const revision = Number(result[0]?.values[0]?.[0] ?? 0);
+  if (!Number.isSafeInteger(revision) || revision < 0) {
+    throw new Error("Invalid workspace authorization revision");
+  }
+  return revision;
+}
+
+function incrementAuthorizationRevision(
+  database: import("sql.js").Database,
+): void {
+  database.run(
+    `UPDATE workspace_authorization_state
+        SET revision = revision + 1
+      WHERE id = 1`,
+  );
+  if (database.getRowsModified() !== 1) {
+    throw new Error("Workspace authorization revision is unavailable");
+  }
+}
+
+function cacheAuthorizationRevision(
+  state: HostStateStore,
+  revision: number,
+): void {
+  authorizationCaches.set(state, { revision, checkedAt: Date.now() });
 }
 
 export async function resolveWorkspacePath(

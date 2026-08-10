@@ -7,9 +7,12 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import WebSocket, { WebSocketServer } from "ws";
 
+import { HostStateStore } from "../host/state-store.js";
+import { ThreadPermissionRegistry } from "../host/thread-permissions.js";
 import {
   startTuiPermissionProxy,
   stripResumePermissionOverrides,
+  tuiThreadPermissionOptions,
 } from "./tui-permission-proxy.js";
 
 describe("TUI permission inheritance proxy", () => {
@@ -94,17 +97,24 @@ describe("TUI permission inheritance proxy", () => {
     });
     await listen(upstreamServer, upstreamSocketPath);
 
+    const state = await HostStateStore.open(join(directory, "state.sqlite"));
+    const registry = new ThreadPermissionRegistry(state);
+    await registry.save("thread-1", {
+      approvalPolicy: "never",
+      approvalsReviewer: "guardian_subagent",
+      sandboxPolicy: { type: "dangerFullAccess" },
+    });
+    const permissionOptions = tuiThreadPermissionOptions(registry);
     const proxy = await startTuiPermissionProxy({
       upstreamSocketPath,
       runtimeDir: directory,
-      prepareThreadResume: (params) => ({
-        ...params,
-        approvalPolicy: "never",
-        approvalsReviewer: "guardian_subagent",
-        sandbox: "read-only",
-      }),
-      onThreadPermissions: (observation) => {
+      ...permissionOptions,
+      onThreadPermissions: async (observation, causalObservation) => {
         observations.push(observation);
+        await permissionOptions.onThreadPermissions!(
+          observation,
+          causalObservation,
+        );
       },
     });
     const client = new WebSocket("ws://localhost", {
@@ -113,8 +123,11 @@ describe("TUI permission inheritance proxy", () => {
     });
     await waitForOpen(client);
 
-    await sendAndWait(client, resumeRequest(1, "never"));
-    await sendAndWait(client, resumeRequest(2, "on-request"));
+    const firstResume = await sendAndWait(client, resumeRequest(1, "never"));
+    const secondResume = await sendAndWait(
+      client,
+      resumeRequest(2, "on-request"),
+    );
     await sendAndWait(
       client,
       JSON.stringify({
@@ -154,35 +167,92 @@ describe("TUI permission inheritance proxy", () => {
         },
       }),
     );
+    await sendAndWait(
+      client,
+      JSON.stringify({
+        id: 5,
+        method: "turn/start",
+        params: {
+          threadId: "thread-1",
+          input: [],
+          approvalPolicy: "on-request",
+          approvalsReviewer: "auto_review",
+          sandboxPolicy: { type: "workspaceWrite", writableRoots: [] },
+        },
+      }),
+    );
 
-    expect(upstreamMessages.map(permissionFields)).toEqual([
-      { id: 1, approvalPolicy: "never", sandbox: "read-only" },
-      { id: 2, approvalPolicy: "never", sandbox: "read-only" },
+    expect(
+      upstreamMessages
+        .filter((message) => message.method === "thread/resume")
+        .map(permissionFields),
+    ).toEqual([
+      { id: 1, approvalPolicy: "never", sandbox: "danger-full-access" },
+      { id: 2, approvalPolicy: "never", sandbox: "danger-full-access" },
+    ]);
+    expect(
+      upstreamMessages
+        .filter(
+          (message) =>
+            message.method === "thread/settings/update" &&
+            typeof message.id === "string" &&
+            message.id.startsWith("ce-tui-permission-repair:"),
+        )
+        .map(permissionFields),
+    ).toEqual([
+      {
+        id: expect.any(String),
+        approvalPolicy: "never",
+        sandbox: { type: "dangerFullAccess" },
+      },
+      {
+        id: expect.any(String),
+        approvalPolicy: "never",
+        sandbox: { type: "dangerFullAccess" },
+      },
+    ]);
+    expect(
+      upstreamMessages
+        .filter(
+          (message) =>
+            message.method !== "thread/resume" &&
+            !(typeof message.id === "string"),
+        )
+        .map(permissionFields),
+    ).toEqual([
       {
         id: 3,
         approvalPolicy: "on-request",
         sandbox: { type: "readOnly", networkAccess: false },
       },
       { id: 4, approvalPolicy: "on-request", sandbox: "read-only" },
+      { id: 5, approvalPolicy: undefined, sandbox: undefined },
     ]);
+    expect(firstResume.result).toMatchObject({
+      approvalPolicy: "never",
+      approvalsReviewer: "guardian_subagent",
+    });
+    expect(secondResume.result).toMatchObject({
+      approvalPolicy: "never",
+      approvalsReviewer: "guardian_subagent",
+    });
     expect(observations).toEqual([
       {
         threadId: "thread-1",
-        approvalPolicy: "on-request",
-        approvalsReviewer: "user",
-        sandboxPolicy: { type: "readOnly", networkAccess: false },
-      },
-      {
-        threadId: "thread-1",
-        approvalPolicy: "on-request",
-        approvalsReviewer: "user",
-        sandboxPolicy: { type: "readOnly", networkAccess: false },
+        approvalPolicy: "never",
+        approvalsReviewer: "guardian_subagent",
+        sandboxPolicy: { type: "dangerFullAccess" },
       },
       {
         threadId: "thread-1",
         approvalPolicy: "never",
-        approvalsReviewer: "auto_review",
+        approvalsReviewer: "guardian_subagent",
         sandboxPolicy: { type: "dangerFullAccess" },
+      },
+      {
+        threadId: "thread-1",
+        approvalPolicy: "on-request",
+        sandboxPolicy: { type: "readOnly", networkAccess: false },
       },
       {
         threadId: "thread-new",
@@ -191,9 +261,315 @@ describe("TUI permission inheritance proxy", () => {
         sandboxPolicy: { type: "readOnly", networkAccess: false },
       },
     ]);
+    await expect(registry.read("thread-1")).resolves.toMatchObject({
+      approvalPolicy: "on-request",
+      approvalsReviewer: "guardian_subagent",
+      sandbox: "read-only",
+    });
+    await expect(registry.read("thread-new")).resolves.toMatchObject({
+      approvalPolicy: "on-request",
+      approvalsReviewer: "user",
+      sandbox: "read-only",
+    });
+    await sendAndWait(
+      client,
+      JSON.stringify({
+        id: 6,
+        method: "thread/delete",
+        params: { threadId: "thread-new" },
+      }),
+    );
+    await expect(registry.read("thread-new")).resolves.toBeUndefined();
 
     client.terminate();
     await proxy.close();
+    await state.close();
+    await closeServer(upstreamServer);
+    upstreamWebSockets.close();
+    await rm(directory, { recursive: true, force: true });
+  });
+
+  it("fails closed on duplicate in-flight ids and awaits pending lock release", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "ce-tui-proxy-test-"));
+    const upstreamSocketPath = join(directory, "upstream.sock");
+    const upstreamServer = createServer();
+    const upstreamWebSockets = new WebSocketServer({ noServer: true });
+    let firstRequest!: () => void;
+    const firstRequestReceived = new Promise<void>((resolve) => {
+      firstRequest = resolve;
+    });
+    upstreamServer.on("upgrade", (request, socket, head) => {
+      upstreamWebSockets.handleUpgrade(request, socket, head, (webSocket) => {
+        upstreamWebSockets.emit("connection", webSocket, request);
+      });
+    });
+    upstreamWebSockets.on("connection", (socket) => {
+      socket.once("message", () => firstRequest());
+    });
+    await listen(upstreamServer, upstreamSocketPath);
+
+    let releaseLock!: () => void;
+    const releaseGate = new Promise<void>((resolve) => {
+      releaseLock = resolve;
+    });
+    let releaseStarted!: () => void;
+    const releaseWasStarted = new Promise<void>((resolve) => {
+      releaseStarted = resolve;
+    });
+    let releases = 0;
+    const proxy = await startTuiPermissionProxy({
+      upstreamSocketPath,
+      runtimeDir: directory,
+      beginThreadPermissionObservation: async () => ({
+        generation: 1,
+        observedAt: new Date().toISOString(),
+      }),
+      acquireThreadPermissionMutation: async () => ({
+        release: async () => {
+          releaseStarted();
+          await releaseGate;
+          releases += 1;
+        },
+      }),
+    });
+    const client = new WebSocket("ws://localhost", {
+      createConnection: () => createConnection({ path: proxy.socketPath }),
+      perMessageDeflate: false,
+    });
+    await waitForOpen(client);
+    client.send(resumeRequest(7, "never"));
+    await firstRequestReceived;
+    const clientClosed = new Promise<void>((resolve) =>
+      client.once("close", () => resolve()),
+    );
+    client.send(resumeRequest(7, "never"));
+    await clientClosed;
+    await releaseWasStarted;
+
+    let closeSettled = false;
+    const closing = proxy.close().then(() => {
+      closeSettled = true;
+    });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(closeSettled).toBe(false);
+    releaseLock();
+    await closing;
+    expect(releases).toBe(1);
+
+    await closeServer(upstreamServer);
+    upstreamWebSockets.close();
+    await rm(directory, { recursive: true, force: true });
+  });
+
+  it("closes promptly while a real permission lock acquisition is pending", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "ce-tui-proxy-test-"));
+    const upstreamSocketPath = join(directory, "upstream.sock");
+    const upstreamServer = createServer();
+    const upstreamWebSockets = new WebSocketServer({ noServer: true });
+    let upstreamRequests = 0;
+    upstreamServer.on("upgrade", (request, socket, head) => {
+      upstreamWebSockets.handleUpgrade(request, socket, head, (webSocket) => {
+        upstreamWebSockets.emit("connection", webSocket, request);
+      });
+    });
+    upstreamWebSockets.on("connection", (socket) => {
+      socket.on("message", () => {
+        upstreamRequests += 1;
+      });
+    });
+    await listen(upstreamServer, upstreamSocketPath);
+
+    const statePath = join(directory, "state.sqlite");
+    const ownerState = await HostStateStore.open(statePath);
+    const tuiState = await HostStateStore.open(statePath);
+    const ownerRegistry = new ThreadPermissionRegistry(ownerState);
+    const tuiRegistry = new ThreadPermissionRegistry(tuiState);
+    const heldLease = await ownerRegistry.acquireMutation("thread-1");
+    const permissionOptions = tuiThreadPermissionOptions(tuiRegistry);
+    let acquisitionStarted!: () => void;
+    const acquisitionWasStarted = new Promise<void>((resolve) => {
+      acquisitionStarted = resolve;
+    });
+    const proxy = await startTuiPermissionProxy({
+      upstreamSocketPath,
+      runtimeDir: directory,
+      ...permissionOptions,
+      acquireThreadPermissionMutation: (threadId, options) => {
+        acquisitionStarted();
+        return permissionOptions.acquireThreadPermissionMutation!(
+          threadId,
+          options,
+        );
+      },
+    });
+    const client = new WebSocket("ws://localhost", {
+      createConnection: () => createConnection({ path: proxy.socketPath }),
+      perMessageDeflate: false,
+    });
+    await waitForOpen(client);
+    client.send(resumeRequest(10, "never"));
+    await acquisitionWasStarted;
+
+    await expect(settlesWithin(proxy.close(), 1_000)).resolves.toBeUndefined();
+    expect(upstreamRequests).toBe(0);
+
+    await heldLease.release();
+    await tuiState.close();
+    await ownerState.close();
+    await closeServer(upstreamServer);
+    upstreamWebSockets.close();
+    await rm(directory, { recursive: true, force: true });
+  });
+
+  it("retries explicit settings persistence under the lock and surfaces failure", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "ce-tui-proxy-test-"));
+    const upstreamSocketPath = join(directory, "upstream.sock");
+    const upstreamServer = createServer();
+    const upstreamWebSockets = new WebSocketServer({ noServer: true });
+    upstreamServer.on("upgrade", (request, socket, head) => {
+      upstreamWebSockets.handleUpgrade(request, socket, head, (webSocket) => {
+        upstreamWebSockets.emit("connection", webSocket, request);
+      });
+    });
+    upstreamWebSockets.on("connection", (socket) => {
+      socket.on("message", (raw) => {
+        const message = JSON.parse(raw.toString()) as Record<string, unknown>;
+        socket.send(JSON.stringify({ id: message.id, result: {} }));
+      });
+    });
+    await listen(upstreamServer, upstreamSocketPath);
+
+    const events: string[] = [];
+    const observed: Array<Record<string, unknown>> = [];
+    const proxy = await startTuiPermissionProxy({
+      upstreamSocketPath,
+      runtimeDir: directory,
+      beginThreadPermissionObservation: async () => ({
+        generation: 1,
+        observedAt: new Date().toISOString(),
+      }),
+      acquireThreadPermissionMutation: async () => ({
+        release: async () => {
+          events.push("release");
+        },
+      }),
+      onThreadPermissions: async (observation) => {
+        events.push("persist");
+        observed.push(observation);
+        throw new Error("state unavailable");
+      },
+    });
+    const client = new WebSocket("ws://localhost", {
+      createConnection: () => createConnection({ path: proxy.socketPath }),
+      perMessageDeflate: false,
+    });
+    await waitForOpen(client);
+    const response = await sendAndWait(
+      client,
+      JSON.stringify({
+        id: 8,
+        method: "thread/settings/update",
+        params: {
+          threadId: "thread-1",
+          approvalPolicy: "never",
+          approvalsReviewer: null,
+          sandboxPolicy: null,
+        },
+      }),
+    );
+
+    expect(response).toMatchObject({
+      id: 8,
+      error: { message: expect.stringContaining("state unavailable") },
+    });
+    expect(events).toEqual(["persist", "persist", "release"]);
+    expect(observed).toEqual([
+      { threadId: "thread-1", approvalPolicy: "never" },
+      { threadId: "thread-1", approvalPolicy: "never" },
+    ]);
+
+    client.terminate();
+    await proxy.close();
+    await closeServer(upstreamServer);
+    upstreamWebSockets.close();
+    await rm(directory, { recursive: true, force: true });
+  });
+
+  it("closes an ambiguous repair timeout before releasing its lock once", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "ce-tui-proxy-test-"));
+    const upstreamSocketPath = join(directory, "upstream.sock");
+    const upstreamServer = createServer();
+    const upstreamWebSockets = new WebSocketServer({ noServer: true });
+    const upstreamMethods: unknown[] = [];
+    upstreamServer.on("upgrade", (request, socket, head) => {
+      upstreamWebSockets.handleUpgrade(request, socket, head, (webSocket) => {
+        upstreamWebSockets.emit("connection", webSocket, request);
+      });
+    });
+    upstreamWebSockets.on("connection", (socket) => {
+      socket.on("message", (raw) => {
+        const message = JSON.parse(raw.toString()) as Record<string, unknown>;
+        upstreamMethods.push(message.method);
+        if (message.method === "thread/resume") {
+          socket.send(
+            JSON.stringify({
+              id: message.id,
+              result: {
+                thread: { id: "thread-1" },
+                approvalPolicy: "on-request",
+              },
+            }),
+          );
+        }
+        // Intentionally leave the internal settings/update outcome unknown.
+      });
+    });
+    await listen(upstreamServer, upstreamSocketPath);
+
+    let releases = 0;
+    const proxy = await startTuiPermissionProxy({
+      upstreamSocketPath,
+      runtimeDir: directory,
+      internalRepairTimeoutMs: 30,
+      prepareThreadResume: (params) => ({
+        ...params,
+        approvalPolicy: "never",
+      }),
+      repairThreadResume: (_requested, response) => ({
+        update: { approvalPolicy: "never" },
+        response: { ...response, approvalPolicy: "never" },
+      }),
+      beginThreadPermissionObservation: async () => ({
+        generation: 1,
+        observedAt: new Date().toISOString(),
+      }),
+      claimThreadPermissionRepair: async () => ({
+        generation: 2,
+        observedAt: new Date().toISOString(),
+      }),
+      acquireThreadPermissionMutation: async () => ({
+        release: async () => {
+          releases += 1;
+        },
+      }),
+    });
+    const client = new WebSocket("ws://localhost", {
+      createConnection: () => createConnection({ path: proxy.socketPath }),
+      perMessageDeflate: false,
+    });
+    await waitForOpen(client);
+    const clientClosed = new Promise<void>((resolve) =>
+      client.once("close", () => resolve()),
+    );
+    client.send(resumeRequest(9, "never"));
+    await clientClosed;
+    await proxy.close();
+
+    expect(upstreamMethods).toEqual([
+      "thread/resume",
+      "thread/settings/update",
+    ]);
+    expect(releases).toBe(1);
     await closeServer(upstreamServer);
     upstreamWebSockets.close();
     await rm(directory, { recursive: true, force: true });
@@ -239,6 +615,25 @@ function closeServer(server: HttpServer): Promise<void> {
   });
 }
 
+function settlesWithin<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(
+      () => reject(new Error(`Operation did not settle within ${timeoutMs}ms`)),
+      timeoutMs,
+    );
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (error: unknown) => {
+        clearTimeout(timer);
+        reject(error);
+      },
+    );
+  });
+}
+
 function waitForOpen(socket: WebSocket): Promise<void> {
   return new Promise((resolve, reject) => {
     socket.once("open", resolve);
@@ -253,8 +648,16 @@ function nextMessage(socket: WebSocket): Promise<void> {
   });
 }
 
-async function sendAndWait(socket: WebSocket, message: string): Promise<void> {
-  const response = nextMessage(socket);
+async function sendAndWait(
+  socket: WebSocket,
+  message: string,
+): Promise<Record<string, unknown>> {
+  const response = new Promise<Record<string, unknown>>((resolve, reject) => {
+    socket.once("message", (raw) => {
+      resolve(JSON.parse(raw.toString()) as Record<string, unknown>);
+    });
+    socket.once("error", reject);
+  });
   socket.send(message);
-  await response;
+  return response;
 }

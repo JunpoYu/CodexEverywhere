@@ -42,6 +42,21 @@ script_directory=$(CDPATH= cd -- "$(dirname "$0")" && pwd)
 repository_root=$(CDPATH= cd -- "$script_directory/../.." && pwd)
 cd "$repository_root"
 
+head_commit=$(git rev-parse HEAD)
+if [ "$head_commit" != "$commit" ]; then
+  echo "Release commit $commit does not match checked-out HEAD $head_commit" >&2
+  exit 1
+fi
+tag_commit=$(git rev-parse "$version^{commit}" 2>/dev/null || true)
+if [ "$tag_commit" != "$commit" ]; then
+  echo "Release tag $version does not resolve to commit $commit" >&2
+  exit 1
+fi
+if [ -n "$(git status --porcelain --untracked-files=all)" ]; then
+  echo "Release assets require a completely clean checkout" >&2
+  exit 1
+fi
+
 package_version=$(node -p "require('./package.json').version")
 if [ "$version" != "v$package_version" ]; then
   echo "Tag $version does not match package version $package_version" >&2
@@ -105,7 +120,12 @@ hpc_tools_archive=$output_directory/codex-everywhere-hpc-tools-$version.tar.gz
 
 source_date_epoch=$(git show -s --format=%ct "$commit")
 mkdir "$staging_directory/hpc-tools"
-cp deploy/hpc/install-release.sh deploy/hpc/install-rootless-agent.sh deploy/hpc/activate-rootless-release.sh "$staging_directory/hpc-tools/"
+cp \
+  deploy/hpc/install-release.sh \
+  deploy/hpc/install-rootless-agent.sh \
+  deploy/hpc/activate-rootless-release.sh \
+  deploy/hpc/verify-rootless-release.mjs \
+  "$staging_directory/hpc-tools/"
 cp LICENSE NOTICE "$staging_directory/hpc-tools/"
 cp "$staging_directory/build-info.json" "$staging_directory/hpc-tools/"
 node -e '

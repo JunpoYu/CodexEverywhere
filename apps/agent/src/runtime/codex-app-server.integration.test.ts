@@ -4,10 +4,13 @@ import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
+import { HostStateStore } from "../host/state-store.js";
+import { ThreadPermissionRegistry } from "../host/thread-permissions.js";
 import { CodexAppServerClient } from "./codex-app-server-client.js";
 import { CodexAppServerProcess } from "./codex-app-server-process.js";
 import {
   startTuiPermissionProxy,
+  tuiThreadPermissionOptions,
   type TuiPermissionProxy,
 } from "./tui-permission-proxy.js";
 
@@ -43,10 +46,12 @@ afterEach(async () => {
   }
 });
 
-async function startServer(): Promise<{
+async function startServer(options: { withAuth?: boolean } = {}): Promise<{
   processHandle: CodexAppServerProcess;
   socketPath: string;
   workspace: string;
+  directory: string;
+  codexHome: string;
 }> {
   const directory = await mkdtemp(join(tmpdir(), "ce-app-server-test-"));
   temporaryDirectories.push(directory);
@@ -56,11 +61,13 @@ async function startServer(): Promise<{
   await mkdir(workspace);
   await mkdir(codexHome, { mode: 0o700 });
 
-  const sourceCodexHome = process.env.CODEX_HOME ?? join(homedir(), ".codex");
-  await copyFile(
-    join(sourceCodexHome, "auth.json"),
-    join(codexHome, "auth.json"),
-  );
+  if (options.withAuth) {
+    const sourceCodexHome = process.env.CODEX_HOME ?? join(homedir(), ".codex");
+    await copyFile(
+      join(sourceCodexHome, "auth.json"),
+      join(codexHome, "auth.json"),
+    );
+  }
 
   const processHandle = await CodexAppServerProcess.start({
     socketPath,
@@ -68,7 +75,7 @@ async function startServer(): Promise<{
     env: { ...process.env, CODEX_HOME: codexHome },
   });
   processes.push(processHandle);
-  return { processHandle, socketPath, workspace };
+  return { processHandle, socketPath, workspace, directory, codexHome };
 }
 
 async function connect(
@@ -84,6 +91,67 @@ async function connect(
 }
 
 describe("real Codex app-server contract", () => {
+  it("keeps explicit thread permissions after a complete app-server restart", async () => {
+    const { processHandle, socketPath, workspace, directory, codexHome } =
+      await startServer();
+    const firstClient = await connect(socketPath, "ce_restart_permissions_a");
+    let secondClient: CodexAppServerClient | undefined;
+    let threadId: string | undefined;
+
+    try {
+      const started = await firstClient.request<ThreadStartResponse>(
+        "thread/start",
+        {
+          cwd: workspace,
+          approvalPolicy: "never",
+          sandbox: "danger-full-access",
+          ephemeral: false,
+        },
+      );
+      threadId = started.thread.id;
+      await firstClient.request("thread/name/set", {
+        threadId,
+        name: "Permission Restart Contract",
+      });
+      await firstClient.close();
+      await processHandle.stop();
+      await rm(socketPath, { force: true });
+
+      const restarted = await CodexAppServerProcess.start({
+        socketPath,
+        cwd: directory,
+        env: { ...process.env, CODEX_HOME: codexHome },
+      });
+      processes.push(restarted);
+      secondClient = await connect(socketPath, "ce_restart_permissions_b");
+
+      const resumed = await secondClient.request<ThreadStartResponse>(
+        "thread/resume",
+        {
+          threadId,
+          cwd: workspace,
+          approvalPolicy: "never",
+          sandbox: "danger-full-access",
+        },
+      );
+      expect(resumed.approvalPolicy).toBe("never");
+      expect(resumed.sandbox?.type).toBe("dangerFullAccess");
+
+      const resumedAgain = await secondClient.request<ThreadStartResponse>(
+        "thread/resume",
+        { threadId },
+      );
+      expect(resumedAgain.approvalPolicy).toBe("never");
+      expect(resumedAgain.sandbox?.type).toBe("dangerFullAccess");
+    } finally {
+      if (threadId !== undefined) {
+        await secondClient
+          ?.request("thread/delete", { threadId })
+          .catch(() => undefined);
+      }
+    }
+  });
+
   it("shares one persistent thread between two clients", async () => {
     const { socketPath, workspace } = await startServer();
     const clientA = await connect(socketPath, "ce_contract_a");
@@ -222,9 +290,15 @@ describe("real Codex app-server contract", () => {
   });
 
   it("keeps stored permissions when the official TUI resumes a thread", async () => {
-    const { socketPath, workspace } = await startServer();
+    const { processHandle, socketPath, workspace, directory, codexHome } =
+      await startServer();
     const webClient = await connect(socketPath, "ce_permission_web");
+    const state = await HostStateStore.open(
+      join(directory, "codex-everywhere-state.sqlite"),
+    );
+    const registry = new ThreadPermissionRegistry(state);
     let permissionProxy: TuiPermissionProxy | undefined;
+    let cleanupClient: CodexAppServerClient = webClient;
     let threadId: string | undefined;
 
     try {
@@ -238,6 +312,7 @@ describe("real Codex app-server contract", () => {
         },
       );
       threadId = started.thread.id;
+      await registry.saveResponse(started);
       await webClient.request("thread/name/set", {
         threadId,
         name: "Permission Inheritance Contract",
@@ -247,6 +322,7 @@ describe("real Codex app-server contract", () => {
       permissionProxy = await startTuiPermissionProxy({
         upstreamSocketPath: socketPath,
         runtimeDir: tuiRuntime,
+        ...tuiThreadPermissionOptions(registry),
       });
       const tuiClient = await connect(
         permissionProxy.socketPath,
@@ -285,20 +361,58 @@ describe("real Codex app-server contract", () => {
           },
         },
       });
+      await expect(registry.read(threadId)).resolves.toMatchObject({
+        approvalPolicy: "on-request",
+        sandbox: "read-only",
+      });
+
+      await tuiClient.close();
+      await permissionProxy.close();
+      permissionProxy = undefined;
+      await webClient.close();
+      await processHandle.stop();
+      await rm(socketPath, { force: true });
+
+      const restarted = await CodexAppServerProcess.start({
+        socketPath,
+        cwd: directory,
+        env: { ...process.env, CODEX_HOME: codexHome },
+      });
+      processes.push(restarted);
+      permissionProxy = await startTuiPermissionProxy({
+        upstreamSocketPath: socketPath,
+        runtimeDir: tuiRuntime,
+        ...tuiThreadPermissionOptions(registry),
+      });
+      const restartedTui = await connect(
+        permissionProxy.socketPath,
+        "ce_permission_tui_restarted",
+      );
+      cleanupClient = restartedTui;
+      const resumedAfterRestart =
+        await restartedTui.request<ThreadStartResponse>("thread/resume", {
+          threadId,
+          cwd: workspace,
+          approvalPolicy: "never",
+          sandbox: "danger-full-access",
+        });
+      expect(resumedAfterRestart.approvalPolicy).toBe("on-request");
+      expect(resumedAfterRestart.sandbox?.type).toBe("readOnly");
     } finally {
       if (threadId !== undefined) {
-        await webClient
+        await cleanupClient
           .request("thread/delete", { threadId })
           .catch(() => undefined);
       }
       await permissionProxy?.close();
+      await state.close();
     }
   });
 
   it.skipIf(process.env.CE_RUN_MODEL_INTEGRATION !== "1")(
     "keeps an active turn running while the controlling client reconnects",
     async () => {
-      const { socketPath, workspace } = await startServer();
+      const { socketPath, workspace } = await startServer({ withAuth: true });
       const clientA = await connect(socketPath, "ce_lifecycle_a");
       let threadId: string | undefined;
 

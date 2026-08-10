@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -11,12 +11,16 @@ import {
 } from "@codex-everywhere/crypto";
 import {
   PROTOCOL_VERSION,
+  parseGatewayHandshakeResult,
   type GatewayCipherFrame,
   type RequestEnvelope,
 } from "@codex-everywhere/protocol";
 
 import { DeviceRegistry } from "../host/devices.js";
+import { AuthenticatedSessionRegistry } from "../host/auth-security.js";
 import { HostStateStore } from "../host/state-store.js";
+import type { PasskeyRegistry } from "../host/passkeys.js";
+import { AuthenticatedGatewaySession } from "./authenticated-session.js";
 import { DirectGateway } from "./direct-gateway.js";
 
 const temporaryDirectories: string[] = [];
@@ -27,6 +31,41 @@ afterEach(async () => {
 });
 
 describe("DirectGateway", () => {
+  it("keeps responsive Direct sockets alive and closes half-open peers", async () => {
+    const state = await stateStore();
+    const gateway = await DirectGateway.start({
+      host: "127.0.0.1",
+      port: 0,
+      nodeId: "node-1",
+      userId: "unix:1000",
+      identity: generateStaticKeyPair(),
+      hostFingerprint: `sha256:${"A".repeat(43)}`,
+      gatewayHeartbeatMs: 20,
+      state,
+      createSession: () => ({ request: async () => undefined }),
+    });
+    const endpoint = `ws://127.0.0.1:${gateway.port}/gateway`;
+    const responsive = await openRawSocket(endpoint);
+    let pingCount = 0;
+    responsive.on("ping", () => {
+      pingCount += 1;
+    });
+    await new Promise((resolve) => setTimeout(resolve, 70));
+    expect(pingCount).toBeGreaterThanOrEqual(2);
+    expect(responsive.readyState).toBe(WebSocket.OPEN);
+
+    const halfOpen = await openRawSocket(endpoint, false);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(halfOpen.readyState).toBe(WebSocket.OPEN);
+    await onceClosed(halfOpen);
+    expect(halfOpen.readyState).toBe(WebSocket.CLOSED);
+
+    responsive.close();
+    await onceClosed(responsive);
+    await gateway.close();
+    await state.close();
+  });
+
   it("returns a public profile without opening an authenticated session", async () => {
     const state = await stateStore();
     const hostKeys = generateStaticKeyPair();
@@ -107,7 +146,10 @@ describe("DirectGateway", () => {
       hostFingerprint: `sha256:${"A".repeat(43)}`,
       state,
       createSession: () => ({
-        request: async (request: RequestEnvelope) => request.payload,
+        request: async (request: RequestEnvelope) =>
+          request.method === "thread/start"
+            ? { thread: { id: "thread-1" } }
+            : request.payload,
       }),
     };
     const gateway = await DirectGateway.start(options);
@@ -129,6 +171,23 @@ describe("DirectGateway", () => {
     ).resolves.toEqual({
       answer: 42,
     });
+    await expect(
+      requestWithKey(
+        paired.socket,
+        paired.session,
+        "thread/start",
+        { cwd: "/work" },
+        "durable-thread-start-key",
+      ),
+    ).resolves.toEqual({ thread: { id: "thread-1" } });
+    await expect(
+      state.read(
+        (database) =>
+          database.exec(
+            "SELECT count(*) FROM durable_mutation_claims WHERE result_json IS NOT NULL",
+          )[0]?.values[0]?.[0],
+      ),
+    ).resolves.toBe(1);
     const largePayload = "x".repeat(3_500_000);
     await expect(
       roundTrip(paired.socket, paired.session, largePayload),
@@ -152,11 +211,294 @@ describe("DirectGateway", () => {
     await state.close();
   }, 30_000);
 
+  it("fails a rejected claimed thread/start closed without replaying it", async () => {
+    const state = await stateStore();
+    const devices = new DeviceRegistry(state);
+    const grant = await devices.issuePairing();
+    const hostKeys = generateStaticKeyPair();
+    const deviceKeys = generateStaticKeyPair();
+    let calls = 0;
+    const gateway = await DirectGateway.start({
+      host: "127.0.0.1",
+      port: 0,
+      nodeId: "node-1",
+      userId: "unix:1000",
+      identity: hostKeys,
+      hostFingerprint: `sha256:${"A".repeat(43)}`,
+      state,
+      createSession: () => ({
+        request: async () => {
+          calls += 1;
+          throw new Error(
+            "app-server disconnected after accepting thread/start",
+          );
+        },
+      }),
+    });
+    const client = await connectClient({
+      port: gateway.port,
+      deviceKeys,
+      hostPublicKey: hostKeys.publicKey,
+      auth: {
+        mode: "pair",
+        pairingId: grant.pairingId,
+        secret: grant.secret,
+        deviceName: "Test browser",
+      },
+    });
+
+    const first = await requestOutcomeWithKey(
+      client.socket,
+      client.session,
+      "thread/start",
+      { cwd: "/work" },
+      "rejected-thread-start-key",
+    );
+    expect(first).toMatchObject({
+      ok: false,
+      error: {
+        code: "IDEMPOTENCY_OUTCOME_INDETERMINATE",
+        retryable: false,
+      },
+    });
+    if (first.ok) throw new Error("Expected thread/start to fail closed");
+    const retry = await requestOutcomeWithKey(
+      client.socket,
+      client.session,
+      "thread/start",
+      { cwd: "/work" },
+      "rejected-thread-start-key",
+    );
+    expect(retry).toMatchObject({
+      ok: false,
+      error: {
+        code: "IDEMPOTENCY_OUTCOME_INDETERMINATE",
+        retryable: false,
+      },
+    });
+    expect(calls).toBe(1);
+    await expect(
+      state.read(
+        (database) =>
+          database.exec(
+            "SELECT durable_mutation_claims.result_json, idempotency_keys.result_json, idempotency_keys.expires_at FROM durable_mutation_claims JOIN idempotency_keys USING (key)",
+          )[0]?.values[0],
+      ),
+    ).resolves.toEqual([
+      JSON.stringify({ ok: false, error: first.error }),
+      JSON.stringify({ ok: false, error: first.error }),
+      "9999-12-31T23:59:59.999Z",
+    ]);
+
+    client.socket.close();
+    await onceClosed(client.socket);
+    await gateway.close();
+    await state.close();
+  });
+
+  it("returns a claimed turn/queue success once and permanently disables content replay", async () => {
+    const state = await stateStore();
+    const devices = new DeviceRegistry(state);
+    const grant = await devices.issuePairing();
+    const hostKeys = generateStaticKeyPair();
+    const deviceKeys = generateStaticKeyPair();
+    const calls = new Map<string, number>();
+    const gateway = await DirectGateway.start({
+      host: "127.0.0.1",
+      port: 0,
+      nodeId: "node-1",
+      userId: "unix:1000",
+      identity: hostKeys,
+      hostFingerprint: `sha256:${"A".repeat(43)}`,
+      state,
+      createSession: () => ({
+        request: async (request: RequestEnvelope) => {
+          calls.set(request.method, (calls.get(request.method) ?? 0) + 1);
+          const payload = request.payload as Record<string, unknown>;
+          if (request.method === "turn/start") {
+            return {
+              turn: {
+                id: "turn-1",
+                status: "inProgress",
+                items: [{ text: "PRIVATE DIRECT TURN PROMPT" }],
+              },
+            };
+          }
+          if (request.method === "queue/add") {
+            return {
+              id: "queue-1",
+              threadId: payload.threadId,
+              status: "pending",
+              turnPayload: {
+                clientUserMessageId: payload.clientUserMessageId,
+                input: payload.input,
+              },
+            };
+          }
+          return {};
+        },
+      }),
+    });
+    const client = await connectClient({
+      port: gateway.port,
+      deviceKeys,
+      hostPublicKey: hostKeys.publicKey,
+      auth: {
+        mode: "pair",
+        pairingId: grant.pairingId,
+        secret: grant.secret,
+        deviceName: "Test browser",
+      },
+    });
+    const cases = [
+      {
+        method: "turn/start",
+        key: "durable-turn-start-key",
+        payload: {
+          threadId: "thread-1",
+          clientUserMessageId: "operation-turn-1",
+          input: [{ type: "text", text: "PRIVATE DIRECT TURN PROMPT" }],
+        },
+      },
+      {
+        method: "queue/add",
+        key: "durable-queue-add-key",
+        payload: {
+          threadId: "thread-1",
+          clientUserMessageId: "operation-queue-1",
+          input: [{ type: "text", text: "PRIVATE DIRECT QUEUE PROMPT" }],
+        },
+      },
+    ];
+
+    for (const entry of cases) {
+      await expect(
+        requestWithKey(
+          client.socket,
+          client.session,
+          entry.method,
+          entry.payload,
+          entry.key,
+        ),
+      ).resolves.toMatchObject(
+        entry.method === "turn/start"
+          ? { turn: { id: "turn-1" } }
+          : { id: "queue-1", status: "pending" },
+      );
+      await expect(
+        requestOutcomeWithKey(
+          client.socket,
+          client.session,
+          entry.method,
+          entry.payload,
+          entry.key,
+        ),
+      ).resolves.toMatchObject({
+        ok: false,
+        error: {
+          code: "IDEMPOTENCY_OUTCOME_INDETERMINATE",
+          retryable: false,
+        },
+      });
+      expect(calls.get(entry.method)).toBe(1);
+    }
+    const persisted = JSON.stringify(
+      await state.read(
+        (database) =>
+          database.exec(
+            "SELECT durable_mutation_claims.result_json, idempotency_keys.result_json, idempotency_keys.expires_at FROM durable_mutation_claims JOIN idempotency_keys USING (key) WHERE durable_mutation_claims.method IN ('turn/start', 'queue/add') ORDER BY durable_mutation_claims.method",
+          )[0]?.values,
+      ),
+    );
+    expect(persisted).not.toContain("PRIVATE DIRECT TURN PROMPT");
+    expect(persisted).not.toContain("PRIVATE DIRECT QUEUE PROMPT");
+    expect(persisted.match(/IDEMPOTENCY_OUTCOME_INDETERMINATE/gu)).toHaveLength(
+      4,
+    );
+    expect(persisted.match(/9999-12-31T23:59:59.999Z/gu)).toHaveLength(2);
+
+    client.socket.close();
+    await onceClosed(client.socket);
+    await gateway.close();
+    await state.close();
+  });
+
+  it("never replays rejected claimed turn/start and queue/add mutations", async () => {
+    const state = await stateStore();
+    const devices = new DeviceRegistry(state);
+    const grant = await devices.issuePairing();
+    const hostKeys = generateStaticKeyPair();
+    const deviceKeys = generateStaticKeyPair();
+    const calls = new Map<string, number>();
+    const gateway = await DirectGateway.start({
+      host: "127.0.0.1",
+      port: 0,
+      nodeId: "node-1",
+      userId: "unix:1000",
+      identity: hostKeys,
+      hostFingerprint: `sha256:${"A".repeat(43)}`,
+      state,
+      createSession: () => ({
+        request: async (request: RequestEnvelope) => {
+          calls.set(request.method, (calls.get(request.method) ?? 0) + 1);
+          throw new Error(`disconnect after accepting ${request.method}`);
+        },
+      }),
+    });
+    const client = await connectClient({
+      port: gateway.port,
+      deviceKeys,
+      hostPublicKey: hostKeys.publicKey,
+      auth: {
+        mode: "pair",
+        pairingId: grant.pairingId,
+        secret: grant.secret,
+        deviceName: "Test browser",
+      },
+    });
+
+    for (const method of ["turn/start", "queue/add"]) {
+      const payload = {
+        threadId: "thread-1",
+        clientUserMessageId: `operation-${method}`,
+        input: [{ type: "text", text: "PRIVATE REJECTED DIRECT PROMPT" }],
+      };
+      const key = `rejected-${method}-key`;
+      const first = await requestOutcomeWithKey(
+        client.socket,
+        client.session,
+        method,
+        payload,
+        key,
+      );
+      expect(first).toMatchObject({
+        ok: false,
+        error: { code: "IDEMPOTENCY_OUTCOME_INDETERMINATE" },
+      });
+      await expect(
+        requestOutcomeWithKey(
+          client.socket,
+          client.session,
+          method,
+          payload,
+          key,
+        ),
+      ).resolves.toEqual(first);
+      expect(calls.get(method)).toBe(1);
+    }
+
+    client.socket.close();
+    await onceClosed(client.socket);
+    await gateway.close();
+    await state.close();
+  });
+
   it("accepts an unknown device only as a pending login", async () => {
     const state = await stateStore();
     const hostKeys = generateStaticKeyPair();
     const deviceKeys = generateStaticKeyPair();
-    let finishAuthentication: (() => Promise<void>) | undefined;
+    let finishAuthentication:
+      (() => Promise<(() => Promise<void> | void) | void>) | undefined;
     const gateway = await DirectGateway.start({
       host: "127.0.0.1",
       port: 0,
@@ -193,6 +535,378 @@ describe("DirectGateway", () => {
     await onceClosed(pending.socket);
     await gateway.close();
     await state.close();
+  });
+
+  it("reactivates a revoked saved identity only after explicit remembered login authentication", async () => {
+    const state = await stateStore();
+    const hostKeys = generateStaticKeyPair();
+    const deviceKeys = generateStaticKeyPair();
+    const devices = new DeviceRegistry(state);
+    await devices.enrollAuthenticated({
+      deviceId: "browser-1",
+      deviceName: "Old browser",
+      publicKey: deviceKeys.publicKey,
+    });
+    await devices.revoke("browser-1");
+    let rememberedDevice = false;
+    let finishAuthentication:
+      (() => Promise<(() => Promise<void> | void) | void>) | undefined;
+    const gateway = await DirectGateway.start({
+      host: "127.0.0.1",
+      port: 0,
+      nodeId: "node-1",
+      userId: "unix:1000",
+      identity: hostKeys,
+      hostFingerprint: `sha256:${"A".repeat(43)}`,
+      state,
+      createSession: (_device, context) => {
+        rememberedDevice = context.rememberedDevice;
+        finishAuthentication = context.onAuthenticated;
+        return { request: async () => "pending" };
+      },
+    });
+
+    const pending = await connectClient({
+      port: gateway.port,
+      deviceKeys,
+      hostPublicKey: hostKeys.publicKey,
+      auth: {
+        mode: "login",
+        deviceName: "Trusted again",
+        rememberDevice: true,
+      },
+    });
+    expect(rememberedDevice).toBe(true);
+    await expect(
+      devices.verify("browser-1", deviceKeys.publicKey),
+    ).rejects.toMatchObject({ code: "REVOKED" });
+    await finishAuthentication!();
+    await expect(
+      devices.verify("browser-1", deviceKeys.publicKey),
+    ).resolves.toMatchObject({ name: "Trusted again" });
+
+    pending.socket.close();
+    await onceClosed(pending.socket);
+    await gateway.close();
+    await state.close();
+  });
+
+  it("returns an encrypted reauthentication rejection for a revoked trusted connect", async () => {
+    const state = await stateStore();
+    const hostKeys = generateStaticKeyPair();
+    const deviceKeys = generateStaticKeyPair();
+    const devices = new DeviceRegistry(state);
+    await devices.enrollAuthenticated({
+      deviceId: "browser-1",
+      deviceName: "Remembered browser",
+      publicKey: deviceKeys.publicKey,
+    });
+    await devices.revoke("browser-1");
+    let sessions = 0;
+    const gateway = await DirectGateway.start({
+      host: "127.0.0.1",
+      port: 0,
+      nodeId: "node-1",
+      userId: "unix:1000",
+      identity: hostKeys,
+      hostFingerprint: `sha256:${"A".repeat(43)}`,
+      state,
+      createSession: () => {
+        sessions += 1;
+        return { request: async () => "unexpected" };
+      },
+    });
+
+    await expect(
+      rejectedHandshakeResult({
+        port: gateway.port,
+        deviceKeys,
+        hostPublicKey: hostKeys.publicKey,
+        auth: { mode: "connect" },
+      }),
+    ).resolves.toEqual({
+      result: {
+        version: 1,
+        ok: false,
+        error: { code: "REAUTH_REQUIRED" },
+      },
+      code: 1008,
+      reason: "REAUTH_REQUIRED",
+    });
+    expect(sessions).toBe(0);
+
+    await gateway.close();
+    await state.close();
+  });
+
+  it("resumes only a ticket bound to the Noise device identity", async () => {
+    const state = await stateStore();
+    const hostKeys = generateStaticKeyPair();
+    const deviceKeys = generateStaticKeyPair();
+    const sessions = new AuthenticatedSessionRegistry();
+    const binding = {
+      principal: "user" as const,
+      nodeId: "node-1",
+      userId: "unix:1000",
+      deviceId: "browser-1",
+      devicePublicKey: Buffer.from(deviceKeys.publicKey).toString("base64url"),
+      rememberedDevice: false,
+    };
+    const resumeToken = sessions.issueResumeTicket(
+      sessions.captureGeneration(),
+      binding,
+    )!;
+    const gateway = await DirectGateway.start({
+      host: "127.0.0.1",
+      port: 0,
+      nodeId: "node-1",
+      userId: "unix:1000",
+      identity: hostKeys,
+      hostFingerprint: `sha256:${"A".repeat(43)}`,
+      state,
+      createSession: (device, context) =>
+        new AuthenticatedGatewaySession({
+          inner: {
+            request: async (request: RequestEnvelope) => request.payload,
+          },
+          passkeys: {
+            count: async () => 1,
+          } as unknown as PasskeyRegistry,
+          newlyPaired: context.newlyPaired,
+          ...(context.resumeToken ? { resumeToken: context.resumeToken } : {}),
+          resumeAuthenticatedSession: (token, revoke) =>
+            sessions.resume(
+              token,
+              {
+                ...binding,
+                deviceId: device.id,
+                devicePublicKey: Buffer.from(device.publicKey).toString(
+                  "base64url",
+                ),
+              },
+              revoke,
+            ),
+        }),
+    });
+    const resumed = await connectClient({
+      port: gateway.port,
+      deviceKeys,
+      hostPublicKey: hostKeys.publicKey,
+      auth: { mode: "resume", resumeToken },
+    });
+    await expect(
+      roundTrip(resumed.socket, resumed.session, {
+        value: "already-authenticated",
+      }),
+    ).resolves.toEqual({ value: "already-authenticated" });
+    resumed.socket.close();
+    await onceClosed(resumed.socket);
+
+    await expect(
+      rejectedHandshakeResult({
+        port: gateway.port,
+        deviceKeys,
+        hostPublicKey: hostKeys.publicKey,
+        auth: { mode: "resume", resumeToken: "B".repeat(43) },
+      }),
+    ).resolves.toEqual({
+      result: {
+        version: 1,
+        ok: false,
+        error: { code: "REAUTH_REQUIRED" },
+      },
+      code: 1008,
+      reason: "REAUTH_REQUIRED",
+    });
+    await gateway.close();
+    await state.close();
+  });
+
+  it("rejects every remembered tab after an out-of-process device revoke while preserving temporary sessions", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "ce-device-revoke-test-"));
+    temporaryDirectories.push(directory);
+    const statePath = join(directory, "state.sqlite");
+    const state = await HostStateStore.open(statePath);
+    const hostKeys = generateStaticKeyPair();
+    const deviceKeys = generateStaticKeyPair();
+    await new DeviceRegistry(state).enrollAuthenticated({
+      deviceId: "browser-1",
+      deviceName: "Remembered browser",
+      publicKey: deviceKeys.publicKey,
+    });
+    const sessions = new AuthenticatedSessionRegistry();
+    const baseBinding = {
+      principal: "user" as const,
+      nodeId: "node-1",
+      userId: "unix:1000",
+      deviceId: "browser-1",
+      devicePublicKey: Buffer.from(deviceKeys.publicKey).toString("base64url"),
+    };
+    const generation = sessions.captureGeneration();
+    const rememberedBinding = { ...baseBinding, rememberedDevice: true };
+    const keyMismatchTicket = sessions.issueResumeTicket(
+      generation,
+      rememberedBinding,
+    )!;
+    const gateway = await DirectGateway.start({
+      host: "127.0.0.1",
+      port: 0,
+      nodeId: "node-1",
+      userId: "unix:1000",
+      identity: hostKeys,
+      hostFingerprint: `sha256:${"A".repeat(43)}`,
+      state,
+      createSession: async (device, context) => {
+        const binding = {
+          ...baseBinding,
+          deviceId: device.id,
+          devicePublicKey: Buffer.from(device.publicKey).toString("base64url"),
+          rememberedDevice: context.rememberedDevice,
+        };
+        if (context.resumeRememberedDeviceInvalid)
+          await sessions.revokeDevice(binding);
+        return new AuthenticatedGatewaySession({
+          inner: {
+            request: async (request: RequestEnvelope) => request.payload,
+          },
+          passkeys: { count: async () => 1 } as unknown as PasskeyRegistry,
+          newlyPaired: context.newlyPaired,
+          ...(context.resumeToken ? { resumeToken: context.resumeToken } : {}),
+          resumeAuthenticatedSession: (token, revoke) =>
+            sessions.resume(token, binding, revoke),
+        });
+      },
+    });
+
+    await expect(
+      rejectedHandshakeResult({
+        port: gateway.port,
+        deviceKeys: generateStaticKeyPair(),
+        hostPublicKey: hostKeys.publicKey,
+        auth: { mode: "resume", resumeToken: keyMismatchTicket },
+      }),
+    ).resolves.toMatchObject({
+      result: { ok: false, error: { code: "REAUTH_REQUIRED" } },
+    });
+
+    const rememberedTickets = [
+      sessions.issueResumeTicket(generation, rememberedBinding)!,
+      sessions.issueResumeTicket(generation, rememberedBinding)!,
+    ];
+
+    const externalState = await HostStateStore.open(statePath);
+    expect(await new DeviceRegistry(externalState).revoke("browser-1")).toBe(
+      true,
+    );
+    await externalState.close();
+
+    for (const resumeToken of rememberedTickets) {
+      await expect(
+        rejectedHandshakeResult({
+          port: gateway.port,
+          deviceKeys,
+          hostPublicKey: hostKeys.publicKey,
+          auth: { mode: "resume", resumeToken },
+        }),
+      ).resolves.toMatchObject({
+        result: { ok: false, error: { code: "REAUTH_REQUIRED" } },
+      });
+    }
+
+    const temporaryTicket = sessions.issueResumeTicket(generation, {
+      ...baseBinding,
+      rememberedDevice: false,
+    })!;
+    const temporary = await connectClient({
+      port: gateway.port,
+      deviceKeys,
+      hostPublicKey: hostKeys.publicKey,
+      auth: { mode: "resume", resumeToken: temporaryTicket },
+    });
+    await expect(
+      roundTrip(temporary.socket, temporary.session, { still: "valid" }),
+    ).resolves.toEqual({ still: "valid" });
+    temporary.socket.close();
+    await onceClosed(temporary.socket);
+    await gateway.close();
+    await state.close();
+  });
+
+  it("replays authentication secrets only in connection memory", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "ce-gateway-secret-test-"));
+    temporaryDirectories.push(directory);
+    const statePath = join(directory, "state.sqlite");
+    const state = await HostStateStore.open(statePath);
+    const devices = new DeviceRegistry(state);
+    const grant = await devices.issuePairing();
+    const hostKeys = generateStaticKeyPair();
+    const deviceKeys = generateStaticKeyPair();
+    let calls = 0;
+    const gateway = await DirectGateway.start({
+      host: "127.0.0.1",
+      port: 0,
+      nodeId: "node-1",
+      userId: "unix:1000",
+      identity: hostKeys,
+      hostFingerprint: `sha256:${"A".repeat(43)}`,
+      state,
+      createSession: () => ({
+        request: async () => {
+          calls += 1;
+          return {
+            authenticated: true,
+            recoveryCodes: ["RECOVERY-CODE-PLAINTEXT"],
+            resumeToken: "RESUME-TOKEN-PLAINTEXT",
+          };
+        },
+      }),
+    });
+    const client = await connectClient({
+      port: gateway.port,
+      deviceKeys,
+      hostPublicKey: hostKeys.publicKey,
+      auth: {
+        mode: "pair",
+        pairingId: grant.pairingId,
+        secret: grant.secret,
+        deviceName: "Test browser",
+      },
+    });
+    const first = await requestWithKey(
+      client.socket,
+      client.session,
+      "auth/register/verify",
+      { response: { id: "credential" } },
+      "secret-idempotency-key",
+    );
+    const retry = await requestWithKey(
+      client.socket,
+      client.session,
+      "auth/register/verify",
+      { response: { id: "credential" } },
+      "secret-idempotency-key",
+    );
+    expect(retry).toEqual(first);
+    expect(calls).toBe(1);
+    await expect(
+      state.read(
+        (database) =>
+          database.exec("SELECT count(*) FROM idempotency_keys")[0]
+            ?.values[0]?.[0],
+      ),
+    ).resolves.toBe(0);
+
+    client.socket.close();
+    await onceClosed(client.socket);
+    await gateway.close();
+    await state.close();
+    const persisted = await readFile(statePath);
+    expect(persisted.includes(Buffer.from("RECOVERY-CODE-PLAINTEXT"))).toBe(
+      false,
+    );
+    expect(persisted.includes(Buffer.from("RESUME-TOKEN-PLAINTEXT"))).toBe(
+      false,
+    );
   });
 
   it("does not let a slow read block a later mutation", async () => {
@@ -314,6 +1028,64 @@ async function connectClient(input: {
   return { socket, session: completed.session, accepted };
 }
 
+async function rejectedHandshakeResult(input: {
+  port: number;
+  deviceKeys: ReturnType<typeof generateStaticKeyPair>;
+  hostPublicKey: Uint8Array;
+  auth: Record<string, unknown>;
+}): Promise<{
+  result: ReturnType<typeof parseGatewayHandshakeResult>;
+  code: number;
+  reason: string;
+}> {
+  const socket = new WebSocket(`ws://127.0.0.1:${input.port}/gateway`, {
+    perMessageDeflate: false,
+  });
+  await new Promise<void>((resolve, reject) => {
+    socket.once("open", resolve);
+    socket.once("error", reject);
+  });
+  const handshake = new NoiseInitiator(
+    input.deviceKeys,
+    input.hostPublicKey,
+    encodePrologue({
+      version: 1,
+      userId: "unix:1000",
+      nodeId: "node-1",
+      deviceId: "browser-1",
+    }),
+  );
+  const replyMessage = nextMessage(socket);
+  const closed = new Promise<{ code: number; reason: string }>(
+    (resolve, reject) => {
+      socket.once("close", (code, reason) =>
+        resolve({ code, reason: reason.toString() }),
+      );
+      socket.once("error", reject);
+    },
+  );
+  socket.send(
+    JSON.stringify({
+      type: "handshake/hello",
+      version: PROTOCOL_VERSION,
+      nodeId: "node-1",
+      deviceId: "browser-1",
+      message: Buffer.from(
+        handshake.start(Buffer.from(JSON.stringify(input.auth))),
+      ).toString("base64url"),
+    }),
+  );
+  const reply = JSON.parse((await replyMessage).toString()) as {
+    message: string;
+  };
+  const completed = handshake.finish(Buffer.from(reply.message, "base64url"));
+  completed.session.dispose();
+  const result = parseGatewayHandshakeResult(
+    Buffer.from(completed.payload).toString("utf8"),
+  );
+  return { result, ...(await closed) };
+}
+
 async function roundTrip(
   socket: WebSocket,
   session: SecureSession,
@@ -347,8 +1119,74 @@ async function roundTrip(
     ok: boolean;
     result: unknown;
   };
-  expect(value.ok).toBe(true);
+  expect(value, JSON.stringify(value)).toMatchObject({ ok: true });
   return value.result;
+}
+
+async function requestWithKey(
+  socket: WebSocket,
+  session: SecureSession,
+  method: string,
+  payload: unknown,
+  idempotencyKey: string,
+): Promise<unknown> {
+  const value = await requestOutcomeWithKey(
+    socket,
+    session,
+    method,
+    payload,
+    idempotencyKey,
+  );
+  expect(value.ok).toBe(true);
+  if (!value.ok) throw new Error(`Gateway request failed: ${value.error.code}`);
+  return value.result;
+}
+
+async function requestOutcomeWithKey(
+  socket: WebSocket,
+  session: SecureSession,
+  method: string,
+  payload: unknown,
+  idempotencyKey: string,
+): Promise<
+  | { ok: true; result: unknown }
+  | {
+      ok: false;
+      error: { code: string; message: string; retryable?: boolean };
+    }
+> {
+  const requestNumber = ++requestCounter;
+  const encrypted = session.encryptMessage(
+    Buffer.from(
+      JSON.stringify({
+        version: PROTOCOL_VERSION,
+        requestId: `request-${requestNumber}`,
+        idempotencyKey,
+        method,
+        payload,
+      }),
+    ),
+  );
+  const response = nextEncryptedMessage(socket, session);
+  for (const frame of encrypted) {
+    socket.send(
+      JSON.stringify({
+        type: "cipher",
+        version: PROTOCOL_VERSION,
+        sessionId: frame.sessionId,
+        sequence: frame.sequence,
+        ciphertext: Buffer.from(frame.ciphertext).toString("base64url"),
+      }),
+    );
+  }
+  const value = JSON.parse(Buffer.from(await response).toString()) as {
+    ok: boolean;
+    result?: unknown;
+    error?: { code: string; message: string; retryable?: boolean };
+  };
+  if (value.ok) return { ok: true, result: value.result };
+  if (!value.error) throw new Error("Gateway error response is missing error");
+  return { ok: false, error: value.error };
 }
 
 let requestCounter = 0;
@@ -428,6 +1266,17 @@ function nextEncryptedMessage(
 function onceClosed(socket: WebSocket): Promise<void> {
   if (socket.readyState === WebSocket.CLOSED) return Promise.resolve();
   return new Promise((resolve) => socket.once("close", resolve));
+}
+
+function openRawSocket(endpoint: string, autoPong = true): Promise<WebSocket> {
+  return new Promise((resolve, reject) => {
+    const socket = new WebSocket(endpoint, {
+      perMessageDeflate: false,
+      autoPong,
+    });
+    socket.once("open", () => resolve(socket));
+    socket.once("error", reject);
+  });
 }
 
 function rejectedWebSocketStatus(

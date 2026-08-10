@@ -10,11 +10,14 @@ import {
 } from "@codex-everywhere/crypto";
 
 import { inspectSshUnixAccount } from "../admin/unix-accounts.js";
+import { parseAdminRouteRenewalGrant } from "../admin/admin-route-provisioning.js";
 import { parseSelfProvisioningGrant } from "./self-service-provisioning.js";
 import {
   DEFAULT_ROOTLESS_PROVISIONER_USER,
+  ROOTLESS_ADMIN_RELAY_RENEWAL_FEATURE,
   ROOTLESS_PROVISIONING_MAX_FILE_BYTES,
   ROOTLESS_PROVISIONING_VERSION,
+  ROOTLESS_RELAY_RENEWAL_FEATURE,
   assertFreshProvisioningTimestamp,
   decodeHandshake,
   encodeHandshake,
@@ -36,8 +39,36 @@ export async function requestRootlessSelfProvisioningGrant(
     serviceUsername?: string;
     now?: () => number;
     timeoutMs?: number;
+    renewalCapability?: string;
   } = {},
 ) {
+  const grant = await requestRootlessProvisioningGrant({
+    ...options,
+    operation: options.renewalCapability ? "renew-relay" : "initialize",
+  });
+  return parseSelfProvisioningGrant(grant);
+}
+
+export async function requestRootlessAdminRouteRenewal(options: {
+  serviceUsername?: string;
+  now?: () => number;
+  timeoutMs?: number;
+  renewalCapability: string;
+}) {
+  const grant = await requestRootlessProvisioningGrant({
+    ...options,
+    operation: "renew-admin-relay",
+  });
+  return parseAdminRouteRenewalGrant(grant);
+}
+
+async function requestRootlessProvisioningGrant(options: {
+  serviceUsername?: string;
+  now?: () => number;
+  timeoutMs?: number;
+  operation: "initialize" | "renew-relay" | "renew-admin-relay";
+  renewalCapability?: string;
+}): Promise<unknown> {
   const serviceUsername =
     options.serviceUsername ??
     process.env.CE_PROVISIONER_USER ??
@@ -96,6 +127,11 @@ export async function requestRootlessSelfProvisioningGrant(
     (responsesStat.mode & 0o7777) !== 0o711
   )
     throw new Error("Unsafe rootless provisioner queue ownership");
+  if (options.operation === "renew-relay") {
+    assertRootlessProvisionerSupportsRelayRenewal(descriptor.features);
+  } else if (options.operation === "renew-admin-relay") {
+    assertRootlessProvisionerSupportsAdminRelayRenewal(descriptor.features);
+  }
 
   const requestId = randomUUID();
   const createdAt = new Date((options.now ?? Date.now)()).toISOString();
@@ -110,7 +146,17 @@ export async function requestRootlessSelfProvisioningGrant(
     createdAt,
     handshake: encodeHandshake(
       initiator.start(
-        Buffer.from(JSON.stringify({ requestId, createdAt }), "utf8"),
+        Buffer.from(
+          JSON.stringify({
+            requestId,
+            createdAt,
+            operation: options.operation,
+            ...(options.renewalCapability
+              ? { routeCapability: options.renewalCapability }
+              : {}),
+          }),
+          "utf8",
+        ),
       ),
     ),
   };
@@ -154,7 +200,27 @@ export async function requestRootlessSelfProvisioningGrant(
     JSON.parse(Buffer.from(completed.payload).toString("utf8")) as unknown,
   );
   if (!result.ok) throw new Error(result.error);
-  return parseSelfProvisioningGrant(result.grant);
+  return result.grant;
+}
+
+export function assertRootlessProvisionerSupportsRelayRenewal(
+  features: readonly string[] | undefined,
+): void {
+  if (!features?.includes(ROOTLESS_RELAY_RENEWAL_FEATURE)) {
+    throw new RootlessProvisionerUnavailableError(
+      "Rootless provisioner must be restarted on the current release before Relay renewal",
+    );
+  }
+}
+
+export function assertRootlessProvisionerSupportsAdminRelayRenewal(
+  features: readonly string[] | undefined,
+): void {
+  if (!features?.includes(ROOTLESS_ADMIN_RELAY_RENEWAL_FEATURE)) {
+    throw new RootlessProvisionerUnavailableError(
+      "Rootless provisioner must be restarted on the current release before administrator Relay renewal",
+    );
+  }
 }
 
 async function writeRequest(

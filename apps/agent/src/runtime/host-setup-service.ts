@@ -16,8 +16,9 @@ import {
 
 import {
   readHostConfig,
-  writeHostConfig,
+  updateHostConfig,
   type HostConfig,
+  type HostConfigUpdater,
 } from "../host/config.js";
 import {
   codexProcessEnvironment,
@@ -42,7 +43,10 @@ import { probeAppServer, restartAppServer } from "./app-server-supervisor.js";
 
 type HostSetupDependencies = {
   readConfig(paths: HostPaths): Promise<HostConfig>;
-  writeConfig(paths: HostPaths, config: HostConfig): Promise<void>;
+  updateConfig(
+    paths: HostPaths,
+    update: HostConfigUpdater,
+  ): Promise<HostConfig>;
   probeCodex(options: {
     userHome: string;
     env: NodeJS.ProcessEnv;
@@ -58,7 +62,11 @@ type HostSetupDependencies = {
   probeAppServer(socketPath: string): Promise<boolean>;
   restartAppServer(
     paths: HostPaths,
-    options: { codexBinary: string; env: NodeJS.ProcessEnv },
+    options: {
+      codexBinary: string;
+      env: NodeJS.ProcessEnv;
+      force: true;
+    },
   ): Promise<unknown>;
   importCodexAuth(options: {
     userHome: string;
@@ -82,7 +90,7 @@ type HostPreferencesRegistry = Pick<
 
 const defaultDependencies: HostSetupDependencies = {
   readConfig: readHostConfig,
-  writeConfig: writeHostConfig,
+  updateConfig: updateHostConfig,
   probeCodex: probeCodexInstallation,
   installCodex: installCodexForCurrentUser,
   probeLatestCodexVersion,
@@ -137,7 +145,10 @@ export class HostSetupService {
           value: await this.#importCodexAuth(payload),
         };
       case "setup/app-server/restart":
-        return { handled: true, value: await this.#restartAppServer() };
+        return {
+          handled: true,
+          value: await this.#restartAppServer(payload),
+        };
       case "preferences/read":
         return {
           handled: true,
@@ -214,11 +225,13 @@ export class HostSetupService {
     if (payload.mode !== "direct" && payload.mode !== "proxy") {
       throw new Error("Network mode must be direct or proxy");
     }
-    const config = await this.#dependencies.readConfig(this.#paths);
     const appServerRunning = await this.#dependencies.probeAppServer(
       this.#paths.appServerSocket,
     );
-    await this.#dependencies.writeConfig(this.#paths, { ...config, network });
+    await this.#dependencies.updateConfig(this.#paths, (config) => ({
+      ...config,
+      network,
+    }));
     return {
       networkMode: network.mode,
       restartRequired: appServerRunning,
@@ -332,7 +345,12 @@ export class HostSetupService {
     });
   }
 
-  async #restartAppServer(): Promise<unknown> {
+  async #restartAppServer(payload: Record<string, unknown>): Promise<unknown> {
+    if (payload.force !== true) {
+      throw new Error(
+        "Restarting Codex app-server requires force: true after explicit user confirmation",
+      );
+    }
     const env = await this.codexEnvironment();
     const installation = await this.#dependencies.probeCodex({
       userHome: this.#userHome,
@@ -343,6 +361,7 @@ export class HostSetupService {
     await this.#dependencies.restartAppServer(this.#paths, {
       codexBinary: installation.binary,
       env,
+      force: true,
     });
     return {
       running: true,

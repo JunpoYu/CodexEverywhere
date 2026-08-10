@@ -28,18 +28,37 @@ import {
 import {
   ProcessLock,
   isProcessAlive,
+  processRecordMatches,
   readProcessRecord,
+  signalRecordedProcess,
   writeProcessRecord,
 } from "../host/process-files.js";
 import { HostStateStore } from "../host/state-store.js";
-import type { TrustedDevice } from "../host/devices.js";
+import {
+  CachedDeviceTrustVerifier,
+  DeviceRegistry,
+  DeviceTrustError,
+  type TrustedDevice,
+} from "../host/devices.js";
+import {
+  inspectAdminRelayCapabilityRenewal,
+  renewAdminRelayCapabilityIfNeeded,
+  startAdminRelayCapabilityRenewalLoop,
+} from "./admin-relay-capability-renewal.js";
 
 const RECENT_AUTHENTICATION_MS = 5 * 60 * 1_000;
 
+type AdminResumeTicketMetadata = {
+  authenticatedAt: number;
+};
+
 export async function runAdminControllerService(): Promise<void> {
-  const config = await loadAdminControllerConfig();
-  assertControllerUser(config);
-  const paths = resolveAdminControllerPaths(config.home, config.runAsUid);
+  const bootstrapConfig = await loadAdminControllerConfig();
+  assertControllerUser(bootstrapConfig);
+  const paths = resolveAdminControllerPaths(
+    bootstrapConfig.home,
+    bootstrapConfig.runAsUid,
+  );
   await Promise.all([
     mkdir(paths.home, { recursive: true, mode: 0o700 }),
     mkdir(paths.keysDir, { recursive: true, mode: 0o700 }),
@@ -51,9 +70,25 @@ export async function runAdminControllerService(): Promise<void> {
     chmod(paths.runtimeDir, 0o700),
   ]);
   const lock = await ProcessLock.acquire(paths.lockFile);
-  const state = await HostStateStore.open(paths.stateFile);
+  let state: HostStateStore | undefined;
   let relay: RelayConnector | undefined;
+  let relayRenewalLoop:
+    ReturnType<typeof startAdminRelayCapabilityRenewalLoop> | undefined;
   try {
+    const config = await reloadAdminControllerConfigForStartup(
+      paths.configFile,
+      bootstrapConfig,
+      {
+        onRenewalError: (error) => {
+          process.stderr.write(
+            `Administrator Relay capability renewal deferred: ${safeServiceError(error)}\n`,
+          );
+        },
+      },
+    );
+    assertControllerUser(config);
+    state = await HostStateStore.open(paths.stateFile);
+    const activeState = state;
     const identity = await loadOrCreateHostIdentity(paths.keysDir);
     const opaqueServerSetup = await loadOrCreateOpaqueServerSetup(
       paths.keysDir,
@@ -61,8 +96,12 @@ export async function runAdminControllerService(): Promise<void> {
     const hostPublicKey = Buffer.from(identity.keyPair.publicKey).toString(
       "base64url",
     );
-    const sessions = new AuthenticatedSessionRegistry();
+    const sessions =
+      new AuthenticatedSessionRegistry<AdminResumeTicketMetadata>();
     const limiter = new AuthenticationRateLimiter();
+    const deviceTrust = new CachedDeviceTrustVerifier(
+      new DeviceRegistry(activeState),
+    );
     const helper = new AdminHelperClient();
     const gatewayOptions = {
       host: "127.0.0.1",
@@ -76,20 +115,35 @@ export async function runAdminControllerService(): Promise<void> {
       relayEndpoint: config.relayEndpoint,
       relayRouteId: config.routeId,
       allowedOrigin: config.origin,
-      state,
-      createSession: (
+      state: activeState,
+      createSession: async (
         device: TrustedDevice,
         context: {
           newlyPaired: boolean;
-          onAuthenticated?: () => Promise<void>;
+          rememberedDevice: boolean;
+          resumeRememberedDeviceInvalid?: boolean;
+          resumeToken?: string;
+          onAuthenticated?: () => Promise<(() => Promise<void> | void) | void>;
         },
-      ) =>
-        new AuthenticatedGatewaySession({
+      ) => {
+        let authenticatedAt: number | undefined;
+        const sessionBinding = {
+          principal: "host-admin" as const,
+          nodeId: config.nodeId,
+          userId: `admin:${config.installationId}`,
+          deviceId: device.id,
+          devicePublicKey: Buffer.from(device.publicKey).toString("base64url"),
+          rememberedDevice: context.rememberedDevice,
+        };
+        if (context.resumeRememberedDeviceInvalid)
+          await sessions.revokeDevice(sessionBinding);
+        return new AuthenticatedGatewaySession({
           newlyPaired: context.newlyPaired,
           ...(context.onAuthenticated
             ? { onAuthenticated: context.onAuthenticated }
             : {}),
-          passkeys: new PasskeyRegistry(state, {
+          ...(context.resumeToken ? { resumeToken: context.resumeToken } : {}),
+          passkeys: new PasskeyRegistry(activeState, {
             origin: config.origin,
             rpId: config.rpId,
             nodeId: config.nodeId,
@@ -97,7 +151,7 @@ export async function runAdminControllerService(): Promise<void> {
             userDisplayName: `${config.serverName} 管理员`,
             userHandle: identity.keyPair.publicKey,
           }),
-          passwords: new PasswordRegistry(state, {
+          passwords: new PasswordRegistry(activeState, {
             serverSetup: opaqueServerSetup,
             userIdentifier: `ce-admin-password-v1\0${config.installationId}`,
           }),
@@ -106,11 +160,61 @@ export async function runAdminControllerService(): Promise<void> {
             server: hostPublicKey,
           },
           consumeAuthAttempt: (kind) => limiter.consume(kind),
-          registerAuthenticatedSession: (revoke) => sessions.register(revoke),
-          onCredentialsRecovered: () => sessions.revokeAll(),
-          createInner: async () =>
-            new AdminGatewaySession(helper, `device:${device.id}`),
-        }),
+          captureAuthenticationGeneration: () => sessions.captureGeneration(),
+          registerAuthenticatedSession: (expectedGeneration, revoke) =>
+            sessions.register(expectedGeneration, sessionBinding, revoke),
+          resumeAuthenticatedSession: (token, revoke) => {
+            const resumed = sessions.resume(token, sessionBinding, revoke);
+            if (resumed) authenticatedAt = resumed.metadata.authenticatedAt;
+            return resumed;
+          },
+          issueResumeTicket: (expectedGeneration) => {
+            authenticatedAt = Date.now();
+            return sessions.issueResumeTicket(
+              expectedGeneration,
+              sessionBinding,
+              { authenticatedAt },
+            );
+          },
+          runCredentialMutation: (expectedGeneration, operation, options) =>
+            sessions.runCredentialMutation(
+              expectedGeneration,
+              operation,
+              options,
+            ),
+          ...(context.rememberedDevice
+            ? {
+                assertAuthenticatedSessionCurrent: async () => {
+                  try {
+                    await deviceTrust.verify(device.id, device.publicKey);
+                  } catch (error) {
+                    if (
+                      error instanceof DeviceTrustError &&
+                      (error.code === "REVOKED" || error.code === "NOT_TRUSTED")
+                    ) {
+                      await sessions.revokeDevice(sessionBinding);
+                      throw new Error(
+                        "This device was revoked; authentication is required",
+                      );
+                    }
+                    throw error;
+                  }
+                },
+              }
+            : {}),
+          createInner: async () => {
+            if (authenticatedAt === undefined)
+              throw new Error(
+                "Administrator authentication timestamp is missing",
+              );
+            return new AdminGatewaySession(
+              helper,
+              `device:${device.id}`,
+              authenticatedAt,
+            );
+          },
+        });
+      },
     };
     relay = await RelayConnector.start({
       ...gatewayOptions,
@@ -118,14 +222,97 @@ export async function runAdminControllerService(): Promise<void> {
       routeId: config.routeId,
       routeCapability: config.routeCapability,
     });
+    let activeRelayCapability = config.routeCapability;
+    relayRenewalLoop = startAdminRelayCapabilityRenewalLoop(paths.configFile, {
+      initialCapability: config.routeCapability,
+      currentUser: { username: config.runAsUser, uid: config.runAsUid },
+      onConfig: async (currentConfig) => {
+        assertSameControllerIdentity(config, currentConfig);
+        if (!relay || currentConfig.routeCapability === activeRelayCapability) {
+          return;
+        }
+        await relay.rotateRouteCapability(currentConfig.routeCapability);
+        activeRelayCapability = currentConfig.routeCapability;
+      },
+      onError: (error) => {
+        process.stderr.write(
+          `Administrator Relay capability renewal retry scheduled: ${safeServiceError(error)}\n`,
+        );
+      },
+    });
     await writeProcessRecord(paths.pidFile);
     await waitForShutdownSignal();
   } finally {
+    await relayRenewalLoop?.close();
     await relay?.close();
-    await state.close();
+    await state?.close();
     await rm(paths.pidFile, { force: true });
     await lock.release();
   }
+}
+
+export async function reloadAdminControllerConfigForStartup(
+  configPath: string,
+  bootstrapConfig: AdminControllerConfig,
+  options: {
+    renew?: typeof renewAdminRelayCapabilityIfNeeded;
+    onRenewalError?: (error: unknown) => void;
+  } = {},
+): Promise<AdminControllerConfig> {
+  let current = await loadAdminControllerConfig(configPath);
+  assertSameControllerIdentity(bootstrapConfig, current);
+  const status = inspectAdminRelayCapabilityRenewal(current.routeCapability);
+  if (status.remainingMs !== undefined && status.remainingMs <= 0) {
+    try {
+      await (options.renew ?? renewAdminRelayCapabilityIfNeeded)(configPath, {
+        currentUser: {
+          username: current.runAsUser,
+          uid: current.runAsUid,
+        },
+      });
+    } catch (error) {
+      options.onRenewalError?.(error);
+    }
+    // A competing writer may have durably installed the new capability before
+    // this attempt observed a CAS/registration failure. The controller lock is
+    // already held by the caller, so always construct Relay from the latest
+    // atomic file instead of the pre-lock bootstrap snapshot.
+    current = await loadAdminControllerConfig(configPath);
+    assertSameControllerIdentity(bootstrapConfig, current);
+  }
+  return current;
+}
+
+function assertSameControllerIdentity(
+  expected: AdminControllerConfig,
+  current: AdminControllerConfig,
+): void {
+  for (const field of [
+    "version",
+    "adminHandle",
+    "runAsUser",
+    "runAsUid",
+    "installationId",
+    "serverName",
+    "origin",
+    "rpId",
+    "relayEndpoint",
+    "routeId",
+    "nodeId",
+    "home",
+  ] as const) {
+    if (current[field] !== expected[field]) {
+      throw new Error(
+        `Administrator Controller identity changed while acquiring its service lock (${field})`,
+      );
+    }
+  }
+}
+
+function safeServiceError(error: unknown): string {
+  return error instanceof Error
+    ? error.message.slice(0, 1_024)
+    : "unknown failure";
 }
 
 export async function startAdminControllerService(
@@ -135,7 +322,7 @@ export async function startAdminControllerService(
   assertControllerUser(config);
   const paths = resolveAdminControllerPaths(config.home, config.runAsUid);
   const existing = await readProcessRecord(paths.pidFile);
-  if (existing && isProcessAlive(existing.pid))
+  if (existing && (await processRecordMatches(existing)))
     return { started: false, pid: existing.pid };
   const child = spawn(
     process.execPath,
@@ -151,7 +338,11 @@ export async function startAdminControllerService(
   const deadline = Date.now() + 15_000;
   while (Date.now() < deadline) {
     const record = await readProcessRecord(paths.pidFile);
-    if (record && record.pid === child.pid && isProcessAlive(record.pid))
+    if (
+      record &&
+      record.pid === child.pid &&
+      (await processRecordMatches(record))
+    )
       return { started: true, pid: record.pid };
     if (!isProcessAlive(child.pid)) break;
     await new Promise((resolve) => setTimeout(resolve, 50));
@@ -164,27 +355,37 @@ export async function stopAdminControllerService(): Promise<boolean> {
   assertControllerUser(config);
   const paths = resolveAdminControllerPaths(config.home, config.runAsUid);
   const record = await readProcessRecord(paths.pidFile);
-  if (!record || !isProcessAlive(record.pid)) {
+  if (!record || !(await processRecordMatches(record))) {
     await rm(paths.pidFile, { force: true });
     return false;
   }
-  process.kill(record.pid, "SIGTERM");
+  await signalRecordedProcess(record, "SIGTERM", {
+    uid: config.runAsUid,
+    commandIncludes: ["admin", "web", "serve"],
+  });
   const deadline = Date.now() + 10_000;
-  while (Date.now() < deadline && isProcessAlive(record.pid))
+  while (Date.now() < deadline && (await processRecordMatches(record)))
     await new Promise((resolve) => setTimeout(resolve, 50));
-  if (isProcessAlive(record.pid))
+  if (await processRecordMatches(record))
     throw new Error("Administrator Controller did not stop after SIGTERM");
   return true;
 }
 
-class AdminGatewaySession implements GatewaySession {
-  readonly #helper: AdminHelperClient;
+export class AdminGatewaySession implements GatewaySession {
+  readonly #helper: Pick<AdminHelperClient, "request">;
   readonly #actor: string;
-  readonly #authenticatedAt = Date.now();
+  readonly #authenticatedAt: number;
 
-  constructor(helper: AdminHelperClient, actor: string) {
+  constructor(
+    helper: Pick<AdminHelperClient, "request">,
+    actor: string,
+    authenticatedAt: number,
+  ) {
+    if (!Number.isSafeInteger(authenticatedAt) || authenticatedAt < 0)
+      throw new Error("Administrator authentication timestamp is invalid");
     this.#helper = helper;
     this.#actor = actor;
+    this.#authenticatedAt = authenticatedAt;
   }
 
   request(request: RequestEnvelope): Promise<unknown> {

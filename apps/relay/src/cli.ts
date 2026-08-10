@@ -11,6 +11,7 @@ import {
   generateRelaySigningKey,
   issueHostProvisionerCredential,
   issueRouteCapability,
+  normalizeInstallationId,
   relayKeyFingerprint,
 } from "./capability.js";
 import { RelayServer } from "./relay-server.js";
@@ -71,9 +72,9 @@ program
 
 program
   .command("issue-route")
-  .option(
+  .requiredOption(
     "--expires-days <days>",
-    "Capability lifetime in days",
+    "Required lifetime for this legacy capability, in days",
     parsePositiveNumber,
   )
   .option(
@@ -87,16 +88,14 @@ program
   .description("Issue a self-contained Agent route capability")
   .action(
     async (options: {
-      expiresDays?: number;
+      expiresDays: number;
       loginName?: string;
       routeId?: string;
     }) => {
       const key = await loadSigningKey();
-      const expiresAt = options.expiresDays
-        ? new Date(Date.now() + options.expiresDays * 86_400_000)
-        : undefined;
+      const expiresAt = new Date(Date.now() + options.expiresDays * 86_400_000);
       const issued = issueRouteCapability(key, {
-        ...(expiresAt ? { expiresAt } : {}),
+        expiresAt,
         ...(options.loginName ? { loginName: options.loginName } : {}),
         ...(options.routeId ? { routeId: options.routeId } : {}),
       });
@@ -115,21 +114,39 @@ program
 
 program
   .command("serve")
+  .requiredOption(
+    "--installation-id <id>",
+    "Only accept provisioned routes for this host installation",
+    normalizeInstallationId,
+  )
   .option("--host <host>", "Bind address", "127.0.0.1")
   .option("--port <port>", "Bind port", parsePort, 7346)
+  .option(
+    "--trust-loopback-proxy",
+    "Use X-Real-IP only when the TCP peer is a loopback reverse proxy",
+  )
   .description("Run the in-memory Relay")
-  .action(async (options: { host: string; port: number }) => {
-    const relay = await RelayServer.start({
-      host: options.host,
-      port: options.port,
-      signingKey: await loadSigningKey(),
-    });
-    process.stdout.write(
-      `Relay listening on ws://${options.host}:${relay.port}\n`,
-    );
-    await waitForShutdownSignal();
-    await relay.close();
-  });
+  .action(
+    async (options: {
+      installationId: string;
+      host: string;
+      port: number;
+      trustLoopbackProxy?: boolean;
+    }) => {
+      const relay = await RelayServer.start({
+        host: options.host,
+        port: options.port,
+        signingKey: await loadSigningKey(),
+        installationId: options.installationId,
+        trustLoopbackProxy: options.trustLoopbackProxy ?? false,
+      });
+      process.stdout.write(
+        `Relay listening on ws://${options.host}:${relay.port}\n`,
+      );
+      await waitForShutdownSignal();
+      await relay.close();
+    },
+  );
 
 await program.parseAsync();
 

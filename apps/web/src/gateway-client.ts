@@ -8,9 +8,15 @@ import {
 } from "@codex-everywhere/crypto";
 import {
   PROTOCOL_VERSION,
+  RELAY_MESSAGE_TYPES,
+  RELAY_PROTOCOL_VERSION,
+  parseGatewayCipherFrame,
+  parseGatewayHandshakeResult,
+  parseGatewayHandshakeReply,
+  parseGatewayServerEnvelope,
+  parseRelayWireMessage,
   type EventEnvelope,
-  type GatewayCipherFrame,
-  type ResponseEnvelope,
+  type ProtocolError,
 } from "@codex-everywhere/protocol";
 import {
   startAuthentication,
@@ -86,6 +92,74 @@ export class TemporaryPasswordReauthenticationRequired extends Error {
   }
 }
 
+export class GatewayReauthenticationRequired extends Error {
+  constructor() {
+    super("The Host requires interactive authentication");
+    this.name = "GatewayReauthenticationRequired";
+  }
+}
+
+export class GatewayInteractiveReauthenticationFailed extends Error {
+  constructor(cause: unknown) {
+    super("Interactive Host authentication did not complete", { cause });
+    this.name = "GatewayInteractiveReauthenticationFailed";
+  }
+}
+
+/**
+ * The encrypted request was accepted by the browser transport, but no Host
+ * response arrived before its deadline. `transportLost` distinguishes a
+ * proven tunnel failure from a slow response. Callers must preserve the
+ * idempotency key until the authoritative outcome has been reconciled.
+ */
+export class GatewayRequestOutcomeUnknownError extends Error {
+  readonly method: string;
+  readonly idempotencyKey: string;
+  readonly transportLost: boolean;
+
+  constructor(
+    method: string,
+    idempotencyKey: string,
+    cause: Error,
+    options: { transportLost?: boolean } = {},
+  ) {
+    const transportLost = options.transportLost ?? false;
+    super(
+      transportLost
+        ? `Host connection failed; outcome unknown for ${method}`
+        : `Host request outcome unknown for ${method}`,
+      { cause },
+    );
+    this.name = "GatewayRequestOutcomeUnknownError";
+    this.method = method;
+    this.idempotencyKey = idempotencyKey;
+    this.transportLost = transportLost;
+  }
+}
+
+export class GatewayResponseError extends Error {
+  readonly code: string;
+  readonly retryable: boolean;
+
+  constructor(error: ProtocolError) {
+    super(error.message);
+    this.name = "GatewayResponseError";
+    this.code = error.code;
+    this.retryable = error.retryable ?? false;
+  }
+}
+
+export function isGatewayRequestOutcomeUnknown(
+  error: unknown,
+): error is GatewayRequestOutcomeUnknownError {
+  return error instanceof GatewayRequestOutcomeUnknownError;
+}
+
+export type GatewayRequestOptions = {
+  timeoutMs?: number;
+  idempotencyKey?: string;
+};
+
 export class GatewayClient {
   readonly host: SavedHost;
   readonly transport: "direct" | "relay";
@@ -97,11 +171,15 @@ export class GatewayClient {
       resolve(value: unknown): void;
       reject(error: Error): void;
       timeout: ReturnType<typeof setTimeout>;
+      method: string;
+      idempotencyKey: string;
     }
   >();
   readonly #eventListeners = new Set<(event: EventEnvelope) => void>();
   readonly #connectionListeners = new Set<(error: Error) => void>();
   #reconnectMode: GatewayReconnectMode = "trusted-device";
+  #resumeToken: string | undefined;
+  #reauthenticationRequired = false;
   #usable = true;
 
   private constructor(
@@ -163,11 +241,27 @@ export class GatewayClient {
     return { client, recoveryCodes };
   }
 
-  static async connect(host: SavedHost): Promise<GatewayClient> {
+  static async connect(
+    host: SavedHost,
+    options: {
+      canInteract?: () => boolean;
+      onInteractionStarted?: () => void;
+    } = {},
+  ): Promise<GatewayClient> {
     const client = await GatewayClient.#openPreferred(host, {
       mode: "connect",
     });
-    await client.#authenticate(false, false);
+    try {
+      await client.#authenticate(
+        false,
+        false,
+        options.canInteract,
+        options.onInteractionStarted,
+      );
+    } catch (error) {
+      client.close();
+      throw error;
+    }
     return client;
   }
 
@@ -182,13 +276,16 @@ export class GatewayClient {
       const response = nextTextMessage(socket, "找不到在线的 Codex Agent");
       socket.send(
         JSON.stringify({
-          type: "relay/lookup",
-          version: 1,
+          type: RELAY_MESSAGE_TYPES.lookup,
+          version: RELAY_PROTOCOL_VERSION,
           loginName,
           principal,
         }),
       );
-      const value: unknown = JSON.parse(await response);
+      const value = parseRelayWireMessage(
+        await response,
+        RELAY_MESSAGE_TYPES.profile,
+      );
       if (!isRelayProfile(value))
         throw new Error("Relay 返回了无效的宿主机资料");
       if ((value.principal ?? "user") !== principal)
@@ -429,7 +526,9 @@ export class GatewayClient {
     const result = await client.request<{
       authenticated: true;
       recoveryCodes: string[];
+      resumeToken?: string;
     }>("auth/register/verify", { response });
+    client.#rememberResumeToken(result);
     client.#reconnectMode = gatewayReconnectMode(
       "recovery",
       options.rememberDevice,
@@ -442,8 +541,10 @@ export class GatewayClient {
     host: SavedHost,
     auth: Record<string, unknown>,
   ): Promise<GatewayClient> {
-    return firstAvailableTarget(connectionTargets(host), (target) =>
-      GatewayClient.#open(host, auth, target),
+    return firstAvailableTarget(
+      connectionTargets(host),
+      (target) => GatewayClient.#open(host, auth, target),
+      { stopOn: isGatewayReauthenticationRequired },
     );
   }
 
@@ -453,6 +554,7 @@ export class GatewayClient {
     target: ConnectionTarget,
   ): Promise<GatewayClient> {
     const socket = new WebSocket(target.endpoint);
+    let pendingSession: SecureSession | undefined;
     try {
       await socketOpened(socket);
       if (target.transport === "relay") {
@@ -460,18 +562,12 @@ export class GatewayClient {
         const readyMessage = nextTextMessage(socket, "Relay route timed out");
         socket.send(
           JSON.stringify({
-            type: "relay/connect",
-            version: 1,
+            type: RELAY_MESSAGE_TYPES.connect,
+            version: RELAY_PROTOCOL_VERSION,
             routeId: host.routeId,
           }),
         );
-        const ready = JSON.parse(await readyMessage) as {
-          type?: string;
-          version?: number;
-        };
-        if (ready.type !== "relay/ready" || ready.version !== 1) {
-          throw new Error("Relay route was rejected");
-        }
+        parseRelayWireMessage(await readyMessage, RELAY_MESSAGE_TYPES.ready);
       }
       const handshake = new NoiseInitiator(
         {
@@ -501,22 +597,17 @@ export class GatewayClient {
           ),
         }),
       );
-      const reply = JSON.parse(await replyMessage) as {
-        type?: string;
-        message?: string;
-      };
-      if (
-        reply.type !== "handshake/reply" ||
-        typeof reply.message !== "string"
-      ) {
-        throw new Error("Host rejected the encrypted handshake");
-      }
+      const reply = parseGatewayHandshakeReply(await replyMessage);
       const completed = handshake.finish(base64UrlToBytes(reply.message));
-      const accepted = JSON.parse(decoder.decode(completed.payload)) as {
-        ok?: boolean;
-        loginName?: string;
-      };
-      if (!accepted.ok) throw new Error("Host did not accept this device");
+      pendingSession = completed.session;
+      const accepted = parseGatewayHandshakeResult(
+        decoder.decode(completed.payload),
+      );
+      if (!accepted.ok) throw new GatewayReauthenticationRequired();
+      const expectedPrincipal = host.kind === "admin" ? "host-admin" : "user";
+      if (accepted.principal !== expectedPrincipal) {
+        throw new Error("Host returned the wrong identity domain");
+      }
       const connectedHost = accepted.loginName?.trim()
         ? {
             ...host,
@@ -525,13 +616,16 @@ export class GatewayClient {
             loginName: accepted.loginName.trim(),
           }
         : host;
-      return new GatewayClient(
+      const client = new GatewayClient(
         connectedHost,
         socket,
         completed.session,
         target.transport,
       );
+      pendingSession = undefined;
+      return client;
     } catch (error) {
+      pendingSession?.dispose();
       socket.close();
       throw error;
     }
@@ -540,6 +634,8 @@ export class GatewayClient {
   async #authenticate(
     newlyPaired: boolean,
     discoverable: boolean,
+    canInteract: () => boolean = () => true,
+    onInteractionStarted: () => void = () => undefined,
   ): Promise<string[]> {
     const status = await this.request<{
       authenticated: boolean;
@@ -556,13 +652,17 @@ export class GatewayClient {
       const result = await this.request<{
         authenticated: true;
         recoveryCodes: string[];
+        resumeToken?: string;
       }>("auth/register/verify", { response });
+      this.#rememberResumeToken(result);
       return result.recoveryCodes;
     }
     const options = await this.request<PublicKeyCredentialRequestOptionsJSON>(
       "auth/login/options",
       { discoverable },
     );
+    if (!canInteract()) throw new GatewayReauthenticationRequired();
+    onInteractionStarted();
     const response = await startAuthentication({ optionsJSON: options });
     if (
       discoverable &&
@@ -570,7 +670,11 @@ export class GatewayClient {
     ) {
       throw new Error("这个 Passkey 不属于目标 Codex 宿主机，请选择正确的账户");
     }
-    await this.request("auth/login/verify", { response });
+    const result = await this.request<{
+      authenticated: true;
+      resumeToken?: string;
+    }>("auth/login/verify", { response });
+    this.#rememberResumeToken(result);
     return [];
   }
 
@@ -632,9 +736,13 @@ export class GatewayClient {
       identifiers: this.#opaqueIdentifiers(),
     });
     if (!finished) throw new Error("CodexEverywhere 密码不正确");
-    await this.request("auth/password/login/finish", {
+    const result = await this.request<{
+      authenticated: true;
+      resumeToken?: string;
+    }>("auth/password/login/finish", {
       finishLoginRequest: finished.finishLoginRequest,
     });
+    this.#rememberResumeToken(result);
   }
 
   #opaqueIdentifiers(): { client: string; server: string } {
@@ -647,18 +755,19 @@ export class GatewayClient {
   request<T = unknown>(
     method: string,
     payload: unknown,
-    options: { timeoutMs?: number } = {},
+    options: GatewayRequestOptions = {},
   ): Promise<T> {
     if (!this.#usable || this.#socket.readyState !== WebSocket.OPEN) {
       return Promise.reject(new Error("Host connection is unavailable"));
     }
     const requestId = crypto.randomUUID();
+    const idempotencyKey = options.idempotencyKey ?? crypto.randomUUID();
     const frames = this.#session.encryptMessage(
       encoder.encode(
         JSON.stringify({
           version: PROTOCOL_VERSION,
           requestId,
-          idempotencyKey: crypto.randomUUID(),
+          idempotencyKey,
           method,
           payload,
         }),
@@ -667,26 +776,45 @@ export class GatewayClient {
     return new Promise<T>((resolve, reject) => {
       const timeout = setTimeout(() => {
         this.#pending.delete(requestId);
-        const error = new Error(`Host request timed out: ${method}`);
+        const cause = new Error(`Host request timed out: ${method}`);
+        const error = new GatewayRequestOutcomeUnknownError(
+          method,
+          idempotencyKey,
+          cause,
+        );
         reject(error);
-        // A timed-out request may have been written to a half-open tunnel.
-        // Never reuse that transport and never retry the request implicitly:
-        // state-changing methods may already have reached the Host.
-        this.#invalidate(error);
+        // The request outcome is unknown, but a slow Host method is not proof
+        // that the encrypted transport died. Keep unrelated in-flight work and
+        // the socket alive; callers reconcile mutations with the same key.
       }, options.timeoutMs ?? 30_000);
       this.#pending.set(requestId, {
         resolve: (value) => resolve(value as T),
         reject,
         timeout,
+        method,
+        idempotencyKey,
       });
+      let sentFrames = 0;
       try {
-        for (const frame of frames) this.#socket.send(encodeFrame(frame));
+        for (const frame of frames) {
+          this.#socket.send(encodeFrame(frame));
+          sentFrames += 1;
+        }
       } catch {
         this.#pending.delete(requestId);
         clearTimeout(timeout);
-        const error = new Error(
+        const cause = new Error(
           `Host connection failed while sending: ${method}`,
         );
+        const error =
+          sentFrames > 0
+            ? new GatewayRequestOutcomeUnknownError(
+                method,
+                idempotencyKey,
+                cause,
+                { transportLost: true },
+              )
+            : cause;
         reject(error);
         this.#invalidate(error);
       }
@@ -720,18 +848,139 @@ export class GatewayClient {
     }
   }
 
-  async reconnect(): Promise<GatewayClient> {
+  get canReconnectSilently(): boolean {
+    return this.#resumeToken !== undefined;
+  }
+
+  async reconnect(
+    options: {
+      allowInteractive?: boolean;
+      canInteract?: () => boolean;
+    } = {},
+  ): Promise<GatewayClient> {
+    const canInteract =
+      options.canInteract ?? (() => options.allowInteractive ?? true);
+    const resumeToken = this.#resumeToken;
+    if (resumeToken) {
+      try {
+        const client = await GatewayClient.#openPreferred(this.host, {
+          mode: "resume",
+          resumeToken,
+        });
+        client.#resumeToken = resumeToken;
+        client.#reconnectMode = this.#reconnectMode;
+        return client;
+      } catch (error) {
+        if (!isGatewayReauthenticationRequired(error)) throw error;
+        this.#resumeToken = undefined;
+        this.#reauthenticationRequired = true;
+      }
+    }
+    if (this.#reauthenticationRequired) {
+      if (!canInteract()) throw new GatewayReauthenticationRequired();
+      if (this.#reconnectMode === "temporary-password") {
+        throw new TemporaryPasswordReauthenticationRequired();
+      }
+      return this.#runInteractiveRecovery((onInteractionStarted) =>
+        this.reauthenticateWithPasskey(
+          this.#reconnectMode === "trusted-device",
+          canInteract,
+          onInteractionStarted,
+        ),
+      );
+    }
+    if (!canInteract()) throw new GatewayReauthenticationRequired();
     if (this.#reconnectMode === "temporary-password") {
       throw new TemporaryPasswordReauthenticationRequired();
     }
     if (this.#reconnectMode === "temporary-passkey") {
-      return GatewayClient.loginWithPasskey(hostDocument(this.host), {
-        loginName: this.host.loginName ?? this.host.name,
-        deviceName: this.host.deviceName,
-        rememberDevice: false,
-      });
+      return this.#runInteractiveRecovery((onInteractionStarted) =>
+        this.reauthenticateWithPasskey(
+          false,
+          canInteract,
+          onInteractionStarted,
+        ),
+      );
     }
-    return GatewayClient.connect(this.host);
+    return this.#runInteractiveRecovery((onInteractionStarted) =>
+      GatewayClient.connect(this.host, {
+        canInteract,
+        onInteractionStarted,
+      }),
+    );
+  }
+
+  async #runInteractiveRecovery(
+    operation: (onInteractionStarted: () => void) => Promise<GatewayClient>,
+  ): Promise<GatewayClient> {
+    let interactionStarted = false;
+    try {
+      return await operation(() => {
+        interactionStarted = true;
+      });
+    } catch (error) {
+      if (error instanceof GatewayReauthenticationRequired) throw error;
+      if (!interactionStarted) throw error;
+      // A visible recovery may open WebAuthn once. Treat every failure after
+      // that point as interactive, not as a transport retry, so a network
+      // error or cancellation cannot reopen the prompt in a loop.
+      throw new GatewayInteractiveReauthenticationFailed(error);
+    }
+  }
+
+  async reauthenticateWithPasskey(
+    rememberDevice: boolean,
+    canInteract: () => boolean = () => true,
+    onInteractionStarted: () => void = () => undefined,
+  ): Promise<GatewayClient> {
+    const client = await GatewayClient.#openPreferred(this.host, {
+      mode: "login",
+      deviceName: this.host.deviceName,
+      rememberDevice,
+    });
+    try {
+      await client.#authenticate(
+        false,
+        true,
+        canInteract,
+        onInteractionStarted,
+      );
+    } catch (error) {
+      client.close();
+      throw error;
+    }
+    client.#reconnectMode = gatewayReconnectMode("passkey", rememberDevice);
+    if (rememberDevice) await saveHost(client.host);
+    return client;
+  }
+
+  async reauthenticateWithPassword(
+    password: string,
+    rememberDevice: boolean,
+  ): Promise<GatewayClient> {
+    const client = await GatewayClient.#openPreferred(this.host, {
+      mode: "login",
+      deviceName: this.host.deviceName,
+      rememberDevice,
+    });
+    try {
+      await client.#authenticatePassword(password);
+    } catch (error) {
+      client.close();
+      throw error;
+    }
+    client.#reconnectMode = gatewayReconnectMode("password", rememberDevice);
+    if (rememberDevice) await saveHost(client.host);
+    return client;
+  }
+
+  #rememberResumeToken(value: { resumeToken?: unknown }): void {
+    if (
+      typeof value.resumeToken === "string" &&
+      /^[A-Za-z0-9_-]{43}$/u.test(value.resumeToken)
+    ) {
+      this.#resumeToken = value.resumeToken;
+    }
   }
 
   close(): void {
@@ -741,9 +990,17 @@ export class GatewayClient {
   #invalidate(error: Error, closeSocket = true): void {
     if (!this.#usable) return;
     this.#usable = false;
+    this.#session.dispose();
     for (const pending of this.#pending.values()) {
       clearTimeout(pending.timeout);
-      pending.reject(error);
+      pending.reject(
+        new GatewayRequestOutcomeUnknownError(
+          pending.method,
+          pending.idempotencyKey,
+          error,
+          { transportLost: true },
+        ),
+      );
     }
     this.#pending.clear();
     for (const listener of this.#connectionListeners) {
@@ -763,34 +1020,41 @@ export class GatewayClient {
   }
 
   #handleMessage(event: MessageEvent): void {
-    if (typeof event.data !== "string") return;
+    if (typeof event.data !== "string") {
+      this.#invalidate(new Error("Host sent an invalid binary protocol frame"));
+      return;
+    }
     try {
-      const wire = JSON.parse(event.data) as GatewayCipherFrame;
+      const wire = parseGatewayCipherFrame(event.data);
       const plaintext = this.#session.decryptMessage({
         sessionId: wire.sessionId,
         sequence: wire.sequence,
         ciphertext: base64UrlToBytes(wire.ciphertext),
       });
       if (!plaintext) return;
-      const value: unknown = JSON.parse(decoder.decode(plaintext));
-      if (!isRecord(value)) return;
-      if (typeof value.requestId === "string") {
-        const response = value as ResponseEnvelope;
-        const pending = this.#pending.get(response.requestId);
+      const envelope = parseGatewayServerEnvelope(decoder.decode(plaintext));
+      if ("requestId" in envelope) {
+        const pending = this.#pending.get(envelope.requestId);
         if (!pending) return;
-        this.#pending.delete(response.requestId);
+        this.#pending.delete(envelope.requestId);
         clearTimeout(pending.timeout);
-        if (response.ok) pending.resolve(response.result);
-        else
-          pending.reject(
-            new Error(response.error?.message ?? "Host request failed"),
-          );
-      } else if (typeof value.eventId === "string") {
-        for (const listener of this.#eventListeners)
-          listener(value as EventEnvelope);
+        if (envelope.ok) pending.resolve(envelope.result);
+        else if (envelope.error) {
+          pending.reject(new GatewayResponseError(envelope.error));
+        } else {
+          // parseGatewayServerEnvelope rejects this shape before it reaches
+          // here; keep the branch exhaustive for protocol evolution.
+          pending.reject(new Error("Host request failed"));
+        }
+      } else {
+        for (const listener of this.#eventListeners) listener(envelope);
       }
-    } catch {
-      this.#socket.close();
+    } catch (error) {
+      this.#invalidate(
+        new Error("Host sent an invalid encrypted protocol message", {
+          cause: error,
+        }),
+      );
     }
   }
 }
@@ -862,35 +1126,6 @@ function assertWebSocketEndpoint(endpoint: string): void {
     throw new Error("Direct Gateway 必须使用 wss:// 或 ws://");
 }
 
-function hostDocument(host: SavedHost): HostDocument {
-  if (host.transport === "direct") {
-    return {
-      version: 1,
-      transport: "direct",
-      endpoint: host.directEndpoint ?? host.endpoint,
-      ...(host.relayEndpoint ? { relayEndpoint: host.relayEndpoint } : {}),
-      ...(host.routeId ? { routeId: host.routeId } : {}),
-      nodeId: host.nodeId,
-      userId: host.userId,
-      hostPublicKey: host.hostPublicKey,
-      hostFingerprint: host.hostFingerprint,
-    };
-  }
-  if (!host.routeId) throw new Error("Relay route is missing");
-  return {
-    version: 1,
-    ...(host.kind === "admin" ? { principal: "host-admin" as const } : {}),
-    transport: "relay",
-    endpoint: host.relayEndpoint ?? host.endpoint,
-    ...(host.directEndpoint ? { directEndpoint: host.directEndpoint } : {}),
-    routeId: host.routeId,
-    nodeId: host.nodeId,
-    userId: host.userId,
-    hostPublicKey: host.hostPublicKey,
-    hostFingerprint: host.hostFingerprint,
-  };
-}
-
 export function connectionTargets(host: SavedHost): ConnectionTarget[] {
   const targets: ConnectionTarget[] = [];
   const add = (target: ConnectionTarget | undefined) => {
@@ -931,12 +1166,14 @@ export function connectionTargets(host: SavedHost): ConnectionTarget[] {
 export async function firstAvailableTarget<T>(
   targets: ConnectionTarget[],
   open: (target: ConnectionTarget) => Promise<T>,
+  options: { stopOn?(error: unknown): boolean } = {},
 ): Promise<T> {
   let lastError: unknown;
   for (const target of targets) {
     try {
       return await open(target);
     } catch (error) {
+      if (options.stopOn?.(error)) throw error;
       lastError = error;
     }
   }
@@ -1002,7 +1239,9 @@ function nextTextMessage(
             ? "配对资料无效或已经使用，请重新运行 ce device pair"
             : event.reason === "wrong node"
               ? "配对资料与当前宿主机不匹配"
-              : "Host closed the connection during handshake";
+              : event.reason === "REAUTH_REQUIRED"
+                ? "REAUTH_REQUIRED"
+                : "Host closed the connection during handshake";
       reject(new Error(message));
     };
     const cleanup = () => {
@@ -1013,6 +1252,13 @@ function nextTextMessage(
     socket.addEventListener("message", handleMessage);
     socket.addEventListener("close", handleClose, { once: true });
   });
+}
+
+function isGatewayReauthenticationRequired(error: unknown): boolean {
+  return (
+    error instanceof GatewayReauthenticationRequired ||
+    (error instanceof Error && error.message === "REAUTH_REQUIRED")
+  );
 }
 
 export function validatePairingDocument(value: PairingDocument): void {
@@ -1039,8 +1285,4 @@ export function validatePairingDocument(value: PairingDocument): void {
   ) {
     throw new Error("配对资料格式无效");
   }
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null;
 }

@@ -7,15 +7,45 @@
 ### Added
 
 - 对话时间线为用户、Codex、工具与系统消息显示自动更新的相对时间；悬停可查看本地精确时间，历史记录优先使用 turn 时间并兼容 UUIDv7 回退。
+- 会话列表新增服务端分页、最近/归档过滤和归档恢复；`/resume` 可跨两类列表搜索，并对精确 thread ID 使用权威读取。
+- Relay 新增进程内单来源 socket、登录查询和 tunnel 建连预算，以及 tunnel 待发送字节上限；生产反向代理示例同步限制 WebSocket 建连速率。
+- rootless provisioner 新增 UID/NSS 绑定的私有随机 route registry 与 feature-negotiated same-route capability renewal；Agent 从到期前 30 天开始无限次重试，并把间隔按剩余寿命限制为至多 12 小时、1 小时或 5 分钟，同时按随机 route 做确定性抖动，`ce doctor` 和 `ce provisioner status` 提前显示授权到期风险。Administrator Controller 使用独立的 root-registered host-admin route binding、相同的续签窗口与分级退避，新 capability 原子落盘后只轮换 control，且不会取得 provisioner credential。
 
 ### Fixed
 
+- HPC/NFS/FUSE 文件系统在原子 rename/link 已发布后若以 `EINVAL`、`ENOTSUP` 或 `EOPNOTSUPP` 表示不支持目录 `fsync`，Host 配置、SQLite 状态、Noise 身份、Codex `auth.json`、provisioner 私有配置与进程记录不再误报失败；文件 `fsync` 以及目录 `EIO`/`EPERM` 等真实错误仍会失败关闭。
+- 已打开页面不再因固定会话 TTL、单次心跳抖动或普通 RPC deadline 被迫离线：Direct、Relay control 与 tunnel 统一容忍连续 4 个 15 秒心跳周期，页面以最高 30 秒间隔无限重建 transport，并用绑定 Noise 身份的页面内存票据静默恢复已认证状态；普通用户和管理员的 `host/ping` 仅请求超时时会保留健康 client 并稍后复查，只有真实 transport 丢失或明确 Host 拒绝才进入恢复。同设备多窗口票据彼此独立，失效或已撤销设备通过加密握手中的结构化 `REAUTH_REQUIRED` 可靠回退，后台不触发 WebAuthn，可见后的单次交互若取消或失败会进入显式登录而不是无限重弹，反向代理清除 WebSocket close reason 也不会造成坏票据死循环。管理员页面静默恢复会继承原登录时间，不会刷新危险操作要求的五分钟 recent-auth 窗口。
+- 凭据恢复现在以认证 challenge 开始时的代次做 CAS，并与添加 Passkey、轮换恢复码和设置专用密码串行；恢复完成会撤销活动会话与全部页面票据。CLI 撤销可信设备后，新的 resume 会重新读取持久设备状态并使该设备全部 remembered 多窗口票据失效，同时不误伤之后经 Passkey 建立的临时页面会话。
 - turn 完成、后台近期 turn 合并及 snapshot 同步都会保留每个 item 已收到的准确生命周期时间，不再把 Codex 与工具卡片重置为 turn 起止时间；消息时间在明暗主题下使用满足小字号可读性的高对比配色。
-- 会话创建时或之后明确修改的审批策略、审批 reviewer 与 sandbox 权限会保存在该 Linux 用户自己的 Host 状态中；Web、后台 Queue 和所有 `ce tui` 入口共享同一同步与恢复逻辑，Agent 或 Codex app-server 重启后不再回落为“按需审批 + 可写工作目录”。未知新版权限值仍会正常转发，但不会以旧值覆盖 Codex。
+- 会话创建时或之后明确修改的审批策略、审批 reviewer 与 sandbox 权限会保存在该 Linux 用户自己的 Host 状态中；Web、后台 Queue 和所有 `ce tui` 入口以跨进程持久代次、CAS 与 per-thread coordination fence 串行化权限副作用和保存，合法的长时间权限修复可等待前一 owner 完成并在关闭时取消，不再复用普通事务的十秒 acquisition deadline；Agent 或 Codex app-server 重启后不再回落为“按需审批 + 可写工作目录”。resume 的 `null`/缺失字段按继承处理，未知新版权限值和无版本广播仍会正常转发，但不会清空其他字段或以旧值覆盖 Codex。
+- 本次权限协调格式升级要求先重启用户 Agent，再让升级前已经运行的 `ce tui` 退出并重连；关闭 TUI 不会终止活动 turn。旧进程已加载的 JavaScript 无法被新版本的持久代次和 coordination fence 追溯约束，完成重连前不承诺新并发语义。
+- `turn/start` 或 `queue/add` 在连接中断后不再把“结果未知”误报为失败并恢复成可重复发送的草稿；页面保留原 operation/idempotency key，并优先用有界的最近 turn 分页与 Queue 快照确认是否已经提交。完整分页，或包含发送前已观察到的最新 turn 边界的近期页，才能用“未找到”驱动同键重试；边界已被更多新 turn 挤出时继续等待。旧 app-server 的完整历史快照缓存只用于按 operation ID 正向确认，不能跨轮与后来的 Queue 快照组合成负证据；Queue 的负向对账必须在同轮先成功读取 Queue，再成功读取新的完整历史。每个 client/operation 的完整读取总计最多 3 次或持续 30 秒，Queue 当轮缺失时的成功读取也计数，失败或退避期间缓存仍只用于正向确认；耗尽后停止自动重试并展示人工刷新核对与风险确认后的显式放弃入口。发送 operation key、待确认状态和快照缓存只存在于当前页面内存，离开或刷新时会提示但不会持久化业务内容。
+- `thread/start`、`turn/start` 与 `queue/add` 在副作用前持久化不自动过期的安全操作身份和 durable claim，并向旧 Agent 的普通幂等表写入永久 fail-closed 镜像。指纹不包含 prompt、文件内容或整包 payload 哈希；`thread/start` 只保存可验证且不含 prompt 的成功结果，`turn/start` 与 `queue/add` 的内容型成功响应仅在 tombstone 落盘后返回当前内存调用，永久表始终只保留 `IDEMPOTENCY_OUTCOME_INDETERMINATE`，后续同 key 不会重放并改由 `clientUserMessageId` 对账。handler 拒绝、响应不可验证或结果提交失败同样永久失败关闭；升级还会安全迁移并物理清除短期未发布旧表中的 payload 哈希。thread 创建待核对时，Web 要求用户刷新会话列表并显式放弃本地记录，不会按目录或时间猜测结果；同一标签页的 `sessionStorage` 只保存不含业务内容、目录或 Host 信息的固定版本 opaque 标记，并在离开页面前提示。
+- Host Queue 新增旧版可忽略的 additive 逻辑状态：新版 add 从同一事务起让兼容 Queue 行始终保持物理 `done`，pending / paused / running 仅在新表中推进，因此回滚旧 Agent 仍可启动，但看不到或重派新版消息。后台 `turn/start`、Gateway fallback 与 Queue 转 `turn/steer` 按稳定 queue item 身份共用一份永久消费 claim；副作用前同事务写 claim、删除逻辑状态，且不保存或散列 prompt/附件。accepted 后断连、权限保存失败、响应不可验证或 claim 完成失败都会永久显示为“结果待核对”，重启和旧 Agent 回滚均不能再次投递；indeterminate 标记遇到瞬时存储失败时由生命周期内的单计时器 repair coordinator 按 item 去重并指数退避，只重试状态落盘、绝不重跑 app-server 请求，关闭后仍由下次启动接管。该项同时阻断同 thread 后续 dispatch/Steer，只有用户核对权威历史并显式确认风险后才能标记放弃、删除记录并唤醒后续队列。每次打开状态库都会把任何物理非 `done` 行视为旧 Agent 在回滚期间创建或恢复的不可证明结果并保守隔离，修复了 consumption 表已存在时 new → old → new 仍可能重放的升级缺口；正常新版 pending 项跨重启保持可投递。
+- Service Worker 更新改为用户确认后的安全激活，不再因 `skipWaiting` 和 `controllerchange` 强制刷新而丢失草稿或一次性恢复码；Vite 构建清单中的所有 hash chunk（包括延迟加载的 OPAQUE）会随外壳预缓存，激活时只删除没有活动旧标签页声明使用的版本缓存，网络返回 SPA fallback HTML 时也会优先从对应旧缓存恢复脚本。管理员页面同样会在休眠、断网和重新上线后恢复连接。
+- 首个 Passkey 的最终写入增加事务内空表断言；WebAuthn 注册/认证 challenge、恢复授权与 OPAQUE 登录中间态变为五分钟内一次性使用，并在成功、撤销、关闭或定时到期时主动清除，避免并发首次注册和陈旧认证状态。
+- Host 状态迁移与事务统一使用带所有权证明、租约和安全接管的跨进程锁；进程锁和 app-server supervisor 不再仅凭可复用 PID 判断身份，也不会在释放时删除后继 owner。锁存活性只比较 PID、启动时间、boot ID 与 UID，不再因运行期间 Node 可执行路径或命令行显示变化而误回收；可变字段仅在发信号前作为显式目标校验。app-server supervisor 会在 spawn 前原子发布带 boot identity 的启动保留记录，再原子发布 child 的不可变进程身份；即使 supervisor 在两者之间崩溃，后继也会失败关闭而不会启动第二实例。
+- 移除 workspace 会持久推进授权 revision；已打开的 Web 会话、待处理审批和后台 Queue 在继续转发或响应前重新验证 thread 的真实 cwd，撤权后暂停并释放订阅。
+- Web Gateway 失效时会立即释放 Noise 分片重组缓冲，而不是等待 assembly timer；Agent 的 notification、server request 与 Queue event 异步授权复核也会在状态库读取失败时失败关闭并消费 rejection，避免瞬时 I/O 错误升级成 Node 未处理 Promise rejection。
+- 首屏主题初始化移出内联脚本以符合生产 CSP；流式 Markdown 增量按绘制帧合并，item 更新使用精确 DOM 定位，避免每个传输 delta 重解析累计全文和扫描完整时间线。
+- provisioned Relay capability 续签先原子保存新凭据，再只轮换 control 注册而保留已建立 tunnel；普通用户不能提交或替换 route ID。升级前 route 只允许在旧 capability 与对应旧 credential 仍有效时完整验签迁入，过期验签材料会自动删除。
+- Relay control 轮换在注册帧发送后即把已持久化的新 capability 作为重连目标，即使 Relay 已接受注册但确认帧丢失，也不会回退到会被授权高水位拒绝的旧 capability。宿主机 transport、Passkey origin 与 Codex 网络设置统一在跨进程协调锁内重新读取并合并最新配置，续签与用户代理修改不再以陈旧整文件快照互相覆盖。
+- Relay 现在按 capability 与 provisioner credential 的更早绝对截止时间撤销 route，统一清理 control、pending/setup 和 active tunnel；same-route 续签会原地延长授权且拒绝旧 capability 回滚 deadline，临近截止的 Agent 调度会预留 45 秒并在不足该窗口时立即续签。
 
 ### Changed
 
 - 移除对话页顶部重复的会话设置齿轮；权限、模型与思考强度继续从输入框状态栏直接进入设置。
+- HPC Release 安装必须由显式批准的 manifest SHA-256，或绑定目标仓库、Release workflow、tag ref、manifest commit 与 GitHub-hosted runner 的 attestation 建立独立信任根；manifest、制品、build-info、project、协议、Node 版本及安装树 inventory 写完后才原子切换 `current`。
+- Release CI 会运行真实 Codex app-server adapter 合同测试；本地制品脚本拒绝脏工作树、错误 commit 和不匹配 tag。生产回滚与重复安装会重新验证完整文件 inventory 并拒绝内容漂移，development 回滚需要显式开关，旧目录不会被静默补证。
+- Relay v1 wire 常量与解析器集中到共享协议包；当前 Agent/Web/Relay 明确采用严格 v1 fail-closed，而不是声称尚未实现的滚动版本协商。
+
+### Security
+
+- 页面恢复票据使用 256-bit 随机值，Agent 只在进程内保存绑定完整 Noise/身份域的 SHA-256 摘要并实行每设备与全局 LRU 上限。恢复码、票据、OPAQUE 响应、设备登录码和管理员交接码不再写入持久幂等表；同 transport 只在最多 128 项、5 分钟的有界内存中保留原响应用于处理响应丢失，到期即使没有后续请求也主动清除，迁移同时以 SQLite secure-delete 清理历史敏感结果。
+- Web 对握手、cipher、response/event 和 Relay 控制消息执行版本、形状、大小和 user/admin 身份域校验；合法未知 Codex event 仍按 generic event 向前兼容。
+- Noise 接收端增加单消息上限、独立的片间 idle timeout 与不可续期 absolute deadline、跨会话共享重组内存预算和显式释放，slow-drip 分片不能长期占用 Agent 内存。
+- Relay 只在显式启用且来源为 loopback 代理时信任合法 `X-Real-IP`；地址 rate bucket 采用硬上限和单次常数工作量清理，转发同时受单 tunnel 与跨 tunnel 全进程 pending-byte 预算约束并在发送或关闭后释放；新签发 legacy route capability 必须明确设置有效期。
+- 管理员所有用户变更在副作用前重新核对 NSS username/UID、home realpath 与目录所有者；同 request ID 并发请求合并，不同输入拒绝，UID 或用户名复用不能静默接管原登记。
 
 ## [0.3.0-alpha.5] - 2026-08-09
 
@@ -34,7 +64,7 @@
 - Codex 网络设置在复制内容或触发原生取消事件时不再意外关闭。
 - Queue 消息、审批状态和运行中 turn 的停止入口不再被流式回复刷出可见区域，审批提交期间会锁定按钮以防重复操作。
 - 实时事件、本地乐观消息和后台快照现在按 turn/item 身份归并，避免用户消息及首次助手回复临时重复显示。
-- Host 请求超时或 WebSocket 失败后会废弃旧 tunnel；状态变更请求不会自动重发，防止 Host 已执行请求时产生重复副作用。
+- WebSocket 被证明失败后会废弃旧 tunnel；单个 Host 请求超时不会再杀死健康 transport。状态变更请求保留原幂等键并先核对权威结果，防止 Host 已执行时产生重复副作用。
 
 ## [0.3.0-alpha.4] - 2026-08-07
 

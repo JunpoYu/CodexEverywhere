@@ -6,9 +6,9 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   initializeHost,
   readHostConfig,
+  updateHostConfig,
   withDirectTransport,
   withRelayTransport,
-  writeHostConfig,
 } from "./config.js";
 import { resolveHostPaths } from "./paths.js";
 
@@ -52,11 +52,58 @@ describe("host config", () => {
       },
     };
 
-    await writeHostConfig(paths, updated);
+    await updateHostConfig(paths, () => updated);
 
     expect(JSON.parse(await readFile(paths.configFile, "utf8"))).toEqual(
       updated,
     );
+  });
+
+  it("serializes concurrent field updates across host config writers", async () => {
+    const base = await temporaryDirectory();
+    const paths = resolveHostPaths({
+      CE_HOME: join(base, "home"),
+      CE_RUNTIME_DIR: join(base, "runtime"),
+    });
+    await initializeHost(paths);
+    const firstRead = deferred<void>();
+    const releaseFirst = deferred<void>();
+
+    const networkUpdate = updateHostConfig(paths, async (config) => {
+      firstRead.resolve();
+      await releaseFirst.promise;
+      return {
+        ...config,
+        network: {
+          mode: "proxy" as const,
+          httpsProxy: "http://proxy.example:7890",
+        },
+      };
+    });
+    await firstRead.promise;
+    const relayUpdate = updateHostConfig(paths, (config) => ({
+      ...config,
+      transport: withRelayTransport(config.transport, {
+        endpoint: "wss://relay.example/relay",
+        routeId: "route-1",
+        routeCapability: "capability-2",
+      }),
+    }));
+    releaseFirst.resolve();
+    await Promise.all([networkUpdate, relayUpdate]);
+
+    expect(await readHostConfig(paths)).toMatchObject({
+      network: {
+        mode: "proxy",
+        httpsProxy: "http://proxy.example:7890",
+      },
+      transport: {
+        mode: "relay",
+        endpoint: "wss://relay.example/relay",
+        routeId: "route-1",
+        routeCapability: "capability-2",
+      },
+    });
   });
 
   it("keeps Direct and Relay configured together", () => {
@@ -94,4 +141,15 @@ async function temporaryDirectory(): Promise<string> {
   const path = await mkdtemp(join(tmpdir(), "ce-config-test-"));
   temporaryDirectories.push(path);
   return path;
+}
+
+function deferred<T>(): {
+  promise: Promise<T>;
+  resolve(value: T): void;
+} {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
 }

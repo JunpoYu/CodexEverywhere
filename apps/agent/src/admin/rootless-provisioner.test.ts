@@ -121,6 +121,117 @@ describe("rootless Unix-user provisioner", () => {
     });
   });
 
+  it("passes an encrypted Relay renewal proof only to the UID-bound issuer", async () => {
+    const server = generateStaticKeyPair();
+    const { initiator, raw } = createRequest(server.publicKey, NOW, {
+      operation: "renew-relay",
+      routeCapability: "private-current-capability",
+    });
+    const issueGrant = vi.fn(async () => ({
+      version: 1 as const,
+      username: "alice",
+      uid: 1003,
+      origin: "https://codex.example.com",
+      relayEndpoint: "wss://codex.example.com/relay",
+      routeId: "A".repeat(32),
+      routeCapability: "renewed-capability",
+    }));
+    const completed = await createRootlessProvisioningResponse(
+      raw,
+      1003,
+      paths(),
+      server,
+      {
+        now: NOW,
+        inspectAccount: async (uid) => ({
+          eligible: true as const,
+          account: {
+            username: "alice",
+            uid,
+            gid: 100,
+            home: "/public/home/alice",
+            shell: "/bin/bash",
+          },
+        }),
+        issueGrant,
+      },
+    );
+
+    expect(issueGrant).toHaveBeenCalledWith(
+      expect.objectContaining({ username: "alice", uid: 1003 }),
+      expect.objectContaining({
+        renewalCapability: "private-current-capability",
+        routeBindingsPath: "/service/route-bindings.json",
+      }),
+    );
+    const opened = initiator.finish(
+      decodeHandshake(completed.response.handshake),
+    );
+    expect(JSON.parse(Buffer.from(opened.payload).toString("utf8"))).toEqual({
+      ok: true,
+      grant: expect.objectContaining({ routeCapability: "renewed-capability" }),
+    });
+  });
+
+  it("routes administrator renewal only to the root-registered UID-bound issuer", async () => {
+    const server = generateStaticKeyPair();
+    const { initiator, raw } = createRequest(server.publicKey, NOW, {
+      operation: "renew-admin-relay",
+      routeCapability: "private-admin-capability",
+    });
+    const issueGrant = vi.fn();
+    const issueAdminGrant = vi.fn(async () => ({
+      version: 1 as const,
+      username: "alice",
+      uid: 1003,
+      adminHandle: "cluster-admin",
+      origin: "https://codex.example.com",
+      relayEndpoint: "wss://codex.example.com/relay",
+      routeId: "A".repeat(32),
+      routeCapability: "renewed-admin-capability",
+    }));
+    const completed = await createRootlessProvisioningResponse(
+      raw,
+      1003,
+      paths(),
+      server,
+      {
+        now: NOW,
+        inspectAccount: async (uid) => ({
+          eligible: true as const,
+          account: {
+            username: "alice",
+            uid,
+            gid: 100,
+            home: "/public/home/alice",
+            shell: "/bin/bash",
+          },
+        }),
+        issueGrant,
+        issueAdminGrant,
+      },
+    );
+
+    expect(issueGrant).not.toHaveBeenCalled();
+    expect(issueAdminGrant).toHaveBeenCalledWith(
+      expect.objectContaining({ username: "alice", uid: 1003 }),
+      expect.objectContaining({
+        adminInstallationPath: "/etc/codex-everywhere-admin-controller.json",
+        adminRouteBindingsPath: "/service/admin-route-bindings.json",
+        renewalCapability: "private-admin-capability",
+      }),
+    );
+    const opened = initiator.finish(
+      decodeHandshake(completed.response.handshake),
+    );
+    expect(JSON.parse(Buffer.from(opened.payload).toString("utf8"))).toEqual({
+      ok: true,
+      grant: expect.objectContaining({
+        routeCapability: "renewed-admin-capability",
+      }),
+    });
+  });
+
   it("rejects expired and clear/authenticated payload mismatches", async () => {
     const server = generateStaticKeyPair();
     const expired = createRequest(server.publicKey, NOW - 2 * 60 * 1_000 - 1);
@@ -145,7 +256,11 @@ describe("rootless Unix-user provisioner", () => {
   });
 });
 
-function createRequest(serverPublicKey: Uint8Array, now = NOW) {
+function createRequest(
+  serverPublicKey: Uint8Array,
+  now = NOW,
+  payload: Record<string, unknown> = {},
+) {
   const requestId = randomUUID();
   const createdAt = new Date(now).toISOString();
   const initiator = new NoiseInitiator(
@@ -159,7 +274,10 @@ function createRequest(serverPublicKey: Uint8Array, now = NOW) {
     createdAt,
     handshake: encodeHandshake(
       initiator.start(
-        Buffer.from(JSON.stringify({ requestId, createdAt }), "utf8"),
+        Buffer.from(
+          JSON.stringify({ requestId, createdAt, ...payload }),
+          "utf8",
+        ),
       ),
     ),
   };
@@ -170,6 +288,10 @@ function paths(): RootlessProvisionerPaths {
   return {
     home: "/service",
     configFile: "/service/config.json",
+    configMutationLock: "/service/config.mutation.lock",
+    routeBindingsFile: "/service/route-bindings.json",
+    adminRouteBindingsFile: "/service/admin-route-bindings.json",
+    adminInstallationFile: "/etc/codex-everywhere-admin-controller.json",
     adminStateFile: "/service/admin-state.sqlite",
     keysDirectory: "/service/keys",
     logsDirectory: "/service/logs",

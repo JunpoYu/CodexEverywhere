@@ -1,9 +1,10 @@
 import { spawn } from "node:child_process";
 import { stat } from "node:fs/promises";
 
-import type { HostConfig } from "./config.js";
+import { relayTransport, type HostConfig } from "./config.js";
 import type { HostPaths } from "./paths.js";
 import { probeAppServer } from "../runtime/app-server-supervisor.js";
+import { inspectRelayCapabilityRenewal } from "../runtime/relay-capability-renewal.js";
 
 export type DoctorCheck = {
   name: string;
@@ -45,6 +46,7 @@ export async function runDoctor(
       config.transport.mode,
       true,
     ),
+    relayCapabilityDoctorCheck(config),
     check(
       "Passkey origin",
       Boolean(config.webAuthn),
@@ -66,6 +68,57 @@ export async function runDoctor(
       true,
     ),
   ];
+}
+
+export function relayCapabilityDoctorCheck(
+  config: HostConfig,
+  now = Date.now(),
+): DoctorCheck {
+  const relay = relayTransport(config.transport);
+  if (!relay) {
+    return check("Relay capability", true, "not configured", false);
+  }
+  try {
+    const status = inspectRelayCapabilityRenewal(relay.routeCapability, now);
+    if (!status.provisioned) {
+      return check(
+        "Relay capability",
+        true,
+        "legacy capability; provisioner auto-renewal does not apply",
+        false,
+      );
+    }
+    const expiresAt = status.expiresAt ?? "unknown";
+    if ((status.remainingMs ?? 0) <= 0) {
+      return check(
+        "Relay capability",
+        false,
+        `expired at ${expiresAt}; self-service renewal requires a current host provisioner credential`,
+        config.transport.mode === "relay",
+      );
+    }
+    if (status.renewalDue) {
+      return check(
+        "Relay capability",
+        false,
+        `expires at ${expiresAt}; Agent is retrying same-route renewal and the operator must rotate the host provisioner credential before expiry`,
+        false,
+      );
+    }
+    return check(
+      "Relay capability",
+      true,
+      `same-route auto-renewal scheduled before ${expiresAt}`,
+      false,
+    );
+  } catch {
+    return check(
+      "Relay capability",
+      false,
+      "invalid capability metadata",
+      config.transport.mode === "relay",
+    );
+  }
 }
 
 function check(

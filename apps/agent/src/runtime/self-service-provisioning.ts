@@ -4,9 +4,9 @@ import { userInfo } from "node:os";
 import { routeIdFromCapability } from "@codex-everywhere/protocol/relay-capability";
 
 import {
-  initializeHost,
+  relayTransport,
+  updateHostConfig,
   withRelayTransport,
-  writeHostConfig,
   type HostConfig,
 } from "../host/config.js";
 import {
@@ -68,9 +68,8 @@ export async function applySelfProvisioningGrant(
   ) {
     throw new Error("Host provisioner returned a different Unix identity");
   }
-  const config = await initializeHost(paths);
   const origin = new URL(grant.origin);
-  const updated: HostConfig = {
+  return updateHostConfig(paths, (config): HostConfig => ({
     ...config,
     transport: withRelayTransport(config.transport, {
       endpoint: grant.relayEndpoint,
@@ -81,9 +80,44 @@ export async function applySelfProvisioningGrant(
     ...(config.network === undefined && grant.defaultCodexNetwork
       ? { network: grant.defaultCodexNetwork }
       : {}),
-  };
-  await writeHostConfig(paths, updated);
-  return updated;
+  }));
+}
+
+export async function applyRelayCapabilityRenewal(
+  paths: HostPaths,
+  grantValue: unknown,
+  expectedCapability: string,
+  currentUser: { username: string; uid: number } = {
+    username: userInfo().username,
+    uid: process.getuid?.() ?? -1,
+  },
+): Promise<HostConfig> {
+  const grant = parseSelfProvisioningGrant(grantValue);
+  if (
+    grant.username !== currentUser.username ||
+    grant.uid !== currentUser.uid
+  ) {
+    throw new Error("Host provisioner returned a different Unix identity");
+  }
+  return updateHostConfig(paths, (config): HostConfig => {
+    const relay = relayTransport(config.transport);
+    if (!relay) throw new Error("Relay transport is not configured");
+    if (relay.routeCapability !== expectedCapability) {
+      throw new Error("Relay transport changed while applying its renewal");
+    }
+    if (relay.routeId !== grant.routeId) {
+      throw new Error(
+        "Host provisioner attempted to replace the Relay route ID",
+      );
+    }
+    return {
+      ...config,
+      transport: withRelayTransport(config.transport, {
+        ...relay,
+        routeCapability: grant.routeCapability,
+      }),
+    };
+  });
 }
 
 export function parseSelfProvisioningGrant(

@@ -81,6 +81,7 @@ export class PasskeyRegistry {
     options: {
       replaceExisting?: boolean;
       issueRecoveryCodes?: boolean;
+      requireNoExistingPasskey?: boolean;
       recoveryCode?: string;
       recoveryAuthorization?: RecoveryAuthorization;
     } = {},
@@ -98,6 +99,9 @@ export class PasskeyRegistry {
       ? createRecoveryCodes()
       : [];
     await this.#state.transaction((database) => {
+      if (options.requireNoExistingPasskey && passkeyCount(database) !== 0) {
+        throw new Error("Initial Passkey registration is no longer allowed");
+      }
       const createdAt = new Date().toISOString();
       if (options.replaceExisting) {
         const authorization =
@@ -324,6 +328,11 @@ export class PasskeyRegistry {
       (credential) => credential.id === id,
     );
   }
+}
+
+function passkeyCount(database: Database): number {
+  const result = database.exec("SELECT COUNT(*) FROM passkeys");
+  return Number(result[0]?.values[0]?.[0] ?? 0);
 }
 
 function createRecoveryCodes(): string[] {

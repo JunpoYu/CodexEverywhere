@@ -12,11 +12,39 @@ import {
   type RecoveryAuthorization,
 } from "../host/passkeys.js";
 import { PasswordRegistry, type OpaqueIdentifiers } from "../host/passwords.js";
-import type { AuthenticationAttemptKind } from "../host/auth-security.js";
+import type {
+  AuthenticationAttemptKind,
+  CredentialMutationRunner,
+  CredentialMutationResult,
+} from "../host/auth-security.js";
 import type { GatewaySession } from "./direct-gateway.js";
 
 export type AuthenticatedRequestResult =
   { handled: false } | { handled: true; value: unknown };
+
+type PendingWebAuthnChallenge = {
+  value: string;
+  expiresAt: number;
+  authGeneration?: number;
+  recoveryAuthorization?: RecoveryAuthorization;
+};
+
+type PendingPasswordLogin = {
+  value: string;
+  expiresAt: number;
+  authGeneration?: number;
+};
+
+type PendingRecoveryAuthorization = {
+  value: RecoveryAuthorization;
+  expiresAt: number;
+};
+
+type PendingAuthenticationState =
+  "registration" | "authentication" | "recovery" | "password-login";
+
+const AUTHENTICATION_STATE_TTL_MS = 5 * 60_000;
+const AUTHENTICATED_SESSION_RECHECK_MS = 10_000;
 
 export class AuthenticatedGatewaySession implements GatewaySession {
   readonly #createInner: () => Promise<GatewaySession>;
@@ -24,12 +52,24 @@ export class AuthenticatedGatewaySession implements GatewaySession {
   readonly #passwords: PasswordRegistry | undefined;
   readonly #opaqueIdentifiers: OpaqueIdentifiers | undefined;
   readonly #newlyPaired: boolean;
-  readonly #onAuthenticated: (() => Promise<void>) | undefined;
+  readonly #onAuthenticated:
+    (() => Promise<(() => Promise<void> | void) | void>) | undefined;
   readonly #consumeAuthAttempt:
     ((kind: AuthenticationAttemptKind) => void) | undefined;
+  readonly #captureAuthenticationGeneration: (() => number) | undefined;
   readonly #registerAuthenticatedSession:
-    ((revoke: () => void) => () => void) | undefined;
-  readonly #onCredentialsRecovered: (() => void) | undefined;
+    | ((
+        expectedGeneration: number,
+        revoke: () => void,
+      ) => (() => void) | undefined)
+    | undefined;
+  readonly #issueResumeTicket:
+    ((expectedGeneration: number) => string | undefined) | undefined;
+  readonly #runCredentialMutation: CredentialMutationRunner | undefined;
+  readonly #onCredentialsRecovered: (() => Promise<void> | void) | undefined;
+  readonly #assertAuthenticatedSessionCurrent:
+    (() => Promise<void>) | undefined;
+  readonly #authenticatedSessionRecheckMs: number;
   readonly #handleAuthenticatedRequest:
     | ((
         request: RequestEnvelope,
@@ -44,14 +84,18 @@ export class AuthenticatedGatewaySession implements GatewaySession {
   #innerPromise: Promise<GatewaySession> | undefined;
   #authenticated = false;
   #authenticationFinalized = false;
-  #registrationChallenge: string | undefined;
+  #registrationChallenge: PendingWebAuthnChallenge | undefined;
   #registrationMode: "initial" | "recovery" | "add" | undefined;
-  #authenticationChallenge: string | undefined;
-  #recoveryAuthorized = false;
-  #recoveryAuthorization: RecoveryAuthorization | undefined;
-  #serverLoginState: string | undefined;
+  #authenticationChallenge: PendingWebAuthnChallenge | undefined;
+  #recoveryAuthorization: PendingRecoveryAuthorization | undefined;
+  #serverLoginState: PendingPasswordLogin | undefined;
+  #authenticationStateExpiryTimer: ReturnType<typeof setTimeout> | undefined;
+  readonly #expiredAuthenticationStates = new Set<PendingAuthenticationState>();
   #unregisterAuthenticatedSession: (() => void) | undefined;
+  #authenticatedGeneration: number | undefined;
   #revoked = false;
+  #authenticationRecheckTimer: ReturnType<typeof setInterval> | undefined;
+  #authenticationRecheckInFlight = false;
 
   constructor(options: {
     inner?: GatewaySession;
@@ -60,10 +104,23 @@ export class AuthenticatedGatewaySession implements GatewaySession {
     passwords?: PasswordRegistry;
     opaqueIdentifiers?: OpaqueIdentifiers;
     newlyPaired: boolean;
-    onAuthenticated?: () => Promise<void>;
+    onAuthenticated?: () => Promise<(() => Promise<void> | void) | void>;
     consumeAuthAttempt?: (kind: AuthenticationAttemptKind) => void;
-    registerAuthenticatedSession?: (revoke: () => void) => () => void;
-    onCredentialsRecovered?: () => void;
+    captureAuthenticationGeneration?: () => number;
+    registerAuthenticatedSession?: (
+      expectedGeneration: number,
+      revoke: () => void,
+    ) => (() => void) | undefined;
+    resumeToken?: string;
+    resumeAuthenticatedSession?: (
+      token: string,
+      revoke: () => void,
+    ) => { unregister: () => void; generation: number } | undefined;
+    issueResumeTicket?: (expectedGeneration: number) => string | undefined;
+    runCredentialMutation?: CredentialMutationRunner;
+    onCredentialsRecovered?: () => Promise<void> | void;
+    assertAuthenticatedSessionCurrent?: () => Promise<void>;
+    authenticationRecheckMs?: number;
     handleAuthenticatedRequest?: (
       request: RequestEnvelope,
       emitEvent: (event: EventEnvelope) => void,
@@ -81,9 +138,39 @@ export class AuthenticatedGatewaySession implements GatewaySession {
     this.#newlyPaired = options.newlyPaired;
     this.#onAuthenticated = options.onAuthenticated;
     this.#consumeAuthAttempt = options.consumeAuthAttempt;
+    this.#captureAuthenticationGeneration =
+      options.captureAuthenticationGeneration;
     this.#registerAuthenticatedSession = options.registerAuthenticatedSession;
+    this.#issueResumeTicket = options.issueResumeTicket;
+    this.#runCredentialMutation = options.runCredentialMutation;
     this.#onCredentialsRecovered = options.onCredentialsRecovered;
+    this.#assertAuthenticatedSessionCurrent =
+      options.assertAuthenticatedSessionCurrent;
+    this.#authenticatedSessionRecheckMs =
+      options.authenticationRecheckMs ?? AUTHENTICATED_SESSION_RECHECK_MS;
+    if (
+      !Number.isSafeInteger(this.#authenticatedSessionRecheckMs) ||
+      this.#authenticatedSessionRecheckMs <= 0
+    ) {
+      throw new Error(
+        "Authenticated session recheck interval must be positive",
+      );
+    }
     this.#handleAuthenticatedRequest = options.handleAuthenticatedRequest;
+    if (options.resumeToken !== undefined) {
+      const resumed = options.resumeAuthenticatedSession?.(
+        options.resumeToken,
+        () => this.#revoke(),
+      );
+      if (!resumed) {
+        throw new Error("REAUTH_REQUIRED: session resume ticket is invalid");
+      }
+      this.#authenticated = true;
+      this.#authenticationFinalized = true;
+      this.#unregisterAuthenticatedSession = resumed.unregister;
+      this.#authenticatedGeneration = resumed.generation;
+      this.#startAuthenticationRecheck();
+    }
   }
 
   onEvent(
@@ -97,6 +184,9 @@ export class AuthenticatedGatewaySession implements GatewaySession {
   async request(request: RequestEnvelope): Promise<unknown> {
     if (this.#revoked)
       throw new Error("This authenticated session was revoked; reconnect");
+    if (this.#authenticated && this.#assertAuthenticatedSessionCurrent) {
+      await this.#assertAuthenticatedSessionCurrent();
+    }
     const payload = asRecord(request.payload);
     switch (request.method) {
       case "auth/status": {
@@ -108,47 +198,97 @@ export class AuthenticatedGatewaySession implements GatewaySession {
         };
       }
       case "auth/register/options": {
+        const recoveryAuthorization = !this.#authenticated
+          ? this.#takeRecoveryAuthorization()
+          : undefined;
+        let hasExistingPasskey = false;
         if (
           !this.#authenticated &&
-          !this.#recoveryAuthorized &&
-          (!this.#newlyPaired || (await this.#passkeys.count()) > 0)
+          !recoveryAuthorization &&
+          !this.#newlyPaired
+        ) {
+          hasExistingPasskey = true;
+        } else if (
+          !this.#authenticated &&
+          !recoveryAuthorization &&
+          this.#newlyPaired
+        ) {
+          hasExistingPasskey = (await this.#passkeys.count()) > 0;
+          this.#assertSessionOpen();
+        }
+        if (
+          !this.#authenticated &&
+          !recoveryAuthorization &&
+          hasExistingPasskey
         )
           throw new Error(
             "Passkey registration is not allowed in this session",
           );
+        const authGeneration = this.#authenticated
+          ? this.#authenticatedGeneration
+          : this.#captureAuthenticationGeneration?.();
         const options = await this.#passkeys.registrationOptions();
-        this.#registrationChallenge = options.challenge;
-        this.#registrationMode = this.#recoveryAuthorized
-          ? "recovery"
-          : this.#authenticated
-            ? "add"
-            : "initial";
+        this.#assertSessionOpen();
+        if (recoveryAuthorization) {
+          assertAuthenticationStateFresh(
+            recoveryAuthorization,
+            "Recovery authorization",
+          );
+        }
+        this.#setRegistrationChallenge(
+          pendingChallenge(
+            options.challenge,
+            authGeneration,
+            recoveryAuthorization?.value,
+            recoveryAuthorization?.expiresAt,
+          ),
+          recoveryAuthorization
+            ? "recovery"
+            : this.#authenticated
+              ? "add"
+              : "initial",
+        );
         return options;
       }
       case "auth/register/verify": {
-        if (!this.#registrationChallenge)
-          throw new Error("Passkey registration challenge is missing");
-        const challenge = this.#registrationChallenge;
+        const challenge = this.#takeRegistrationChallenge();
         const mode = this.#registrationMode;
-        this.#registrationChallenge = undefined;
         this.#registrationMode = undefined;
         if (!mode) throw new Error("Passkey registration mode is missing");
-        const result = await this.#passkeys.verifyRegistration(
-          payload.response as RegistrationResponseJSON,
-          challenge,
-          {
-            replaceExisting: mode === "recovery",
-            issueRecoveryCodes: mode !== "add",
-            ...(mode === "recovery" && this.#recoveryAuthorization
-              ? { recoveryAuthorization: this.#recoveryAuthorization }
-              : {}),
-          },
+        assertAuthenticationStateFresh(challenge, "Passkey registration");
+        let authenticationGeneration = challenge.authGeneration;
+        const mutation = await this.#mutateCredentials(
+          authenticationGeneration,
+          () =>
+            this.#passkeys.verifyRegistration(
+              payload.response as RegistrationResponseJSON,
+              challenge.value,
+              {
+                replaceExisting: mode === "recovery",
+                issueRecoveryCodes: mode !== "add",
+                ...(mode === "initial"
+                  ? { requireNoExistingPasskey: true }
+                  : {}),
+                ...(mode === "recovery" && challenge.recoveryAuthorization
+                  ? {
+                      recoveryAuthorization: challenge.recoveryAuthorization,
+                    }
+                  : {}),
+              },
+            ),
+          { revokeAllAfter: mode === "recovery" },
         );
-        if (mode === "recovery") this.#onCredentialsRecovered?.();
-        this.#recoveryAuthorized = false;
-        this.#recoveryAuthorization = undefined;
-        if (!this.#authenticated) await this.#finishAuthentication();
-        return { authenticated: true, ...result };
+        const result = mutation.result;
+        if (mode === "recovery") {
+          authenticationGeneration = mutation.generation;
+        }
+        const resumeToken = !this.#authenticated
+          ? await this.#finishAuthentication(authenticationGeneration)
+          : undefined;
+        return {
+          ...result,
+          ...this.#authenticatedResult(resumeToken),
+        };
       }
       case "auth/recover": {
         if (this.#authenticated)
@@ -156,37 +296,44 @@ export class AuthenticatedGatewaySession implements GatewaySession {
         this.#consumeAuthAttempt?.("recovery");
         if (typeof payload.code !== "string")
           throw new Error("Recovery code is required");
-        this.#recoveryAuthorization = await this.#passkeys.authorizeRecovery(
+        const authorization = await this.#passkeys.authorizeRecovery(
           payload.code,
         );
-        this.#recoveryAuthorized = true;
+        this.#assertSessionOpen();
+        this.#setRecoveryAuthorization(authorization);
         return { registrationRequired: true };
       }
       case "auth/recovery/rotate": {
         if (!this.#authenticated)
           throw new Error("Authentication required to rotate recovery codes");
-        return {
-          recoveryCodes: await this.#passkeys.rotateRecoveryCodes(),
-        };
+        const mutation = await this.#mutateCredentials(
+          this.#authenticatedGeneration,
+          () => this.#passkeys.rotateRecoveryCodes(),
+        );
+        return { recoveryCodes: mutation.result };
       }
       case "auth/login/options": {
+        const authGeneration = this.#captureAuthenticationGeneration?.();
         const options = await this.#passkeys.authenticationOptions(
           payload.discoverable === true,
         );
-        this.#authenticationChallenge = options.challenge;
+        this.#assertSessionOpen();
+        this.#setAuthenticationChallenge(
+          pendingChallenge(options.challenge, authGeneration),
+        );
         return options;
       }
       case "auth/login/verify": {
-        if (!this.#authenticationChallenge)
-          throw new Error("Passkey authentication challenge is missing");
-        const challenge = this.#authenticationChallenge;
-        this.#authenticationChallenge = undefined;
+        const challenge = this.#takeAuthenticationChallenge();
+        assertAuthenticationStateFresh(challenge, "Passkey authentication");
         await this.#passkeys.verifyAuthentication(
           payload.response as AuthenticationResponseJSON,
-          challenge,
+          challenge.value,
         );
-        await this.#finishAuthentication();
-        return { authenticated: true };
+        const resumeToken = await this.#finishAuthentication(
+          challenge.authGeneration,
+        );
+        return this.#authenticatedResult(resumeToken);
       }
       case "auth/password/register/start": {
         if (!this.#authenticated)
@@ -205,8 +352,10 @@ export class AuthenticatedGatewaySession implements GatewaySession {
           throw new Error("Authentication required to set a password");
         if (typeof payload.registrationRecord !== "string")
           throw new Error("Password registration record is required");
-        await this.#requiredPasswords().saveRegistrationRecord(
-          payload.registrationRecord,
+        await this.#mutateCredentials(this.#authenticatedGeneration, () =>
+          this.#requiredPasswords().saveRegistrationRecord(
+            payload.registrationRecord as string,
+          ),
         );
         return { passwordEnabled: true };
       }
@@ -214,27 +363,33 @@ export class AuthenticatedGatewaySession implements GatewaySession {
         this.#consumeAuthAttempt?.("password");
         if (typeof payload.startLoginRequest !== "string")
           throw new Error("Password login request is required");
+        const authGeneration = this.#captureAuthenticationGeneration?.();
         const started = await this.#requiredPasswords().startLogin(
           payload.startLoginRequest,
           this.#requiredOpaqueIdentifiers(),
         );
-        this.#serverLoginState = started.serverLoginState;
+        this.#assertSessionOpen();
+        this.#setPasswordLoginState({
+          value: started.serverLoginState,
+          expiresAt: Date.now() + AUTHENTICATION_STATE_TTL_MS,
+          ...(authGeneration !== undefined ? { authGeneration } : {}),
+        });
         return { loginResponse: started.loginResponse };
       }
       case "auth/password/login/finish": {
-        if (!this.#serverLoginState)
-          throw new Error("Password login state is missing");
+        const state = this.#takePasswordLoginState();
         if (typeof payload.finishLoginRequest !== "string")
           throw new Error("Password login finalization is required");
-        const state = this.#serverLoginState;
-        this.#serverLoginState = undefined;
+        assertAuthenticationStateFresh(state, "Password login state");
         await this.#requiredPasswords().finishLogin(
-          state,
+          state.value,
           payload.finishLoginRequest,
           this.#requiredOpaqueIdentifiers(),
         );
-        await this.#finishAuthentication();
-        return { authenticated: true };
+        const resumeToken = await this.#finishAuthentication(
+          state.authGeneration,
+        );
+        return this.#authenticatedResult(resumeToken);
       }
       case "host/ping":
         if (!this.#authenticated)
@@ -256,28 +411,259 @@ export class AuthenticatedGatewaySession implements GatewaySession {
 
   async close(): Promise<void> {
     this.#unregisterAuthenticatedSession?.();
+    this.#unregisterAuthenticatedSession = undefined;
+    this.#revoked = true;
+    this.#authenticated = false;
+    this.#authenticatedGeneration = undefined;
+    this.#clearPendingAuthenticationStates();
+    this.#stopAuthenticationRecheck();
     this.#unsubscribeInner?.();
+    this.#unsubscribeInner = undefined;
     await this.#inner?.close?.();
   }
 
-  async #finishAuthentication(): Promise<void> {
-    if (this.#authenticationFinalized) return;
-    await this.#onAuthenticated?.();
-    this.#authenticated = true;
-    this.#authenticationFinalized = true;
-    this.#unregisterAuthenticatedSession = this.#registerAuthenticatedSession?.(
-      () => this.#revoke(),
-    );
-    this.#subscribeInner();
+  async #finishAuthentication(
+    expectedGeneration: number | undefined,
+  ): Promise<string | undefined> {
+    if (this.#authenticationFinalized) return undefined;
+    if (this.#revoked)
+      throw new Error("Authentication was invalidated; reconnect");
+    let rollbackAuthenticatedSideEffect: (() => Promise<void> | void) | void =
+      undefined;
+    try {
+      if (this.#registerAuthenticatedSession) {
+        if (expectedGeneration === undefined)
+          throw new Error("Authentication generation is missing");
+        this.#unregisterAuthenticatedSession =
+          this.#registerAuthenticatedSession(expectedGeneration, () =>
+            this.#revoke(),
+          );
+        if (!this.#unregisterAuthenticatedSession)
+          throw new Error("Authentication was invalidated; reconnect");
+      }
+      if (this.#onAuthenticated) {
+        rollbackAuthenticatedSideEffect = (
+          await this.#mutateCredentials(expectedGeneration, () =>
+            this.#onAuthenticated!(),
+          )
+        ).result;
+      }
+      if (this.#revoked)
+        throw new Error("Authentication was invalidated; reconnect");
+      let resumeToken: string | undefined;
+      if (this.#issueResumeTicket) {
+        if (expectedGeneration === undefined)
+          throw new Error("Authentication generation is missing");
+        resumeToken = this.#issueResumeTicket(expectedGeneration);
+        if (!resumeToken)
+          throw new Error("Authentication was invalidated; reconnect");
+      }
+      this.#authenticated = true;
+      this.#authenticationFinalized = true;
+      this.#authenticatedGeneration = expectedGeneration;
+      this.#clearPendingAuthenticationStates();
+      this.#startAuthenticationRecheck();
+      this.#subscribeInner();
+      return resumeToken;
+    } catch (error) {
+      this.#unregisterAuthenticatedSession?.();
+      this.#unregisterAuthenticatedSession = undefined;
+      try {
+        await rollbackAuthenticatedSideEffect?.();
+      } finally {
+        this.#revoke();
+      }
+      throw error;
+    }
   }
 
   #revoke(): void {
     if (this.#revoked) return;
     this.#revoked = true;
     this.#authenticated = false;
+    this.#authenticatedGeneration = undefined;
+    this.#clearPendingAuthenticationStates();
+    this.#stopAuthenticationRecheck();
     this.#unsubscribeInner?.();
     this.#unsubscribeInner = undefined;
     void this.#inner?.close?.();
+  }
+
+  #startAuthenticationRecheck(): void {
+    if (
+      !this.#assertAuthenticatedSessionCurrent ||
+      this.#authenticationRecheckTimer ||
+      this.#revoked
+    ) {
+      return;
+    }
+    this.#authenticationRecheckTimer = setInterval(() => {
+      if (this.#authenticationRecheckInFlight || this.#revoked) return;
+      this.#authenticationRecheckInFlight = true;
+      void this.#assertAuthenticatedSessionCurrent!()
+        .catch(() => {
+          // Definitive revocation is applied by the registry-backed callback.
+          // Transient state-store failures fail the current check closed but do
+          // not destroy a reusable page ticket; the next interval retries.
+        })
+        .finally(() => {
+          this.#authenticationRecheckInFlight = false;
+        });
+    }, this.#authenticatedSessionRecheckMs);
+    this.#authenticationRecheckTimer.unref?.();
+  }
+
+  #stopAuthenticationRecheck(): void {
+    if (this.#authenticationRecheckTimer)
+      clearInterval(this.#authenticationRecheckTimer);
+    this.#authenticationRecheckTimer = undefined;
+    this.#authenticationRecheckInFlight = false;
+  }
+
+  #assertSessionOpen(): void {
+    if (this.#revoked)
+      throw new Error("Authentication was invalidated; reconnect");
+  }
+
+  #setRegistrationChallenge(
+    challenge: PendingWebAuthnChallenge,
+    mode: "initial" | "recovery" | "add",
+  ): void {
+    this.#registrationChallenge = challenge;
+    this.#registrationMode = mode;
+    this.#expiredAuthenticationStates.delete("registration");
+    this.#rescheduleAuthenticationStateExpiry();
+  }
+
+  #takeRegistrationChallenge(): PendingWebAuthnChallenge {
+    const challenge = this.#registrationChallenge;
+    this.#registrationChallenge = undefined;
+    const expired = this.#expiredAuthenticationStates.delete("registration");
+    this.#rescheduleAuthenticationStateExpiry();
+    if (challenge) return challenge;
+    if (expired) throw new Error("Passkey registration challenge has expired");
+    throw new Error("Passkey registration challenge is missing");
+  }
+
+  #setAuthenticationChallenge(challenge: PendingWebAuthnChallenge): void {
+    this.#authenticationChallenge = challenge;
+    this.#expiredAuthenticationStates.delete("authentication");
+    this.#rescheduleAuthenticationStateExpiry();
+  }
+
+  #takeAuthenticationChallenge(): PendingWebAuthnChallenge {
+    const challenge = this.#authenticationChallenge;
+    this.#authenticationChallenge = undefined;
+    const expired = this.#expiredAuthenticationStates.delete("authentication");
+    this.#rescheduleAuthenticationStateExpiry();
+    if (challenge) return challenge;
+    if (expired)
+      throw new Error("Passkey authentication challenge has expired");
+    throw new Error("Passkey authentication challenge is missing");
+  }
+
+  #setRecoveryAuthorization(authorization: RecoveryAuthorization): void {
+    this.#recoveryAuthorization = {
+      value: authorization,
+      expiresAt: Date.now() + AUTHENTICATION_STATE_TTL_MS,
+    };
+    this.#expiredAuthenticationStates.delete("recovery");
+    this.#rescheduleAuthenticationStateExpiry();
+  }
+
+  #takeRecoveryAuthorization(): PendingRecoveryAuthorization | undefined {
+    const authorization = this.#recoveryAuthorization;
+    this.#recoveryAuthorization = undefined;
+    const expired = this.#expiredAuthenticationStates.delete("recovery");
+    this.#rescheduleAuthenticationStateExpiry();
+    if (authorization) {
+      assertAuthenticationStateFresh(authorization, "Recovery authorization");
+      return authorization;
+    }
+    if (expired) throw new Error("Recovery authorization has expired");
+    return undefined;
+  }
+
+  #setPasswordLoginState(state: PendingPasswordLogin): void {
+    this.#serverLoginState = state;
+    this.#expiredAuthenticationStates.delete("password-login");
+    this.#rescheduleAuthenticationStateExpiry();
+  }
+
+  #takePasswordLoginState(): PendingPasswordLogin {
+    const state = this.#serverLoginState;
+    this.#serverLoginState = undefined;
+    const expired = this.#expiredAuthenticationStates.delete("password-login");
+    this.#rescheduleAuthenticationStateExpiry();
+    if (state) return state;
+    if (expired) throw new Error("Password login state has expired");
+    throw new Error("Password login state is missing");
+  }
+
+  #rescheduleAuthenticationStateExpiry(): void {
+    if (this.#authenticationStateExpiryTimer) {
+      clearTimeout(this.#authenticationStateExpiryTimer);
+      this.#authenticationStateExpiryTimer = undefined;
+    }
+    const expirations = [
+      this.#registrationChallenge?.expiresAt,
+      this.#authenticationChallenge?.expiresAt,
+      this.#recoveryAuthorization?.expiresAt,
+      this.#serverLoginState?.expiresAt,
+    ].filter((value): value is number => value !== undefined);
+    if (expirations.length === 0) return;
+    const expiresAt = Math.min(...expirations);
+    this.#authenticationStateExpiryTimer = setTimeout(
+      () => {
+        this.#authenticationStateExpiryTimer = undefined;
+        this.#expireAuthenticationStates();
+        this.#rescheduleAuthenticationStateExpiry();
+      },
+      Math.max(0, expiresAt - Date.now()),
+    );
+    this.#authenticationStateExpiryTimer.unref?.();
+  }
+
+  #expireAuthenticationStates(): void {
+    const now = Date.now();
+    if (
+      this.#registrationChallenge &&
+      now >= this.#registrationChallenge.expiresAt
+    ) {
+      this.#registrationChallenge = undefined;
+      this.#registrationMode = undefined;
+      this.#expiredAuthenticationStates.add("registration");
+    }
+    if (
+      this.#authenticationChallenge &&
+      now >= this.#authenticationChallenge.expiresAt
+    ) {
+      this.#authenticationChallenge = undefined;
+      this.#expiredAuthenticationStates.add("authentication");
+    }
+    if (
+      this.#recoveryAuthorization &&
+      now >= this.#recoveryAuthorization.expiresAt
+    ) {
+      this.#recoveryAuthorization = undefined;
+      this.#expiredAuthenticationStates.add("recovery");
+    }
+    if (this.#serverLoginState && now >= this.#serverLoginState.expiresAt) {
+      this.#serverLoginState = undefined;
+      this.#expiredAuthenticationStates.add("password-login");
+    }
+  }
+
+  #clearPendingAuthenticationStates(): void {
+    if (this.#authenticationStateExpiryTimer)
+      clearTimeout(this.#authenticationStateExpiryTimer);
+    this.#authenticationStateExpiryTimer = undefined;
+    this.#registrationChallenge = undefined;
+    this.#registrationMode = undefined;
+    this.#authenticationChallenge = undefined;
+    this.#recoveryAuthorization = undefined;
+    this.#serverLoginState = undefined;
+    this.#expiredAuthenticationStates.clear();
   }
 
   #ensureInner(): Promise<GatewaySession> {
@@ -307,6 +693,44 @@ export class AuthenticatedGatewaySession implements GatewaySession {
     return this.#passwords;
   }
 
+  #authenticatedResult(resumeToken?: string): {
+    authenticated: true;
+    resumeToken?: string;
+  } {
+    return {
+      authenticated: true,
+      ...(resumeToken ? { resumeToken } : {}),
+    };
+  }
+
+  async #mutateCredentials<T>(
+    expectedGeneration: number | undefined,
+    operation: () => Promise<T>,
+    options: { revokeAllAfter?: boolean } = {},
+  ): Promise<CredentialMutationResult<T>> {
+    if (this.#runCredentialMutation) {
+      if (expectedGeneration === undefined)
+        throw new Error("Authentication generation is missing");
+      return this.#runCredentialMutation(
+        expectedGeneration,
+        async () => {
+          if (this.#revoked)
+            throw new Error("Authentication was invalidated; reconnect");
+          return operation();
+        },
+        options,
+      );
+    }
+    const result = await operation();
+    if (options.revokeAllAfter) await this.#onCredentialsRecovered?.();
+    return {
+      result,
+      generation: options.revokeAllAfter
+        ? (this.#captureAuthenticationGeneration?.() ?? expectedGeneration ?? 0)
+        : (expectedGeneration ?? 0),
+    };
+  }
+
   #requiredOpaqueIdentifiers(): OpaqueIdentifiers {
     if (!this.#opaqueIdentifiers)
       throw new Error("Password login identifiers are not configured");
@@ -318,4 +742,30 @@ function asRecord(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== "object")
     throw new Error("Request payload must be an object");
   return value as Record<string, unknown>;
+}
+
+function pendingChallenge(
+  value: string,
+  authGeneration?: number,
+  recoveryAuthorization?: RecoveryAuthorization,
+  authorizationExpiresAt?: number,
+): PendingWebAuthnChallenge {
+  return {
+    value,
+    expiresAt: Math.min(
+      Date.now() + AUTHENTICATION_STATE_TTL_MS,
+      authorizationExpiresAt ?? Number.POSITIVE_INFINITY,
+    ),
+    ...(authGeneration !== undefined ? { authGeneration } : {}),
+    ...(recoveryAuthorization ? { recoveryAuthorization } : {}),
+  };
+}
+
+function assertAuthenticationStateFresh(
+  state: { expiresAt: number },
+  label: string,
+): void {
+  if (Date.now() >= state.expiresAt) {
+    throw new Error(`${label} has expired`);
+  }
 }

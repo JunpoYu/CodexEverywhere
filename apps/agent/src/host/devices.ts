@@ -21,6 +21,65 @@ export type TrustedDevice = {
   revokedAt?: string;
 };
 
+export class DeviceTrustError extends Error {
+  readonly code: "NOT_TRUSTED" | "REVOKED" | "KEY_MISMATCH";
+
+  constructor(
+    code: "NOT_TRUSTED" | "REVOKED" | "KEY_MISMATCH",
+    message: string,
+  ) {
+    super(message);
+    this.name = "DeviceTrustError";
+    this.code = code;
+  }
+}
+
+/**
+ * Coalesces repeated trust checks from an active authenticated Web session.
+ * A fresh transport still performs an uncached database lookup in
+ * DirectGateway, while high-frequency RPCs share a short success window so a
+ * busy thread view does not reload the sql.js database for every request.
+ */
+export class CachedDeviceTrustVerifier {
+  readonly #registry: Pick<DeviceRegistry, "verify">;
+  readonly #ttlMs: number;
+  readonly #now: () => number;
+  readonly #entries = new Map<
+    string,
+    { expiresAt: number; verification: Promise<TrustedDevice> }
+  >();
+
+  constructor(
+    registry: Pick<DeviceRegistry, "verify">,
+    options: { ttlMs?: number; now?: () => number } = {},
+  ) {
+    this.#registry = registry;
+    this.#ttlMs = options.ttlMs ?? 5_000;
+    this.#now = options.now ?? Date.now;
+    if (!Number.isSafeInteger(this.#ttlMs) || this.#ttlMs <= 0)
+      throw new Error("Device trust cache lifetime must be positive");
+  }
+
+  async verify(
+    deviceId: string,
+    publicKey: Uint8Array,
+  ): Promise<TrustedDevice> {
+    const key = `${deviceId}\0${Buffer.from(publicKey).toString("base64url")}`;
+    const now = this.#now();
+    const current = this.#entries.get(key);
+    if (current && now < current.expiresAt) return current.verification;
+    const verification = this.#registry.verify(deviceId, publicKey);
+    const entry = { expiresAt: now + this.#ttlMs, verification };
+    this.#entries.set(key, entry);
+    try {
+      return await verification;
+    } catch (error) {
+      if (this.#entries.get(key) === entry) this.#entries.delete(key);
+      throw error;
+    }
+  }
+}
+
 export class DeviceRegistry {
   readonly #state: HostStateStore;
 
@@ -103,15 +162,30 @@ export class DeviceRegistry {
     deviceId: string,
     publicKey: Uint8Array,
   ): Promise<TrustedDevice> {
+    const device = await this.match(deviceId, publicKey);
+    if (!device)
+      throw new DeviceTrustError("NOT_TRUSTED", "Device is not trusted");
+    if (device.revokedAt)
+      throw new DeviceTrustError("REVOKED", "Device was revoked");
+    return device;
+  }
+
+  async match(
+    deviceId: string,
+    publicKey: Uint8Array,
+  ): Promise<TrustedDevice | undefined> {
     const device = await this.get(deviceId);
-    if (!device || device.revokedAt) throw new Error("Device is not trusted");
+    if (!device) return undefined;
     const expected = Buffer.from(device.publicKey);
     const actual = Buffer.from(publicKey);
     if (
       expected.byteLength !== actual.byteLength ||
       !timingSafeEqual(expected, actual)
     ) {
-      throw new Error("Device key does not match trusted device");
+      throw new DeviceTrustError(
+        "KEY_MISMATCH",
+        "Device key does not match trusted device",
+      );
     }
     return device;
   }
@@ -145,6 +219,84 @@ export class DeviceRegistry {
         createdAt,
       };
     });
+  }
+
+  async rememberAuthenticated(input: {
+    deviceId: string;
+    deviceName: string;
+    publicKey: Uint8Array;
+  }): Promise<{
+    device: TrustedDevice;
+    rollback?: () => Promise<void>;
+  }> {
+    validateDeviceInput(input.deviceId, input.deviceName, input.publicKey);
+    const remembered = await this.#state.transaction((database) => {
+      const statement = database.prepare(
+        "SELECT public_key, created_at, revoked_at FROM trusted_devices WHERE id = ?",
+      );
+      let existing: unknown[] | undefined;
+      try {
+        statement.bind([input.deviceId]);
+        if (statement.step()) existing = statement.get();
+      } finally {
+        statement.free();
+      }
+      if (existing) {
+        const expected = Buffer.from(toBytes(existing[0]));
+        const actual = Buffer.from(input.publicKey);
+        if (
+          expected.byteLength !== actual.byteLength ||
+          !timingSafeEqual(expected, actual)
+        ) {
+          throw new DeviceTrustError(
+            "KEY_MISMATCH",
+            "Device key does not match trusted device",
+          );
+        }
+        const changed = existing[2] != null;
+        if (changed) {
+          database.run(
+            "UPDATE trusted_devices SET name = ?, revoked_at = NULL WHERE id = ? AND revoked_at IS NOT NULL",
+            [input.deviceName, input.deviceId],
+          );
+          if (database.getRowsModified() !== 1)
+            throw new Error("Device trust changed during authentication");
+        }
+        return {
+          changed,
+          device: {
+            id: input.deviceId,
+            name: input.deviceName,
+            publicKey: input.publicKey,
+            createdAt: String(existing[1]),
+          },
+        };
+      }
+      const createdAt = new Date().toISOString();
+      database.run(
+        "INSERT INTO trusted_devices(id, name, public_key, created_at, revoked_at) VALUES (?, ?, ?, ?, NULL)",
+        [input.deviceId, input.deviceName, input.publicKey, createdAt],
+      );
+      return {
+        changed: true,
+        device: {
+          id: input.deviceId,
+          name: input.deviceName,
+          publicKey: input.publicKey,
+          createdAt,
+        },
+      };
+    });
+    return {
+      device: remembered.device,
+      ...(remembered.changed
+        ? {
+            rollback: async () => {
+              await this.revoke(input.deviceId);
+            },
+          }
+        : {}),
+    };
   }
 
   get(deviceId: string): Promise<TrustedDevice | undefined> {

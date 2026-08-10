@@ -10,6 +10,8 @@ import {
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 
+import { syncDirectoryForDurability } from "../host/durable-file.js";
+
 export const MAX_CODEX_AUTH_BYTES = 256 * 1024;
 
 export type CodexAuthImportOutcome = {
@@ -67,12 +69,7 @@ export async function importCodexAuthFile(options: {
     }
     await rename(temporary, authPath);
     await chmod(authPath, 0o600);
-    const directoryHandle = await open(codexDirectory, "r");
-    try {
-      await directoryHandle.sync();
-    } finally {
-      await directoryHandle.close();
-    }
+    await syncDirectoryForDurability(codexDirectory);
   } catch (error) {
     await rm(temporary, { force: true });
     throw error;

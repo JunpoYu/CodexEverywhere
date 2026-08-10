@@ -3,7 +3,11 @@ import { chmod, mkdir, open, rm } from "node:fs/promises";
 import { dirname } from "node:path";
 
 import { resolveRootlessProvisionerPaths } from "../admin/rootless-provisioner.js";
-import { isProcessAlive, readProcessRecord } from "../host/process-files.js";
+import {
+  processRecordMatches,
+  readProcessRecord,
+  signalRecordedProcess,
+} from "../host/process-files.js";
 import { resolveExecutable } from "../host/watchdog.js";
 
 const MARKER_START = "# BEGIN CODEXEVERYWHERE ROOTLESS PROVISIONER";
@@ -48,7 +52,7 @@ export async function rootlessProvisionerStatus(
   paths = resolveRootlessProvisionerPaths(),
 ): Promise<{ running: boolean; pid?: number }> {
   const record = await readProcessRecord(paths.pidFile);
-  return record && isProcessAlive(record.pid)
+  return record && (await processRecordMatches(record))
     ? { running: true, pid: record.pid }
     : { running: false };
 }
@@ -57,14 +61,18 @@ export async function stopRootlessProvisioner(
   paths = resolveRootlessProvisionerPaths(),
 ): Promise<boolean> {
   const record = await readProcessRecord(paths.pidFile);
-  if (!record || !isProcessAlive(record.pid)) {
+  if (!record || !(await processRecordMatches(record))) {
     await rm(paths.pidFile, { force: true });
     return false;
   }
-  process.kill(record.pid, "SIGTERM");
+  await signalRecordedProcess(record, "SIGTERM", {
+    ...(typeof process.getuid === "function" ? { uid: process.getuid() } : {}),
+    commandIncludes: ["provisioner", "serve"],
+  });
   const deadline = Date.now() + 10_000;
-  while (Date.now() < deadline && isProcessAlive(record.pid)) await wait(50);
-  if (isProcessAlive(record.pid))
+  while (Date.now() < deadline && (await processRecordMatches(record)))
+    await wait(50);
+  if (await processRecordMatches(record))
     throw new Error("Rootless provisioner did not stop after SIGTERM");
   return true;
 }

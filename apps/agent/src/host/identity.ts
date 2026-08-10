@@ -7,6 +7,8 @@ import {
   type StaticKeyPair,
 } from "@codex-everywhere/crypto";
 
+import { syncDirectoryForDurability } from "./durable-file.js";
+
 export type HostIdentity = {
   keyPair: StaticKeyPair;
   fingerprint: string;
@@ -43,12 +45,7 @@ export async function loadOrCreateHostIdentity(
   try {
     await link(temporary, path);
     await rm(temporary);
-    const directory = await open(keysDirectory, "r");
-    try {
-      await directory.sync();
-    } finally {
-      await directory.close();
-    }
+    await syncDirectoryForDurability(keysDirectory);
   } catch (error) {
     await rm(temporary, { force: true });
     if (isAlreadyExists(error))

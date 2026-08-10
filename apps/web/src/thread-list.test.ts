@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   FAST_THREAD_LIST_TIMEOUT_MS,
   LEGACY_THREAD_LIST_TIMEOUT_MS,
+  mergeThreadPages,
   requestThreadList,
   threadListErrorMessage,
   type ThreadListRequester,
@@ -83,6 +84,44 @@ describe("requestThreadList", () => {
     );
     expect(request).toHaveBeenCalledTimes(1);
   });
+
+  it("does not restart a legacy scan after reaching an empty later page", async () => {
+    const request = vi.fn().mockResolvedValue({
+      data: [],
+      nextCursor: null,
+    });
+    const client = { request } as ThreadListRequester;
+
+    await requestThreadList(client, { limit: 100, cursor: "page-2" });
+
+    expect(request).toHaveBeenCalledTimes(1);
+    expect(request).toHaveBeenCalledWith(
+      "thread/list",
+      { limit: 100, cursor: "page-2", useStateDbOnly: true },
+      { timeoutMs: FAST_THREAD_LIST_TIMEOUT_MS },
+    );
+  });
+});
+
+describe("mergeThreadPages", () => {
+  it("preserves order while replacing duplicate thread summaries", () => {
+    expect(
+      mergeThreadPages(
+        [
+          { id: "one", preview: "old" },
+          { id: "two", preview: "two" },
+        ],
+        [
+          { id: "one", preview: "new" },
+          { id: "three", preview: "three" },
+        ],
+      ),
+    ).toEqual([
+      { id: "one", preview: "new" },
+      { id: "two", preview: "two" },
+      { id: "three", preview: "three" },
+    ]);
+  });
 });
 
 describe("threadListErrorMessage", () => {
@@ -101,5 +140,13 @@ describe("threadListErrorMessage", () => {
     expect(threadListErrorMessage(new Error("permission denied"))).toBe(
       "permission denied",
     );
+  });
+
+  it("explains rolling-version gaps for archive discovery", () => {
+    expect(
+      threadListErrorMessage(
+        new Error("Invalid params: unknown field `archived`"),
+      ),
+    ).toContain("当前 Codex 版本不支持");
   });
 });

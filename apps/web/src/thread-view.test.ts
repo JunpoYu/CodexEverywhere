@@ -16,6 +16,7 @@ import {
   queuedMessageText,
   relativeMessageTime,
   shouldFollowTimeline,
+  StreamingDeltaBuffer,
   streamingItemCandidateId,
   TRANSIENT_TIMELINE_SELECTOR,
   threadSnapshotRevision,
@@ -134,6 +135,46 @@ describe("timeline auto-follow", () => {
         clientHeight: 500,
       }),
     ).toBe(true);
+  });
+});
+
+describe("streaming delta batching", () => {
+  it("coalesces adjacent deltas for one item while preserving stream order", () => {
+    const buffer = new StreamingDeltaBuffer();
+    buffer.append({
+      itemId: "agent-1",
+      delta: "hel",
+      kind: "agent",
+      turnId: "turn-1",
+    });
+    buffer.append({
+      itemId: "agent-1",
+      delta: "lo",
+      kind: "agent",
+      turnId: "turn-1",
+    });
+    buffer.append({
+      itemId: "tool-1",
+      delta: "ok",
+      kind: "tool",
+      turnId: "turn-1",
+    });
+
+    expect(buffer.drain()).toEqual([
+      {
+        itemId: "agent-1",
+        delta: "hello",
+        kind: "agent",
+        turnId: "turn-1",
+      },
+      {
+        itemId: "tool-1",
+        delta: "ok",
+        kind: "tool",
+        turnId: "turn-1",
+      },
+    ]);
+    expect(buffer.drain()).toEqual([]);
   });
 });
 
@@ -318,6 +359,21 @@ describe("composer delivery", () => {
     expect(localUserReconciledByTurns(undefined, turns)).toBe(false);
     expect(localUserReconciledByTurns("turn-pending", turns)).toBe(false);
     expect(localUserReconciledByTurns("turn-new", turns)).toBe(true);
+  });
+
+  it("reconciles an optimistic user card by its stable client message id", () => {
+    const turns = [
+      {
+        id: "turn-new",
+        items: [{ type: "userMessage", clientId: "composer-operation-1" }],
+      },
+    ];
+    expect(
+      localUserReconciledByTurns(undefined, turns, "composer-operation-1"),
+    ).toBe(true);
+    expect(
+      localUserReconciledByTurns(undefined, turns, "another-operation"),
+    ).toBe(false);
   });
 
   it("reconciles streaming cards only after the authoritative item id appears", () => {

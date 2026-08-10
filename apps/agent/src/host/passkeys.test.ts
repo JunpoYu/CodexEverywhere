@@ -46,6 +46,60 @@ describe("PasskeyRegistry recovery codes", () => {
     await store.close();
   });
 
+  it("commits only one initial Passkey across competing ceremonies", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "ce-passkey-initial-"));
+    temporaryDirectories.push(directory);
+    const path = join(directory, "state.sqlite");
+    const [firstStore, secondStore] = await Promise.all([
+      HostStateStore.open(path),
+      HostStateStore.open(path),
+    ]);
+    const identity = {
+      origin: "https://codex.example",
+      rpId: "codex.example",
+      userName: "alice",
+      nodeId: "node-1",
+    };
+    const firstRegistry = new PasskeyRegistry(firstStore, identity);
+    const secondRegistry = new PasskeyRegistry(secondStore, identity);
+    vi.mocked(verifyRegistrationResponse)
+      .mockResolvedValueOnce(successfulRegistration("first-passkey"))
+      .mockResolvedValueOnce(successfulRegistration("second-passkey"));
+
+    const outcomes = await Promise.allSettled([
+      firstRegistry.verifyRegistration(
+        { id: "first-passkey" } as RegistrationResponseJSON,
+        "challenge-1",
+        {
+          issueRecoveryCodes: true,
+          requireNoExistingPasskey: true,
+        },
+      ),
+      secondRegistry.verifyRegistration(
+        { id: "second-passkey" } as RegistrationResponseJSON,
+        "challenge-2",
+        {
+          issueRecoveryCodes: true,
+          requireNoExistingPasskey: true,
+        },
+      ),
+    ]);
+
+    expect(
+      outcomes.filter(({ status }) => status === "fulfilled"),
+    ).toHaveLength(1);
+    expect(outcomes.filter(({ status }) => status === "rejected")).toEqual([
+      expect.objectContaining({
+        reason: expect.objectContaining({
+          message: "Initial Passkey registration is no longer allowed",
+        }),
+      }),
+    ]);
+    await expect(firstRegistry.count()).resolves.toBe(1);
+    await firstStore.close();
+    await secondStore.close();
+  });
+
   it("shows one new code and invalidates the older code", async () => {
     const directory = await mkdtemp(join(tmpdir(), "ce-passkey-test-"));
     temporaryDirectories.push(directory);
@@ -196,3 +250,28 @@ describe("PasskeyRegistry recovery codes", () => {
     await store.close();
   });
 });
+
+function successfulRegistration(
+  id: string,
+): Awaited<ReturnType<typeof verifyRegistrationResponse>> {
+  return {
+    verified: true,
+    registrationInfo: {
+      credential: {
+        id,
+        publicKey: new Uint8Array(32),
+        counter: 0,
+        transports: [],
+      },
+      credentialDeviceType: "singleDevice",
+      credentialBackedUp: false,
+      credentialType: "public-key",
+      attestationObject: new Uint8Array(),
+      origin: "https://codex.example",
+      rpID: "codex.example",
+      aaguid: "00000000-0000-0000-0000-000000000000",
+      userVerified: true,
+      fmt: "none",
+    },
+  };
+}

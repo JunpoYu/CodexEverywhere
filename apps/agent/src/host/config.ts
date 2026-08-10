@@ -2,6 +2,9 @@ import { chmod, mkdir, open, readFile, rename, rm } from "node:fs/promises";
 import { dirname } from "node:path";
 import { randomUUID } from "node:crypto";
 
+import { syncDirectoryForDurability } from "./durable-file.js";
+import { HostStateStore } from "./state-store.js";
+
 import type { HostPaths } from "./paths.js";
 import {
   validateCodexNetworkConfig,
@@ -39,6 +42,10 @@ export type HostConfig = {
   webAuthn?: { origin: string; rpId: string };
   network?: CodexNetworkConfig;
 };
+
+export type HostConfigUpdater = (
+  current: HostConfig,
+) => HostConfig | Promise<HostConfig>;
 
 export function createHostConfig(): HostConfig {
   return {
@@ -108,15 +115,7 @@ export async function initializeHost(paths: HostPaths): Promise<HostConfig> {
     chmod(paths.runtimeDir, 0o700),
   ]);
 
-  try {
-    return await readHostConfig(paths);
-  } catch (error) {
-    if (!isMissingFile(error)) throw error;
-  }
-
-  const config = createHostConfig();
-  await writeHostConfig(paths, config);
-  return config;
+  return updateHostConfig(paths, (config) => config);
 }
 
 export async function readHostConfig(paths: HostPaths): Promise<HostConfig> {
@@ -127,7 +126,49 @@ export async function readHostConfig(paths: HostPaths): Promise<HostConfig> {
   return raw;
 }
 
-export async function writeHostConfig(
+export async function updateHostConfig(
+  paths: HostPaths,
+  update: HostConfigUpdater,
+): Promise<HostConfig> {
+  return withHostConfigMutation(paths, async () => {
+    let current: HostConfig;
+    let exists = true;
+    try {
+      current = await readHostConfig(paths);
+    } catch (error) {
+      if (!isMissingFile(error)) throw error;
+      current = createHostConfig();
+      exists = false;
+    }
+    const updated = await update(current);
+    if (!isHostConfig(updated)) {
+      throw new Error("Refusing to write invalid config");
+    }
+    if (!exists || updated !== current) {
+      await writeHostConfigUnlocked(paths, updated);
+    }
+    return updated;
+  });
+}
+
+async function withHostConfigMutation<T>(
+  paths: HostPaths,
+  operation: () => Promise<T>,
+): Promise<T> {
+  const state = await HostStateStore.open(paths.stateFile);
+  try {
+    const lease = await state.acquireCoordinationLock("host-config");
+    try {
+      return await operation();
+    } finally {
+      await lease.release();
+    }
+  } finally {
+    await state.close();
+  }
+}
+
+async function writeHostConfigUnlocked(
   paths: HostPaths,
   config: HostConfig,
 ): Promise<void> {
@@ -144,12 +185,7 @@ export async function writeHostConfig(
   }
   try {
     await rename(temporary, paths.configFile);
-    const directory = await open(dirname(paths.configFile), "r");
-    try {
-      await directory.sync();
-    } finally {
-      await directory.close();
-    }
+    await syncDirectoryForDurability(dirname(paths.configFile));
   } catch (error) {
     await rm(temporary, { force: true });
     throw error;

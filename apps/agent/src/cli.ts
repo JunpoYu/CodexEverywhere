@@ -13,9 +13,9 @@ import {
   initializeHost,
   readHostConfig,
   relayTransport,
+  updateHostConfig,
   withDirectTransport,
   withRelayTransport,
-  writeHostConfig,
 } from "./host/config.js";
 import { DeviceRegistry } from "./host/devices.js";
 import { PasskeyRegistry } from "./host/passkeys.js";
@@ -46,7 +46,10 @@ import {
 } from "./runtime/app-server-supervisor.js";
 import { probeCodexInstallation } from "./runtime/codex-install.js";
 import { tuiArguments, tuiExitGuidance } from "./runtime/tui-launch.js";
-import { startTuiPermissionProxy } from "./runtime/tui-permission-proxy.js";
+import {
+  startTuiPermissionProxy,
+  tuiThreadPermissionOptions,
+} from "./runtime/tui-permission-proxy.js";
 import { inspectSshUnixAccount } from "./admin/unix-accounts.js";
 import {
   bootstrapUnixUser,
@@ -54,6 +57,7 @@ import {
 } from "./admin/user-bootstrap.js";
 import {
   installHostProvisioner,
+  inspectInstalledProvisionerCredential,
   issueSelfProvisioningGrant,
   setHostProvisionerDefaultCodexNetwork,
 } from "./admin/self-provision.js";
@@ -94,6 +98,7 @@ import {
   startAdminControllerService,
   stopAdminControllerService,
 } from "./runtime/admin-controller-service.js";
+import { inspectAdminControllerAuthorizationStatus } from "./runtime/admin-controller-status.js";
 
 const program = new Command();
 const paths = resolveHostPaths();
@@ -307,13 +312,20 @@ provisioner
   .command("status")
   .description("Show rootless provisioner health")
   .action(async () => {
-    const status = await rootlessProvisionerStatus();
+    const provisionerPaths = resolveRootlessProvisionerPaths();
+    const status = await rootlessProvisionerStatus(provisionerPaths);
     process.stdout.write(
       status.running
         ? `Rootless provisioner is running (PID ${String(status.pid)}).\n`
         : "Rootless provisioner is stopped.\n",
     );
-    if (!status.running) process.exitCode = 1;
+    const credential = await inspectInstalledProvisionerCredential(
+      provisionerPaths.configFile,
+    );
+    process.stdout.write(
+      `${credential.remainingMs <= 30 * 86_400_000 ? "WARN" : "OK"}\tHost provisioner credential\t${credential.installationId} expires at ${credential.expiresAt}\n`,
+    );
+    if (!status.running || credential.remainingMs <= 0) process.exitCode = 1;
   });
 
 provisioner
@@ -377,11 +389,7 @@ program
         permissionProxy = await startTuiPermissionProxy({
           upstreamSocketPath: paths.appServerSocket,
           runtimeDir: paths.runtimeDir,
-          prepareThreadResume: (params) =>
-            threadPermissions.applyToResume(params),
-          onThreadPermissions: async (observation) => {
-            await threadPermissions.save(observation.threadId, observation);
-          },
+          ...tuiThreadPermissionOptions(threadPermissions),
         });
         process.exitCode = await runInteractive(
           runtime.codexBinary,
@@ -443,15 +451,14 @@ transport
       options: { listenHost: string; listenPort: number },
     ) => {
       assertWebSocketEndpoint(endpoint);
-      const config = await initializeHost(paths);
-      await writeHostConfig(paths, {
+      await updateHostConfig(paths, (config) => ({
         ...config,
         transport: withDirectTransport(config.transport, {
           endpoint,
           listenHost: options.listenHost,
           listenPort: options.listenPort,
         }),
-      });
+      }));
       process.stdout.write(`Direct transport configured: ${endpoint}\n`);
     },
   );
@@ -480,15 +487,14 @@ transport
         ? await readSecretFromStdin("Relay capability")
         : options.capability!;
       const routeId = routeIdFromCapability(capability);
-      const config = await initializeHost(paths);
-      await writeHostConfig(paths, {
+      await updateHostConfig(paths, (config) => ({
         ...config,
         transport: withRelayTransport(config.transport, {
           endpoint,
           routeId,
           routeCapability: capability,
         }),
-      });
+      }));
       process.stdout.write(`Relay transport configured: ${endpoint}\n`);
     },
   );
@@ -725,11 +731,15 @@ adminWeb
       config.runAsUid,
     );
     const record = await readProcessRecord(adminPaths.pidFile);
+    const { relayAuthorization, rootRegistration } =
+      await inspectAdminControllerAuthorizationStatus(config);
     process.stdout.write(
       [
         `Server: ${config.serverName}`,
         `Administrator handle: ${config.adminHandle}`,
         `Controller: ${record && isProcessAlive(record.pid) ? `running (PID ${record.pid})` : "stopped"}`,
+        `Relay authorization: ${relayAuthorization}`,
+        `Root registration: ${rootRegistration}`,
         `State: ${config.home}`,
       ].join("\n") + "\n",
     );
@@ -876,11 +886,10 @@ auth
       throw new Error(
         "RP ID must equal or be a parent domain of the PWA origin",
       );
-    const config = await initializeHost(paths);
-    await writeHostConfig(paths, {
+    await updateHostConfig(paths, (config) => ({
       ...config,
       webAuthn: { origin: origin.origin, rpId },
-    });
+    }));
     process.stdout.write(
       `Passkey origin configured: ${origin.origin} (${rpId})\n`,
     );

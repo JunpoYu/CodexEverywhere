@@ -12,7 +12,7 @@ import {
 import {
   initializeHost,
   readHostConfig,
-  writeHostConfig,
+  updateHostConfig,
 } from "../host/config.js";
 import { resolveHostPaths } from "../host/paths.js";
 import {
@@ -63,10 +63,10 @@ describe("user self-service provisioning", () => {
   it("does not replace a user's existing network choice", async () => {
     const paths = await temporaryPaths();
     const existing = await initializeHost(paths);
-    await writeHostConfig(paths, {
+    await updateHostConfig(paths, () => ({
       ...existing,
       network: { mode: "direct" },
-    });
+    }));
     const grant = {
       ...selfProvisioningGrant("bob", 2025),
       defaultCodexNetwork: {

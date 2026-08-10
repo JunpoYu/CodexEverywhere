@@ -80,7 +80,7 @@ git tag -a v0.3.0-alpha.1 codex/public-release \
 git push public v0.3.0-alpha.1
 ```
 
-Tag 推送后，[Release workflow](../.github/workflows/release.yml) 会重新执行格式、类型、测试和构建检查，并创建 GitHub Release。带连字符的版本会自动标记为 prerelease。
+Tag 推送后，[Release workflow](../.github/workflows/release.yml) 会重新执行格式、类型、单元测试和构建检查，安装并记录当时 npm 最新稳定版 Codex CLI，再运行真实 app-server contract 集成测试。任何一项失败都不会生成制品。带连字符的版本会自动标记为 prerelease。
 
 Release workflow 还会验证 tag commit 属于公开 `main`，并生成：
 
@@ -93,7 +93,7 @@ manifest.json
 SHA256SUMS
 ```
 
-`manifest.json` 记录统一版本、完整 commit、协议版本、Node.js 要求以及每个制品的名称、大小和 SHA-256。GitHub Actions 同时为制品生成 provenance attestation。Release 已存在时 workflow 不覆盖或移动它。
+`manifest.json` 记录统一版本、完整 commit、协议版本、Node.js 要求以及每个制品的名称、大小和 SHA-256。GitHub Actions 同时为制品生成 provenance attestation。消费端不仅验证制品签名属于目标仓库，还将 signer workflow 固定为 `.github/workflows/release.yml`，并要求 source ref 等于请求的 tag、source digest 等于 manifest commit；缺少这些 CLI 能力时失败关闭。Release 已存在时 workflow 不覆盖或移动它。
 
 ## 后续发布
 
@@ -103,9 +103,9 @@ SHA256SUMS
 4. 合并后在本地同步公开 `main`；
 5. 创建并推送 annotated tag；
 6. 检查自动生成的 GitHub Release、安装文档和源代码归档；
-7. 检查 manifest、SHA-256 和 provenance attestation；
-8. 由独立 staging 运维环境消费 Release，完成全新安装、升级和回滚演练；
-9. 人工批准后，由 production 运维环境部署同一组制品，不重新构建。
+7. 检查 manifest、SHA-256、provenance attestation 的 workflow/tag/commit 身份约束，以及 Release 摘要中记录的 Codex app-server contract 基线；
+8. 由独立 staging 运维环境消费 Release，完成全新安装、重复安装恢复、安装内容漂移拒绝、升级和严格 inventory 回滚演练，并记录获批 `manifest.json` SHA-256；
+9. 人工批准后，由 production 安装器以该获批摘要为信任根部署同一组制品，不重新构建。
 
 不要把 GitHub Actions 的生产 SSH 私钥放进公开源码仓库。个人或单集群部署推荐由服务器上的无特权专用账号主动下载 Release，并把真实配置保留在服务器本地；多环境团队才需要私有 ops 仓库或带 Environment 审批的独立部署工作流。公开仓库的 CI 只构建和发布，绝不 SSH 到生产环境。完整流程见[部署与升级](deployment.zh-CN.md)。
 
