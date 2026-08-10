@@ -84,9 +84,9 @@ export class CodexGatewaySession implements GatewaySession {
       options.consumptionRepairer ??
       new QueueConsumptionRepairer(options.queue);
     this.#ownsConsumptionRepairer = options.consumptionRepairer === undefined;
-    this.#unsubscribeQueue = options.queueDispatcher?.onEvent(
-      (event) => void this.#forwardQueueEvent(event),
-    );
+    this.#unsubscribeQueue = options.queueDispatcher?.onEvent((event) => {
+      void this.#forwardQueueEvent(event).catch(() => undefined);
+    });
     this.#unsubscribeConsumptionRepair =
       options.queueDispatcher && options.consumptionRepairer
         ? undefined
@@ -108,14 +108,22 @@ export class CodexGatewaySession implements GatewaySession {
               reason: "Queue delivery claim failed before submission",
             });
           });
-    client.on(
-      "notification",
-      (notification) => void this.#forwardNotification(notification),
-    );
-    client.on(
-      "serverRequest",
-      (request) => void this.#forwardServerRequest(request),
-    );
+    client.on("notification", (notification) => {
+      void this.#forwardNotification(notification).catch(() => undefined);
+    });
+    client.on("serverRequest", (request) => {
+      void this.#forwardServerRequest(request).catch(() => {
+        this.#serverRequests.delete(String(request.id));
+        try {
+          request.reject({
+            code: -32_000,
+            message: "Unable to verify workspace authorization",
+          });
+        } catch {
+          // The app-server may already have closed the request transport.
+        }
+      });
+    });
   }
 
   static async connect(

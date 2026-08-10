@@ -990,6 +990,7 @@ export class GatewayClient {
   #invalidate(error: Error, closeSocket = true): void {
     if (!this.#usable) return;
     this.#usable = false;
+    this.#session.dispose();
     for (const pending of this.#pending.values()) {
       clearTimeout(pending.timeout);
       pending.reject(

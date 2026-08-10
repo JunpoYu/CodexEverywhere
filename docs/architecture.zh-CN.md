@@ -38,7 +38,7 @@
 - 对话时间线是内容区内唯一的纵向滚动容器；会话头和输入器始终留在视口中，Codex 回复完成后自动滚动到最新消息。
 - 已完成初始化的用户登录后直接进入工作区；Codex 直连/代理配置位于设置菜单，修改前明确提示会中断活动 turn，保存后重启 app-server 并自动重新连接。
 - 会话头以紧凑状态区根据 app-server 增量事件实时显示正在思考、回复、执行命令、修改文件、调用工具、等待操作、完成或异常，而不是只显示笼统的 active 状态；完整会话设置保留明确的图标入口，常用的权限与模型设置同时在输入框状态栏中直接可见、可修改。
-- Agent 在首次读取或列出 thread 时完成 workspace 授权并缓存结果；同一连接中的后续 delta notification 立即转发，workspace root 变化时清空缓存，避免逐条 `thread/read` 阻塞流式回复。
+- Agent 在首次读取或列出 thread 时完成 workspace 授权并缓存结果；同一连接中的后续 delta notification 立即转发，workspace root 变化时清空缓存，避免逐条 `thread/read` 阻塞流式回复。notification、server request 与 Queue event 的异步 revision 复核均在回调边界消费 rejection；状态库瞬时读取失败时本次事件失败关闭，server request 返回授权不可验证错误，不得形成可能终止 Node 进程的未处理 Promise rejection。
 - 活动会话以 app-server delta notification 为实时主通道；PWA 在短时间收不到事件时自动读取并合并最新 `thread/read` 快照，结束后立即停止同步，避免通知偶发丢失时必须手动点击会话刷新。
 - 输入器以 app-server 的真实 thread 状态决定发送语义：空闲时启动 turn，活动或等待审批时默认持久加入宿主机 Queue。排队项不写入或临时插入历史时间线，而是在输入框上方的固定 Queue 托盘中显示数量、正文以及暂停、投递中或结果待核对状态；重新打开会话后从宿主机恢复。同一 thread 仅队首且尚未投递的项可在活动 turn 结束前原子转换为 Steer；尚未投递的项可安全移除，结果待核对项只能在用户核对权威历史并确认重复风险后放弃记录。发送失败会恢复输入内容，活动 turn 的停止按钮与发送操作同处输入器右侧。
 - 命令、文件与权限审批，以及 `requestUserInput` 回答。
@@ -517,7 +517,7 @@ Relay 不保存用户、Passkey、密码验证记录、恢复码、设备、节�
 
 ### 浏览器
 
-PWA 在用户选择“记住此设备”时使用 IndexedDB 保存 host profile 和设备静态密钥，不使用 `localStorage`。设备密钥只发送其公钥，私钥不离开浏览器。页面恢复票据无论 remembered 或 temporary 都不进入 IndexedDB、Service Worker、`localStorage` 或 URL；同一页面内可跨 WebSocket 重连复用，刷新、关闭页面或 Agent 重启后丢失并回到正常认证。临时模式也不写入 host profile、设备私钥或对话缓存。对话的设备级加密离线缓存尚未实现；当前 Service Worker 在安装时解析构建后的入口并缓存 HTML、hash JS/CSS、manifest、图标等应用外壳，运行时只缓存同源静态资源。
+PWA 在用户选择“记住此设备”时使用 IndexedDB 保存 host profile 和设备静态密钥，不使用 `localStorage`。设备密钥只发送其公钥，私钥不离开浏览器。页面恢复票据无论 remembered 或 temporary 都不进入 IndexedDB、Service Worker、`localStorage` 或 URL；同一页面内可跨 WebSocket 重连复用，刷新、关闭页面或 Agent 重启后丢失并回到正常认证。临时模式也不写入 host profile、设备私钥或对话缓存。对话的设备级加密离线缓存尚未实现；当前 Vite 构建生成完整 asset manifest，Service Worker 在安装时预缓存 HTML、全部 hash JS/CSS（包括尚未调用的动态 import）、字体、manifest 与图标等应用外壳，运行时只缓存同源静态资源。激活新 worker 时会通过 `MessageChannel` 查询所有活动窗口正在运行的缓存版本；只有全部窗口响应后才删除无人使用的旧版本，任一旧页面无法响应时保守保留全部版本。脚本或样式请求若因原发布目录切换得到 404，或被 SPA fallback 错误返回 HTML，会在所有保留的版本缓存中查找，因此其他标签页不必为更新立即丢弃草稿、一次性凭据或页面内待核对状态。
 
 ## 11. 内部协议
 

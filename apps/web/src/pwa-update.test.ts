@@ -47,4 +47,33 @@ describe("safe PWA updates", () => {
     expect(installHandler).not.toContain("skipWaiting");
     expect(worker).toContain('event.data?.type === "SKIP_WAITING"');
   });
+
+  it("precaches lazy build assets and retains caches used by old tabs", () => {
+    const worker = readFileSync(
+      new URL("../public/sw.js", import.meta.url),
+      "utf8",
+    );
+    const entry = readFileSync(new URL("./entry.ts", import.meta.url), "utf8");
+    const viteConfig = readFileSync(
+      new URL("../vite.config.ts", import.meta.url),
+      "utf8",
+    );
+
+    expect(viteConfig).toContain('manifest: "asset-manifest.json"');
+    expect(worker).toContain('const ASSET_MANIFEST = "/asset-manifest.json"');
+    expect(worker).toContain("buildManifestAssets(cache)");
+    expect(worker).toContain("matchVersionedCaches(request)");
+    expect(worker).toContain('contentType.includes("text/html")');
+    expect(worker).toContain("activeClientCacheNames()");
+    expect(worker).toContain("if (!retained) return");
+    const activation = worker.slice(
+      worker.indexOf('self.addEventListener("activate"'),
+      worker.indexOf('self.addEventListener("fetch"'),
+    );
+    expect(activation).toContain("!retained.has(key)");
+    expect(activation).not.toContain("key !== CACHE");
+    expect(entry).toContain('const PWA_ASSET_CACHE = "codex-everywhere-v44"');
+    expect(entry).toContain("event.ports[0]?.postMessage");
+    expect(worker).toContain('const CACHE = "codex-everywhere-v44"');
+  });
 });

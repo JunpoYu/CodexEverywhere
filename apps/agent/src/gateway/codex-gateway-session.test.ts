@@ -80,6 +80,7 @@ describe("CodexGatewaySession notifications", () => {
     let delayNextResume = false;
     let delayedResumeMessage: Record<string, unknown> | undefined;
     let revokedServerRequestResponse: Record<string, unknown> | undefined;
+    let revisionFailureResponse: Record<string, unknown> | undefined;
     const slashMethodPayloads = new Map<string, unknown>();
     const settingsUpdatePayloads: unknown[] = [];
     const sendResumeResponse = (message: Record<string, unknown>) => {
@@ -118,6 +119,11 @@ describe("CodexGatewaySession notifications", () => {
           message.id === "approval-after-revocation"
         ) {
           revokedServerRequestResponse = message;
+        } else if (
+          message.method === undefined &&
+          message.id === "approval-after-revision-failure"
+        ) {
+          revisionFailureResponse = message;
         } else if (message.method === "initialize") {
           initializePayload = message.params as Record<string, unknown>;
           sendToClient?.({ id: message.id, result: {} });
@@ -248,6 +254,45 @@ describe("CodexGatewaySession notifications", () => {
       approvalsReviewer: "user",
       sandbox: "danger-full-access",
     });
+    const eventCountBeforeRevisionFailure = events.length;
+    const failedNotificationRevision = vi
+      .spyOn(workspaces, "authorizationRevision")
+      .mockRejectedValueOnce(new Error("transient state reload failure"));
+    sendToClient?.({
+      method: "item/agentMessage/delta",
+      params: {
+        threadId: "thread-1",
+        turnId: "turn-revision-failure",
+        itemId: "item-revision-failure",
+        delta: "must be dropped safely",
+      },
+    });
+    await vi.waitFor(() =>
+      expect(failedNotificationRevision).toHaveBeenCalled(),
+    );
+    expect(events).toHaveLength(eventCountBeforeRevisionFailure);
+    failedNotificationRevision.mockRestore();
+
+    const failedRequestRevision = vi
+      .spyOn(workspaces, "authorizationRevision")
+      .mockRejectedValueOnce(new Error("transient state reload failure"));
+    sendToClient?.({
+      id: "approval-after-revision-failure",
+      method: "item/commandExecution/requestApproval",
+      params: {
+        threadId: "thread-1",
+        turnId: "turn-revision-failure",
+        itemId: "item-revision-failure",
+      },
+    });
+    await vi.waitFor(() =>
+      expect(revisionFailureResponse).toMatchObject({
+        id: "approval-after-revision-failure",
+        error: { message: "Unable to verify workspace authorization" },
+      }),
+    );
+    expect(failedRequestRevision).toHaveBeenCalled();
+    failedRequestRevision.mockRestore();
     expect(slashMethodPayloads.get("thread/settings/update")).toEqual({
       threadId: "thread-1",
       approvalPolicy: "never",

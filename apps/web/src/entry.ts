@@ -3,6 +3,8 @@ import "./style.css";
 
 import { announcePwaUpdate } from "./pwa-update.js";
 
+const PWA_ASSET_CACHE = "codex-everywhere-v44";
+
 void registerServiceWorker();
 
 if (location.pathname === "/admin" || location.pathname.startsWith("/admin/")) {
@@ -13,6 +15,14 @@ if (location.pathname === "/admin" || location.pathname.startsWith("/admin/")) {
 
 async function registerServiceWorker(): Promise<void> {
   if (!("serviceWorker" in navigator)) return;
+  navigator.serviceWorker.addEventListener("message", (event) => {
+    if (event.data?.type !== "PWA_CACHE_VERSION_REQUEST") {
+      return;
+    }
+    event.ports[0]?.postMessage({
+      cacheName: PWA_ASSET_CACHE,
+    });
+  });
   let hadController = navigator.serviceWorker.controller !== null;
   let activationRequested = false;
   let reloading = false;

@@ -627,6 +627,7 @@ describe("ambiguous gateway request outcomes", () => {
   });
 
   it("marks pending outcomes as transport-lost after an actual socket close", async () => {
+    const dispose = vi.spyOn(SecureSession.prototype, "dispose");
     const device = generateStaticKeyPair();
     const hostIdentity = generateStaticKeyPair();
     const simulation = simulatedHostWebSocket(hostIdentity);
@@ -645,18 +646,26 @@ describe("ambiguous gateway request outcomes", () => {
       devicePublicKey: bytesToBase64Url(device.publicKey),
       deviceSecretKey: bytesToBase64Url(device.secretKey),
     });
-    const lost = vi.fn();
-    client.onConnectionLost(lost);
-    const pending = client.request("thread/read", { threadId: "thread-1" });
-    const rejected = expect(pending).rejects.toMatchObject({
-      name: "GatewayRequestOutcomeUnknownError",
-      transportLost: true,
-    });
+    const disposalsBeforeClose = dispose.mock.calls.length;
+    try {
+      const lost = vi.fn();
+      client.onConnectionLost(lost);
+      const pending = client.request("thread/read", { threadId: "thread-1" });
+      const rejected = expect(pending).rejects.toMatchObject({
+        name: "GatewayRequestOutcomeUnknownError",
+        transportLost: true,
+      });
 
-    simulation.socket().close();
+      simulation.socket().close();
 
-    await rejected;
-    expect(lost).toHaveBeenCalledOnce();
+      await rejected;
+      expect(lost).toHaveBeenCalledOnce();
+      expect(dispose).toHaveBeenCalledTimes(disposalsBeforeClose + 1);
+      client.close();
+      expect(dispose).toHaveBeenCalledTimes(disposalsBeforeClose + 1);
+    } finally {
+      dispose.mockRestore();
+    }
   });
 });
 
