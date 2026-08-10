@@ -14,8 +14,8 @@ import {
   initializeHost,
   readHostConfig,
   relayTransport,
+  updateHostConfig,
   withRelayTransport,
-  writeHostConfig,
 } from "../host/config.js";
 import { resolveHostPaths } from "../host/paths.js";
 import { relayCapabilityDoctorCheck } from "../host/doctor.js";
@@ -536,14 +536,14 @@ async function configuredRelay(now: number, remainingMs = 2 * 86_400_000) {
     new Date(now),
   );
   const config = await initializeHost(paths);
-  await writeHostConfig(paths, {
+  await updateHostConfig(paths, () => ({
     ...config,
     transport: withRelayTransport(config.transport, {
       endpoint: "wss://codex.example.com/relay",
       routeId: route.payload.routeId,
       routeCapability: route.capability,
     }),
-  });
+  }));
   return { paths, relayKey, route };
 }
 

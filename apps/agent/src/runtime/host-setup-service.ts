@@ -16,8 +16,9 @@ import {
 
 import {
   readHostConfig,
-  writeHostConfig,
+  updateHostConfig,
   type HostConfig,
+  type HostConfigUpdater,
 } from "../host/config.js";
 import {
   codexProcessEnvironment,
@@ -42,7 +43,10 @@ import { probeAppServer, restartAppServer } from "./app-server-supervisor.js";
 
 type HostSetupDependencies = {
   readConfig(paths: HostPaths): Promise<HostConfig>;
-  writeConfig(paths: HostPaths, config: HostConfig): Promise<void>;
+  updateConfig(
+    paths: HostPaths,
+    update: HostConfigUpdater,
+  ): Promise<HostConfig>;
   probeCodex(options: {
     userHome: string;
     env: NodeJS.ProcessEnv;
@@ -86,7 +90,7 @@ type HostPreferencesRegistry = Pick<
 
 const defaultDependencies: HostSetupDependencies = {
   readConfig: readHostConfig,
-  writeConfig: writeHostConfig,
+  updateConfig: updateHostConfig,
   probeCodex: probeCodexInstallation,
   installCodex: installCodexForCurrentUser,
   probeLatestCodexVersion,
@@ -221,11 +225,13 @@ export class HostSetupService {
     if (payload.mode !== "direct" && payload.mode !== "proxy") {
       throw new Error("Network mode must be direct or proxy");
     }
-    const config = await this.#dependencies.readConfig(this.#paths);
     const appServerRunning = await this.#dependencies.probeAppServer(
       this.#paths.appServerSocket,
     );
-    await this.#dependencies.writeConfig(this.#paths, { ...config, network });
+    await this.#dependencies.updateConfig(this.#paths, (config) => ({
+      ...config,
+      network,
+    }));
     return {
       networkMode: network.mode,
       restartRequired: appServerRunning,

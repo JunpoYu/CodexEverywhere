@@ -13,9 +13,9 @@ import {
   initializeHost,
   readHostConfig,
   relayTransport,
+  updateHostConfig,
   withDirectTransport,
   withRelayTransport,
-  writeHostConfig,
 } from "./host/config.js";
 import { DeviceRegistry } from "./host/devices.js";
 import { PasskeyRegistry } from "./host/passkeys.js";
@@ -451,15 +451,14 @@ transport
       options: { listenHost: string; listenPort: number },
     ) => {
       assertWebSocketEndpoint(endpoint);
-      const config = await initializeHost(paths);
-      await writeHostConfig(paths, {
+      await updateHostConfig(paths, (config) => ({
         ...config,
         transport: withDirectTransport(config.transport, {
           endpoint,
           listenHost: options.listenHost,
           listenPort: options.listenPort,
         }),
-      });
+      }));
       process.stdout.write(`Direct transport configured: ${endpoint}\n`);
     },
   );
@@ -488,15 +487,14 @@ transport
         ? await readSecretFromStdin("Relay capability")
         : options.capability!;
       const routeId = routeIdFromCapability(capability);
-      const config = await initializeHost(paths);
-      await writeHostConfig(paths, {
+      await updateHostConfig(paths, (config) => ({
         ...config,
         transport: withRelayTransport(config.transport, {
           endpoint,
           routeId,
           routeCapability: capability,
         }),
-      });
+      }));
       process.stdout.write(`Relay transport configured: ${endpoint}\n`);
     },
   );
@@ -888,11 +886,10 @@ auth
       throw new Error(
         "RP ID must equal or be a parent domain of the PWA origin",
       );
-    const config = await initializeHost(paths);
-    await writeHostConfig(paths, {
+    await updateHostConfig(paths, (config) => ({
       ...config,
       webAuthn: { origin: origin.origin, rpId },
-    });
+    }));
     process.stdout.write(
       `Passkey origin configured: ${origin.origin} (${rpId})\n`,
     );

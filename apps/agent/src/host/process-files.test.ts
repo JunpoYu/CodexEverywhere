@@ -88,6 +88,23 @@ describe("ProcessLock", () => {
         processRecordMatches({ ...record!, procStartTime: "recycled" }),
       ).resolves.toBe(false);
       await expect(
+        processRecordMatches({
+          ...record!,
+          executable: `${record!.executable ?? "/usr/bin/node"} (deleted)`,
+          cmdline: ["stale-recorded-command"],
+        }),
+      ).resolves.toBe(true);
+      await expect(
+        processRecordMatches(record!, {
+          executable: "/definitely/not/the/current/executable",
+        }),
+      ).resolves.toBe(false);
+      await expect(
+        processRecordMatches(record!, {
+          commandIncludes: ["definitely-not-a-current-command-argument"],
+        }),
+      ).resolves.toBe(false);
+      await expect(
         signalRecordedProcess(
           { ...record!, procStartTime: "recycled" },
           "SIGTERM",

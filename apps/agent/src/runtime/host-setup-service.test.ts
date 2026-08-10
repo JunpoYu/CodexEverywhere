@@ -7,6 +7,61 @@ import { resolveHostPaths } from "../host/paths.js";
 import { HostSetupService } from "./host-setup-service.js";
 
 describe("HostSetupService", () => {
+  it("merges network changes into the latest coordinated host config", async () => {
+    let config: HostConfig = {
+      ...createHostConfig(),
+      transport: {
+        mode: "relay",
+        endpoint: "wss://relay.example/relay",
+        routeId: "route-1",
+        routeCapability: "capability-1",
+      },
+    };
+    const updateConfig = vi.fn(
+      async (
+        _paths: unknown,
+        update: (current: HostConfig) => HostConfig | Promise<HostConfig>,
+      ) => {
+        config = {
+          ...config,
+          transport: {
+            mode: "relay",
+            endpoint: "wss://relay.example/relay",
+            routeId: "route-1",
+            routeCapability: "capability-2",
+          },
+        };
+        config = await update(config);
+        return config;
+      },
+    );
+    const service = new HostSetupService(resolveHostPaths(), {
+      dependencies: {
+        updateConfig,
+        probeAppServer: vi.fn(async () => false),
+      },
+    });
+
+    await expect(
+      service.request(
+        envelope("setup/network/configure", {
+          mode: "proxy",
+          httpsProxy: "http://proxy.example:7890",
+        }),
+      ),
+    ).resolves.toEqual({
+      handled: true,
+      value: { networkMode: "proxy", restartRequired: false },
+    });
+    expect(config).toMatchObject({
+      network: {
+        mode: "proxy",
+        httpsProxy: "http://proxy.example:7890",
+      },
+      transport: { routeCapability: "capability-2" },
+    });
+  });
+
   it("returns only the proxy mode and never returns proxy credentials", async () => {
     let config: HostConfig = {
       ...createHostConfig(),
@@ -19,9 +74,6 @@ describe("HostSetupService", () => {
       userHome: "/home/alice",
       dependencies: {
         readConfig: vi.fn(async () => config),
-        writeConfig: vi.fn(async (_paths, next) => {
-          config = next;
-        }),
         probeCodex: vi.fn(async () => ({
           installed: false,
           binary: "/home/alice/.local/bin/codex",

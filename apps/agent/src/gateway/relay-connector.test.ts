@@ -230,6 +230,48 @@ describe("RelayConnector", () => {
     expect(acceptedCapabilities).toEqual(["capability-1"]);
   });
 
+  it("reconnects with the candidate after an ambiguous rotation response", async () => {
+    const server = await relayServer();
+    const controls: WebSocket[] = [];
+    const registeredCapabilities: string[] = [];
+    server.on("connection", (socket) => {
+      socket.once("message", (raw) => {
+        const message = JSON.parse(raw.toString()) as Record<string, unknown>;
+        if (message.type !== "relay/register") return;
+        controls.push(socket);
+        registeredCapabilities.push(String(message.capability));
+        if (controls.length === 1) {
+          registered(socket);
+          return;
+        }
+        if (controls.length === 2) {
+          controls[0]!.close(1008, "route registered elsewhere");
+          // Model a Relay that committed the candidate but whose registered
+          // acknowledgement was lost with the control transport.
+          socket.close(1011, "acknowledgement lost");
+          return;
+        }
+        registered(socket);
+      });
+    });
+    const connector = await RelayConnector.start({
+      ...(await connectorOptions(server)),
+      relayReconnectDelayMs: 20,
+    });
+    openConnectors.push(connector);
+
+    await expect(
+      connector.rotateRouteCapability("capability-2"),
+    ).rejects.toThrow();
+    await waitUntil(() => controls.length === 3);
+    expect(registeredCapabilities).toEqual([
+      "capability-1",
+      "capability-2",
+      "capability-2",
+    ]);
+    expect(controls[2]?.readyState).toBe(WebSocket.OPEN);
+  });
+
   it("does not commit or reconnect a capability rotation after close", async () => {
     const server = await relayServer();
     const controls: WebSocket[] = [];

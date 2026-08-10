@@ -24,10 +24,11 @@
 - Host Queue 新增旧版可忽略的 additive 逻辑状态：新版 add 从同一事务起让兼容 Queue 行始终保持物理 `done`，pending / paused / running 仅在新表中推进，因此回滚旧 Agent 仍可启动，但看不到或重派新版消息。后台 `turn/start`、Gateway fallback 与 Queue 转 `turn/steer` 按稳定 queue item 身份共用一份永久消费 claim；副作用前同事务写 claim、删除逻辑状态，且不保存或散列 prompt/附件。accepted 后断连、权限保存失败、响应不可验证或 claim 完成失败都会永久显示为“结果待核对”，重启和旧 Agent 回滚均不能再次投递；indeterminate 标记遇到瞬时存储失败时由生命周期内的单计时器 repair coordinator 按 item 去重并指数退避，只重试状态落盘、绝不重跑 app-server 请求，关闭后仍由下次启动接管。该项同时阻断同 thread 后续 dispatch/Steer，只有用户核对权威历史并显式确认风险后才能标记放弃、删除记录并唤醒后续队列。每次打开状态库都会把任何物理非 `done` 行视为旧 Agent 在回滚期间创建或恢复的不可证明结果并保守隔离，修复了 consumption 表已存在时 new → old → new 仍可能重放的升级缺口；正常新版 pending 项跨重启保持可投递。
 - Service Worker 更新改为用户确认后的安全激活，不再因 `skipWaiting` 和 `controllerchange` 强制刷新而丢失草稿或一次性恢复码；管理员页面也会在休眠、断网和重新上线后恢复连接。
 - 首个 Passkey 的最终写入增加事务内空表断言；WebAuthn 注册/认证 challenge、恢复授权与 OPAQUE 登录中间态变为五分钟内一次性使用，并在成功、撤销、关闭或定时到期时主动清除，避免并发首次注册和陈旧认证状态。
-- Host 状态迁移与事务统一使用带所有权证明、租约和安全接管的跨进程锁；进程锁和 app-server supervisor 不再仅凭可复用 PID 判断身份，也不会在释放时删除后继 owner。app-server supervisor 会在 spawn 前原子发布带 boot identity 的启动保留记录，再原子发布 child 的不可变进程身份；即使 supervisor 在两者之间崩溃，后继也会失败关闭而不会启动第二实例。
+- Host 状态迁移与事务统一使用带所有权证明、租约和安全接管的跨进程锁；进程锁和 app-server supervisor 不再仅凭可复用 PID 判断身份，也不会在释放时删除后继 owner。锁存活性只比较 PID、启动时间、boot ID 与 UID，不再因运行期间 Node 可执行路径或命令行显示变化而误回收；可变字段仅在发信号前作为显式目标校验。app-server supervisor 会在 spawn 前原子发布带 boot identity 的启动保留记录，再原子发布 child 的不可变进程身份；即使 supervisor 在两者之间崩溃，后继也会失败关闭而不会启动第二实例。
 - 移除 workspace 会持久推进授权 revision；已打开的 Web 会话、待处理审批和后台 Queue 在继续转发或响应前重新验证 thread 的真实 cwd，撤权后暂停并释放订阅。
 - 首屏主题初始化移出内联脚本以符合生产 CSP；流式 Markdown 增量按绘制帧合并，item 更新使用精确 DOM 定位，避免每个传输 delta 重解析累计全文和扫描完整时间线。
 - provisioned Relay capability 续签先原子保存新凭据，再只轮换 control 注册而保留已建立 tunnel；普通用户不能提交或替换 route ID。升级前 route 只允许在旧 capability 与对应旧 credential 仍有效时完整验签迁入，过期验签材料会自动删除。
+- Relay control 轮换在注册帧发送后即把已持久化的新 capability 作为重连目标，即使 Relay 已接受注册但确认帧丢失，也不会回退到会被授权高水位拒绝的旧 capability。宿主机 transport、Passkey origin 与 Codex 网络设置统一在跨进程协调锁内重新读取并合并最新配置，续签与用户代理修改不再以陈旧整文件快照互相覆盖。
 - Relay 现在按 capability 与 provisioner credential 的更早绝对截止时间撤销 route，统一清理 control、pending/setup 和 active tunnel；same-route 续签会原地延长授权且拒绝旧 capability 回滚 deadline，临近截止的 Agent 调度会预留 45 秒并在不足该窗口时立即续签。
 
 ### Changed

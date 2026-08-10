@@ -99,6 +99,10 @@ export class RelayConnector extends EventEmitter<{ connected: [] }> {
     candidateCapability = this.#options.routeCapability,
   ): Promise<void> {
     let socket: WebSocket | undefined;
+    const previousCapability = this.#options.routeCapability;
+    let registrationSent = false;
+    let responseReceived = false;
+    let registrationAccepted = false;
     try {
       socket = await openSocket(this.#options.endpoint);
       this.#track(socket);
@@ -121,12 +125,23 @@ export class RelayConnector extends EventEmitter<{ connected: [] }> {
           },
         }),
       );
+      registrationSent = true;
+      // A provisioned renewal is persisted before control rotation begins.
+      // Once its registration frame has been sent, a close/timeout is
+      // ambiguous: the Relay may already have installed the candidate and
+      // advanced its monotonic authorization high-water mark. Reconnect with
+      // the candidate in that case. A response that can be parsed as an
+      // explicit rejection below still restores the previous capability.
+      this.#options.routeCapability = candidateCapability;
+      const response = await nextMessage(socket);
+      responseReceived = true;
       const registered = parseRelayWireMessage(
-        await nextMessage(socket),
+        response,
         RELAY_MESSAGE_TYPES.registered,
       );
       if (registered.routeId !== this.#options.routeId)
         throw new Error("Relay registration rejected");
+      registrationAccepted = true;
       if (this.#stopped) throw new Error("Relay connector is stopped");
       const previousControl = this.#control;
       this.#options.routeCapability = candidateCapability;
@@ -156,6 +171,14 @@ export class RelayConnector extends EventEmitter<{ connected: [] }> {
       }
       this.emit("connected");
     } catch (error) {
+      if (
+        registrationSent &&
+        responseReceived &&
+        !registrationAccepted &&
+        !this.#stopped
+      ) {
+        this.#options.routeCapability = previousCapability;
+      }
       if (socket && socket.readyState !== WebSocket.CLOSED) socket.terminate();
       throw error;
     }

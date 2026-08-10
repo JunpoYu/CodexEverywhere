@@ -206,18 +206,11 @@ export async function processRecordMatches(
   ) {
     return false;
   }
-  if (
-    record.executable !== undefined &&
-    current.executable !== record.executable
-  ) {
-    return false;
-  }
-  if (
-    record.cmdline !== undefined &&
-    !sameStrings(current.cmdline, record.cmdline)
-  ) {
-    return false;
-  }
+  // executable and cmdline are intentionally excluded from liveness. Both
+  // can change while the same process identity remains alive (for example,
+  // an atomic Node runtime upgrade changes /proc/<pid>/exe to a deleted
+  // pathname). Callers that are about to signal a process still pass explicit
+  // expectations below, which are checked against the current /proc values.
   return matchesExpectation(current, expectation);
 }
 
@@ -574,16 +567,6 @@ function optionalStringArray(value: unknown): boolean {
   return (
     value === undefined ||
     (Array.isArray(value) && value.every((item) => typeof item === "string"))
-  );
-}
-
-function sameStrings(
-  left: readonly string[],
-  right: readonly string[],
-): boolean {
-  return (
-    left.length === right.length &&
-    left.every((value, index) => value === right[index])
   );
 }
 
