@@ -25,10 +25,6 @@
   <a href="CONTRIBUTING.md">贡献</a>
 </p>
 
-![CodexEverywhere 桌面端与移动端产品界面示意](docs/assets/product-overview.svg)
-
-<p align="center"><sub>产品界面示意：桌面与手机连接同一个 Codex app-server，会话、工具活动、审批与 Queue 保持同步。</sub></p>
-
 CodexEverywhere 是一个面向 Linux/HPC 的自托管 Codex Web/PWA 控制平台。它让你离开 SSH 后，仍可从浏览器查看活动会话、发送消息、处理审批、管理工作区，并在 Web 与官方 Codex TUI 之间继续同一个任务。
 
 它不重新实现 Codex Agent。thread、turn、工具调用和执行状态仍以官方 [Codex app-server](https://developers.openai.com/codex/app-server) 为唯一事实源；CodexEverywhere 只补上安全连接、移动端体验、持久 Queue 和 HPC 运行层。
