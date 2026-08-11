@@ -2195,6 +2195,29 @@ button {
   transform: translateY(-1px);
 }
 
+.button-pending {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+}
+
+.button-pending::before {
+  width: 12px;
+  height: 12px;
+  flex: 0 0 auto;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 50%;
+  content: "";
+  animation: rotate 700ms linear infinite;
+}
+
+.button-pending:disabled {
+  cursor: progress;
+  opacity: 0.78;
+}
+
 .secondary {
   background: #292c32;
 }
