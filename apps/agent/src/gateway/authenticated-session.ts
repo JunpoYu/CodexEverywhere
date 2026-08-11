@@ -81,6 +81,7 @@ export class AuthenticatedGatewaySession implements GatewaySession {
   >();
   #inner: GatewaySession | undefined;
   #unsubscribeInner: (() => void) | undefined;
+  #unsubscribeInnerClose: (() => void) | undefined;
   #innerPromise: Promise<GatewaySession> | undefined;
   #authenticated = false;
   #authenticationFinalized = false;
@@ -419,6 +420,8 @@ export class AuthenticatedGatewaySession implements GatewaySession {
     this.#stopAuthenticationRecheck();
     this.#unsubscribeInner?.();
     this.#unsubscribeInner = undefined;
+    this.#unsubscribeInnerClose?.();
+    this.#unsubscribeInnerClose = undefined;
     await this.#inner?.close?.();
   }
 
@@ -486,6 +489,8 @@ export class AuthenticatedGatewaySession implements GatewaySession {
     this.#stopAuthenticationRecheck();
     this.#unsubscribeInner?.();
     this.#unsubscribeInner = undefined;
+    this.#unsubscribeInnerClose?.();
+    this.#unsubscribeInnerClose = undefined;
     void this.#inner?.close?.();
   }
 
@@ -668,12 +673,42 @@ export class AuthenticatedGatewaySession implements GatewaySession {
 
   #ensureInner(): Promise<GatewaySession> {
     if (this.#inner) return Promise.resolve(this.#inner);
-    this.#innerPromise ??= this.#createInner().then((inner) => {
-      this.#inner = inner;
-      this.#subscribeInner();
-      return inner;
-    });
+    if (!this.#innerPromise) {
+      const pending = this.#createInner()
+        .then((inner) => {
+          this.#inner = inner;
+          this.#unsubscribeInnerClose = inner.onClose?.(() =>
+            this.#discardInner(inner),
+          );
+          this.#subscribeInner();
+          return inner;
+        })
+        .catch((error: unknown) => {
+          // app-server availability is independent from Host authentication.
+          // A failed cold start must not poison this authenticated browser
+          // session forever; a later request may reconnect after recovery.
+          if (this.#innerPromise === pending) this.#innerPromise = undefined;
+          throw error;
+        });
+      this.#innerPromise = pending;
+    }
     return this.#innerPromise;
+  }
+
+  #discardInner(inner: GatewaySession): void {
+    if (this.#inner !== inner) return;
+    this.#unsubscribeInner?.();
+    this.#unsubscribeInner = undefined;
+    this.#unsubscribeInnerClose?.();
+    this.#unsubscribeInnerClose = undefined;
+    this.#inner = undefined;
+    this.#innerPromise = undefined;
+    try {
+      void Promise.resolve(inner.close?.()).catch(() => undefined);
+    } catch {
+      // The transport is already closed. Cleanup is best effort and must not
+      // turn its close notification into an unhandled exception.
+    }
   }
 
   #subscribeInner(): void {

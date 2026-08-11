@@ -35,6 +35,20 @@ type AppServerProcessRecord = ProcessRecord & {
   appServerStartupNonce?: string;
 };
 
+const APP_SERVER_STARTUP_TIMEOUT_MS = 60_000;
+
+export type AppServerInspection = {
+  health:
+    | "healthy"
+    | "starting"
+    | "live-unresponsive"
+    | "stale-artifacts"
+    | "stopped";
+  socketExists: boolean;
+  pid?: number;
+  startupSupervisorPid?: number;
+};
+
 export async function probeAppServer(socketPath: string): Promise<boolean> {
   try {
     if (!(await stat(socketPath)).isSocket()) return false;
@@ -46,6 +60,46 @@ export async function probeAppServer(socketPath: string): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+export async function inspectAppServer(
+  paths: HostPaths,
+): Promise<AppServerInspection> {
+  const socketExists = await pathExists(paths.appServerSocket);
+  if (await probeAppServer(paths.appServerSocket)) {
+    const record = await readAppServerProcessRecord(paths);
+    return {
+      health: "healthy",
+      socketExists: true,
+      ...(record ? { pid: record.pid } : {}),
+    };
+  }
+
+  const record = await readAppServerProcessRecord(paths);
+  if (record && (await processRecordMatches(record))) {
+    return {
+      health: "live-unresponsive",
+      socketExists,
+      pid: record.pid,
+    };
+  }
+  const reservation = await readStartupReservation(paths);
+  if (reservation && (await processRecordMatches(reservation))) {
+    return {
+      health: "starting",
+      socketExists,
+      startupSupervisorPid: reservation.pid,
+    };
+  }
+  if (record || reservation || socketExists) {
+    return {
+      health: "stale-artifacts",
+      socketExists,
+      ...(record ? { pid: record.pid } : {}),
+      ...(reservation ? { startupSupervisorPid: reservation.pid } : {}),
+    };
+  }
+  return { health: "stopped", socketExists: false };
 }
 
 export async function ensureAppServer(
@@ -127,7 +181,8 @@ async function ensureAppServerLocked(
         "Codex app-server startup reservation changed before owner publication",
       );
     }
-    const deadline = Date.now() + (options.timeoutMs ?? 15_000);
+    const deadline =
+      Date.now() + (options.timeoutMs ?? APP_SERVER_STARTUP_TIMEOUT_MS);
     while (Date.now() < deadline) {
       if (childError) {
         throw new Error("Failed to start Codex app-server", {
@@ -161,6 +216,7 @@ export async function restartAppServer(
     timeoutMs?: number;
     force?: boolean;
     hooks?: AppServerSupervisorHooks;
+    expectedPid?: number;
   } = {},
 ): Promise<{ started: boolean; pid?: number }> {
   if (options.force !== true) {
@@ -172,6 +228,14 @@ export async function restartAppServer(
   try {
     const record = await readAppServerProcessRecord(paths);
     const reservation = await readStartupReservation(paths);
+    if (
+      options.expectedPid !== undefined &&
+      record?.pid !== options.expectedPid
+    ) {
+      throw new Error(
+        `Codex app-server owner changed before recovery: expected PID ${options.expectedPid}, found ${record?.pid ?? "none"}`,
+      );
+    }
     if (record && (await processRecordMatches(record))) {
       if (
         reservation &&
@@ -194,7 +258,29 @@ export async function restartAppServer(
         await new Promise((resolve) => setTimeout(resolve, 50));
       }
       if (await processRecordMatches(record)) {
-        throw new Error("Codex app-server did not stop cleanly");
+        // `force` is an explicit acknowledgement that an unresponsive
+        // app-server may still own an active turn. Escalate only after
+        // revalidating the exact immutable process identity and command.
+        await signalRecordedProcess(record, "SIGKILL", {
+          ...(typeof process.getuid === "function"
+            ? { uid: process.getuid() }
+            : {}),
+          commandIncludes: [
+            "app-server",
+            "--listen",
+            `unix://${paths.appServerSocket}`,
+          ],
+        });
+        const forcedDeadline = Date.now() + 5_000;
+        while (
+          Date.now() < forcedDeadline &&
+          (await processRecordMatches(record))
+        ) {
+          await new Promise((resolve) => setTimeout(resolve, 50));
+        }
+        if (await processRecordMatches(record)) {
+          throw new Error("Codex app-server did not stop after SIGKILL");
+        }
       }
     } else if (await probeAppServer(paths.appServerSocket)) {
       throw new Error(

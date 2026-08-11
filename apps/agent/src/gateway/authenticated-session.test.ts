@@ -145,6 +145,82 @@ describe("AuthenticatedGatewaySession", () => {
     expect(createInner).not.toHaveBeenCalled();
   });
 
+  it("retries a failed lazy Codex session without reauthenticating", async () => {
+    const request = vi.fn(async () => "codex-result");
+    const createInner = vi
+      .fn<() => Promise<{ request: typeof request }>>()
+      .mockRejectedValueOnce(new Error("app-server unavailable"))
+      .mockResolvedValue({ request });
+    const passkeys = {
+      count: vi.fn(async () => 1),
+      authenticationOptions: vi.fn(async () => ({ challenge: "login" })),
+      verifyAuthentication: vi.fn(async () => undefined),
+    } as unknown as PasskeyRegistry;
+    const session = new AuthenticatedGatewaySession({
+      createInner,
+      passkeys,
+      newlyPaired: false,
+    });
+
+    await session.request(envelope("auth/login/options", {}));
+    await session.request(
+      envelope("auth/login/verify", { response: { id: "passkey" } }),
+    );
+    await expect(session.request(envelope("thread/list", {}))).rejects.toThrow(
+      "app-server unavailable",
+    );
+    await expect(session.request(envelope("thread/list", {}))).resolves.toBe(
+      "codex-result",
+    );
+    expect(createInner).toHaveBeenCalledTimes(2);
+    expect(passkeys.authenticationOptions).toHaveBeenCalledOnce();
+    expect(passkeys.verifyAuthentication).toHaveBeenCalledOnce();
+  });
+
+  it("replaces a lazy Codex session after its transport closes", async () => {
+    let closeFirst: (() => void) | undefined;
+    const cleanupFirst = vi.fn(async () => undefined);
+    const firstRequest = vi.fn(async () => "first");
+    const secondRequest = vi.fn(async () => "second");
+    const createInner = vi
+      .fn()
+      .mockResolvedValueOnce({
+        request: firstRequest,
+        onClose: (listener: () => void) => {
+          closeFirst = listener;
+          return () => {
+            closeFirst = undefined;
+          };
+        },
+        close: cleanupFirst,
+      })
+      .mockResolvedValueOnce({ request: secondRequest });
+    const passkeys = {
+      count: vi.fn(async () => 1),
+      authenticationOptions: vi.fn(async () => ({ challenge: "login" })),
+      verifyAuthentication: vi.fn(async () => undefined),
+    } as unknown as PasskeyRegistry;
+    const session = new AuthenticatedGatewaySession({
+      createInner,
+      passkeys,
+      newlyPaired: false,
+    });
+
+    await session.request(envelope("auth/login/options", {}));
+    await session.request(
+      envelope("auth/login/verify", { response: { id: "passkey" } }),
+    );
+    await expect(session.request(envelope("thread/list", {}))).resolves.toBe(
+      "first",
+    );
+    closeFirst?.();
+    await vi.waitFor(() => expect(cleanupFirst).toHaveBeenCalledOnce());
+    await expect(session.request(envelope("thread/list", {}))).resolves.toBe(
+      "second",
+    );
+    expect(createInner).toHaveBeenCalledTimes(2);
+  });
+
   it("answers an authenticated health check without creating a Codex session", async () => {
     const createInner = vi.fn(async () => ({ request: async () => "codex" }));
     const passkeys = {

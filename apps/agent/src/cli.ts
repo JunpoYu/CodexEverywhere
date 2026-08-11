@@ -42,7 +42,9 @@ import {
 } from "./runtime/agent-service.js";
 import {
   ensureAppServer,
+  inspectAppServer,
   probeAppServer,
+  restartAppServer,
 } from "./runtime/app-server-supervisor.js";
 import { probeCodexInstallation } from "./runtime/codex-install.js";
 import { tuiArguments, tuiExitGuidance } from "./runtime/tui-launch.js";
@@ -237,6 +239,58 @@ agent
   .command("serve", { hidden: true })
   .description("Run the host Agent in the foreground")
   .action(async () => runAgentService(paths));
+
+const appServer = program
+  .command("app-server")
+  .description("Inspect and recover the per-user Codex app-server");
+
+appServer
+  .command("status")
+  .description("Show app-server process and protocol health")
+  .action(async () => {
+    const inspection = await inspectAppServer(paths);
+    process.stdout.write(
+      [
+        `Health: ${inspection.health}`,
+        `Socket: ${inspection.socketExists ? paths.appServerSocket : "missing"}`,
+        `PID: ${inspection.pid ?? "none"}`,
+        ...(inspection.startupSupervisorPid
+          ? [`Startup supervisor PID: ${inspection.startupSupervisorPid}`]
+          : []),
+      ].join("\n") + "\n",
+    );
+    if (inspection.health !== "healthy") process.exitCode = 1;
+  });
+
+appServer
+  .command("recover")
+  .description("Explicitly replace an unresponsive recorded app-server")
+  .requiredOption(
+    "--expected-pid <pid>",
+    "Recorded app-server PID observed with `ce app-server status`",
+    parseProcessId,
+  )
+  .option(
+    "--force",
+    "Confirm that recovery may interrupt an active Codex turn",
+    false,
+  )
+  .action(async (options: { expectedPid: number; force: boolean }) => {
+    if (!options.force) {
+      throw new Error(
+        "Recovery can interrupt an active Codex turn; inspect the process and pass --force",
+      );
+    }
+    const runtime = await currentCodexRuntime();
+    const result = await restartAppServer(paths, {
+      ...runtime,
+      force: true,
+      expectedPid: options.expectedPid,
+    });
+    process.stdout.write(
+      `Recovered Codex app-server (PID ${result.pid ?? "unknown"}).\n`,
+    );
+  });
 
 const provisioner = program
   .command("provisioner")
@@ -1078,6 +1132,14 @@ function parsePort(value: string): number {
     throw new Error(`Invalid TCP port: ${value}`);
   }
   return port;
+}
+
+function parseProcessId(value: string): number {
+  const pid = Number(value);
+  if (!Number.isSafeInteger(pid) || pid < 1) {
+    throw new Error(`Invalid process ID: ${value}`);
+  }
+  return pid;
 }
 
 function assertWebSocketEndpoint(endpoint: string): void {
