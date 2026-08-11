@@ -7,6 +7,10 @@ const adminSource = readFileSync(
   new URL("./admin-main.ts", import.meta.url),
   "utf8",
 );
+const styleSource = readFileSync(
+  new URL("./style.css", import.meta.url),
+  "utf8",
+);
 
 describe("frontend reliability contracts", () => {
   it("allows the complete stop-and-cold-start window for app-server restarts", () => {
@@ -38,6 +42,33 @@ describe("frontend reliability contracts", () => {
     expect(adminSource).toContain(
       'id="admin-connection" class="admin-connection" role="status" aria-live="polite"',
     );
+  });
+
+  it("locks login actions synchronously while Passkey verification is pending", () => {
+    const action = mainSource.slice(
+      mainSource.indexOf("async function runLoginButtonAction"),
+      mainSource.indexOf("async function activate"),
+    );
+    const savedHosts = mainSource.slice(
+      mainSource.indexOf("async function renderSavedHosts"),
+      mainSource.indexOf("function savedHostDocument"),
+    );
+    const adminAction = adminSource.slice(
+      adminSource.indexOf("async function runButtonAction"),
+      adminSource.indexOf("function showSecret"),
+    );
+
+    for (const source of [action, adminAction]) {
+      expect(source).toContain("if (button.disabled) return");
+      expect(source).toContain("button.disabled = true");
+      expect(source).toContain('button.setAttribute("aria-busy", "true")');
+      expect(source).toContain('button.classList.add("button-pending")');
+      expect(source).toContain("finally");
+      expect(source).toContain("button.disabled = false");
+    }
+    expect(savedHosts).toContain('runLoginButtonAction(connect, "正在验证…"');
+    expect(styleSource).toContain(".button-pending::before");
+    expect(styleSource).toContain("cursor: progress");
   });
 
   it("marks the administrator channel stale immediately and participates in shared recovery policy", () => {

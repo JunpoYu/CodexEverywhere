@@ -912,6 +912,7 @@ async function runButtonAction(
   if (button.disabled) return;
   const original = button.textContent ?? "";
   button.disabled = true;
+  button.classList.add("button-pending");
   button.setAttribute("aria-busy", "true");
   button.textContent = pendingLabel;
   if (errorTarget) {
@@ -927,6 +928,7 @@ async function runButtonAction(
     } else toast(errorMessage(caught), true);
   } finally {
     button.disabled = false;
+    button.classList.remove("button-pending");
     button.removeAttribute("aria-busy");
     button.textContent = original;
   }

@@ -923,7 +923,12 @@ pairingCommandOutput.addEventListener("click", () =>
 );
 requiredElement("login-passkey").addEventListener(
   "click",
-  () => void loginWithPasskey(),
+  () =>
+    void runLoginButtonAction(
+      requiredElement<HTMLButtonElement>("login-passkey"),
+      "正在验证…",
+      loginWithPasskey,
+    ),
 );
 requiredElement("login-password-button").addEventListener(
   "click",
@@ -1776,6 +1781,27 @@ async function connectSaved(host: SavedHost): Promise<void> {
   } catch (error) {
     setStatus("offline", "连接失败");
     setupError.textContent = errorMessage(error);
+  }
+}
+
+async function runLoginButtonAction(
+  button: HTMLButtonElement,
+  pendingLabel: string,
+  operation: () => Promise<void>,
+): Promise<void> {
+  if (button.disabled) return;
+  const originalLabel = button.textContent ?? "";
+  button.disabled = true;
+  button.classList.add("button-pending");
+  button.setAttribute("aria-busy", "true");
+  button.textContent = pendingLabel;
+  try {
+    await operation();
+  } finally {
+    button.disabled = false;
+    button.classList.remove("button-pending");
+    button.removeAttribute("aria-busy");
+    button.textContent = originalLabel;
   }
 }
 
@@ -6671,7 +6697,13 @@ async function renderSavedHosts(): Promise<void> {
       : host.endpoint;
     info.append(name, account, endpoint);
     const connect = button("继续", "primary");
-    connect.addEventListener("click", () => void connectSaved(host));
+    connect.addEventListener(
+      "click",
+      () =>
+        void runLoginButtonAction(connect, "正在验证…", () =>
+          connectSaved(host),
+        ),
+    );
     const more = document.createElement("details");
     more.className = "host-menu";
     const summary = document.createElement("summary");
