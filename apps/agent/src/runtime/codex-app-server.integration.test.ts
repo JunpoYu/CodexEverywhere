@@ -42,7 +42,12 @@ afterEach(async () => {
   for (const client of clients.splice(0)) await client.close();
   for (const processHandle of processes.splice(0)) await processHandle.stop();
   for (const directory of temporaryDirectories.splice(0)) {
-    await rm(directory, { recursive: true, force: true });
+    await rm(directory, {
+      recursive: true,
+      force: true,
+      maxRetries: 10,
+      retryDelay: 100,
+    });
   }
 });
 

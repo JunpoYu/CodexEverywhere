@@ -4,6 +4,12 @@
 
 ## [Unreleased]
 
+## [0.3.0-alpha.8] - 2026-08-12
+
+### Fixed
+
+- 真实 Codex app-server 合同测试清理临时目录时会对 Linux 上短暂存在的后台插件 clone 文件执行有界重试，避免把已通过的协议合同误报为 `ENOTEMPTY` 发布失败。
+
 ## [0.3.0-alpha.7] - 2026-08-12
 
 ### Fixed
