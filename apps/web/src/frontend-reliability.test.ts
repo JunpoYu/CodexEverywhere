@@ -9,6 +9,19 @@ const adminSource = readFileSync(
 );
 
 describe("frontend reliability contracts", () => {
+  it("allows the complete stop-and-cold-start window for app-server restarts", () => {
+    expect(mainSource).toContain(
+      "const APP_SERVER_RESTART_REQUEST_TIMEOUT_MS = 90_000;",
+    );
+    expect(
+      mainSource.match(/APP_SERVER_RESTART_REQUEST_TIMEOUT_MS/gu),
+    ).toHaveLength(5);
+    const restartRequests = mainSource.match(
+      /"setup\/app-server\/restart"[\s\S]{0,160}?timeoutMs:\s*APP_SERVER_RESTART_REQUEST_TIMEOUT_MS/gu,
+    );
+    expect(restartRequests).toHaveLength(4);
+  });
+
   it("does not open the mobile keyboard merely because history was opened", () => {
     const openThread = mainSource.slice(
       mainSource.indexOf("async function openThread"),

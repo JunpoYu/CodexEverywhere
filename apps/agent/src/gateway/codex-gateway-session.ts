@@ -63,6 +63,7 @@ export class CodexGatewaySession implements GatewaySession {
   readonly #consumptionRepairer: QueueConsumptionRepairer;
   readonly #ownsConsumptionRepairer: boolean;
   readonly #events = new EventEmitter<{ event: [EventEnvelope] }>();
+  readonly #closeListeners = new Set<() => void>();
   readonly #serverRequests = new Map<string, CodexServerRequest>();
   readonly #authorizedThreads = new Map<string, number>();
   readonly #unsubscribeQueue: (() => void) | undefined;
@@ -124,6 +125,10 @@ export class CodexGatewaySession implements GatewaySession {
         }
       });
     });
+    client.once("close", () => {
+      for (const listener of this.#closeListeners) listener();
+      this.#closeListeners.clear();
+    });
   }
 
   static async connect(
@@ -138,6 +143,15 @@ export class CodexGatewaySession implements GatewaySession {
   onEvent(listener: (event: EventEnvelope) => void): () => void {
     this.#events.on("event", listener);
     return () => this.#events.off("event", listener);
+  }
+
+  onClose(listener: () => void): () => void {
+    if (this.#client.closed) {
+      queueMicrotask(listener);
+      return () => undefined;
+    }
+    this.#closeListeners.add(listener);
+    return () => this.#closeListeners.delete(listener);
   }
 
   async request(request: RequestEnvelope): Promise<unknown> {
@@ -366,6 +380,7 @@ export class CodexGatewaySession implements GatewaySession {
     this.#unsubscribeConsumptionRepair?.();
     this.#unsubscribeConsumptionPauseRepair?.();
     this.#serverRequests.clear();
+    this.#closeListeners.clear();
     await this.#client.close();
     if (this.#ownsConsumptionRepairer) {
       await this.#consumptionRepairer.close();

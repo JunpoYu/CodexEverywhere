@@ -54,6 +54,7 @@ const assemblyBudgets = new WeakMap<
 export type GatewaySession = {
   request(request: RequestEnvelope): Promise<unknown>;
   onEvent?(listener: (event: EventEnvelope) => void): () => void;
+  onClose?(listener: () => void): () => void;
   close?(): Promise<void> | void;
 };
 

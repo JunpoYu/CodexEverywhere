@@ -1,4 +1,5 @@
 import { createServer, type Server as HttpServer } from "node:http";
+import { createServer as createNetServer, type Socket } from "node:net";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -67,6 +68,37 @@ async function createHarness(
 }
 
 describe("CodexAppServerClient", () => {
+  it("handles a WebSocket opening timeout without an unhandled socket error", async () => {
+    const socketDirectory = await mkdtemp(join(tmpdir(), "ce-rpc-timeout-"));
+    const socketPath = join(socketDirectory, "server.sock");
+    const connections = new Set<Socket>();
+    const server = createNetServer((socket) => {
+      connections.add(socket);
+      socket.once("close", () => connections.delete(socket));
+      // Accept the Unix connection but never complete the WebSocket upgrade.
+    });
+    await new Promise<void>((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(socketPath, () => {
+        server.off("error", reject);
+        resolve();
+      });
+    });
+
+    try {
+      await expect(
+        CodexAppServerClient.connectUnix(socketPath, { timeoutMs: 25 }),
+      ).rejects.toThrow("Timed out connecting to Codex app-server");
+      await new Promise((resolve) => setImmediate(resolve));
+    } finally {
+      for (const connection of connections) connection.destroy();
+      await new Promise<void>((resolve, reject) =>
+        server.close((error) => (error ? reject(error) : resolve())),
+      );
+      await rm(socketDirectory, { recursive: true, force: true });
+    }
+  });
+
   it("initializes and resolves requests", async () => {
     const methods: string[] = [];
     const { client } = await createHarness((message, send) => {

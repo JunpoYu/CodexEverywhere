@@ -346,6 +346,8 @@ Passkey 绑定 PWA Origin，而不是 WSS 数据路径。推荐保持一个稳�
 
 - `ce agent ensure` 使用文件锁检查 Agent 和 app-server。
 - Agent 不依赖 Codex/app-server 才能上线；安装、网络和登录初始化完成后，第一次 Codex 业务请求才按需确保 app-server。
+- app-server 冷启动以 60 秒为上限；启动保留记录从 spawn 前持续到协议 readiness 成功，并发请求等待持有 supervisor lock 的同一次受控启动，Web 的 90 秒 restart deadline 覆盖最多 10 秒停止与 60 秒冷启动。Unix WebSocket 在建立前超时或失败时始终消费 transport error，不得形成未处理事件并终止 Agent。认证会话只对同一次 inner 建连做 singleflight，失败或已建立 transport 随后关闭时会清除缓存，使后续请求在不重新 Passkey 的情况下重连。
+- `ce app-server status` 只读报告 healthy / starting / live-unresponsive / stale-artifacts / stopped；owner PID 已发布但 startup reservation 仍由当前 supervisor 持有时继续报告 starting，不得对正常慢启动给出破坏性恢复建议。`ce app-server recover --expected-pid <pid> --force` 在 supervisor lock 内重新核对持久进程身份后才终止并替换 owner。live-unresponsive 无法权威证明活动 turn 已结束，因此不会被 watchdog 自动杀死，强制恢复仍是用户明确承担中断风险的操作；`SIGKILL` 只允许用于可重新验证 boot ID、进程启动时间、UID 与当前命令的 Linux 记录，其他平台在 `SIGTERM` 无效后失败关闭。
 - `ce agent install-service` 安装带唯一注释标记的用户 crontab watchdog。
 - watchdog 定期确保专用 tmux 会话存在；tmux 中保留实时可查看日志，同时写入轮转日志文件。
 - 日志达到轮转阈值时，watchdog 先停止 Agent 并关闭旧日志文件描述符，再轮转并重启 Agent；独立 app-server 不因此被终止，活动 turn 继续运行。

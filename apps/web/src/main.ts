@@ -139,6 +139,8 @@ import {
   workspaceRelativeCwd,
 } from "./workspace-view.js";
 
+const APP_SERVER_RESTART_REQUEST_TIMEOUT_MS = 90_000;
+
 type ThreadSummary = {
   id: string;
   name: string | null;
@@ -2370,7 +2372,7 @@ async function applyCodexUpdate(): Promise<void> {
     await previous.request(
       "setup/app-server/restart",
       { force: true },
-      { timeoutMs: 30_000 },
+      { timeoutMs: APP_SERVER_RESTART_REQUEST_TIMEOUT_MS },
     );
     codexVersionDialog.close();
     await reconnectAfterCodexRestart(previous);
@@ -2457,7 +2459,7 @@ async function saveNetworkSettings(): Promise<void> {
       await previous.request(
         "setup/app-server/restart",
         { force: true },
-        { timeoutMs: 30_000 },
+        { timeoutMs: APP_SERVER_RESTART_REQUEST_TIMEOUT_MS },
       );
       networkSettingsDialog.close();
       await reconnectAfterCodexRestart(previous);
@@ -2603,7 +2605,7 @@ async function continueAfterCodexCheck(): Promise<void> {
       await previous.request(
         "setup/app-server/restart",
         { force: true },
-        { timeoutMs: 30_000 },
+        { timeoutMs: APP_SERVER_RESTART_REQUEST_TIMEOUT_MS },
       );
       appServerRestartRequired = false;
       provisionStatus.appServerRunning = true;
@@ -2769,7 +2771,7 @@ async function importCodexAuth(): Promise<void> {
     await previous.request(
       "setup/app-server/restart",
       { force: true },
-      { timeoutMs: 30_000 },
+      { timeoutMs: APP_SERVER_RESTART_REQUEST_TIMEOUT_MS },
     );
     await reconnectAfterCodexRestart(previous);
     return;

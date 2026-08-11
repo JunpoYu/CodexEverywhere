@@ -79,37 +79,9 @@ export class CodexAppServerClient extends EventEmitter<ClientEvents> {
       createConnection: () => createConnection({ path: socketPath }),
       perMessageDeflate: false,
     });
-
-    await new Promise<void>((resolve, reject) => {
-      const timeout = setTimeout(() => {
-        cleanup();
-        socket.terminate();
-        reject(
-          new Error(
-            `Timed out connecting to Codex app-server after ${timeoutMs}ms`,
-          ),
-        );
-      }, timeoutMs);
-      const handleOpen = () => {
-        cleanup();
-        resolve();
-      };
-      const handleError = (error: Error) => {
-        cleanup();
-        reject(error);
-      };
-      const cleanup = () => {
-        clearTimeout(timeout);
-        socket.off("open", handleOpen);
-        socket.off("error", handleError);
-      };
-
-      socket.once("open", handleOpen);
-      socket.once("error", handleError);
-    });
-
     const client = new CodexAppServerClient(socket);
     try {
+      await waitForWebSocketOpen(socket, timeoutMs);
       await withTimeout(
         client.request("initialize", {
           clientInfo: {
@@ -275,6 +247,39 @@ export class CodexAppServerClient extends EventEmitter<ClientEvents> {
     }
     this.#pending.clear();
   }
+}
+
+function waitForWebSocketOpen(
+  socket: WebSocket,
+  timeoutMs: number,
+): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    let settled = false;
+    const finish = (error?: Error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      socket.off("open", handleOpen);
+      socket.off("error", handleError);
+      if (error) reject(error);
+      else resolve();
+    };
+    const handleOpen = () => finish();
+    const handleError = (error: Error) => finish(error);
+    const timeout = setTimeout(() => {
+      finish(
+        new Error(
+          `Timed out connecting to Codex app-server after ${timeoutMs}ms`,
+        ),
+      );
+      // CodexAppServerClient installs its transport error listener before this
+      // timer starts. Terminating a CONNECTING ws can therefore never emit an
+      // unhandled "closed before the connection was established" error.
+      socket.terminate();
+    }, timeoutMs);
+    socket.once("open", handleOpen);
+    socket.once("error", handleError);
+  });
 }
 
 async function withTimeout<T>(

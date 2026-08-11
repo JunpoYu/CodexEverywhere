@@ -20,7 +20,12 @@ import {
   readProcessRecord,
   writeProcessRecord,
 } from "../host/process-files.js";
-import { ensureAppServer, restartAppServer } from "./app-server-supervisor.js";
+import {
+  canForceKillAppServerProcess,
+  ensureAppServer,
+  inspectAppServer,
+  restartAppServer,
+} from "./app-server-supervisor.js";
 
 const temporaryDirectories: string[] = [];
 
@@ -36,6 +41,40 @@ afterEach(async () => {
 });
 
 describe("app-server supervisor", () => {
+  it("only permits forced escalation with immutable Linux identity", () => {
+    const record = {
+      pid: process.pid,
+      startedAt: new Date().toISOString(),
+      procStartTime: "123",
+      bootId: "boot-id",
+      uid: 1000,
+    };
+
+    expect(canForceKillAppServerProcess(record, "linux")).toBe(true);
+    expect(canForceKillAppServerProcess(record, "darwin")).toBe(false);
+    expect(
+      canForceKillAppServerProcess(
+        { pid: record.pid, startedAt: record.startedAt },
+        "linux",
+      ),
+    ).toBe(false);
+  });
+
+  it("reports stale artifacts without treating a socket path as healthy", async () => {
+    const directory = await temporaryDirectory();
+    const paths = resolveHostPaths({
+      CE_HOME: join(directory, "home"),
+      CE_RUNTIME_DIR: join(directory, "run"),
+    });
+    await mkdir(paths.runtimeDir, { recursive: true });
+    await writeFile(paths.appServerSocket, "stale", { mode: 0o600 });
+
+    await expect(inspectAppServer(paths)).resolves.toEqual({
+      health: "stale-artifacts",
+      socketExists: true,
+    });
+  });
+
   it("requires an explicit force decision before restarting", async () => {
     const directory = await temporaryDirectory();
     const paths = resolveHostPaths({
@@ -44,6 +83,26 @@ describe("app-server supervisor", () => {
     });
 
     await expect(restartAppServer(paths)).rejects.toThrow("force: true");
+  });
+
+  it("rejects recovery when the recorded owner changed", async () => {
+    const directory = await temporaryDirectory();
+    const paths = resolveHostPaths({
+      CE_HOME: join(directory, "home"),
+      CE_RUNTIME_DIR: join(directory, "run"),
+    });
+    await mkdir(paths.runtimeDir, { recursive: true });
+    await writeProcessRecord(paths.appServerPidFile, process.pid);
+
+    await expect(
+      restartAppServer(paths, {
+        force: true,
+        expectedPid: process.pid + 1,
+      }),
+    ).rejects.toThrow(`expected PID ${process.pid + 1}`);
+    await expect(
+      readProcessRecord(paths.appServerPidFile),
+    ).resolves.toMatchObject({ pid: process.pid });
   });
 
   it("refuses to replace a live recorded owner whose protocol probe times out", async () => {
@@ -98,6 +157,12 @@ server.listen(${JSON.stringify(paths.appServerSocket)});
         await expect(stat(paths.appServerSocket)).resolves.toMatchObject({});
       });
       await writeProcessRecord(paths.appServerPidFile, owner.pid);
+
+      await expect(inspectAppServer(paths)).resolves.toMatchObject({
+        health: "live-unresponsive",
+        socketExists: true,
+        pid: owner.pid,
+      });
 
       await expect(
         ensureAppServer(paths, { codexBinary: fakeCodex, timeoutMs: 100 }),
@@ -155,6 +220,12 @@ server.listen(${JSON.stringify(paths.appServerSocket)});
         expect(record).not.toHaveProperty("cmdline");
       }
       await expect(processRecordMatches(record!)).resolves.toBe(true);
+    });
+    await expect(inspectAppServer(paths)).resolves.toMatchObject({
+      health: "starting",
+      socketExists: false,
+      pid: childPid,
+      startupSupervisorPid: process.pid,
     });
 
     expect(await outcome).toMatchObject({
