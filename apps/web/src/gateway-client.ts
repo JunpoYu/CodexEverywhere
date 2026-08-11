@@ -406,7 +406,7 @@ export class GatewayClient {
       deviceName: options.deviceName,
       rememberDevice: options.rememberDevice,
     });
-    await client.#authenticate(false, true);
+    await client.#authenticate(false, false);
     client.#reconnectMode = gatewayReconnectMode(
       "passkey",
       options.rememberDevice,
@@ -941,7 +941,7 @@ export class GatewayClient {
     try {
       await client.#authenticate(
         false,
-        true,
+        false,
         canInteract,
         onInteractionStarted,
       );

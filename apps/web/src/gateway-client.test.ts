@@ -224,9 +224,6 @@ describe("connection target selection", () => {
 describe("ambiguous gateway request outcomes", () => {
   it("keeps a temporary Passkey device identity stable across reconnects", async () => {
     const hostIdentity = generateStaticKeyPair();
-    webauthnMocks.startAuthentication.mockResolvedValue({
-      response: { userHandle: bytesToBase64Url(hostIdentity.publicKey) },
-    });
     const simulation = simulatedHostWebSocket(hostIdentity);
     vi.stubGlobal("WebSocket", simulation.WebSocketClass);
     const client = await GatewayClient.loginWithPasskey(
@@ -253,6 +250,7 @@ describe("ambiguous gateway request outcomes", () => {
 
     const reconnected = await client.reconnect();
 
+    expect(simulation.loginOptionDiscoverability()).toEqual([false]);
     expect(client.canReconnectSilently).toBe(true);
     expect(reconnected.host).toMatchObject({
       deviceId: originalIdentity.deviceId,
@@ -322,9 +320,6 @@ describe("ambiguous gateway request outcomes", () => {
       expect(simulation.handshakeModes()).toEqual(["connect", "resume"]);
       expect(dispose.mock.calls.length).toBe(disposalsBeforeResume + 1);
 
-      webauthnMocks.startAuthentication.mockResolvedValue({
-        response: { userHandle: bytesToBase64Url(hostIdentity.publicKey) },
-      });
       const reauthenticated = await client.reconnect({
         allowInteractive: true,
       });
@@ -338,6 +333,7 @@ describe("ambiguous gateway request outcomes", () => {
         mode: "login",
         rememberDevice: true,
       });
+      expect(simulation.loginOptionDiscoverability()).toEqual([false, false]);
     } finally {
       dispose.mockRestore();
     }
@@ -677,11 +673,13 @@ function simulatedHostWebSocket(
   socket(): SimulatedHostSocket;
   handshakeModes(): string[];
   handshakeAuthentications(): Record<string, unknown>[];
+  loginOptionDiscoverability(): unknown[];
   failNextLoginOptions(): void;
 } {
   let current: SimulatedHostSocket | undefined;
   const handshakeModes: string[] = [];
   const handshakeAuthentications: Record<string, unknown>[] = [];
+  const loginOptionDiscoverability: unknown[] = [];
   let failNextLoginOptions = false;
 
   class SimulatedHostSocket extends EventTarget {
@@ -765,8 +763,12 @@ function simulatedHostWebSocket(
       const request = JSON.parse(new TextDecoder().decode(plaintext)) as {
         requestId: string;
         method: string;
+        payload?: Record<string, unknown>;
       };
       this.lastRequest = request;
+      if (request.method === "auth/login/options") {
+        loginOptionDiscoverability.push(request.payload?.discoverable);
+      }
       if (request.method === "auth/login/options" && failNextLoginOptions) {
         failNextLoginOptions = false;
         queueMicrotask(() => this.close());
@@ -851,6 +853,7 @@ function simulatedHostWebSocket(
       handshakeAuthentications.map((authentication) => ({
         ...authentication,
       })),
+    loginOptionDiscoverability: () => [...loginOptionDiscoverability],
     failNextLoginOptions: () => {
       failNextLoginOptions = true;
     },
