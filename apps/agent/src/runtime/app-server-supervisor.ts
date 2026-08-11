@@ -76,19 +76,25 @@ export async function inspectAppServer(
   }
 
   const record = await readAppServerProcessRecord(paths);
+  const reservation = await readStartupReservation(paths);
+  if (
+    reservation &&
+    (await processRecordMatches(reservation)) &&
+    (!record ||
+      record.appServerStartupNonce === reservation.appServerStartupNonce)
+  ) {
+    return {
+      health: "starting",
+      socketExists,
+      ...(record ? { pid: record.pid } : {}),
+      startupSupervisorPid: reservation.pid,
+    };
+  }
   if (record && (await processRecordMatches(record))) {
     return {
       health: "live-unresponsive",
       socketExists,
       pid: record.pid,
-    };
-  }
-  const reservation = await readStartupReservation(paths);
-  if (reservation && (await processRecordMatches(reservation))) {
-    return {
-      health: "starting",
-      socketExists,
-      startupSupervisorPid: reservation.pid,
     };
   }
   if (record || reservation || socketExists) {
@@ -176,11 +182,6 @@ async function ensureAppServerLocked(
     };
     await writePrivateJsonAtomically(paths.appServerPidFile, capturedOwner);
     ownerRecord = capturedOwner;
-    if (!(await removeOwnedStartupReservation(paths, startupReservation))) {
-      throw new Error(
-        "Codex app-server startup reservation changed before owner publication",
-      );
-    }
     const deadline =
       Date.now() + (options.timeoutMs ?? APP_SERVER_STARTUP_TIMEOUT_MS);
     while (Date.now() < deadline) {
@@ -193,6 +194,11 @@ async function ensureAppServerLocked(
         throw new Error("Codex app-server exited before becoming ready");
       }
       if (await probeAppServer(paths.appServerSocket)) {
+        if (!(await removeOwnedStartupReservation(paths, startupReservation))) {
+          throw new Error(
+            "Codex app-server startup reservation changed before readiness",
+          );
+        }
         child.unref();
         return { started: true, pid: childPid };
       }
@@ -258,9 +264,15 @@ export async function restartAppServer(
         await new Promise((resolve) => setTimeout(resolve, 50));
       }
       if (await processRecordMatches(record)) {
+        if (!canForceKillAppServerProcess(record)) {
+          throw new Error(
+            `Codex app-server PID ${record.pid} did not stop after SIGTERM; refusing SIGKILL because immutable process identity validation is unavailable`,
+          );
+        }
         // `force` is an explicit acknowledgement that an unresponsive
-        // app-server may still own an active turn. Escalate only after
-        // revalidating the exact immutable process identity and command.
+        // app-server may still own an active turn. Linux escalation additionally
+        // requires the recorded boot, process start time, and UID before the
+        // current command is revalidated by signalRecordedProcess.
         await signalRecordedProcess(record, "SIGKILL", {
           ...(typeof process.getuid === "function"
             ? { uid: process.getuid() }
@@ -298,21 +310,31 @@ export async function restartAppServer(
 
 async function acquireSupervisorLock(paths: HostPaths): Promise<ProcessLock> {
   const lockPath = `${paths.appServerPidFile}.supervisor.lock`;
-  const deadline = Date.now() + 20_000;
   while (true) {
     try {
       return await ProcessLock.acquire(lockPath);
     } catch (error) {
       if (
         !(error instanceof Error) ||
-        !error.message.includes("already running") ||
-        Date.now() >= deadline
+        !error.message.includes("already running")
       ) {
         throw error;
       }
       await new Promise((resolve) => setTimeout(resolve, 50));
     }
   }
+}
+
+export function canForceKillAppServerProcess(
+  record: ProcessRecord,
+  platform: NodeJS.Platform = process.platform,
+): boolean {
+  return (
+    platform === "linux" &&
+    record.procStartTime !== undefined &&
+    record.bootId !== undefined &&
+    record.uid !== undefined
+  );
 }
 
 async function stopSpawnedChild(child: ChildProcess): Promise<void> {

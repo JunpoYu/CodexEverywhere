@@ -103,7 +103,7 @@ flowchart LR
     App --> Work
 ```
 
-每位 Linux 用户只运行一个长期 app-server，由它承载多个 workspace 和 thread。Agent 在 spawn 前先原子发布带宿主机 boot identity 的启动保留记录，再原子发布 app-server 的不可变进程身份并删除该保留记录；因此 Agent 即使在 spawn 与 PID 发布之间崩溃，后继也会在同一 boot 内失败关闭而不会启动第二实例。带匹配 app-server owner record 的保留记录可以按同一 nonce 安全清理；没有匹配 owner record 的残留只有在能够证明来自旧 boot 时才自动回收，同一 boot 内则必须先由运维者确认没有启动中的 child，再按错误提示移除。app-server 冷启动最多等待 60 秒；连接失败不会终止 Agent、Relay 或 Host 认证，会话会在后续请求重新建立 Codex inner transport。`ce app-server status` 区分健康、启动中、存活但无响应、陈旧文件与停止状态；确认没有可保留的活动 turn 后，可用 status 返回的 PID 执行 `ce app-server recover --expected-pid <pid> --force`，进程身份变化时恢复会拒绝继续。Agent 可以同时配置 Direct 与 Relay：
+每位 Linux 用户只运行一个长期 app-server，由它承载多个 workspace 和 thread。Agent 在 spawn 前先原子发布带宿主机 boot identity 的启动保留记录，再原子发布 app-server 的不可变进程身份，并在协议探测成功后删除该保留记录；因此 Agent 即使在 spawn、PID 发布或 readiness 等待期间崩溃，后继也会在同一 boot 内失败关闭而不会启动第二实例。带匹配 app-server owner record 的保留记录可以按同一 nonce 安全清理；没有匹配 owner record 的残留只有在能够证明来自旧 boot 时才自动回收，同一 boot 内则必须先由运维者确认没有启动中的 child，再按错误提示移除。app-server 冷启动最多等待 60 秒；并发连接会等待同一个 supervisor 完成，不会以更短的独立锁期限提前失败。连接失败不会终止 Agent、Relay 或 Host 认证，会话会在后续请求重新建立 Codex inner transport。`ce app-server status` 区分健康、启动中、存活但无响应、陈旧文件与停止状态；启动保留记录存在且仍匹配 owner 时，即使 PID 已发布也保持报告“启动中”。确认没有可保留的活动 turn 后，可用 status 返回的 PID 执行 `ce app-server recover --expected-pid <pid> --force`，进程身份变化时恢复会拒绝继续；非 Linux 平台无法证明 boot ID、进程启动时间和 UID 时，温和终止无效后不会升级为 `SIGKILL`。Agent 可以同时配置 Direct 与 Relay：
 
 - **Direct**：浏览器能够到达宿主机时的首选路径。Nginx 只暴露 Agent Gateway，app-server socket 永不暴露到公网。
 - **Relay**：适合 NAT、防火墙或 HPC 入站受限环境。Relay 不保存用户数据库，只在内存中维护在线 opaque route 和有限期授权的防回滚高水位，并转发端到端密文；这些易失状态在进程重启时全部清空。

@@ -21,6 +21,7 @@ import {
   writeProcessRecord,
 } from "../host/process-files.js";
 import {
+  canForceKillAppServerProcess,
   ensureAppServer,
   inspectAppServer,
   restartAppServer,
@@ -40,6 +41,25 @@ afterEach(async () => {
 });
 
 describe("app-server supervisor", () => {
+  it("only permits forced escalation with immutable Linux identity", () => {
+    const record = {
+      pid: process.pid,
+      startedAt: new Date().toISOString(),
+      procStartTime: "123",
+      bootId: "boot-id",
+      uid: 1000,
+    };
+
+    expect(canForceKillAppServerProcess(record, "linux")).toBe(true);
+    expect(canForceKillAppServerProcess(record, "darwin")).toBe(false);
+    expect(
+      canForceKillAppServerProcess(
+        { pid: record.pid, startedAt: record.startedAt },
+        "linux",
+      ),
+    ).toBe(false);
+  });
+
   it("reports stale artifacts without treating a socket path as healthy", async () => {
     const directory = await temporaryDirectory();
     const paths = resolveHostPaths({
@@ -200,6 +220,12 @@ server.listen(${JSON.stringify(paths.appServerSocket)});
         expect(record).not.toHaveProperty("cmdline");
       }
       await expect(processRecordMatches(record!)).resolves.toBe(true);
+    });
+    await expect(inspectAppServer(paths)).resolves.toMatchObject({
+      health: "starting",
+      socketExists: false,
+      pid: childPid,
+      startupSupervisorPid: process.pid,
     });
 
     expect(await outcome).toMatchObject({

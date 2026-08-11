@@ -13,7 +13,7 @@
 
 ### Fixed
 
-- Codex app-server Unix WebSocket 在 upgrade 前超时不再因移除 `error` listener 后调用 `terminate()` 而触发未处理异常并杀死 Agent；冷启动窗口从 15 秒扩展到 60 秒，失败或运行中断开的 lazy inner session 会从当前 Host 会话清除并允许后续请求无须重新 Passkey 即可重连。新增 `ce app-server status` 与要求匹配 PID、显式 `--force` 的安全恢复入口，watchdog 对可能仍承载活动 turn 的 live-unresponsive owner 继续失败关闭而不擅自终止。
+- Codex app-server Unix WebSocket 在 upgrade 前超时不再因移除 `error` listener 后调用 `terminate()` 而触发未处理异常并杀死 Agent；冷启动窗口从 15 秒扩展到 60 秒，并发请求会等待同一个受控启动完成，Web 重启请求覆盖完整的停止与冷启动窗口。启动保留记录持续到协议探测成功，因此 `status` 不会把正常慢启动误报为无响应；失败或运行中断开的 lazy inner session 会从当前 Host 会话清除并允许后续请求无须重新 Passkey 即可重连。新增 `ce app-server status` 与要求匹配 PID、显式 `--force` 的安全恢复入口，watchdog 对可能仍承载活动 turn 的 live-unresponsive owner 继续失败关闭而不擅自终止；缺少 Linux 不可变进程身份的平台在 `SIGTERM` 无效后拒绝升级为 `SIGKILL`。
 - HPC/NFS/FUSE 文件系统在原子 rename/link 已发布后若以 `EINVAL`、`ENOTSUP` 或 `EOPNOTSUPP` 表示不支持目录 `fsync`，Host 配置、SQLite 状态、Noise 身份、Codex `auth.json`、provisioner 私有配置与进程记录不再误报失败；文件 `fsync` 以及目录 `EIO`/`EPERM` 等真实错误仍会失败关闭。
 - 已打开页面不再因固定会话 TTL、单次心跳抖动或普通 RPC deadline 被迫离线：Direct、Relay control 与 tunnel 统一容忍连续 4 个 15 秒心跳周期，页面以最高 30 秒间隔无限重建 transport，并用绑定 Noise 身份的页面内存票据静默恢复已认证状态；普通用户和管理员的 `host/ping` 仅请求超时时会保留健康 client 并稍后复查，只有真实 transport 丢失或明确 Host 拒绝才进入恢复。同设备多窗口票据彼此独立，失效或已撤销设备通过加密握手中的结构化 `REAUTH_REQUIRED` 可靠回退，后台不触发 WebAuthn，可见后的单次交互若取消或失败会进入显式登录而不是无限重弹，反向代理清除 WebSocket close reason 也不会造成坏票据死循环。管理员页面静默恢复会继承原登录时间，不会刷新危险操作要求的五分钟 recent-auth 窗口。
 - 凭据恢复现在以认证 challenge 开始时的代次做 CAS，并与添加 Passkey、轮换恢复码和设置专用密码串行；恢复完成会撤销活动会话与全部页面票据。CLI 撤销可信设备后，新的 resume 会重新读取持久设备状态并使该设备全部 remembered 多窗口票据失效，同时不误伤之后经 Passkey 建立的临时页面会话。
