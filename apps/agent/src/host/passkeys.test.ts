@@ -27,6 +27,38 @@ afterEach(async () => {
 });
 
 describe("PasskeyRegistry recovery codes", () => {
+  it("targets registered credential IDs for non-discoverable authentication", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "ce-passkey-options-"));
+    temporaryDirectories.push(directory);
+    const store = await HostStateStore.open(join(directory, "state.sqlite"));
+    const registry = new PasskeyRegistry(store, {
+      origin: "https://codex.example",
+      rpId: "codex.example",
+      userName: "alice",
+      nodeId: "node-1",
+    });
+    await store.transaction((database) => {
+      database.run(
+        "INSERT INTO passkeys (credential_id, public_key, sign_count, created_at) VALUES (?, ?, ?, ?)",
+        [
+          "server-side-passkey",
+          new Uint8Array(32),
+          0,
+          "2026-08-12T00:00:00.000Z",
+        ],
+      );
+    });
+
+    const targeted = await registry.authenticationOptions(false);
+    const discoverable = await registry.authenticationOptions(true);
+
+    expect(targeted.allowCredentials?.map(({ id }) => id)).toEqual([
+      "server-side-passkey",
+    ]);
+    expect(discoverable.allowCredentials).toBeUndefined();
+    await store.close();
+  });
+
   it("uses a recognizable Unix account and host display name", async () => {
     const directory = await mkdtemp(join(tmpdir(), "ce-passkey-label-"));
     temporaryDirectories.push(directory);
