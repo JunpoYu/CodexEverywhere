@@ -95,6 +95,30 @@ describe("frontend reliability contracts", () => {
       merge.indexOf("card.remove()"),
     );
     expect(merge).toContain("detachedTransientCards.push(card)");
+    expect(threadViewSource).toContain(
+      '.timeline-entry.streaming, .timeline-entry[data-finalized-stream="true"]',
+    );
+  });
+
+  it("does not race the initial resume with its retry timer", () => {
+    const openThread = mainSource.slice(
+      mainSource.indexOf("async function openThread"),
+      mainSource.indexOf("async function openNewSession"),
+    );
+    const sync = mainSource.slice(
+      mainSource.indexOf("async function syncActiveThread"),
+      mainSource.indexOf("async function renderQueuedMessages"),
+    );
+
+    expect(
+      openThread.indexOf("threadHistoryInitializationSequence = sequence"),
+    ).toBeLessThan(openThread.indexOf("setThreadStatus(thread.status)"));
+    expect(openThread).toContain(
+      "if (threadHistoryInitializationSequence === sequence)",
+    );
+    expect(sync).toContain(
+      "threadHistoryInitializationSequence === openThreadSequence",
+    );
   });
 
   it("does not revive an exhausted history cursor and retries failed initialization", () => {

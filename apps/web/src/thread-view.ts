@@ -1080,7 +1080,7 @@ export class ThreadTimelineView {
       ? completedStreamingCandidateId(
           lifecycleTurnId,
           itemTimelineKind(item),
-          this.#streamingIdentities(),
+          this.#completionCandidateIdentities(),
           Boolean(existing),
           itemTimelineReconciliationText(item),
         )
@@ -1197,10 +1197,10 @@ export class ThreadTimelineView {
     );
   }
 
-  #streamingIdentities(): StreamingTimelineIdentity[] {
+  #completionCandidateIdentities(): StreamingTimelineIdentity[] {
     return Array.from(
       this.#container.querySelectorAll<HTMLElement>(
-        ".timeline-entry.streaming",
+        '.timeline-entry.streaming, .timeline-entry[data-finalized-stream="true"]',
       ),
     ).map((candidate) => ({
       turnId: candidate.dataset.streamTurnId,

@@ -310,6 +310,7 @@ let activeTurnId: string | undefined;
 let activeNewestTurnId: string | undefined;
 let threadSyncTimer: number | undefined;
 let threadSyncInFlight = false;
+let threadHistoryInitializationSequence: number | undefined;
 let activeHistoryNextCursor: string | undefined;
 let activeHistoryPaginationExhausted = false;
 let activeHistoryExhaustedNewestTurnId: string | undefined;
@@ -3663,6 +3664,7 @@ async function openThread(
   const previousThreadId = activeThreadId;
   stopThreadSync();
   const sequence = ++openThreadSequence;
+  threadHistoryInitializationSequence = sequence;
   activeThreadId = thread.id;
   activeThreadCwd = thread.cwd;
   renderWorkspaceScopeDescription();
@@ -3741,6 +3743,10 @@ async function openThread(
     };
     setTuiHandoffVisible(true);
     renderComposerSessionMeta();
+    // The authoritative initial snapshot is now committed. Queue restoration
+    // may take longer, but a bounded repair can no longer race the resume.
+    if (threadHistoryInitializationSequence === sequence)
+      threadHistoryInitializationSequence = undefined;
     const queueSnapshot = await renderQueuedMessages(thread.id, sequence);
     if (
       client !== currentClient ||
@@ -3775,6 +3781,9 @@ async function openThread(
       return;
     appendTimeline("error", "无法读取 thread", errorMessage(error));
     startThreadSync();
+  } finally {
+    if (threadHistoryInitializationSequence === sequence)
+      threadHistoryInitializationSequence = undefined;
   }
   renderThreads(threadsCache);
 }
@@ -5829,6 +5838,7 @@ async function loadOlderHistory(): Promise<void> {
 async function syncActiveThread(): Promise<void> {
   if (
     threadSyncInFlight ||
+    threadHistoryInitializationSequence === openThreadSequence ||
     !client ||
     !activeThreadId ||
     (activeHistoryMode !== "initializing" &&
