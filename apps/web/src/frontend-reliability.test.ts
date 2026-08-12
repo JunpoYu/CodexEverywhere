@@ -53,6 +53,10 @@ describe("frontend reliability contracts", () => {
     ).toBeLessThan(openThread.indexOf("setThreadStatus(thread.status)"));
     expect(newThread).toContain('activeHistoryMode = "paged"');
     expect(threadSync).toContain('if (syncStrategy === "skip") return;');
+    expect(threadSync).toContain('if (syncStrategy === "initialize")');
+    expect(threadSync).toContain(
+      "resumeThreadHistory(currentClient, threadId)",
+    );
     expect(threadSync).toContain("readThreadRepairSnapshot");
     expect(threadSync).toContain("retainRepairHistoryCursor");
     expect(threadSync).toContain(
@@ -62,7 +66,7 @@ describe("frontend reliability contracts", () => {
   });
 
   it("finalizes stale streaming cards from completed turns", () => {
-    const merge = mainSource.includes("timelineView.mergeRecentTurns");
+    const mainUsesMerge = mainSource.includes("timelineView.mergeRecentTurns");
     const threadViewSource = readFileSync(
       new URL("./thread-view.ts", import.meta.url),
       "utf8",
@@ -72,12 +76,48 @@ describe("frontend reliability contracts", () => {
       threadViewSource.indexOf("const deltaKinds"),
     );
 
-    expect(merge).toBe(true);
+    expect(mainUsesMerge).toBe(true);
     expect(threadViewSource).toContain("streamingCardReconciliation");
     expect(threadViewSource).toContain(
       'authoritativeTurn.status === "inProgress"',
     );
     expect(completion).toContain("#removeStreamingTurnCards(payload.turn.id)");
+    const lifecycle = threadViewSource.slice(
+      threadViewSource.indexOf('event.type === "codex/item/started"'),
+      threadViewSource.indexOf("const patchUpdate"),
+    );
+    expect(lifecycle).toContain('event.type === "codex/item/completed"');
+    const merge = threadViewSource.slice(
+      threadViewSource.indexOf("mergeRecentTurns(turns"),
+      threadViewSource.indexOf("reconcileSnapshot("),
+    );
+    expect(merge.indexOf("#finalizeStreamingCard(card)")).toBeLessThan(
+      merge.indexOf("card.remove()"),
+    );
+    expect(merge).toContain("detachedTransientCards.push(card)");
+  });
+
+  it("does not revive an exhausted history cursor and retries failed initialization", () => {
+    const openThread = mainSource.slice(
+      mainSource.indexOf("async function openThread"),
+      mainSource.indexOf("async function openNewSession"),
+    );
+    const loadOlder = mainSource.slice(
+      mainSource.indexOf("async function loadOlderHistory"),
+      mainSource.indexOf("async function syncActiveThread"),
+    );
+    const sync = mainSource.slice(
+      mainSource.indexOf("async function syncActiveThread"),
+      mainSource.indexOf("async function renderQueuedMessages"),
+    );
+
+    expect(openThread).toContain("startThreadSync()");
+    expect(loadOlder).toContain(
+      "activeHistoryPaginationExhausted = activeHistoryNextCursor === undefined",
+    );
+    expect(sync).toContain("activeHistoryPaginationExhausted");
+    expect(sync).toContain('syncStrategy === "initialize"');
+    expect(sync).toContain("resumeThreadHistory(currentClient, threadId)");
   });
 
   it("exposes connection changes to assistive technology and keeps a non-color mobile symbol", () => {

@@ -311,6 +311,7 @@ let activeNewestTurnId: string | undefined;
 let threadSyncTimer: number | undefined;
 let threadSyncInFlight = false;
 let activeHistoryNextCursor: string | undefined;
+let activeHistoryPaginationExhausted = false;
 let activeHistoryMode: ThreadHistoryMode = "none";
 let olderHistoryLoading = false;
 let lastRealtimeEventAt = 0;
@@ -1819,6 +1820,7 @@ async function activate(nextClient: GatewayClient): Promise<void> {
   activeTurnId = undefined;
   activeNewestTurnId = undefined;
   activeHistoryNextCursor = undefined;
+  activeHistoryPaginationExhausted = false;
   activeHistoryMode = "none";
   olderHistoryLoading = false;
   activeThreadSettings = undefined;
@@ -3583,6 +3585,7 @@ function closeActiveThreadView(): void {
   activeTurnId = undefined;
   activeNewestTurnId = undefined;
   activeHistoryNextCursor = undefined;
+  activeHistoryPaginationExhausted = false;
   activeHistoryMode = "none";
   olderHistoryLoading = false;
   activeThreadSettings = undefined;
@@ -3663,6 +3666,7 @@ async function openThread(
   activeTurnId = undefined;
   activeNewestTurnId = undefined;
   activeHistoryNextCursor = undefined;
+  activeHistoryPaginationExhausted = false;
   activeHistoryMode = "initializing";
   olderHistoryLoading = false;
   activeThreadSettings = undefined;
@@ -3715,6 +3719,8 @@ async function openThread(
       .find((turn) => turn.status === "inProgress")?.id;
     activeNewestTurnId = detail.thread.turns.at(-1)?.id;
     activeHistoryNextCursor = history.nextCursor;
+    activeHistoryPaginationExhausted =
+      history.paged && history.nextCursor === undefined;
     activeHistoryMode = history.paged ? "paged" : "legacy";
     setThreadStatus(detail.thread.status);
     timelineView.renderSnapshot(detail, {
@@ -3761,6 +3767,7 @@ async function openThread(
     )
       return;
     appendTimeline("error", "无法读取 thread", errorMessage(error));
+    startThreadSync();
   }
   renderThreads(threadsCache);
 }
@@ -4223,6 +4230,7 @@ async function completeStartedTask(
     activeTurnId = undefined;
     activeNewestTurnId = undefined;
     activeHistoryNextCursor = undefined;
+    activeHistoryPaginationExhausted = false;
     // A newly created thread has no older history. Keep repair reads bounded
     // from the first turn instead of temporarily treating it as legacy.
     activeHistoryMode = "paged";
@@ -5780,6 +5788,7 @@ async function loadOlderHistory(): Promise<void> {
     )
       return;
     activeHistoryNextCursor = page.nextCursor ?? undefined;
+    activeHistoryPaginationExhausted = activeHistoryNextCursor === undefined;
     timelineView.prependTurns(
       newestPageInReadingOrder(page),
       Boolean(activeHistoryNextCursor),
@@ -5808,7 +5817,8 @@ async function syncActiveThread(): Promise<void> {
     threadSyncInFlight ||
     !client ||
     !activeThreadId ||
-    activeThreadStatus?.type !== "active" ||
+    (activeHistoryMode !== "initializing" &&
+      activeThreadStatus?.type !== "active") ||
     Date.now() - lastRealtimeEventAt < 1_250
   )
     return;
@@ -5820,6 +5830,58 @@ async function syncActiveThread(): Promise<void> {
     const syncStrategy = threadHistorySyncStrategy(activeHistoryMode);
     if (syncStrategy === "skip") return;
     const requestedHistoryMode = activeHistoryMode;
+    if (syncStrategy === "initialize") {
+      const history = await resumeThreadHistory(currentClient, threadId);
+      if (
+        client !== currentClient ||
+        sequence !== openThreadSequence ||
+        activeThreadId !== threadId ||
+        activeHistoryMode !== requestedHistoryMode
+      )
+        return;
+      const detail = history.detail;
+      activeTurnId = [...detail.thread.turns]
+        .reverse()
+        .find((turn) => turn.status === "inProgress")?.id;
+      activeNewestTurnId = detail.thread.turns.at(-1)?.id;
+      activeHistoryNextCursor = history.nextCursor;
+      activeHistoryPaginationExhausted =
+        history.paged && history.nextCursor === undefined;
+      activeHistoryMode = history.paged ? "paged" : "legacy";
+      timelineView.renderSnapshot(detail, {
+        hasOlderHistory: Boolean(activeHistoryNextCursor),
+      });
+      activeThreadSettings = {
+        model: detail.model,
+        effort: detail.reasoningEffort,
+        approvalPolicy: detail.approvalPolicy,
+        sandboxPolicy: detail.sandbox,
+      };
+      setTuiHandoffVisible(true);
+      renderComposerSessionMeta();
+      setThreadStatus(detail.thread.status);
+      messageInput.disabled = false;
+      updateComposerSubmitAvailability();
+      const queueSnapshot = await renderQueuedMessages(threadId, sequence);
+      if (
+        client !== currentClient ||
+        sequence !== openThreadSequence ||
+        activeThreadId !== threadId
+      )
+        return;
+      reconcilePendingComposerOperations(
+        threadId,
+        detail.thread.turns,
+        !history.paged || history.nextCursor === undefined,
+        queueSnapshot,
+        {
+          negativeEvidenceAllowed: false,
+          targetClient: currentClient,
+        },
+      );
+      lastRealtimeEventAt = Date.now();
+      return;
+    }
     const repair = await readThreadRepairSnapshot(
       currentClient,
       threadId,
@@ -5837,11 +5899,13 @@ async function syncActiveThread(): Promise<void> {
       activeHistoryNextCursor = retainRepairHistoryCursor(
         activeHistoryNextCursor,
         repair.nextCursor,
+        activeHistoryPaginationExhausted,
       );
       timelineView.setHasOlderHistory(Boolean(activeHistoryNextCursor));
       timelineView.mergeRecentTurns(repair.displayTurns);
     } else {
       activeHistoryNextCursor = undefined;
+      activeHistoryPaginationExhausted = true;
       timelineView.reconcileSnapshot(
         {
           ...repair.detail,

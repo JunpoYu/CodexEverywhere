@@ -603,7 +603,19 @@ export class ThreadTimelineView {
         TRANSIENT_TIMELINE_SELECTOR,
       ),
     );
-    for (const card of transientCards) card.remove();
+    const detachedTransientCards: HTMLElement[] = [];
+    for (const card of transientCards) {
+      if (
+        card.classList.contains("streaming") &&
+        streamingCardReconciliation(card.dataset.streamTurnId, turns) ===
+          "finalize"
+      ) {
+        this.#finalizeStreamingCard(card);
+        continue;
+      }
+      card.remove();
+      detachedTransientCards.push(card);
+    }
     for (const turn of turns) {
       const replacement = this.#turnElement(turn, existingTimestamps);
       const existing = this.#container.querySelector<HTMLElement>(
@@ -617,7 +629,7 @@ export class ThreadTimelineView {
         this.#container.append(replacement);
       }
     }
-    for (const card of transientCards) {
+    for (const card of detachedTransientCards) {
       if (
         localUserReconciledByTurns(
           card.dataset.localTurnId,
@@ -631,11 +643,6 @@ export class ThreadTimelineView {
         turns,
       );
       if (reconciliation === "discard") continue;
-      if (reconciliation === "finalize") {
-        this.#finalizeStreamingCard(card);
-        this.#container.append(card);
-        continue;
-      }
       const candidateId = streamingItemCandidateId(
         card.dataset.streamTurnId,
         card.dataset.itemId,
@@ -671,8 +678,27 @@ export class ThreadTimelineView {
         TRANSIENT_TIMELINE_SELECTOR,
       ),
     );
+    const finalizedCards = transientCards.filter(
+      (card) =>
+        card.classList.contains("streaming") &&
+        streamingCardReconciliation(
+          card.dataset.streamTurnId,
+          boundedResponse.thread.turns,
+        ) === "finalize",
+    );
+    for (const card of finalizedCards) this.#finalizeStreamingCard(card);
+    const finalizedCardSet = new Set(finalizedCards);
     this.#replaceSnapshot(boundedResponse, existingTimestamps);
+    if (finalizedCards.length > 0) {
+      const fragment = document.createDocumentFragment();
+      for (const card of finalizedCards) fragment.append(card);
+      const anchor = this.#container.querySelector(
+        ".turn-block, .timeline-entry:not(.history-pagination)",
+      );
+      this.#container.insertBefore(fragment, anchor);
+    }
     for (const card of transientCards) {
+      if (finalizedCardSet.has(card)) continue;
       if (
         localUserReconciledByTurns(
           card.dataset.localTurnId,
@@ -686,11 +712,6 @@ export class ThreadTimelineView {
         boundedResponse.thread.turns,
       );
       if (reconciliation === "discard") continue;
-      if (reconciliation === "finalize") {
-        this.#finalizeStreamingCard(card);
-        this.#container.append(card);
-        continue;
-      }
       const candidateId = streamingItemCandidateId(
         card.dataset.streamTurnId,
         card.dataset.itemId,
@@ -835,6 +856,8 @@ export class ThreadTimelineView {
           payload.item,
           typeof payload.turnId === "string" ? payload.turnId : undefined,
           lifecycleItemTimestamp(event.type, payload, payload.item),
+          false,
+          event.type === "codex/item/completed",
         );
         this.#finishContentUpdate(followLatest);
         return true;
@@ -865,6 +888,7 @@ export class ThreadTimelineView {
           item,
           payload.turn.id,
           turnItemTimestamp(payload.turn, item),
+          true,
           true,
         );
       }
@@ -1022,9 +1046,10 @@ export class ThreadTimelineView {
 
   #upsertItem(
     item: ThreadItem,
-    completedTurnId?: string,
+    lifecycleTurnId?: string,
     timestampMs?: number,
     preserveExistingTimestamp = false,
+    reconcileCompletedStream = false,
   ): void {
     if (!isVisibleThreadItem(item)) return;
     this.#container.querySelector(".empty")?.remove();
@@ -1035,13 +1060,15 @@ export class ThreadTimelineView {
       local?.remove();
     }
     const [existing, ...duplicates] = this.#findItems(item.id);
-    const completedStreamId = completedStreamingCandidateId(
-      completedTurnId,
-      itemTimelineKind(item),
-      this.#streamingIdentities(),
-      Boolean(existing),
-      itemTimelineReconciliationText(item),
-    );
+    const completedStreamId = reconcileCompletedStream
+      ? completedStreamingCandidateId(
+          lifecycleTurnId,
+          itemTimelineKind(item),
+          this.#streamingIdentities(),
+          Boolean(existing),
+          itemTimelineReconciliationText(item),
+        )
+      : undefined;
     const completedStream = completedStreamId
       ? this.#findItem(completedStreamId)
       : undefined;
@@ -1055,7 +1082,7 @@ export class ThreadTimelineView {
         preserveExistingTimestamp,
       ),
     );
-    if (completedTurnId) replacement.dataset.lifecycleTurnId = completedTurnId;
+    if (lifecycleTurnId) replacement.dataset.lifecycleTurnId = lifecycleTurnId;
     if (existing) existing.replaceWith(replacement);
     else if (completedStream) completedStream.replaceWith(replacement);
     else this.#container.append(replacement);

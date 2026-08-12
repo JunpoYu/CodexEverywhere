@@ -83,8 +83,9 @@ export async function readThreadRepairSnapshot(
 export function retainRepairHistoryCursor(
   currentCursor: string | undefined,
   repairCursor: string | undefined,
+  exhausted: boolean,
 ): string | undefined {
-  return currentCursor ?? repairCursor;
+  return currentCursor ?? (exhausted ? undefined : repairCursor);
 }
 
 export async function resumeThreadHistory(
@@ -157,7 +158,8 @@ export function newestTurnsWithinLimit(
 
 export function threadHistorySyncStrategy(
   mode: ThreadHistoryMode,
-): "skip" | "paged" | "legacy" {
+): "skip" | "initialize" | "paged" | "legacy" {
+  if (mode === "initializing") return "initialize";
   if (mode === "paged") return "paged";
   if (mode === "legacy") return "legacy";
   return "skip";

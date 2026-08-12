@@ -119,9 +119,9 @@ describe("thread history pagination", () => {
     expect(history.detail.thread.turns.at(-1)?.id).toBe("turn-25");
   });
 
-  it("does not run a full-history sync while pagination is initializing", () => {
+  it("retries resume while pagination is initializing", () => {
     expect(threadHistorySyncStrategy("none")).toBe("skip");
-    expect(threadHistorySyncStrategy("initializing")).toBe("skip");
+    expect(threadHistorySyncStrategy("initializing")).toBe("initialize");
     expect(threadHistorySyncStrategy("paged")).toBe("paged");
     expect(threadHistorySyncStrategy("legacy")).toBe("legacy");
   });
@@ -141,12 +141,15 @@ describe("thread history pagination", () => {
   });
 
   it("retains a repair cursor without replacing an older pagination cursor", () => {
-    expect(retainRepairHistoryCursor(undefined, "repair-older")).toBe(
+    expect(retainRepairHistoryCursor(undefined, "repair-older", false)).toBe(
       "repair-older",
     );
-    expect(retainRepairHistoryCursor("already-older", "repair-older")).toBe(
-      "already-older",
-    );
+    expect(
+      retainRepairHistoryCursor("already-older", "repair-older", false),
+    ).toBe("already-older");
+    expect(
+      retainRepairHistoryCursor(undefined, "repair-older", true),
+    ).toBeUndefined();
   });
 
   it("returns the cursor and completeness of a paged repair", async () => {
