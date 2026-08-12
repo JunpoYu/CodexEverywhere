@@ -84,8 +84,12 @@ export function retainRepairHistoryCursor(
   currentCursor: string | undefined,
   repairCursor: string | undefined,
   exhausted: boolean,
+  exhaustedBoundaryVisible: boolean,
 ): string | undefined {
-  return currentCursor ?? (exhausted ? undefined : repairCursor);
+  return (
+    currentCursor ??
+    (exhausted && exhaustedBoundaryVisible ? undefined : repairCursor)
+  );
 }
 
 export async function resumeThreadHistory(

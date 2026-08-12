@@ -6,8 +6,8 @@
 
 ### Fixed
 
-- Web 打开活动会话时使用显式的历史初始化状态，分页结果确定前不会启动完整历史 snapshot；初始化请求瞬时失败后会继续重试 `thread/resume`，并绕过普通 repair 的 1.25 秒实时静默门槛，即使 turn 持续产生事件或已切换为空闲也不会永久停在不可修复的 `initializing` 状态。新会话从首个 turn 起使用有界分页同步，延迟到达的 legacy 完整快照也不能覆盖最近 20 个 turn。后台 repair 会为尚未建立分页状态的新会话保留更早历史 cursor，但用户已经加载到历史尽头后不会重新激活耗尽的 cursor；旧 app-server 不支持 `thread/turns/list` 时，新会话会自动降级到 legacy repair。legacy 完整结果仍只向 DOM 提交最近 20 个 turn，但待确认发送使用未截断结果做安全对账，不再把窗口外的已完成操作误判为缺失。
-- Web 时间线只用 item ID 或 `clientUserMessageId` 精确合并用户消息，不能把同 turn 中任意已有用户消息当成 Steer 新消息已同步的证据。助手只在 item 完成阶段把 ID 变化的流式 item 与权威项做 turn、类型和完整文本唯一匹配；新的 `item/started` 不会误覆盖同 turn 中上一条漏失完成通知的流式输出，权威 item 自身已存在时也不会跨 ID 删除同文 sibling stream。快照、完成通知和乐观卡片乱序到达时不再显示重复的用户消息或首条 Codex 回复，存在多个同文候选时则保守保留而不猜测。流式卡片只有在权威 turn 仍为 `inProgress` 时才能覆盖快照；完成通知会清理同 turn 的残留流式卡，repair 窗口之外的旧卡会在原位置结束动画，避免会话已经空闲却永久显示闪烁光标或把旧回复移动成最新输出。
+- Web 打开活动会话时使用显式的历史初始化状态，分页结果确定前不会启动完整历史 snapshot；初始化请求瞬时失败后会继续重试 `thread/resume`，并绕过普通 repair 的 1.25 秒实时静默门槛，所有 turn 完成/空闲路径也会保留初始化计时器，不会永久停在不可修复的 `initializing` 状态。新会话从首个 turn 起使用有界分页同步，延迟到达的 legacy 完整快照也不能覆盖最近 20 个 turn。后台 repair 会为尚未建立分页状态的新会话保留更早历史 cursor；用户已经加载到历史尽头时，只要 repair 页仍覆盖当时已加载的最新边界就保持 exhaustion，若边界已被更多新 turn 推出窗口则重新建立 cursor，使漏失的中间 turn 仍可分页到达。旧 app-server 不支持 `thread/turns/list` 时，新会话会自动降级到 legacy repair。legacy 完整结果仍只向 DOM 提交最近 20 个 turn，但待确认发送使用未截断结果做安全对账，不再把窗口外的已完成操作误判为缺失。
+- Web 时间线只用 item ID 或 `clientUserMessageId` 精确合并用户消息，不能把同 turn 中任意已有用户消息当成 Steer 新消息已同步的证据。助手只在 item 完成阶段把 ID 变化的流式 item 与权威项做 turn、类型和完整文本唯一匹配；新的 `item/started` 不会误覆盖同 turn 中上一条漏失完成通知的流式输出，权威 item 自身已存在时也不会跨 ID 删除同文 sibling stream。快照、完成通知和乐观卡片乱序到达时不再显示重复的用户消息或首条 Codex 回复，存在多个同文候选时则保守保留而不猜测。流式卡片只有在权威 turn 仍为 `inProgress` 时才能覆盖快照；repair 窗口之外的旧卡会在原位置结束动画并保留 turn、类型与原文身份，之后分页或迟到完成事件加载权威 turn 时会精确清理该 loose 卡，避免会话空闲后永久闪烁、把旧回复移动到最新位置或再次显示重复回复。
 
 ## [0.3.0-alpha.8] - 2026-08-12
 

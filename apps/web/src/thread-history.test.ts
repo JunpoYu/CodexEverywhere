@@ -141,15 +141,18 @@ describe("thread history pagination", () => {
   });
 
   it("retains a repair cursor without replacing an older pagination cursor", () => {
-    expect(retainRepairHistoryCursor(undefined, "repair-older", false)).toBe(
-      "repair-older",
-    );
     expect(
-      retainRepairHistoryCursor("already-older", "repair-older", false),
+      retainRepairHistoryCursor(undefined, "repair-older", false, false),
+    ).toBe("repair-older");
+    expect(
+      retainRepairHistoryCursor("already-older", "repair-older", false, false),
     ).toBe("already-older");
     expect(
-      retainRepairHistoryCursor(undefined, "repair-older", true),
+      retainRepairHistoryCursor(undefined, "repair-older", true, true),
     ).toBeUndefined();
+    expect(
+      retainRepairHistoryCursor(undefined, "repair-older", true, false),
+    ).toBe("repair-older");
   });
 
   it("returns the cursor and completeness of a paged repair", async () => {

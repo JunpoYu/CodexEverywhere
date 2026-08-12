@@ -116,6 +116,8 @@ describe("frontend reliability contracts", () => {
       "activeHistoryPaginationExhausted = activeHistoryNextCursor === undefined",
     );
     expect(sync).toContain("activeHistoryPaginationExhausted");
+    expect(sync).toContain("activeHistoryExhaustedNewestTurnId");
+    expect(sync).toContain("repair.displayTurns.some");
     expect(sync).toContain('syncStrategy === "initialize"');
     expect(sync).toContain("resumeThreadHistory(currentClient, threadId)");
     expect(sync).toContain(
@@ -128,6 +130,28 @@ describe("frontend reliability contracts", () => {
     expect(status).toContain(
       'if (activeHistoryMode === "initializing") startThreadSync()',
     );
+    const activity = mainSource.slice(
+      mainSource.indexOf("function updateThreadActivity"),
+      mainSource.indexOf("function updateTokenUsage"),
+    );
+    expect(activity).toContain(
+      'if (activeHistoryMode === "initializing") startThreadSync()',
+    );
+  });
+
+  it("keeps finalized stream identity until its authoritative page arrives", () => {
+    const threadViewSource = readFileSync(
+      new URL("./thread-view.ts", import.meta.url),
+      "utf8",
+    );
+    const prepend = threadViewSource.slice(
+      threadViewSource.indexOf("prependTurns(turns"),
+      threadViewSource.indexOf("mergeRecentTurns(turns"),
+    );
+    expect(threadViewSource).toContain('card.dataset.finalizedStream = "true"');
+    expect(threadViewSource).not.toContain("delete card.dataset.streamTurnId");
+    expect(threadViewSource).toContain("#removeFinalizedStreamAliases");
+    expect(prepend).toContain("#removeFinalizedStreamAliases(turn)");
   });
 
   it("exposes connection changes to assistive technology and keeps a non-color mobile symbol", () => {

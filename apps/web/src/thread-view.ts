@@ -576,6 +576,7 @@ export class ThreadTimelineView {
         this.#container.querySelector(`[data-turn-id="${CSS.escape(turn.id)}"]`)
       )
         continue;
+      this.#removeFinalizedStreamAliases(turn);
       const section = this.#turnElement(turn);
       if (section) fragment.append(section);
     }
@@ -615,6 +616,7 @@ export class ThreadTimelineView {
         `[data-turn-id="${CSS.escape(turn.id)}"]`,
       );
       this.#removeLooseTurnItems(turn);
+      this.#removeFinalizedStreamAliases(turn);
       if (existing) {
         if (replacement) existing.replaceWith(replacement);
         else existing.remove();
@@ -885,6 +887,7 @@ export class ThreadTimelineView {
           true,
         );
       }
+      this.#removeFinalizedStreamAliases(payload.turn);
       this.#removeStreamingTurnCards(payload.turn.id);
       if (payload.turn.error) {
         this.#appendNoticeElement(
@@ -1196,8 +1199,24 @@ export class ThreadTimelineView {
 
   #finalizeStreamingCard(card: HTMLElement): void {
     card.classList.remove("streaming");
-    delete card.dataset.streamKind;
-    delete card.dataset.streamTurnId;
+    card.dataset.finalizedStream = "true";
+  }
+
+  #removeFinalizedStreamAliases(turn: Turn): void {
+    for (const card of this.#container.querySelectorAll<HTMLElement>(
+      `[data-finalized-stream="true"][data-stream-turn-id="${CSS.escape(turn.id)}"]`,
+    )) {
+      if (
+        streamingItemCandidateId(
+          card.dataset.streamTurnId,
+          card.dataset.itemId,
+          streamingKind(card.dataset.streamKind),
+          card.dataset.rawText,
+          [turn],
+        )
+      )
+        card.remove();
+    }
   }
 
   #itemTimestamps(): Map<string, number> {
