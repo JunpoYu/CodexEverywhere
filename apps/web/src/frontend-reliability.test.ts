@@ -61,6 +61,25 @@ describe("frontend reliability contracts", () => {
     expect(threadSync).toContain("activeHistoryMode = repair.mode");
   });
 
+  it("finalizes stale streaming cards from completed turns", () => {
+    const merge = mainSource.includes("timelineView.mergeRecentTurns");
+    const threadViewSource = readFileSync(
+      new URL("./thread-view.ts", import.meta.url),
+      "utf8",
+    );
+    const completion = threadViewSource.slice(
+      threadViewSource.indexOf('event.type === "codex/turn/completed"'),
+      threadViewSource.indexOf("const deltaKinds"),
+    );
+
+    expect(merge).toBe(true);
+    expect(threadViewSource).toContain("streamingCardReconciliation");
+    expect(threadViewSource).toContain(
+      'authoritativeTurn.status === "inProgress"',
+    );
+    expect(completion).toContain("#removeStreamingTurnCards(payload.turn.id)");
+  });
+
   it("exposes connection changes to assistive technology and keeps a non-color mobile symbol", () => {
     expect(mainSource).toContain(
       'id="connection-status" class="connection-badge" role="status" aria-live="polite"',

@@ -242,6 +242,16 @@ export function streamingItemCandidateId(
   return semanticMatches.length === 1 ? semanticMatches[0]?.id : undefined;
 }
 
+export function streamingCardReconciliation(
+  streamTurnId: string | undefined,
+  turns: ReadonlyArray<Turn>,
+): "preserve" | "finalize" | "discard" {
+  if (!streamTurnId) return "preserve";
+  const authoritativeTurn = turns.find((turn) => turn.id === streamTurnId);
+  if (!authoritativeTurn) return "finalize";
+  return authoritativeTurn.status === "inProgress" ? "preserve" : "discard";
+}
+
 export type LooseTimelineIdentity = {
   itemId?: string | undefined;
   clientUserMessageId?: string | undefined;
@@ -616,6 +626,16 @@ export class ThreadTimelineView {
         )
       )
         continue;
+      const reconciliation = streamingCardReconciliation(
+        card.dataset.streamTurnId,
+        turns,
+      );
+      if (reconciliation === "discard") continue;
+      if (reconciliation === "finalize") {
+        this.#finalizeStreamingCard(card);
+        this.#container.append(card);
+        continue;
+      }
       const candidateId = streamingItemCandidateId(
         card.dataset.streamTurnId,
         card.dataset.itemId,
@@ -661,6 +681,16 @@ export class ThreadTimelineView {
         )
       )
         continue;
+      const reconciliation = streamingCardReconciliation(
+        card.dataset.streamTurnId,
+        boundedResponse.thread.turns,
+      );
+      if (reconciliation === "discard") continue;
+      if (reconciliation === "finalize") {
+        this.#finalizeStreamingCard(card);
+        this.#container.append(card);
+        continue;
+      }
       const candidateId = streamingItemCandidateId(
         card.dataset.streamTurnId,
         card.dataset.itemId,
@@ -838,6 +868,7 @@ export class ThreadTimelineView {
           true,
         );
       }
+      this.#removeStreamingTurnCards(payload.turn.id);
       if (payload.turn.error) {
         this.#appendNoticeElement(
           "Codex 错误",
@@ -1134,6 +1165,19 @@ export class ThreadTimelineView {
       kind: streamingKind(candidate.dataset.streamKind),
       rawText: candidate.dataset.rawText,
     }));
+  }
+
+  #removeStreamingTurnCards(turnId: string): void {
+    for (const card of this.#container.querySelectorAll<HTMLElement>(
+      `.timeline-entry.streaming[data-stream-turn-id="${CSS.escape(turnId)}"]`,
+    ))
+      card.remove();
+  }
+
+  #finalizeStreamingCard(card: HTMLElement): void {
+    card.classList.remove("streaming");
+    delete card.dataset.streamKind;
+    delete card.dataset.streamTurnId;
   }
 
   #itemTimestamps(): Map<string, number> {

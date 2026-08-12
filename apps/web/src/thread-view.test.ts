@@ -23,6 +23,7 @@ import {
   relativeMessageTime,
   shouldFollowTimeline,
   StreamingDeltaBuffer,
+  streamingCardReconciliation,
   streamingItemCandidateId,
   TRANSIENT_TIMELINE_SELECTOR,
   threadSnapshotRevision,
@@ -510,6 +511,22 @@ describe("composer delivery", () => {
         turns,
       ),
     ).toBeUndefined();
+  });
+
+  it("keeps only streams whose authoritative turn is still running", () => {
+    const turns = [
+      testTurn("completed-turn"),
+      { ...testTurn("active-turn"), status: "inProgress" },
+    ] as Turn[];
+
+    expect(streamingCardReconciliation("active-turn", turns)).toBe("preserve");
+    expect(streamingCardReconciliation("completed-turn", turns)).toBe(
+      "discard",
+    );
+    expect(streamingCardReconciliation("outside-repair-window", turns)).toBe(
+      "finalize",
+    );
+    expect(streamingCardReconciliation(undefined, turns)).toBe("preserve");
   });
 
   it("reconciles a changed completed id only to one unambiguous active stream", () => {
