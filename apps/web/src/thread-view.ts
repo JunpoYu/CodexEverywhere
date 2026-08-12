@@ -158,6 +158,7 @@ export type StreamingTimelineIdentity = {
   turnId: string | undefined;
   itemId: string | undefined;
   kind: StreamingTimelineKind | undefined;
+  rawText?: string | undefined;
 };
 
 export type BufferedStreamingDelta = {
@@ -197,13 +198,16 @@ export function completedStreamingCandidateId(
   completedKind: StreamingTimelineKind | undefined,
   candidates: ReadonlyArray<StreamingTimelineIdentity>,
   exactItemPresent = false,
+  completedText?: string,
 ): string | undefined {
-  if (exactItemPresent || !completedTurnId || !completedKind) return undefined;
+  if (!completedTurnId || !completedKind) return undefined;
   const matches = candidates.filter(
     (candidate) =>
       candidate.turnId === completedTurnId &&
       candidate.kind === completedKind &&
-      candidate.itemId,
+      candidate.itemId &&
+      (!exactItemPresent ||
+        (completedText !== undefined && candidate.rawText === completedText)),
   );
   return matches.length === 1 ? matches[0]?.itemId : undefined;
 }
@@ -211,16 +215,66 @@ export function completedStreamingCandidateId(
 export function streamingItemCandidateId(
   streamTurnId: string | undefined,
   streamItemId: string | undefined,
+  streamKind: StreamingTimelineKind | undefined,
+  streamText: string | undefined,
   turns: ReadonlyArray<Turn>,
 ): string | undefined {
   if (!streamTurnId || !streamItemId) return undefined;
   const turn = turns.find((candidate) => candidate.id === streamTurnId);
   if (!turn) return undefined;
-  return turn.items.some(
-    (item: ThreadItem) => isVisibleThreadItem(item) && item.id === streamItemId,
+  if (
+    turn.items.some(
+      (item: ThreadItem) =>
+        isVisibleThreadItem(item) && item.id === streamItemId,
+    )
   )
-    ? streamItemId
-    : undefined;
+    return streamItemId;
+  if (!streamKind || streamText === undefined) return undefined;
+  const semanticMatches: VisibleThreadItem[] = [];
+  for (const item of turn.items) {
+    if (
+      isVisibleThreadItem(item) &&
+      itemTimelineKind(item) === streamKind &&
+      itemTimelineReconciliationText(item) === streamText
+    )
+      semanticMatches.push(item);
+  }
+  return semanticMatches.length === 1 ? semanticMatches[0]?.id : undefined;
+}
+
+export type LooseTimelineIdentity = {
+  itemId?: string | undefined;
+  clientUserMessageId?: string | undefined;
+  lifecycleTurnId?: string | undefined;
+  kind?: string | undefined;
+};
+
+export function looseItemReconciledByTurn(
+  identity: LooseTimelineIdentity,
+  turn: Pick<Turn, "id" | "items">,
+): boolean {
+  if (
+    identity.itemId &&
+    turn.items.some(
+      (item: ThreadItem) =>
+        isVisibleThreadItem(item) && item.id === identity.itemId,
+    )
+  )
+    return true;
+  if (
+    identity.clientUserMessageId &&
+    turn.items.some(
+      (item: ThreadItem) =>
+        item.type === "userMessage" &&
+        item.clientId === identity.clientUserMessageId,
+    )
+  )
+    return true;
+  return (
+    identity.kind === "user" &&
+    identity.lifecycleTurnId === turn.id &&
+    turn.items.some((item: ThreadItem) => item.type === "userMessage")
+  );
 }
 
 const FOLLOW_LATEST_THRESHOLD_PX = 64;
@@ -560,12 +614,16 @@ export class ThreadTimelineView {
       const candidateId = streamingItemCandidateId(
         card.dataset.streamTurnId,
         card.dataset.itemId,
+        streamingKind(card.dataset.streamKind),
+        card.dataset.rawText,
         turns,
       );
       const snapshotCard = candidateId
         ? this.#findItem(candidateId)
         : undefined;
-      if (snapshotCard) snapshotCard.replaceWith(card);
+      if (snapshotCard && candidateId === card.dataset.itemId)
+        snapshotCard.replaceWith(card);
+      else if (snapshotCard) continue;
       else this.#container.append(card);
     }
     this.#renderHistoryPager();
@@ -601,12 +659,16 @@ export class ThreadTimelineView {
       const candidateId = streamingItemCandidateId(
         card.dataset.streamTurnId,
         card.dataset.itemId,
+        streamingKind(card.dataset.streamKind),
+        card.dataset.rawText,
         boundedResponse.thread.turns,
       );
       const snapshotCard = candidateId
         ? this.#findItem(candidateId)
         : undefined;
-      if (snapshotCard) snapshotCard.replaceWith(card);
+      if (snapshotCard && candidateId === card.dataset.itemId)
+        snapshotCard.replaceWith(card);
+      else if (snapshotCard) continue;
       else this.#container.append(card);
     }
     if (followLatest) this.followLatest();
@@ -736,10 +798,7 @@ export class ThreadTimelineView {
         const followLatest = this.#isNearLatest();
         this.#upsertItem(
           payload.item,
-          event.type === "codex/item/completed" &&
-            typeof payload.turnId === "string"
-            ? payload.turnId
-            : undefined,
+          typeof payload.turnId === "string" ? payload.turnId : undefined,
           lifecycleItemTimestamp(event.type, payload, payload.item),
         );
         this.#finishContentUpdate(followLatest);
@@ -769,7 +828,7 @@ export class ThreadTimelineView {
       for (const item of payload.turn.items) {
         this.#upsertItem(
           item,
-          undefined,
+          payload.turn.id,
           turnItemTimestamp(payload.turn, item),
           true,
         );
@@ -945,6 +1004,7 @@ export class ThreadTimelineView {
       itemTimelineKind(item),
       this.#streamingIdentities(),
       Boolean(existing),
+      itemTimelineReconciliationText(item),
     );
     const completedStream = completedStreamId
       ? this.#findItem(completedStreamId)
@@ -959,9 +1019,12 @@ export class ThreadTimelineView {
         preserveExistingTimestamp,
       ),
     );
+    if (completedTurnId) replacement.dataset.lifecycleTurnId = completedTurnId;
     if (existing) existing.replaceWith(replacement);
     else if (completedStream) completedStream.replaceWith(replacement);
     else this.#container.append(replacement);
+    if (existing && completedStream && completedStream !== existing)
+      completedStream.remove();
     for (const duplicate of duplicates) duplicate.remove();
   }
 
@@ -1064,6 +1127,7 @@ export class ThreadTimelineView {
       turnId: candidate.dataset.streamTurnId,
       itemId: candidate.dataset.itemId,
       kind: streamingKind(candidate.dataset.streamKind),
+      rawText: candidate.dataset.rawText,
     }));
   }
 
@@ -1082,14 +1146,20 @@ export class ThreadTimelineView {
   }
 
   #removeLooseTurnItems(turn: Turn): void {
-    const itemIds = new Set(
-      turn.items.filter(isVisibleThreadItem).map((item: ThreadItem) => item.id),
-    );
-    if (itemIds.size === 0) return;
     for (const card of this.#container.querySelectorAll<HTMLElement>(
       "[data-item-id]",
     )) {
-      if (card.dataset.itemId && itemIds.has(card.dataset.itemId))
+      if (
+        looseItemReconciledByTurn(
+          {
+            itemId: card.dataset.itemId,
+            clientUserMessageId: card.dataset.clientUserMessageId,
+            lifecycleTurnId: card.dataset.lifecycleTurnId,
+            kind: card.classList.contains("user") ? "user" : undefined,
+          },
+          turn,
+        )
+      )
         card.remove();
     }
   }
@@ -1317,6 +1387,14 @@ function itemTimelineKind(
   if (item.type === "commandExecution" || item.type === "fileChange")
     return "tool";
   return undefined;
+}
+
+function itemTimelineReconciliationText(
+  item: VisibleThreadItem,
+): string | undefined {
+  return item.type === "agentMessage" || item.type === "plan"
+    ? item.text
+    : undefined;
 }
 
 function streamingKind(

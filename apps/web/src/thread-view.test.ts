@@ -16,6 +16,7 @@ import {
   isReasoningEventType,
   isVisibleThreadItem,
   localUserReconciledByTurns,
+  looseItemReconciledByTurn,
   mcpServerStartupNotice,
   preferredMessageTimestamp,
   queuedMessageText,
@@ -441,16 +442,73 @@ describe("composer delivery", () => {
     ] as never;
 
     expect(
-      streamingItemCandidateId("turn-new", "agent-streaming", turns),
+      streamingItemCandidateId(
+        "turn-new",
+        "agent-streaming",
+        "agent",
+        "未匹配",
+        turns,
+      ),
     ).toBeUndefined();
     expect(
-      streamingItemCandidateId("turn-new", "agent-authoritative", turns),
+      streamingItemCandidateId(
+        "turn-new",
+        "agent-authoritative",
+        "agent",
+        "首次回复",
+        turns,
+      ),
     ).toBe("agent-authoritative");
     expect(
-      streamingItemCandidateId("turn-other", "agent-streaming", turns),
+      streamingItemCandidateId(
+        "turn-other",
+        "agent-streaming",
+        "agent",
+        "首次回复",
+        turns,
+      ),
     ).toBeUndefined();
     expect(
-      streamingItemCandidateId("turn-new", "unknown-tool-stream", turns),
+      streamingItemCandidateId(
+        "turn-new",
+        "unknown-tool-stream",
+        "tool",
+        "首次回复",
+        turns,
+      ),
+    ).toBeUndefined();
+    expect(
+      streamingItemCandidateId(
+        "turn-new",
+        "agent-streaming",
+        "agent",
+        "首次回复",
+        turns,
+      ),
+    ).toBe("agent-authoritative");
+  });
+
+  it("does not guess between authoritative items with identical content", () => {
+    const turns = [
+      {
+        id: "turn-new",
+        status: "completed",
+        error: null,
+        items: [
+          { type: "agentMessage", id: "agent-1", text: "same", phase: null },
+          { type: "agentMessage", id: "agent-2", text: "same", phase: null },
+        ],
+      },
+    ] as never;
+
+    expect(
+      streamingItemCandidateId(
+        "turn-new",
+        "agent-streaming",
+        "agent",
+        "same",
+        turns,
+      ),
     ).toBeUndefined();
   });
 
@@ -490,10 +548,75 @@ describe("composer delivery", () => {
             turnId: "turn-new",
             itemId: "still-streaming",
             kind: "tool",
+            rawText: "still running",
           },
         ],
         true,
+        "done",
       ),
     ).toBeUndefined();
+  });
+
+  it("removes one matching stale stream beside an exact completed item", () => {
+    expect(
+      completedStreamingCandidateId(
+        "turn-new",
+        "agent",
+        [
+          {
+            turnId: "turn-new",
+            itemId: "stale-stream",
+            kind: "agent",
+            rawText: "首次回复",
+          },
+        ],
+        true,
+        "首次回复",
+      ),
+    ).toBe("stale-stream");
+  });
+
+  it("reconciles loose user cards by stable client or lifecycle identity", () => {
+    const turn = {
+      id: "turn-new",
+      items: [
+        {
+          type: "userMessage",
+          id: "user-authoritative",
+          clientId: "operation-1",
+          content: [{ type: "text", text: "你好", text_elements: [] }],
+        },
+      ],
+    } as never;
+
+    expect(
+      looseItemReconciledByTurn(
+        {
+          itemId: "user-started-id",
+          clientUserMessageId: "operation-1",
+        },
+        turn,
+      ),
+    ).toBe(true);
+    expect(
+      looseItemReconciledByTurn(
+        {
+          itemId: "user-started-id",
+          lifecycleTurnId: "turn-new",
+          kind: "user",
+        },
+        turn,
+      ),
+    ).toBe(true);
+    expect(
+      looseItemReconciledByTurn(
+        {
+          itemId: "user-started-id",
+          lifecycleTurnId: "turn-other",
+          kind: "user",
+        },
+        turn,
+      ),
+    ).toBe(false);
   });
 });
