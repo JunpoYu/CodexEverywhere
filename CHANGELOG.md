@@ -4,6 +4,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Web 打开活动会话时使用显式的历史初始化状态，分页结果确定前不会启动完整历史 snapshot；新会话从首个 turn 起使用有界分页同步，延迟到达的 legacy 完整快照也不能覆盖最近 20 个 turn。旧 app-server 的兼容响应和 Timeline repair 会再次执行最近 20 个 turn 的视图层限制，避免长会话突然把全部历史灌入浏览器 DOM。
+
 ## [0.3.0-alpha.8] - 2026-08-12
 
 ### Fixed

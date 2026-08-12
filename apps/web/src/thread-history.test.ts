@@ -7,8 +7,11 @@ import { describe, expect, it, vi } from "vitest";
 
 import {
   HISTORY_PAGE_SIZE,
+  legacyHistorySyncIsCurrent,
   newestPageInReadingOrder,
+  newestTurnsWithinLimit,
   resumeThreadHistory,
+  threadHistorySyncStrategy,
 } from "./thread-history.js";
 
 describe("thread history pagination", () => {
@@ -94,6 +97,45 @@ describe("thread history pagination", () => {
       },
     );
     expect(request).toHaveBeenCalledTimes(2);
+  });
+
+  it("bounds a legacy full-history response to the newest page", async () => {
+    const legacyTurns = Array.from({ length: 25 }, (_, index) =>
+      turn(`turn-${index + 1}`),
+    );
+    const request = vi
+      .fn()
+      .mockRejectedValueOnce(
+        new Error("Invalid params: unknown field `initialTurnsPage`"),
+      )
+      .mockResolvedValueOnce(resumeResponse(legacyTurns));
+
+    const history = await resumeThreadHistory({ request }, "thread-1");
+
+    expect(history.detail.thread.turns).toHaveLength(HISTORY_PAGE_SIZE);
+    expect(history.detail.thread.turns.at(0)?.id).toBe("turn-6");
+    expect(history.detail.thread.turns.at(-1)?.id).toBe("turn-25");
+  });
+
+  it("does not run a full-history sync while pagination is initializing", () => {
+    expect(threadHistorySyncStrategy("none")).toBe("skip");
+    expect(threadHistorySyncStrategy("initializing")).toBe("skip");
+    expect(threadHistorySyncStrategy("paged")).toBe("paged");
+    expect(threadHistorySyncStrategy("legacy")).toBe("legacy");
+  });
+
+  it("rejects a delayed legacy snapshot after the thread becomes paged", () => {
+    expect(legacyHistorySyncIsCurrent("legacy", "legacy")).toBe(true);
+    expect(legacyHistorySyncIsCurrent("legacy", "paged")).toBe(false);
+    expect(legacyHistorySyncIsCurrent("initializing", "legacy")).toBe(false);
+  });
+
+  it("keeps only the newest turns without mutating the source", () => {
+    const turns = Array.from({ length: 25 }, (_, index) =>
+      turn(`turn-${index + 1}`),
+    );
+    expect(newestTurnsWithinLimit(turns).at(0)?.id).toBe("turn-6");
+    expect(turns).toHaveLength(25);
   });
 
   it("does not hide a real resume failure behind an expensive fallback", async () => {

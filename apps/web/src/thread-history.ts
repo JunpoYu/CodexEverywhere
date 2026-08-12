@@ -7,6 +7,8 @@ import type {
 export const HISTORY_PAGE_SIZE = 20;
 export const HISTORY_SYNC_TURN_LIMIT = 5;
 
+export type ThreadHistoryMode = "none" | "initializing" | "paged" | "legacy";
+
 export type ThreadHistoryClient = {
   request<T>(method: string, payload: unknown): Promise<T>;
 };
@@ -55,17 +57,53 @@ export async function resumeThreadHistory(
   } catch (error) {
     if (!isTurnsPaginationUnsupported(error)) throw error;
     if (resumed) {
-      return { detail: resumed, nextCursor: undefined, paged: false };
+      return {
+        detail: withThreadTurns(
+          resumed,
+          newestTurnsWithinLimit(resumed.thread.turns),
+        ),
+        nextCursor: undefined,
+        paged: false,
+      };
     }
     const detail = await client.request<ThreadResumeResponse>("thread/resume", {
       threadId,
     });
-    return { detail, nextCursor: undefined, paged: false };
+    return {
+      detail: withThreadTurns(
+        detail,
+        newestTurnsWithinLimit(detail.thread.turns),
+      ),
+      nextCursor: undefined,
+      paged: false,
+    };
   }
 }
 
 export function newestPageInReadingOrder(page: TurnsPage): Turn[] {
   return [...page.data].reverse();
+}
+
+export function newestTurnsWithinLimit(
+  turns: readonly Turn[],
+  limit = HISTORY_PAGE_SIZE,
+): Turn[] {
+  return turns.slice(-limit);
+}
+
+export function threadHistorySyncStrategy(
+  mode: ThreadHistoryMode,
+): "skip" | "paged" | "legacy" {
+  if (mode === "paged") return "paged";
+  if (mode === "legacy") return "legacy";
+  return "skip";
+}
+
+export function legacyHistorySyncIsCurrent(
+  requestedMode: ThreadHistoryMode,
+  currentMode: ThreadHistoryMode,
+): boolean {
+  return requestedMode === "legacy" && currentMode === requestedMode;
 }
 
 export function isTurnsPaginationUnsupported(error: unknown): boolean {

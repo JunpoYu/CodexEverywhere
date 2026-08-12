@@ -572,9 +572,13 @@ export class ThreadTimelineView {
     this.#finishContentUpdate(followLatest);
   }
 
-  reconcileSnapshot(response: ThreadReadResponse): boolean {
+  reconcileSnapshot(
+    response: ThreadReadResponse,
+    options: { maxTurns?: number } = {},
+  ): boolean {
     this.#flushStreamingDeltas();
-    const revision = threadSnapshotRevision(response);
+    const boundedResponse = boundedThreadSnapshot(response, options.maxTurns);
+    const revision = threadSnapshotRevision(boundedResponse);
     if (revision === this.#snapshotRevision) return false;
     const followLatest = this.#isNearLatest();
     const previousScrollTop = this.#container.scrollTop;
@@ -584,12 +588,12 @@ export class ThreadTimelineView {
         TRANSIENT_TIMELINE_SELECTOR,
       ),
     );
-    this.#replaceSnapshot(response, existingTimestamps);
+    this.#replaceSnapshot(boundedResponse, existingTimestamps);
     for (const card of transientCards) {
       if (
         localUserReconciledByTurns(
           card.dataset.localTurnId,
-          response.thread.turns,
+          boundedResponse.thread.turns,
           card.dataset.localOperationId,
         )
       )
@@ -597,7 +601,7 @@ export class ThreadTimelineView {
       const candidateId = streamingItemCandidateId(
         card.dataset.streamTurnId,
         card.dataset.itemId,
-        response.thread.turns,
+        boundedResponse.thread.turns,
       );
       const snapshotCard = candidateId
         ? this.#findItem(candidateId)
@@ -1212,6 +1216,21 @@ export class ThreadTimelineView {
       updateMessageTimeElement(time);
     }
   }
+}
+
+export function boundedThreadSnapshot(
+  response: ThreadReadResponse,
+  maxTurns?: number,
+): ThreadReadResponse {
+  if (maxTurns === undefined || response.thread.turns.length <= maxTurns)
+    return response;
+  return {
+    ...response,
+    thread: {
+      ...response.thread,
+      turns: response.thread.turns.slice(-maxTurns),
+    },
+  };
 }
 
 function turnItemTimestamp(turn: Turn, item?: ThreadItem): number {

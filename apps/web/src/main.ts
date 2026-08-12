@@ -100,8 +100,12 @@ import {
 import {
   HISTORY_PAGE_SIZE,
   HISTORY_SYNC_TURN_LIMIT,
+  legacyHistorySyncIsCurrent,
   newestPageInReadingOrder,
+  newestTurnsWithinLimit,
   resumeThreadHistory,
+  threadHistorySyncStrategy,
+  type ThreadHistoryMode,
 } from "./thread-history.js";
 import {
   clearUnresolvedThreadStartMarker,
@@ -308,7 +312,7 @@ let activeNewestTurnId: string | undefined;
 let threadSyncTimer: number | undefined;
 let threadSyncInFlight = false;
 let activeHistoryNextCursor: string | undefined;
-let activeHistoryPaged = false;
+let activeHistoryMode: ThreadHistoryMode = "none";
 let olderHistoryLoading = false;
 let lastRealtimeEventAt = 0;
 let activeThreadSettings: ThreadRuntimeSettings | undefined;
@@ -1816,7 +1820,7 @@ async function activate(nextClient: GatewayClient): Promise<void> {
   activeTurnId = undefined;
   activeNewestTurnId = undefined;
   activeHistoryNextCursor = undefined;
-  activeHistoryPaged = false;
+  activeHistoryMode = "none";
   olderHistoryLoading = false;
   activeThreadSettings = undefined;
   activeThreadTokenUsage = undefined;
@@ -3580,7 +3584,7 @@ function closeActiveThreadView(): void {
   activeTurnId = undefined;
   activeNewestTurnId = undefined;
   activeHistoryNextCursor = undefined;
-  activeHistoryPaged = false;
+  activeHistoryMode = "none";
   olderHistoryLoading = false;
   activeThreadSettings = undefined;
   activeThreadTokenUsage = undefined;
@@ -3660,7 +3664,7 @@ async function openThread(
   activeTurnId = undefined;
   activeNewestTurnId = undefined;
   activeHistoryNextCursor = undefined;
-  activeHistoryPaged = false;
+  activeHistoryMode = "initializing";
   olderHistoryLoading = false;
   activeThreadSettings = undefined;
   activeThreadTokenUsage = undefined;
@@ -3712,7 +3716,7 @@ async function openThread(
       .find((turn) => turn.status === "inProgress")?.id;
     activeNewestTurnId = detail.thread.turns.at(-1)?.id;
     activeHistoryNextCursor = history.nextCursor;
-    activeHistoryPaged = history.paged;
+    activeHistoryMode = history.paged ? "paged" : "legacy";
     setThreadStatus(detail.thread.status);
     timelineView.renderSnapshot(detail, {
       hasOlderHistory: Boolean(activeHistoryNextCursor),
@@ -4220,7 +4224,9 @@ async function completeStartedTask(
     activeTurnId = undefined;
     activeNewestTurnId = undefined;
     activeHistoryNextCursor = undefined;
-    activeHistoryPaged = false;
+    // A newly created thread has no older history. Keep repair reads bounded
+    // from the first turn instead of temporarily treating it as legacy.
+    activeHistoryMode = "paged";
     olderHistoryLoading = false;
     renderWorkspaceScopeDescription();
     workspace.classList.add("thread-open");
@@ -5751,7 +5757,7 @@ async function loadOlderHistory(): Promise<void> {
   if (
     !targetClient ||
     !threadId ||
-    !activeHistoryPaged ||
+    activeHistoryMode !== "paged" ||
     !cursor ||
     olderHistoryLoading
   ) {
@@ -5812,7 +5818,9 @@ async function syncActiveThread(): Promise<void> {
   const sequence = openThreadSequence;
   threadSyncInFlight = true;
   try {
-    if (activeHistoryPaged) {
+    const syncStrategy = threadHistorySyncStrategy(activeHistoryMode);
+    if (syncStrategy === "skip") return;
+    if (syncStrategy === "paged") {
       const [metadata, recent] = await Promise.all([
         currentClient.request<ThreadReadResponse>("thread/read", {
           threadId,
@@ -5854,6 +5862,7 @@ async function syncActiveThread(): Promise<void> {
       if (metadata.thread.status.type !== "active") stopThreadSync();
       return;
     }
+    const requestedHistoryMode = activeHistoryMode;
     const detail = await currentClient.request<ThreadReadResponse>(
       "thread/read",
       { threadId, includeTurns: true },
@@ -5861,18 +5870,26 @@ async function syncActiveThread(): Promise<void> {
     if (
       client !== currentClient ||
       sequence !== openThreadSequence ||
-      activeThreadId !== threadId
+      activeThreadId !== threadId ||
+      !legacyHistorySyncIsCurrent(requestedHistoryMode, activeHistoryMode)
     )
       return;
-    activeTurnId = [...detail.thread.turns]
+    const boundedTurns = newestTurnsWithinLimit(detail.thread.turns);
+    const boundedDetail = {
+      ...detail,
+      thread: { ...detail.thread, turns: boundedTurns },
+    };
+    activeTurnId = [...boundedTurns]
       .reverse()
       .find((turn) => turn.status === "inProgress")?.id;
-    activeNewestTurnId = detail.thread.turns.at(-1)?.id ?? activeNewestTurnId;
+    activeNewestTurnId = boundedTurns.at(-1)?.id ?? activeNewestTurnId;
     setThreadStatus(detail.thread.status);
-    timelineView.reconcileSnapshot(detail);
+    timelineView.reconcileSnapshot(boundedDetail, {
+      maxTurns: HISTORY_PAGE_SIZE,
+    });
     reconcilePendingComposerOperations(
       threadId,
-      detail.thread.turns,
+      boundedTurns,
       true,
       undefined,
       {

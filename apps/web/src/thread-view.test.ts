@@ -1,8 +1,13 @@
-import type { ThreadItem } from "@codex-everywhere/codex-app-server-schema/v2";
+import type {
+  ThreadItem,
+  ThreadReadResponse,
+  Turn,
+} from "@codex-everywhere/codex-app-server-schema/v2";
 import { describe, expect, it } from "vitest";
 
 import {
   completedStreamingCandidateId,
+  boundedThreadSnapshot,
   describeThreadItem,
   FileChangeDisclosureState,
   fileChangeItemFromPatchUpdate,
@@ -22,6 +27,36 @@ import {
   threadSnapshotRevision,
   threadSendMode,
 } from "./thread-view.js";
+
+describe("boundedThreadSnapshot", () => {
+  it("prevents a repair snapshot from expanding beyond its turn window", () => {
+    const turns = Array.from({ length: 25 }, (_, index) =>
+      testTurn(`turn-${index + 1}`),
+    );
+    const response = {
+      thread: { id: "thread-1", turns },
+    } as ThreadReadResponse;
+
+    const bounded = boundedThreadSnapshot(response, 20);
+
+    expect(bounded.thread.turns).toHaveLength(20);
+    expect(bounded.thread.turns.at(0)?.id).toBe("turn-6");
+    expect(response.thread.turns).toHaveLength(25);
+  });
+});
+
+function testTurn(id: string): Turn {
+  return {
+    id,
+    items: [],
+    itemsView: "full",
+    status: "completed",
+    error: null,
+    startedAt: null,
+    completedAt: null,
+    durationMs: null,
+  };
+}
 
 describe("relativeMessageTime", () => {
   const now = Date.UTC(2026, 7, 9, 10, 0, 0);

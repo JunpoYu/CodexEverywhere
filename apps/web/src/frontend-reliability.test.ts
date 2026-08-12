@@ -34,6 +34,29 @@ describe("frontend reliability contracts", () => {
     expect(openThread).not.toContain("messageInput.focus");
   });
 
+  it("does not allow background repair to outrun history pagination", () => {
+    const openThread = mainSource.slice(
+      mainSource.indexOf("async function openThread"),
+      mainSource.indexOf("async function openNewSession"),
+    );
+    const newThread = mainSource.slice(
+      mainSource.indexOf("async function completeStartedTask"),
+      mainSource.indexOf("function sessionStartPayload"),
+    );
+    const threadSync = mainSource.slice(
+      mainSource.indexOf("async function syncActiveThread"),
+      mainSource.indexOf("async function renderQueuedMessages"),
+    );
+
+    expect(
+      openThread.indexOf('activeHistoryMode = "initializing"'),
+    ).toBeLessThan(openThread.indexOf("setThreadStatus(thread.status)"));
+    expect(newThread).toContain('activeHistoryMode = "paged"');
+    expect(threadSync).toContain('if (syncStrategy === "skip") return;');
+    expect(threadSync).toContain("legacyHistorySyncIsCurrent");
+    expect(threadSync).toContain("newestTurnsWithinLimit");
+  });
+
   it("exposes connection changes to assistive technology and keeps a non-color mobile symbol", () => {
     expect(mainSource).toContain(
       'id="connection-status" class="connection-badge" role="status" aria-live="polite"',
