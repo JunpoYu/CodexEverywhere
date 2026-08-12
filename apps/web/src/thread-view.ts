@@ -567,9 +567,6 @@ export class ThreadTimelineView {
   prependTurns(turns: Turn[], hasOlderHistory: boolean): void {
     this.#flushStreamingDeltas();
     const previousHeight = this.#container.scrollHeight;
-    const anchor = this.#container.querySelector(
-      ".turn-block, .timeline-entry:not(.history-pagination)",
-    );
     const fragment = document.createDocumentFragment();
     for (const turn of turns) {
       if (
@@ -580,6 +577,12 @@ export class ThreadTimelineView {
       const section = this.#turnElement(turn);
       if (section) fragment.append(section);
     }
+    // Alias reconciliation can remove the first content node. Resolve the
+    // insertion point afterwards so insertBefore never receives a detached
+    // anchor and the caller can safely commit its pagination cursor.
+    const anchor = this.#container.querySelector(
+      ".turn-block, .timeline-entry:not(.history-pagination)",
+    );
     this.#container.insertBefore(fragment, anchor);
     this.#hasOlderHistory = hasOlderHistory;
     this.#loadingOlderHistory = false;
@@ -610,7 +613,8 @@ export class ThreadTimelineView {
       card.remove();
       detachedTransientCards.push(card);
     }
-    for (const turn of turns) {
+    const repairTurnIds = turns.map((turn) => turn.id);
+    for (const [index, turn] of turns.entries()) {
       const replacement = this.#turnElement(turn, existingTimestamps);
       const existing = this.#container.querySelector<HTMLElement>(
         `[data-turn-id="${CSS.escape(turn.id)}"]`,
@@ -621,7 +625,23 @@ export class ThreadTimelineView {
         if (replacement) existing.replaceWith(replacement);
         else existing.remove();
       } else if (replacement) {
-        this.#container.append(replacement);
+        const insertion = repairTurnInsertion(
+          repairTurnIds,
+          index,
+          (turnId) =>
+            this.#container.querySelector<HTMLElement>(
+              `[data-turn-id="${CSS.escape(turnId)}"]`,
+            ) !== null,
+        );
+        const neighbor = insertion
+          ? this.#container.querySelector<HTMLElement>(
+              `[data-turn-id="${CSS.escape(insertion.turnId)}"]`,
+            )
+          : null;
+        if (neighbor && insertion?.position === "before")
+          neighbor.before(replacement);
+        else if (neighbor) neighbor.after(replacement);
+        else this.#container.append(replacement);
       }
     }
     for (const card of detachedTransientCards) {
@@ -1387,6 +1407,22 @@ export function boundedThreadSnapshot(
       turns: response.thread.turns.slice(-maxTurns),
     },
   };
+}
+
+export function repairTurnInsertion(
+  orderedTurnIds: readonly string[],
+  targetIndex: number,
+  isRendered: (turnId: string) => boolean,
+): { turnId: string; position: "before" | "after" } | undefined {
+  for (let index = targetIndex + 1; index < orderedTurnIds.length; index += 1) {
+    const turnId = orderedTurnIds[index];
+    if (turnId && isRendered(turnId)) return { turnId, position: "before" };
+  }
+  for (let index = targetIndex - 1; index >= 0; index -= 1) {
+    const turnId = orderedTurnIds[index];
+    if (turnId && isRendered(turnId)) return { turnId, position: "after" };
+  }
+  return undefined;
 }
 
 function turnItemTimestamp(turn: Turn, item?: ThreadItem): number {

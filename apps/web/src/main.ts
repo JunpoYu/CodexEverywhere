@@ -5795,15 +5795,18 @@ async function loadOlderHistory(): Promise<void> {
       activeThreadId !== threadId
     )
       return;
-    activeHistoryNextCursor = page.nextCursor ?? undefined;
-    activeHistoryPaginationExhausted = activeHistoryNextCursor === undefined;
+    const nextCursor = page.nextCursor ?? undefined;
+    timelineView.prependTurns(
+      newestPageInReadingOrder(page),
+      Boolean(nextCursor),
+    );
+    // Commit pagination only after the DOM update succeeds. A rendering error
+    // must leave the same page retryable instead of skipping it permanently.
+    activeHistoryNextCursor = nextCursor;
+    activeHistoryPaginationExhausted = nextCursor === undefined;
     activeHistoryExhaustedNewestTurnId = activeHistoryPaginationExhausted
       ? activeNewestTurnId
       : undefined;
-    timelineView.prependTurns(
-      newestPageInReadingOrder(page),
-      Boolean(activeHistoryNextCursor),
-    );
   } catch (error) {
     if (
       client === targetClient &&

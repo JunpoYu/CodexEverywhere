@@ -20,6 +20,7 @@ import {
   mcpServerStartupNotice,
   preferredMessageTimestamp,
   queuedMessageText,
+  repairTurnInsertion,
   relativeMessageTime,
   shouldFollowTimeline,
   StreamingDeltaBuffer,
@@ -44,6 +45,30 @@ describe("boundedThreadSnapshot", () => {
     expect(bounded.thread.turns).toHaveLength(20);
     expect(bounded.thread.turns.at(0)?.id).toBe("turn-6");
     expect(response.thread.turns).toHaveLength(25);
+  });
+});
+
+describe("repairTurnInsertion", () => {
+  it("inserts a missed earlier turn before the later turn already rendered", () => {
+    const rendered = new Set(["turn-n-plus-1"]);
+    expect(
+      repairTurnInsertion(
+        ["turn-n", "turn-n-plus-1"],
+        0,
+        rendered.has.bind(rendered),
+      ),
+    ).toEqual({ turnId: "turn-n-plus-1", position: "before" });
+  });
+
+  it("inserts after the nearest earlier page neighbor when no later one is rendered", () => {
+    const rendered = new Set(["turn-n-plus-1"]);
+    expect(
+      repairTurnInsertion(
+        ["turn-n", "turn-n-plus-1", "turn-n-plus-2"],
+        2,
+        rendered.has.bind(rendered),
+      ),
+    ).toEqual({ turnId: "turn-n-plus-1", position: "after" });
   });
 });
 

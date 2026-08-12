@@ -113,7 +113,10 @@ describe("frontend reliability contracts", () => {
 
     expect(openThread).toContain("startThreadSync()");
     expect(loadOlder).toContain(
-      "activeHistoryPaginationExhausted = activeHistoryNextCursor === undefined",
+      "activeHistoryPaginationExhausted = nextCursor === undefined",
+    );
+    expect(loadOlder.indexOf("timelineView.prependTurns(")).toBeLessThan(
+      loadOlder.indexOf("activeHistoryNextCursor = nextCursor"),
     );
     expect(sync).toContain("activeHistoryPaginationExhausted");
     expect(sync).toContain("activeHistoryExhaustedNewestTurnId");
@@ -152,6 +155,12 @@ describe("frontend reliability contracts", () => {
     expect(threadViewSource).not.toContain("delete card.dataset.streamTurnId");
     expect(threadViewSource).toContain("#removeFinalizedStreamAliases");
     expect(prepend).toContain("#removeFinalizedStreamAliases(turn)");
+    expect(prepend.indexOf("#removeFinalizedStreamAliases(turn)")).toBeLessThan(
+      prepend.indexOf("const anchor = this.#container.querySelector"),
+    );
+    expect(prepend).toContain(
+      "// Alias reconciliation can remove the first content node.",
+    );
   });
 
   it("exposes connection changes to assistive technology and keeps a non-color mobile symbol", () => {
