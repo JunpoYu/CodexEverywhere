@@ -200,14 +200,13 @@ export function completedStreamingCandidateId(
   exactItemPresent = false,
   completedText?: string,
 ): string | undefined {
-  if (!completedTurnId || !completedKind) return undefined;
+  if (exactItemPresent || !completedTurnId || !completedKind) return undefined;
   const matches = candidates.filter(
     (candidate) =>
       candidate.turnId === completedTurnId &&
       candidate.kind === completedKind &&
       candidate.itemId &&
-      (!exactItemPresent ||
-        (completedText !== undefined && candidate.rawText === completedText)),
+      (completedText === undefined || candidate.rawText === completedText),
   );
   return matches.length === 1 ? matches[0]?.itemId : undefined;
 }
@@ -255,8 +254,6 @@ export function streamingCardReconciliation(
 export type LooseTimelineIdentity = {
   itemId?: string | undefined;
   clientUserMessageId?: string | undefined;
-  lifecycleTurnId?: string | undefined;
-  kind?: string | undefined;
 };
 
 export function looseItemReconciledByTurn(
@@ -280,11 +277,7 @@ export function looseItemReconciledByTurn(
     )
   )
     return true;
-  return (
-    identity.kind === "user" &&
-    identity.lifecycleTurnId === turn.id &&
-    turn.items.some((item: ThreadItem) => item.type === "userMessage")
-  );
+  return false;
 }
 
 const FOLLOW_LATEST_THRESHOLD_PX = 64;
@@ -1230,8 +1223,6 @@ export class ThreadTimelineView {
           {
             itemId: card.dataset.itemId,
             clientUserMessageId: card.dataset.clientUserMessageId,
-            lifecycleTurnId: card.dataset.lifecycleTurnId,
-            kind: card.classList.contains("user") ? "user" : undefined,
           },
           turn,
         )

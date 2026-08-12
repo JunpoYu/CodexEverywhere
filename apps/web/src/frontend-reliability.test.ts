@@ -118,6 +118,16 @@ describe("frontend reliability contracts", () => {
     expect(sync).toContain("activeHistoryPaginationExhausted");
     expect(sync).toContain('syncStrategy === "initialize"');
     expect(sync).toContain("resumeThreadHistory(currentClient, threadId)");
+    expect(sync).toContain(
+      'activeHistoryMode !== "initializing" &&\n      (activeThreadStatus?.type !== "active" ||',
+    );
+    const status = mainSource.slice(
+      mainSource.indexOf("function setThreadStatus"),
+      mainSource.indexOf("function updatePendingApprovalState"),
+    );
+    expect(status).toContain(
+      'if (activeHistoryMode === "initializing") startThreadSync()',
+    );
   });
 
   it("exposes connection changes to assistive technology and keeps a non-color mobile symbol", () => {

@@ -5818,8 +5818,8 @@ async function syncActiveThread(): Promise<void> {
     !client ||
     !activeThreadId ||
     (activeHistoryMode !== "initializing" &&
-      activeThreadStatus?.type !== "active") ||
-    Date.now() - lastRealtimeEventAt < 1_250
+      (activeThreadStatus?.type !== "active" ||
+        Date.now() - lastRealtimeEventAt < 1_250))
   )
     return;
   const currentClient = client;
@@ -6902,7 +6902,8 @@ function setThreadStatus(status: unknown): void {
     lastRealtimeEventAt ||= Date.now();
     startThreadSync();
   } else {
-    stopThreadSync();
+    if (activeHistoryMode === "initializing") startThreadSync();
+    else stopThreadSync();
     if (threadSettingsPendingNextTurn) {
       threadSettingsPendingNextTurn = false;
       renderComposerSessionMeta();

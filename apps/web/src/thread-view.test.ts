@@ -574,7 +574,7 @@ describe("composer delivery", () => {
     ).toBeUndefined();
   });
 
-  it("removes one matching stale stream beside an exact completed item", () => {
+  it("preserves sibling streams when the exact completed item exists", () => {
     expect(
       completedStreamingCandidateId(
         "turn-new",
@@ -590,10 +590,10 @@ describe("composer delivery", () => {
         true,
         "首次回复",
       ),
-    ).toBe("stale-stream");
+    ).toBeUndefined();
   });
 
-  it("reconciles loose user cards by stable client or lifecycle identity", () => {
+  it("reconciles loose user cards only by stable item or client identity", () => {
     const turn = {
       id: "turn-new",
       items: [
@@ -618,9 +618,7 @@ describe("composer delivery", () => {
     expect(
       looseItemReconciledByTurn(
         {
-          itemId: "user-started-id",
-          lifecycleTurnId: "turn-new",
-          kind: "user",
+          itemId: "user-authoritative",
         },
         turn,
       ),
@@ -629,8 +627,6 @@ describe("composer delivery", () => {
       looseItemReconciledByTurn(
         {
           itemId: "user-started-id",
-          lifecycleTurnId: "turn-other",
-          kind: "user",
         },
         turn,
       ),
