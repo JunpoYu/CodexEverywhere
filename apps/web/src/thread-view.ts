@@ -556,6 +556,11 @@ export class ThreadTimelineView {
     this.#renderHistoryPager();
   }
 
+  setHasOlderHistory(hasOlderHistory: boolean): void {
+    this.#hasOlderHistory = hasOlderHistory;
+    this.#renderHistoryPager();
+  }
+
   prependTurns(turns: Turn[], hasOlderHistory: boolean): void {
     this.#flushStreamingDeltas();
     const previousHeight = this.#container.scrollHeight;

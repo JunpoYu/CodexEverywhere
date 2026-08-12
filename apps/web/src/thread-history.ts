@@ -1,4 +1,5 @@
 import type {
+  ThreadReadResponse,
   ThreadResumeResponse,
   Turn,
   TurnsPage,
@@ -22,6 +23,69 @@ export type OpenThreadHistory = {
   nextCursor: string | undefined;
   paged: boolean;
 };
+
+export type ThreadRepairSnapshot = {
+  detail: ThreadReadResponse;
+  displayTurns: Turn[];
+  reconciliationTurns: Turn[];
+  turnsAuthoritative: boolean;
+  mode: "paged" | "legacy";
+  nextCursor: string | undefined;
+};
+
+export async function readThreadRepairSnapshot(
+  client: ThreadHistoryClient,
+  threadId: string,
+  mode: "paged" | "legacy",
+): Promise<ThreadRepairSnapshot> {
+  if (mode === "paged") {
+    try {
+      const [detail, page] = await Promise.all([
+        client.request<ThreadReadResponse>("thread/read", {
+          threadId,
+          includeTurns: false,
+        }),
+        client.request<TurnsPage>("thread/turns/list", {
+          threadId,
+          limit: HISTORY_SYNC_TURN_LIMIT,
+          sortDirection: "desc",
+          itemsView: "full",
+        }),
+      ]);
+      const turns = newestPageInReadingOrder(page);
+      return {
+        detail,
+        displayTurns: turns,
+        reconciliationTurns: turns,
+        turnsAuthoritative: page.nextCursor == null,
+        mode: "paged",
+        nextCursor: page.nextCursor ?? undefined,
+      };
+    } catch (error) {
+      if (!isTurnsPaginationUnsupported(error)) throw error;
+    }
+  }
+
+  const detail = await client.request<ThreadReadResponse>("thread/read", {
+    threadId,
+    includeTurns: true,
+  });
+  return {
+    detail,
+    displayTurns: newestTurnsWithinLimit(detail.thread.turns),
+    reconciliationTurns: detail.thread.turns,
+    turnsAuthoritative: true,
+    mode: "legacy",
+    nextCursor: undefined,
+  };
+}
+
+export function retainRepairHistoryCursor(
+  currentCursor: string | undefined,
+  repairCursor: string | undefined,
+): string | undefined {
+  return currentCursor ?? repairCursor;
+}
 
 export async function resumeThreadHistory(
   client: ThreadHistoryClient,

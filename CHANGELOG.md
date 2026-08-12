@@ -6,7 +6,7 @@
 
 ### Fixed
 
-- Web 打开活动会话时使用显式的历史初始化状态，分页结果确定前不会启动完整历史 snapshot；新会话从首个 turn 起使用有界分页同步，延迟到达的 legacy 完整快照也不能覆盖最近 20 个 turn。旧 app-server 的兼容响应和 Timeline repair 会再次执行最近 20 个 turn 的视图层限制，避免长会话突然把全部历史灌入浏览器 DOM。
+- Web 打开活动会话时使用显式的历史初始化状态，分页结果确定前不会启动完整历史 snapshot；新会话从首个 turn 起使用有界分页同步，延迟到达的 legacy 完整快照也不能覆盖最近 20 个 turn。后台 repair 会保留分页响应返回的更早历史 cursor；旧 app-server 不支持 `thread/turns/list` 时，新会话会自动降级到 legacy repair。legacy 完整结果仍只向 DOM 提交最近 20 个 turn，但待确认发送使用未截断结果做安全对账，不再把窗口外的已完成操作误判为缺失。
 - Web 时间线会用 `clientUserMessageId` 或同一 turn 的生命周期身份合并用户消息，并在助手流式 item 的 ID 被权威完成项替换时用 turn、类型和完整文本做唯一匹配；快照、完成通知和乐观卡片乱序到达时不再显示重复的用户消息或首条 Codex 回复，存在多个同文候选时则保守保留而不猜测。
 
 ## [0.3.0-alpha.8] - 2026-08-12

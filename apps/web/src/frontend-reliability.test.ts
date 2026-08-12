@@ -53,8 +53,12 @@ describe("frontend reliability contracts", () => {
     ).toBeLessThan(openThread.indexOf("setThreadStatus(thread.status)"));
     expect(newThread).toContain('activeHistoryMode = "paged"');
     expect(threadSync).toContain('if (syncStrategy === "skip") return;');
-    expect(threadSync).toContain("legacyHistorySyncIsCurrent");
-    expect(threadSync).toContain("newestTurnsWithinLimit");
+    expect(threadSync).toContain("readThreadRepairSnapshot");
+    expect(threadSync).toContain("retainRepairHistoryCursor");
+    expect(threadSync).toContain(
+      "repair.reconciliationTurns,\n      repair.turnsAuthoritative",
+    );
+    expect(threadSync).toContain("activeHistoryMode = repair.mode");
   });
 
   it("exposes connection changes to assistive technology and keeps a non-color mobile symbol", () => {
@@ -356,7 +360,7 @@ describe("frontend reliability contracts", () => {
     expect(reconciliation).toContain(
       "negativeEvidenceAllowed: turnsNegativeEvidenceAllowed",
     );
-    expect(threadSync.match(/negativeEvidenceAllowed: true/g)).toHaveLength(2);
+    expect(threadSync).toContain("negativeEvidenceAllowed: true");
     expect(reconcileOperation).toContain(
       "if (!negativeEvidenceAllowed) continue;",
     );

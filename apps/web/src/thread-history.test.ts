@@ -10,6 +10,8 @@ import {
   legacyHistorySyncIsCurrent,
   newestPageInReadingOrder,
   newestTurnsWithinLimit,
+  readThreadRepairSnapshot,
+  retainRepairHistoryCursor,
   resumeThreadHistory,
   threadHistorySyncStrategy,
 } from "./thread-history.js";
@@ -136,6 +138,80 @@ describe("thread history pagination", () => {
     );
     expect(newestTurnsWithinLimit(turns).at(0)?.id).toBe("turn-6");
     expect(turns).toHaveLength(25);
+  });
+
+  it("retains a repair cursor without replacing an older pagination cursor", () => {
+    expect(retainRepairHistoryCursor(undefined, "repair-older")).toBe(
+      "repair-older",
+    );
+    expect(retainRepairHistoryCursor("already-older", "repair-older")).toBe(
+      "already-older",
+    );
+  });
+
+  it("returns the cursor and completeness of a paged repair", async () => {
+    const request = vi
+      .fn()
+      .mockResolvedValueOnce(resumeResponse([]))
+      .mockResolvedValueOnce(turnsPage([turn("new"), turn("old")], "older"));
+
+    const repair = await readThreadRepairSnapshot(
+      { request },
+      "thread-1",
+      "paged",
+    );
+
+    expect(repair).toMatchObject({
+      mode: "paged",
+      nextCursor: "older",
+      turnsAuthoritative: false,
+    });
+    expect(repair.displayTurns.map((value) => value.id)).toEqual([
+      "old",
+      "new",
+    ]);
+    expect(repair.reconciliationTurns).toEqual(repair.displayTurns);
+  });
+
+  it("downgrades a new thread repair when pagination is unsupported", async () => {
+    const legacyTurns = Array.from({ length: 25 }, (_, index) =>
+      turn(`turn-${index + 1}`),
+    );
+    const request = vi
+      .fn()
+      .mockResolvedValueOnce(resumeResponse([]))
+      .mockRejectedValueOnce(
+        new Error("Unsupported gateway method: thread/turns/list"),
+      )
+      .mockResolvedValueOnce(resumeResponse(legacyTurns));
+
+    const repair = await readThreadRepairSnapshot(
+      { request },
+      "thread-1",
+      "paged",
+    );
+
+    expect(repair.mode).toBe("legacy");
+    expect(repair.displayTurns).toHaveLength(HISTORY_PAGE_SIZE);
+    expect(repair.displayTurns.at(0)?.id).toBe("turn-6");
+    expect(repair.reconciliationTurns).toHaveLength(25);
+    expect(repair.turnsAuthoritative).toBe(true);
+    expect(request).toHaveBeenLastCalledWith("thread/read", {
+      threadId: "thread-1",
+      includeTurns: true,
+    });
+  });
+
+  it("does not downgrade a repair after a real transport failure", async () => {
+    const request = vi
+      .fn()
+      .mockResolvedValueOnce(resumeResponse([]))
+      .mockRejectedValueOnce(new Error("Host connection closed"));
+
+    await expect(
+      readThreadRepairSnapshot({ request }, "thread-1", "paged"),
+    ).rejects.toThrow("Host connection closed");
+    expect(request).toHaveBeenCalledTimes(2);
   });
 
   it("does not hide a real resume failure behind an expensive fallback", async () => {

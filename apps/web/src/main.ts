@@ -99,10 +99,9 @@ import {
 } from "./thread-list.js";
 import {
   HISTORY_PAGE_SIZE,
-  HISTORY_SYNC_TURN_LIMIT,
-  legacyHistorySyncIsCurrent,
   newestPageInReadingOrder,
-  newestTurnsWithinLimit,
+  readThreadRepairSnapshot,
+  retainRepairHistoryCursor,
   resumeThreadHistory,
   threadHistorySyncStrategy,
   type ThreadHistoryMode,
@@ -5820,77 +5819,49 @@ async function syncActiveThread(): Promise<void> {
   try {
     const syncStrategy = threadHistorySyncStrategy(activeHistoryMode);
     if (syncStrategy === "skip") return;
-    if (syncStrategy === "paged") {
-      const [metadata, recent] = await Promise.all([
-        currentClient.request<ThreadReadResponse>("thread/read", {
-          threadId,
-          includeTurns: false,
-        }),
-        currentClient.request<TurnsPage>("thread/turns/list", {
-          threadId,
-          limit: HISTORY_SYNC_TURN_LIMIT,
-          sortDirection: "desc",
-          itemsView: "full",
-        }),
-      ]);
-      if (
-        client !== currentClient ||
-        sequence !== openThreadSequence ||
-        activeThreadId !== threadId
-      )
-        return;
-      const recentTurns = newestPageInReadingOrder(recent);
-      activeTurnId = [...recentTurns]
-        .reverse()
-        .find((turn) => turn.status === "inProgress")?.id;
-      activeNewestTurnId = recentTurns.at(-1)?.id ?? activeNewestTurnId;
-      setThreadStatus(metadata.thread.status);
-      timelineView.mergeRecentTurns(recentTurns);
-      reconcilePendingComposerOperations(
-        threadId,
-        recentTurns,
-        recent.nextCursor == null,
-        undefined,
-        {
-          // No Queue snapshot is present, so queue operations cannot become a
-          // negative result; direct turns may use this fresh snapshot.
-          negativeEvidenceAllowed: true,
-          targetClient: currentClient,
-        },
-      );
-      lastRealtimeEventAt = Date.now();
-      if (metadata.thread.status.type !== "active") stopThreadSync();
-      return;
-    }
     const requestedHistoryMode = activeHistoryMode;
-    const detail = await currentClient.request<ThreadReadResponse>(
-      "thread/read",
-      { threadId, includeTurns: true },
+    const repair = await readThreadRepairSnapshot(
+      currentClient,
+      threadId,
+      syncStrategy,
     );
     if (
       client !== currentClient ||
       sequence !== openThreadSequence ||
       activeThreadId !== threadId ||
-      !legacyHistorySyncIsCurrent(requestedHistoryMode, activeHistoryMode)
+      activeHistoryMode !== requestedHistoryMode
     )
       return;
-    const boundedTurns = newestTurnsWithinLimit(detail.thread.turns);
-    const boundedDetail = {
-      ...detail,
-      thread: { ...detail.thread, turns: boundedTurns },
-    };
-    activeTurnId = [...boundedTurns]
+    activeHistoryMode = repair.mode;
+    if (repair.mode === "paged") {
+      activeHistoryNextCursor = retainRepairHistoryCursor(
+        activeHistoryNextCursor,
+        repair.nextCursor,
+      );
+      timelineView.setHasOlderHistory(Boolean(activeHistoryNextCursor));
+      timelineView.mergeRecentTurns(repair.displayTurns);
+    } else {
+      activeHistoryNextCursor = undefined;
+      timelineView.reconcileSnapshot(
+        {
+          ...repair.detail,
+          thread: {
+            ...repair.detail.thread,
+            turns: repair.displayTurns,
+          },
+        },
+        { maxTurns: HISTORY_PAGE_SIZE },
+      );
+    }
+    activeTurnId = [...repair.displayTurns]
       .reverse()
       .find((turn) => turn.status === "inProgress")?.id;
-    activeNewestTurnId = boundedTurns.at(-1)?.id ?? activeNewestTurnId;
-    setThreadStatus(detail.thread.status);
-    timelineView.reconcileSnapshot(boundedDetail, {
-      maxTurns: HISTORY_PAGE_SIZE,
-    });
+    activeNewestTurnId = repair.displayTurns.at(-1)?.id ?? activeNewestTurnId;
+    setThreadStatus(repair.detail.thread.status);
     reconcilePendingComposerOperations(
       threadId,
-      boundedTurns,
-      true,
+      repair.reconciliationTurns,
+      repair.turnsAuthoritative,
       undefined,
       {
         // No Queue snapshot is present, so queue operations cannot become a
@@ -5900,7 +5871,7 @@ async function syncActiveThread(): Promise<void> {
       },
     );
     lastRealtimeEventAt = Date.now();
-    if (detail.thread.status.type !== "active") stopThreadSync();
+    if (repair.detail.thread.status.type !== "active") stopThreadSync();
   } catch {
     // Live notifications remain primary. Retry snapshot synchronization on a
     // later tick without surfacing transient read failures as timeline noise.
