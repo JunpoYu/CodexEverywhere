@@ -4,6 +4,8 @@
 
 ## [Unreleased]
 
+## [0.3.0-alpha.9] - 2026-08-13
+
 ### Changed
 
 - 移除 Web 中复制 Codex TUI 完整清单的斜杠指令补全和手工 adapter，仅新增经过独立设计的 `/side <问题>`：Web 先从 Noise 加密握手协商 `side-fork-v1`，并在断线重试前重新核对，旧 Agent 缺少能力时在副作用前失败关闭；后端再调用原生 `thread/fork` 并要求 `ephemeral: true`，前端以明确的 Side 顶栏、主会话返回入口和移动端布局隔离临时支线。Side 分叉响应只携带版本化继承边界与不透明 app-server 实例代次，边界参与幂等身份；连接中断后用原幂等键恢复，返回成功前会向当前 app-server 验证临时 thread 仍存在。同宿主机重新认证和静默重连均保留 Side 与人工核对状态，暂时重开失败不丢弃唯一 Side handle；只有 app-server 实例代次明确变化才安全返回父 thread，原 Side 待确认消息会在父 thread 中继续显示为可显式放弃的人工核对项。Side 内待确认消息会阻止主动离开，Agent 也在协议层拒绝持久 Queue。Side 不进入会话列表，继承历史只作为模型上下文而不重复渲染；其他 `/` 输入继续失败关闭。
