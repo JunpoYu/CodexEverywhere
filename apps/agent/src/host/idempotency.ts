@@ -18,12 +18,23 @@ type DurableMutationClaim = Pick<RequestEnvelope, "payload"> & {
   method: DurableMutationMethod;
 };
 
-type DurableMutationIdentity = {
-  method: DurableMutationMethod;
-  threadId: string | null;
-  clientUserMessageId: string | null;
-  ephemeral: boolean | null;
-};
+type DurableMutationIdentity =
+  | {
+      method: "thread/start";
+      threadId: null;
+      clientUserMessageId: null;
+    }
+  | {
+      method: "thread/fork";
+      threadId: string | null;
+      clientUserMessageId: null;
+      ephemeral: boolean;
+    }
+  | {
+      method: "turn/start" | "queue/add";
+      threadId: string | null;
+      clientUserMessageId: string | null;
+    };
 
 const RESULT_TTL_MS = 24 * 60 * 60_000;
 const PERMANENT_IDEMPOTENCY_EXPIRY = "9999-12-31T23:59:59.999Z";
@@ -515,20 +526,29 @@ function durableMutationIdentity(
     claim.payload && typeof claim.payload === "object"
       ? (claim.payload as Record<string, unknown>)
       : undefined;
+  if (claim.method === "thread/start") {
+    // Keep the exact v2 identity shape used by released Agents. Adding even a
+    // null field changes JSON.stringify and would make pre-upgrade claims look
+    // like a reused key.
+    return {
+      method: claim.method,
+      threadId: null,
+      clientUserMessageId: null,
+    };
+  }
+  if (claim.method === "thread/fork") {
+    return {
+      method: claim.method,
+      threadId: safeIdentityString(payload?.threadId),
+      clientUserMessageId: null,
+      // Codex defaults the optional field to a persistent fork.
+      ephemeral: payload?.ephemeral === true,
+    };
+  }
   return {
     method: claim.method,
-    threadId:
-      claim.method === "thread/start"
-        ? null
-        : safeIdentityString(payload?.threadId),
-    clientUserMessageId:
-      claim.method === "thread/start" || claim.method === "thread/fork"
-        ? null
-        : safeIdentityString(payload?.clientUserMessageId),
-    ephemeral:
-      claim.method === "thread/fork" && typeof payload?.ephemeral === "boolean"
-        ? payload.ephemeral
-        : null,
+    threadId: safeIdentityString(payload?.threadId),
+    clientUserMessageId: safeIdentityString(payload?.clientUserMessageId),
   };
 }
 
@@ -586,11 +606,13 @@ async function captureDurableMutationResult(
     return {
       returned: parsed,
       persisted:
-        method === "thread/start"
-          ? parsed
-          : indeterminateMutationResult(
-              `The claimed ${method} operation completed, but replay of its content-bearing response is disabled; reconcile by clientUserMessageId`,
-            ),
+        method === "thread/fork"
+          ? boundedPersistedForkResult(parsed)
+          : method === "thread/start"
+            ? parsed
+            : indeterminateMutationResult(
+                `The claimed ${method} operation completed, but replay of its content-bearing response is disabled; reconcile by clientUserMessageId`,
+              ),
     };
   } catch {
     // The handler boundary can include an app-server mutation followed by
@@ -601,6 +623,28 @@ async function captureDurableMutationResult(
     );
     return { returned: indeterminate, persisted: indeterminate };
   }
+}
+
+function boundedPersistedForkResult(value: IdempotentResult): IdempotentResult {
+  if (!value.ok || !value.result || typeof value.result !== "object")
+    return value;
+  const result = value.result as Record<string, unknown>;
+  const thread = result.thread as Record<string, unknown>;
+  return {
+    ok: true,
+    result: {
+      ...result,
+      instructionSources: [],
+      thread: {
+        ...thread,
+        preview: "",
+        name: null,
+        path: null,
+        gitInfo: null,
+        turns: [],
+      },
+    },
+  };
 }
 
 function requestFailure(
@@ -642,7 +686,8 @@ function durableReplayResult(
   method: DurableMutationMethod,
   value: IdempotentResult,
 ): IdempotentResult {
-  if (!value.ok || method === "thread/start") return value;
+  if (!value.ok || method === "thread/start" || method === "thread/fork")
+    return value;
   return indeterminateMutationResult(
     `A previous ${method} completed, but replay of its content-bearing response is disabled; reconcile by clientUserMessageId`,
   );
@@ -712,7 +757,6 @@ function isVerifiableMutationSuccess(
     const thread = record.thread;
     return (
       identity.threadId !== null &&
-      identity.ephemeral !== null &&
       thread !== null &&
       typeof thread === "object" &&
       safeIdentityString((thread as Record<string, unknown>).id) !== null &&

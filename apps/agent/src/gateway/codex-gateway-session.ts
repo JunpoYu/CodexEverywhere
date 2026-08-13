@@ -53,6 +53,14 @@ export type CodexGatewaySessionOptions = {
   consumptionRepairer?: QueueConsumptionRepairer;
 };
 
+type BoundedEphemeralForkResponse = Omit<ThreadForkResponse, "thread"> & {
+  thread: Omit<ThreadForkResponse["thread"], "turns"> & { turns: [] };
+  sideFork: {
+    version: 1;
+    inheritedThroughTurnId: string | null;
+  };
+};
+
 export class CodexGatewaySession implements GatewaySession {
   readonly #client: CodexAppServerClient;
   readonly #workspaces: WorkspaceRegistry;
@@ -330,10 +338,12 @@ export class CodexGatewaySession implements GatewaySession {
           response,
           permissionObservation,
         );
-        if (forkPayload.ephemeral === true) {
+        if (response.thread.ephemeral) {
           this.#ephemeralThreads.add(response.thread.id);
         }
-        return response;
+        return response.thread.ephemeral
+          ? boundedEphemeralForkResponse(response, forkPayload)
+          : response;
       }
       case "thread/compact/start":
       case "thread/goal/set":
@@ -543,6 +553,14 @@ export class CodexGatewaySession implements GatewaySession {
       threadId,
       includeTurns: false,
     });
+    if (
+      this.#ephemeralThreads.has(threadId) ||
+      thread.thread.ephemeral === true
+    ) {
+      throw new Error(
+        "Persistent Queue is not supported for ephemeral Side threads",
+      );
+    }
     const { threadId: _threadId, ...turnPayload } = payload;
     if (!Array.isArray(turnPayload.input))
       throw new Error("queue/add requires input");
@@ -900,6 +918,34 @@ function optionalString(
 ): string | undefined {
   if (value[key] === undefined) return undefined;
   return requiredString(value, key);
+}
+
+function boundedEphemeralForkResponse(
+  response: ThreadForkResponse,
+  request: Record<string, unknown>,
+): BoundedEphemeralForkResponse {
+  const requestedBoundary =
+    typeof request.lastTurnId === "string" ? request.lastTurnId : undefined;
+  return {
+    ...response,
+    // Side responses cross the encrypted Gateway and may otherwise contain
+    // an unbounded inherited rollout. The Web needs settings plus a single
+    // causal boundary, never the parent's prompt/tool history.
+    instructionSources: [],
+    thread: {
+      ...response.thread,
+      preview: "",
+      name: null,
+      path: null,
+      gitInfo: null,
+      turns: [],
+    },
+    sideFork: {
+      version: 1,
+      inheritedThroughTurnId:
+        requestedBoundary ?? response.thread.turns.at(-1)?.id ?? null,
+    },
+  };
 }
 
 function rejectLocalImageInput(value: unknown): void {

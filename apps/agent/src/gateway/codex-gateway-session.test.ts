@@ -129,14 +129,16 @@ describe("CodexGatewaySession notifications", () => {
           sendToClient?.({ id: message.id, result: {} });
         } else if (message.method === "thread/read") {
           threadReads += 1;
+          const threadId = (message.params as { threadId?: string }).threadId;
           sendToClient?.({
             id: message.id,
             result: {
               thread: {
-                id: "thread-1",
+                id: threadId ?? "thread-1",
                 cwd: workspacePath,
                 status: { type: "idle" },
                 turns: [],
+                ephemeral: threadId === "thread-fork",
               },
             },
           });
@@ -189,7 +191,13 @@ describe("CodexGatewaySession notifications", () => {
                 id: "thread-fork",
                 cwd: workspacePath,
                 status: { type: "idle" },
-                turns: [],
+                turns: [
+                  {
+                    id: "parent-turn",
+                    status: "completed",
+                    items: [{ type: "agentMessage", text: "PRIVATE HISTORY" }],
+                  },
+                ],
                 forkedFromId: "thread-1",
                 ephemeral: forkParams.ephemeral === true,
               },
@@ -699,19 +707,42 @@ describe("CodexGatewaySession notifications", () => {
       });
     }
 
-    await expect(
-      session.request({
-        version: PROTOCOL_VERSION,
-        requestId: "slash-fork",
-        idempotencyKey: "slash-fork",
-        method: "thread/fork",
-        payload: { threadId: "thread-1", ephemeral: true },
-      }),
-    ).resolves.toMatchObject({ thread: { id: "thread-fork" } });
+    const sideFork = await session.request({
+      version: PROTOCOL_VERSION,
+      requestId: "slash-fork",
+      idempotencyKey: "slash-fork",
+      method: "thread/fork",
+      payload: {
+        threadId: "thread-1",
+        lastTurnId: "parent-turn",
+        ephemeral: true,
+      },
+    });
+    expect(sideFork).toMatchObject({
+      thread: { id: "thread-fork", turns: [] },
+      sideFork: { version: 1, inheritedThroughTurnId: "parent-turn" },
+    });
+    expect(JSON.stringify(sideFork)).not.toContain("PRIVATE HISTORY");
     await expect(threadPermissions.read("thread-fork")).resolves.toMatchObject({
       approvalPolicy: "never",
       sandbox: "danger-full-access",
     });
+    await expect(
+      session.request({
+        version: PROTOCOL_VERSION,
+        requestId: "side-queue-add",
+        idempotencyKey: "side-queue-add",
+        method: "queue/add",
+        payload: {
+          threadId: "thread-fork",
+          clientUserMessageId: "side-message",
+          input: [{ type: "text", text: "must not persist" }],
+        },
+      }),
+    ).rejects.toThrow("Persistent Queue is not supported");
+    await expect(queue.list()).resolves.not.toContainEqual(
+      expect.objectContaining({ threadId: "thread-fork" }),
+    );
     await expect(
       session.request({
         version: PROTOCOL_VERSION,

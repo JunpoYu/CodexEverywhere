@@ -6,7 +6,7 @@
 
 ### Changed
 
-- 移除 Web 中复制 Codex TUI 完整清单的斜杠指令补全和手工 adapter，仅新增经过独立设计的 `/side <问题>`：后端调用原生 `thread/fork` 并要求 `ephemeral: true`，前端以明确的 Side 顶栏、主会话返回入口和移动端布局隔离临时支线。Side 不进入会话列表、不使用持久 Queue，继承历史只作为模型上下文而不重复渲染；其他 `/` 输入继续失败关闭。
+- 移除 Web 中复制 Codex TUI 完整清单的斜杠指令补全和手工 adapter，仅新增经过独立设计的 `/side <问题>`：后端调用原生 `thread/fork` 并要求 `ephemeral: true`，前端以明确的 Side 顶栏、主会话返回入口和移动端布局隔离临时支线。Side 分叉响应只携带版本化继承边界，连接中断后用原幂等键恢复；Side 内待确认消息会阻止离开，Agent 也在协议层拒绝持久 Queue。Side 不进入会话列表，继承历史只作为模型上下文而不重复渲染；其他 `/` 输入继续失败关闭。
 
 ### Fixed
 

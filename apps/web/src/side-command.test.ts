@@ -23,8 +23,19 @@ describe("Web /side command", () => {
     expect(
       sideVisibleTurns(
         [{ id: "parent-1" }, { id: "parent-2" }, { id: "side-1" }],
-        new Set(["parent-1", "parent-2"]),
+        "parent-2",
+        "side-1",
       ),
     ).toEqual([{ id: "side-1" }]);
+    expect(
+      sideVisibleTurns([{ id: "parent-1" }, { id: "parent-2" }], "parent-2"),
+    ).toEqual([]);
+    expect(
+      sideVisibleTurns(
+        [{ id: "side-21" }, { id: "side-22" }],
+        "parent-2",
+        "side-1",
+      ),
+    ).toEqual([{ id: "side-21" }, { id: "side-22" }]);
   });
 });

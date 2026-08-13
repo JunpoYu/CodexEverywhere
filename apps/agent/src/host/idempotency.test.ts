@@ -674,7 +674,7 @@ describe("IdempotencyRegistry", () => {
     },
   );
 
-  it("returns an ephemeral thread/fork once without persisting inherited history", async () => {
+  it("replays a bounded ephemeral thread/fork without persisting inherited history", async () => {
     directory = await mkdtemp(join(tmpdir(), "ce-idempotency-"));
     state = await HostStateStore.open(join(directory, "state.sqlite"));
     const registry = new IdempotencyRegistry(state);
@@ -699,9 +699,21 @@ describe("IdempotencyRegistry", () => {
     ).resolves.toEqual({ ok: true, result });
     await expect(
       registry.execute("device-a", "side-fork-key", operation, options),
-    ).resolves.toMatchObject({
-      ok: false,
-      error: { code: "IDEMPOTENCY_OUTCOME_INDETERMINATE" },
+    ).resolves.toEqual({
+      ok: true,
+      result: {
+        thread: {
+          id: "side-thread",
+          forkedFromId: "parent-thread",
+          ephemeral: true,
+          turns: [],
+          preview: "",
+          name: null,
+          path: null,
+          gitInfo: null,
+        },
+        instructionSources: [],
+      },
     });
     await expect(
       registry.execute("device-a", "side-fork-key", operation, {
@@ -724,6 +736,114 @@ describe("IdempotencyRegistry", () => {
     );
     expect(serialized).not.toContain("PRIVATE INHERITED HISTORY");
     expect(serialized).not.toContain("parent-turn");
+  });
+
+  it.each([
+    {
+      method: "thread/start" as const,
+      identity: {
+        method: "thread/start",
+        threadId: null,
+        clientUserMessageId: null,
+      },
+      payload: { cwd: "/work" },
+    },
+    {
+      method: "turn/start" as const,
+      identity: {
+        method: "turn/start",
+        threadId: "thread-1",
+        clientUserMessageId: "message-1",
+      },
+      payload: {
+        threadId: "thread-1",
+        clientUserMessageId: "message-1",
+      },
+    },
+    {
+      method: "queue/add" as const,
+      identity: {
+        method: "queue/add",
+        threadId: "thread-1",
+        clientUserMessageId: "message-1",
+      },
+      payload: {
+        threadId: "thread-1",
+        clientUserMessageId: "message-1",
+      },
+    },
+  ])("keeps the released v2 fingerprint for $method", async (entry) => {
+    directory = await mkdtemp(join(tmpdir(), "ce-idempotency-"));
+    state = await HostStateStore.open(join(directory, "state.sqlite"));
+    const key = createHash("sha256")
+      .update("ce-idempotency-v1\0")
+      .update("device-a")
+      .update("\0")
+      .update("released-key")
+      .digest("base64url");
+    const fingerprint = createHash("sha256")
+      .update("ce-durable-idempotency-v2\0")
+      .update(JSON.stringify(entry.identity))
+      .digest("base64url");
+    await state.transaction((database) => {
+      database.run(
+        "INSERT INTO durable_mutation_claims (key, method, request_fingerprint, result_json, created_at, completed_at) VALUES (?, ?, ?, NULL, ?, NULL)",
+        [key, entry.method, fingerprint, new Date().toISOString()],
+      );
+    });
+    const operation = vi.fn(async () => ({ duplicate: true }));
+
+    await expect(
+      new IdempotencyRegistry(state).execute(
+        "device-a",
+        "released-key",
+        operation,
+        { durableClaim: { method: entry.method, payload: entry.payload } },
+      ),
+    ).resolves.toMatchObject({
+      ok: false,
+      error: { code: "IDEMPOTENCY_OUTCOME_INDETERMINATE" },
+    });
+    expect(operation).not.toHaveBeenCalled();
+  });
+
+  it("treats an omitted thread/fork ephemeral field as false", async () => {
+    directory = await mkdtemp(join(tmpdir(), "ce-idempotency-"));
+    state = await HostStateStore.open(join(directory, "state.sqlite"));
+    const registry = new IdempotencyRegistry(state);
+    const result = {
+      thread: {
+        id: "persistent-fork",
+        forkedFromId: "parent-thread",
+        ephemeral: false,
+        turns: [],
+      },
+    };
+    const operation = vi.fn(async () => result);
+    const options = {
+      durableClaim: {
+        method: "thread/fork" as const,
+        payload: { threadId: "parent-thread" },
+      },
+    };
+
+    await expect(
+      registry.execute("device-a", "persistent-fork-key", operation, options),
+    ).resolves.toEqual({ ok: true, result });
+    await expect(
+      registry.execute("device-a", "persistent-fork-key", operation, options),
+    ).resolves.toMatchObject({
+      ok: true,
+      result: {
+        thread: {
+          id: "persistent-fork",
+          forkedFromId: "parent-thread",
+          ephemeral: false,
+          turns: [],
+        },
+      },
+    });
+    expect(operation).toHaveBeenCalledOnce();
   });
 
   it.each([

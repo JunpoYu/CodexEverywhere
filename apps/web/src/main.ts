@@ -223,7 +223,25 @@ type ThreadRuntimeSettings = {
 type ActiveSideSession = {
   threadId: string;
   parent: ThreadSummary;
-  inheritedTurnIds: ReadonlySet<string>;
+  inheritedThroughTurnId: string;
+  firstSideTurnId?: string;
+};
+
+type SideThreadForkResponse = ThreadForkResponse & {
+  sideFork: {
+    version: 1;
+    inheritedThroughTurnId: string | null;
+  };
+};
+
+type PendingSideForkOperation = {
+  idempotencyKey: string;
+  deviceId: string;
+  parent: ThreadSummary;
+  prompt: string;
+  inheritedThroughTurnId: string;
+  outcomeUnknown: boolean;
+  manualReviewRequired: boolean;
 };
 
 const app = requiredElement<HTMLDivElement>("app");
@@ -297,6 +315,8 @@ const composerTurnSnapshotReader = new ComposerTurnSnapshotReader();
 let pendingComposerReconciliationTimer: number | undefined;
 let pendingThreadStartOperation: PendingThreadStartOperation | undefined;
 let threadStartReconciliation: Promise<void> | undefined;
+let pendingSideForkOperation: PendingSideForkOperation | undefined;
+let sideForkReconciliation: Promise<void> | undefined;
 const restoringArchivedThreads = new Set<string>();
 let expandedApprovalId: string | undefined;
 let sessionPermissionDefaults: SessionPermissionDefaults = {
@@ -473,6 +493,7 @@ app.innerHTML = `
         <div class="side-session-banner-copy"><span class="side-session-mark" aria-hidden="true">⑂</span><div><strong><span>Side</span> 临时支线</strong><small id="side-session-parent">继承自主会话</small><p>这里继承主会话上下文，但不会进入会话列表；刷新或离开后无法恢复，回复也不会自动合并回主会话。</p></div></div>
         <button id="return-from-side" class="side-session-return" type="button"><span aria-hidden="true">←</span> 返回主会话</button>
       </aside>
+      <aside id="side-fork-outcome-review" class="thread-start-outcome-review composer-outcome-review" role="status" hidden><strong>Side 创建结果待确认</strong><p id="side-fork-outcome-review-copy">连接中断后无法立即确认临时支线是否已创建。系统会保留原操作编号继续确认，不会用新编号重复分叉。</p><div class="actions"><button id="retry-side-fork-outcome" class="secondary" type="button">使用原操作编号重试</button><button id="abandon-side-fork-outcome" class="ghost danger" type="button">我已核对，放弃待确认</button></div></aside>
       <div id="timeline" class="timeline"><div class="empty empty-session"><strong>从一个任务开始</strong><span>选择左侧会话，或者新建一个 Codex 会话。</span><button id="empty-new-session" class="primary">新建会话</button></div></div>
       <button id="jump-to-latest" class="jump-to-latest" type="button" title="回到正在生成的最新回复" hidden><span aria-hidden="true">↓</span> 回到最新消息</button>
       <aside id="conversation-outline" class="conversation-outline" aria-label="对话大纲" hidden>
@@ -992,6 +1013,14 @@ requiredElement("back-to-sessions").addEventListener(
 requiredElement("return-from-side").addEventListener(
   "click",
   () => void returnToSideParent(),
+);
+requiredElement("retry-side-fork-outcome").addEventListener(
+  "click",
+  () => void resumePendingSideForkOperation(),
+);
+requiredElement("abandon-side-fork-outcome").addEventListener(
+  "click",
+  abandonPendingSideForkOperation,
 );
 requiredElement("start-side-session").addEventListener("click", () => {
   if (!activeThreadId || activeSideSession) return;
@@ -2883,6 +2912,7 @@ async function enterWorkspace(
     }),
   ]);
   if (pendingThreadStartOperation) void resumePendingThreadStartOperation();
+  if (pendingSideForkOperation) void resumePendingSideForkOperation();
   if (pendingComposerOperations.size > 0)
     schedulePendingComposerReconciliation(0);
 }
@@ -3538,6 +3568,11 @@ function closeActiveThreadView(): void {
 }
 
 async function leaveActiveThreadView(): Promise<void> {
+  if (pendingSideForkOperation) {
+    showToast("请先确认或明确放弃 Side 创建结果", "error");
+    renderPendingSideForkOperation();
+    return;
+  }
   if (activeSideSession) {
     await returnToSideParent();
     return;
@@ -3548,8 +3583,12 @@ async function leaveActiveThreadView(): Promise<void> {
 async function returnToSideParent(): Promise<void> {
   const side = activeSideSession;
   if (!side) return;
-  if (composerSubmitting || activeThreadStatus?.type === "active") {
-    showToast("请等待 Side 当前回复结束，或先停止任务", "error");
+  if (
+    composerSubmitting ||
+    activeThreadStatus?.type === "active" ||
+    hasPendingComposerOperationForThread(side.threadId)
+  ) {
+    showToast("请先结束 Side 回复并确认待处理消息，再返回主会话", "error");
     return;
   }
   activeSideSession = undefined;
@@ -3625,8 +3664,14 @@ function visibleTurnsForThread(
 ): Turn[] {
   const side = activeSideSession;
   return side?.threadId === threadId
-    ? sideVisibleTurns(turns, side.inheritedTurnIds)
+    ? sideVisibleTurns(turns, side.inheritedThroughTurnId, side.firstSideTurnId)
     : [...turns];
+}
+
+function hasPendingComposerOperationForThread(threadId: string): boolean {
+  return [...pendingComposerOperations.values()].some(
+    (operation) => operation.threadId === threadId,
+  );
 }
 
 async function openThread(
@@ -3634,11 +3679,20 @@ async function openThread(
   options: { preserveTimeline?: boolean; allowWhileSubmitting?: boolean } = {},
 ): Promise<void> {
   if (
+    pendingSideForkOperation &&
+    pendingSideForkOperation.parent.id !== thread.id
+  ) {
+    showToast("请先确认或明确放弃 Side 创建结果", "error");
+    renderPendingSideForkOperation();
+    return;
+  }
+  if (
     activeSideSession &&
     activeSideSession.threadId !== thread.id &&
-    activeThreadStatus?.type === "active"
+    (activeThreadStatus?.type === "active" ||
+      hasPendingComposerOperationForThread(activeSideSession.threadId))
   ) {
-    showToast("请等待 Side 当前回复结束，或先停止任务", "error");
+    showToast("请先结束 Side 回复并确认待处理消息，再打开其他会话", "error");
     return;
   }
   if (
@@ -3795,6 +3849,11 @@ async function openThread(
 
 async function openNewSession(): Promise<void> {
   requiredElement("new-session-error").textContent = "";
+  if (pendingSideForkOperation) {
+    showToast("请先确认或明确放弃 Side 创建结果", "error");
+    renderPendingSideForkOperation();
+    return;
+  }
   if (activeSideSession) {
     showToast("请先返回主会话，再创建新会话", "error");
     return;
@@ -4048,6 +4107,7 @@ function warnBeforeUnresolvedMutationUnload(event: BeforeUnloadEvent): void {
   const hasUnresolvedMutation =
     threadStartSafetyMarkerArmed ||
     pendingThreadStartOperation !== undefined ||
+    pendingSideForkOperation !== undefined ||
     inFlightComposerOperations.size > 0 ||
     pendingComposerOperations.size > 0;
   if (!hasUnresolvedMutation) return;
@@ -4371,6 +4431,7 @@ function updateComposerSubmitAvailability(): void {
   );
   const unavailable =
     composerSubmitting ||
+    Boolean(pendingSideForkOperation) ||
     outcomePending ||
     inFlightComposerOperations.size > 0 ||
     (Boolean(activeSideSession) && activeThreadStatus?.type === "active") ||
@@ -4385,6 +4446,7 @@ function updateMutationOutcomePendingState(): void {
     pendingComposerOperations.size > 0 ||
       inFlightComposerOperations.size > 0 ||
       Boolean(pendingThreadStartOperation) ||
+      Boolean(pendingSideForkOperation) ||
       threadStartReloadReviewRequired,
   );
 }
@@ -4512,6 +4574,11 @@ async function startSideConversation(prompt: string): Promise<void> {
     showToast("当前会话还没有可继承的对话；请先发送一条普通消息", "error");
     return;
   }
+  if (pendingSideForkOperation) {
+    showToast("已有 Side 创建结果待确认，请使用原操作编号继续", "error");
+    renderPendingSideForkOperation();
+    return;
+  }
   if (
     [...pendingComposerOperations.values()].some(
       (operation) => operation.threadId === parent.id,
@@ -4521,22 +4588,120 @@ async function startSideConversation(prompt: string): Promise<void> {
     return;
   }
 
-  setComposerSubmitting(true);
   const forkIdempotencyKey = crypto.randomUUID();
+  pendingSideForkOperation = {
+    idempotencyKey: forkIdempotencyKey,
+    deviceId: targetClient.host.deviceId,
+    parent,
+    prompt,
+    inheritedThroughTurnId: activeNewestTurnId,
+    outcomeUnknown: false,
+    manualReviewRequired: false,
+  };
+  updateMutationOutcomePendingState();
+  renderPendingSideForkOperation();
+  await resumePendingSideForkOperation();
+}
+
+async function resumePendingSideForkOperation(): Promise<void> {
+  if (sideForkReconciliation) return sideForkReconciliation;
+  const operation = pendingSideForkOperation;
+  const initialClient = client;
+  if (!operation || !initialClient || operation.manualReviewRequired) {
+    renderPendingSideForkOperation();
+    return;
+  }
+  if (
+    operation.outcomeUnknown &&
+    operation.deviceId !== initialClient.host.deviceId
+  ) {
+    operation.manualReviewRequired = true;
+    renderPendingSideForkOperation();
+    showToast("登录身份已变化，无法安全确认原 Side 创建操作", "error");
+    return;
+  }
+
+  setComposerSubmitting(true);
+  const reconciliation = (async () => {
+    try {
+      const recovered =
+        await requestRecoverableGatewayMutation<SideThreadForkResponse>({
+          client: initialClient,
+          method: "thread/fork",
+          payload: {
+            threadId: operation.parent.id,
+            lastTurnId: operation.inheritedThroughTurnId,
+            ephemeral: true,
+          },
+          idempotencyKey: operation.idempotencyKey,
+          reconnect: async (failedClient) => {
+            operation.outcomeUnknown = true;
+            renderPendingSideForkOperation();
+            await recoverConnection(failedClient);
+            if (!client || client === failedClient)
+              throw new Error("Host connection has not recovered yet");
+            return client;
+          },
+        });
+      if (pendingSideForkOperation !== operation) return;
+      pendingSideForkOperation = undefined;
+      updateMutationOutcomePendingState();
+      renderPendingSideForkOperation();
+      await completeSideForkOperation(
+        recovered.client,
+        recovered.value,
+        operation,
+      );
+    } catch (error) {
+      if (pendingSideForkOperation !== operation) return;
+      if (isGatewayMutationOutcomeIndeterminate(error)) {
+        operation.outcomeUnknown = true;
+        operation.manualReviewRequired = true;
+        showToast("Side 创建结果无法证明；已停止自动重放", "error");
+      } else if (
+        isGatewayRequestOutcomeUnknown(error) ||
+        error instanceof GatewayMutationRecoveryPendingError
+      ) {
+        operation.outcomeUnknown = true;
+        showToast("连接中断，Side 创建结果待确认；将保留原操作编号", "error");
+      } else {
+        pendingSideForkOperation = undefined;
+        if (!messageInput.value)
+          messageInput.value = `/side ${operation.prompt}`;
+        autoResize(messageInput);
+        showToast(`无法开启 Side：${errorMessage(error)}`, "error");
+      }
+      updateMutationOutcomePendingState();
+      renderPendingSideForkOperation();
+    } finally {
+      setComposerSubmitting(false);
+    }
+  })();
+  sideForkReconciliation = reconciliation.finally(() => {
+    sideForkReconciliation = undefined;
+  });
+  return sideForkReconciliation;
+}
+
+async function completeSideForkOperation(
+  targetClient: GatewayClient,
+  fork: SideThreadForkResponse,
+  operation: PendingSideForkOperation,
+): Promise<void> {
   let turnOperation: PendingComposerOperation | undefined;
   try {
-    const fork = await targetClient.request<ThreadForkResponse>(
-      "thread/fork",
-      { threadId: parent.id, ephemeral: true },
-      { idempotencyKey: forkIdempotencyKey },
-    );
-    if (!fork.thread.ephemeral || fork.thread.forkedFromId !== parent.id) {
+    if (
+      !fork.thread.ephemeral ||
+      fork.thread.forkedFromId !== operation.parent.id ||
+      fork.sideFork?.version !== 1 ||
+      fork.sideFork.inheritedThroughTurnId !== operation.inheritedThroughTurnId
+    ) {
       throw new Error("Codex did not create the requested ephemeral Side fork");
     }
     activeSideSession = {
       threadId: fork.thread.id,
-      parent,
-      inheritedTurnIds: new Set(fork.thread.turns.map((turn: Turn) => turn.id)),
+      parent: operation.parent,
+      inheritedThroughTurnId: operation.inheritedThroughTurnId,
     };
     await openThread(
       {
@@ -4561,18 +4726,21 @@ async function startSideConversation(prompt: string): Promise<void> {
     messageInput.value = "";
     autoResize(messageInput);
     const input: UserInput[] = [
-      { type: "text", text: prompt, text_elements: [] },
+      { type: "text", text: operation.prompt, text_elements: [] },
     ];
     turnOperation = createPendingComposerOperation(
       "turn",
       targetClient,
       fork.thread.id,
       input,
-      prompt,
+      operation.prompt,
     );
     beginComposerOperationRequest(turnOperation);
     timelineView.appendLocalUser(input, turnOperation.operationId);
-    await sendTurn(targetClient, turnOperation);
+    const turn = await sendTurn(targetClient, turnOperation);
+    if (activeSideSession?.threadId === fork.thread.id) {
+      activeSideSession.firstSideTurnId = turn.turn.id;
+    }
     showToast("已开启 Side 临时支线", "success");
   } catch (error) {
     if (turnOperation && isGatewayMutationOutcomeIndeterminate(error)) {
@@ -4581,28 +4749,48 @@ async function startSideConversation(prompt: string): Promise<void> {
       markComposerOperationUnknown(turnOperation, targetClient, error);
     } else if (turnOperation) {
       timelineView.removeLocalUser(turnOperation.operationId);
-      if (!messageInput.value) messageInput.value = prompt;
+      if (!messageInput.value) messageInput.value = operation.prompt;
       autoResize(messageInput);
       showToast(`Side 消息发送失败：${errorMessage(error)}`, "error");
-    } else {
-      showToast(
-        isGatewayMutationOutcomeIndeterminate(error) ||
-          isGatewayRequestOutcomeUnknown(error)
-          ? "Side 创建结果无法确认，但问题尚未发送；请核对后重试"
-          : `无法开启 Side：${errorMessage(error)}`,
-        "error",
-      );
-    }
+    } else showToast(`无法完成 Side 初始化：${errorMessage(error)}`, "error");
   } finally {
     if (turnOperation) completeComposerOperationRequest(turnOperation);
-    setComposerSubmitting(false);
   }
+}
+
+function renderPendingSideForkOperation(): void {
+  const operation = pendingSideForkOperation;
+  const review = requiredElement("side-fork-outcome-review");
+  review.hidden = !operation;
+  if (!operation) return;
+  requiredElement("side-fork-outcome-review-copy").textContent =
+    operation.manualReviewRequired
+      ? "Agent 无法证明原 Side 是否已经创建，系统已停止自动重放。请核对后再明确放弃；放弃后使用新操作编号可能创建另一条支线。"
+      : "Side 创建结果尚未确认。系统会保留原操作编号继续确认，不会用新编号重复分叉。";
+  requiredElement<HTMLButtonElement>("retry-side-fork-outcome").disabled =
+    operation.manualReviewRequired || Boolean(sideForkReconciliation);
+}
+
+function abandonPendingSideForkOperation(): void {
+  const operation = pendingSideForkOperation;
+  if (!operation) return;
+  if (
+    !window.confirm(
+      "只有在确认可以承担重复 Side 风险后才应放弃。确定清除这条待确认记录吗？",
+    )
+  )
+    return;
+  pendingSideForkOperation = undefined;
+  updateMutationOutcomePendingState();
+  renderPendingSideForkOperation();
+  if (!messageInput.value) messageInput.value = `/side ${operation.prompt}`;
+  autoResize(messageInput);
 }
 
 async function sendTurn(
   targetClient: GatewayClient,
   operation: PendingComposerOperation,
-): Promise<void> {
+): Promise<TurnStartResponse> {
   const response = await targetClient.request<TurnStartResponse>(
     "turn/start",
     {
@@ -4614,13 +4802,15 @@ async function sendTurn(
       idempotencyKey: operation.idempotencyKey,
     },
   );
-  if (client !== targetClient || activeThreadId !== operation.threadId) return;
+  if (client !== targetClient || activeThreadId !== operation.threadId)
+    return response;
   activeTurnId = response.turn.id;
   activeNewestTurnId = response.turn.id;
   timelineView.bindLocalUserToTurn(response.turn.id, operation.operationId);
   setThreadStatus({ type: "active", activeFlags: [] });
   lastRealtimeEventAt = Date.now();
   startThreadSync();
+  return response;
 }
 
 function createPendingComposerOperation(

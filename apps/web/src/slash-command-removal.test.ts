@@ -26,9 +26,13 @@ describe("minimal Web command surface", () => {
     );
     expect(side).toContain('"thread/fork"');
     expect(side).toContain("ephemeral: true");
-    expect(side).toContain("inheritedTurnIds");
+    expect(side).toContain("requestRecoverableGatewayMutation");
+    expect(side).toContain("operation.idempotencyKey");
+    expect(side).toContain("lastTurnId: operation.inheritedThroughTurnId");
+    expect(side).not.toContain("fork.thread.turns.map");
     expect(mainSource).toContain('id="side-session-banner"');
     expect(mainSource).toContain('id="return-from-side"');
+    expect(mainSource).toContain('id="side-fork-outcome-review"');
     expect(mainSource).toContain("临时支线不支持持久 Queue");
   });
 

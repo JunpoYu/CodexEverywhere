@@ -34,7 +34,7 @@
 - 尚未选择会话时，会话时间线保持空白，不消费 app-server 通知；`configWarning`、`remoteControl/status/changed` 和账号状态等宿主机级事件即使在会话打开后也不作为原始 JSON 混入对话。MCP 启动失败使用不含 Transport 堆栈的结构化提示，并区分网络失败与需要重新授权；正常启动状态不写入时间线。当前 thread 的未知事件仍作为 generic event 显示，以保持协议向前兼容。
 - app-server 重启后，发送消息会自动将 `notLoaded` 的磁盘 thread 恢复到内存，不要求用户手动执行 `thread/resume`。
 - 日常工作区采用高密度会话侧栏、结构化时间线和固定底部输入器；提供加载骨架、状态动效、操作 Toast、输入失败恢复、移动端底部会话面板，以及 `Enter` 发送、`Shift+Enter` 换行、`Cmd/Ctrl+K` 搜索和 `Cmd/Ctrl+N` 新建会话。
-- 输入器不复制 TUI 的完整斜杠指令清单，也不开放任意 Shell adapter。当前唯一原生 Web 指令是 `/side <问题>`：Agent 通过 app-server `thread/fork` 创建 `ephemeral: true` 的真实临时 fork，Web 只渲染 fork 后新增的 turn，并持续显示 Side 身份、来源主会话和返回入口。Side 不进入普通 thread 列表、不允许宿主机持久 Queue，刷新、关闭或离开后不可恢复，结果也不会自动合并回父 thread；父 thread 或 Side 仍在运行时不得切换，以免丢失临时执行视图。其他以 `/` 开头的输入失败关闭，不作为 prompt 或 Queue 消息发送；后续必要指令仍需逐项设计和测试。
+- 输入器不复制 TUI 的完整斜杠指令清单，也不开放任意 Shell adapter。当前唯一原生 Web 指令是 `/side <问题>`：Agent 通过 app-server `thread/fork` 创建 `ephemeral: true` 的真实临时 fork，跨 Gateway 的响应会清空继承 rollout，只用 `sideFork.version=1` 和 `inheritedThroughTurnId` 告诉 Web 从哪里开始隐藏父历史。Web 只渲染 fork 后新增的 turn，并持续显示 Side 身份、来源主会话和返回入口；分叉结果未知时保留原幂等键恢复，不生成第二个 fork。Side 不进入普通 thread 列表，Agent 在 `queue/add` 入口再次拒绝持久 Queue；刷新、关闭或离开后不可恢复，结果也不会自动合并回父 thread。父 thread、Side 仍在运行或 Side 存在待确认消息时不得切换，以免丢失临时执行视图。其他以 `/` 开头的输入失败关闭，不作为 prompt 或 Queue 消息发送；后续必要指令仍需逐项设计和测试。
 - 对话时间线是内容区内唯一的纵向滚动容器；会话头和输入器始终留在视口中，Codex 回复完成后自动滚动到最新消息。
 - 已完成初始化的用户登录后直接进入工作区；Codex 直连/代理配置位于设置菜单，修改前明确提示会中断活动 turn，保存后重启 app-server 并自动重新连接。
 - 会话头以紧凑状态区根据 app-server 增量事件实时显示正在思考、回复、执行命令、修改文件、调用工具、等待操作、完成或异常，而不是只显示笼统的 active 状态；完整会话设置保留明确的图标入口，常用的权限与模型设置同时在输入框状态栏中直接可见、可修改。

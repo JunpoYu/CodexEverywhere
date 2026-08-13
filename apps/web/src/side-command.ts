@@ -15,7 +15,21 @@ export function parseWebComposerCommand(input: string): WebComposerCommand {
 
 export function sideVisibleTurns<T extends { id: string }>(
   turns: readonly T[],
-  inheritedTurnIds: ReadonlySet<string>,
+  inheritedThroughTurnId: string,
+  firstSideTurnId?: string,
 ): T[] {
-  return turns.filter((turn) => !inheritedTurnIds.has(turn.id));
+  if (firstSideTurnId) {
+    const firstSideIndex = turns.findIndex(
+      (turn) => turn.id === firstSideTurnId,
+    );
+    // A newest-page snapshot that no longer contains the first Side turn is
+    // entirely newer than it. Full legacy snapshots still contain the id.
+    return firstSideIndex >= 0 ? turns.slice(firstSideIndex) : [...turns];
+  }
+  const boundaryIndex = turns.findIndex(
+    (turn) => turn.id === inheritedThroughTurnId,
+  );
+  // Before the first Side turn, fail closed if a server omits the requested
+  // boundary instead of leaking inherited parent history into the Side UI.
+  return boundaryIndex >= 0 ? turns.slice(boundaryIndex + 1) : [];
 }
