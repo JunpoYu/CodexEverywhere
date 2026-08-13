@@ -674,6 +674,58 @@ describe("IdempotencyRegistry", () => {
     },
   );
 
+  it("returns an ephemeral thread/fork once without persisting inherited history", async () => {
+    directory = await mkdtemp(join(tmpdir(), "ce-idempotency-"));
+    state = await HostStateStore.open(join(directory, "state.sqlite"));
+    const registry = new IdempotencyRegistry(state);
+    const result = {
+      thread: {
+        id: "side-thread",
+        forkedFromId: "parent-thread",
+        ephemeral: true,
+        turns: [{ id: "parent-turn", text: "PRIVATE INHERITED HISTORY" }],
+      },
+    };
+    const operation = vi.fn(async () => result);
+    const options = {
+      durableClaim: {
+        method: "thread/fork",
+        payload: { threadId: "parent-thread", ephemeral: true },
+      },
+    };
+
+    await expect(
+      registry.execute("device-a", "side-fork-key", operation, options),
+    ).resolves.toEqual({ ok: true, result });
+    await expect(
+      registry.execute("device-a", "side-fork-key", operation, options),
+    ).resolves.toMatchObject({
+      ok: false,
+      error: { code: "IDEMPOTENCY_OUTCOME_INDETERMINATE" },
+    });
+    await expect(
+      registry.execute("device-a", "side-fork-key", operation, {
+        durableClaim: {
+          method: "thread/fork",
+          payload: { threadId: "other-parent", ephemeral: true },
+        },
+      }),
+    ).resolves.toMatchObject({
+      ok: false,
+      error: { code: "IDEMPOTENCY_KEY_REUSED" },
+    });
+    expect(operation).toHaveBeenCalledOnce();
+    const serialized = await state.read((database) =>
+      JSON.stringify(
+        database.exec(
+          "SELECT result_json FROM durable_mutation_claims UNION ALL SELECT result_json FROM idempotency_keys",
+        ),
+      ),
+    );
+    expect(serialized).not.toContain("PRIVATE INHERITED HISTORY");
+    expect(serialized).not.toContain("parent-turn");
+  });
+
   it.each([
     {
       method: "turn/start",

@@ -3,6 +3,7 @@ import type {
   Model,
   SandboxPolicy,
   ThreadReadResponse,
+  ThreadForkResponse,
   ThreadListParams,
   ThreadResumeResponse,
   ThreadSettings,
@@ -81,6 +82,7 @@ import {
   sandboxModeForPolicy,
 } from "./session-controls.js";
 import { savedHostDisplayName, savedHostLoginName } from "./saved-host-view.js";
+import { parseWebComposerCommand, sideVisibleTurns } from "./side-command.js";
 import { deleteHost, listHosts, saveHost, type SavedHost } from "./storage.js";
 import {
   initializeTheme,
@@ -111,12 +113,6 @@ import {
   hasUnresolvedThreadStartMarker,
   markThreadStartUnresolved,
 } from "./thread-start-marker.js";
-import {
-  parseSlashCommand,
-  slashCommandCompletion,
-  slashCommandSuggestions,
-  type SlashCommand,
-} from "./slash-commands.js";
 import { mountPwaUpdatePrompt } from "./pwa-update.js";
 import {
   steerableQueueItemIds,
@@ -224,47 +220,11 @@ type ThreadRuntimeSettings = {
   sandboxPolicy: SandboxPolicy;
 };
 
-const INIT_COMMAND_PROMPT = `Generate a file named AGENTS.md that serves as a contributor guide for this repository.
-Before writing, check whether AGENTS.md already exists in the current working directory. If it does, do not overwrite or modify it.
-Your goal is to produce a clear, concise, and well-structured document with descriptive headings and actionable explanations for each section.
-Follow the outline below, but adapt as needed — add sections if relevant, and omit those that do not apply to this project.
-
-Document Requirements
-
-- Title the document "Repository Guidelines".
-- Use Markdown headings (#, ##, etc.) for structure.
-- Keep the document concise. 200-400 words is optimal.
-- Keep explanations short, direct, and specific to this repository.
-- Provide examples where helpful (commands, directory paths, naming patterns).
-- Maintain a professional, instructional tone.
-
-Recommended Sections
-
-Project Structure & Module Organization
-
-- Outline the project structure, including where the source code, tests, and assets are located.
-
-Build, Test, and Development Commands
-
-- List key commands for building, testing, and running locally (e.g., npm test, make build).
-- Briefly explain what each command does.
-
-Coding Style & Naming Conventions
-
-- Specify indentation rules, language-specific style preferences, and naming patterns.
-- Include any formatting or linting tools used.
-
-Testing Guidelines
-
-- Identify testing frameworks and coverage requirements.
-- State test naming conventions and how to run tests.
-
-Commit & Pull Request Guidelines
-
-- Summarize commit message conventions found in the project’s Git history.
-- Outline pull request requirements (descriptions, linked issues, screenshots, etc.).
-
-(Optional) Add other sections if relevant, such as Security & Configuration Tips, Architecture Overview, or Agent-Specific Instructions.`;
+type ActiveSideSession = {
+  threadId: string;
+  parent: ThreadSummary;
+  inheritedTurnIds: ReadonlySet<string>;
+};
 
 const app = requiredElement<HTMLDivElement>("app");
 const themeController = initializeTheme();
@@ -319,6 +279,7 @@ let olderHistoryLoading = false;
 let lastRealtimeEventAt = 0;
 let activeThreadSettings: ThreadRuntimeSettings | undefined;
 let activeThreadTokenUsage: ThreadTokenUsage | undefined;
+let activeSideSession: ActiveSideSession | undefined;
 let threadSettingsPendingNextTurn = false;
 let directoryPickerTarget: "session" | "workspace" = "session";
 let directoryBrowseState: WorkspaceBrowseResponse | undefined;
@@ -328,7 +289,6 @@ const approvalSubmissions = new ApprovalSubmissionTracker();
 const threadUnsubscribeOperations = new Map<string, Promise<void>>();
 const threadDirectoryOpenState = new Map<string, boolean>();
 let composerSubmitting = false;
-let slashCommandSelection = 0;
 const queuedItems = new Map<string, QueueItem>();
 const pendingComposerOperations = new Map<string, PendingComposerOperation>();
 const inFlightComposerOperations = new Set<string>();
@@ -504,10 +464,14 @@ app.innerHTML = `
       <div class="thread-list-footer"><button id="load-more-threads" type="button" hidden>加载更多</button><small id="thread-list-state" aria-live="polite"></small></div>
     </aside>
     <section id="conversation-content" class="content">
-      <div class="thread-header"><button id="back-to-sessions" class="back-to-sessions" type="button" aria-label="返回会话列表">←</button><div class="thread-heading"><p class="eyebrow">Codex session</p><h2 id="thread-title">选择一个会话</h2><small class="thread-cwd-line"><span>当前会话目录</span><code id="thread-cwd"></code></small></div><div class="thread-controls"><div class="codex-status"><strong id="thread-state" class="pill idle" role="status" aria-live="polite">空闲</strong></div><div class="thread-actions"><button id="thread-outline-button" class="thread-outline-action compact-action" type="button" aria-controls="conversation-outline" aria-expanded="false" hidden><span aria-hidden="true">☷</span> 大纲</button><button id="tui-handoff-button" class="ssh-handoff-action compact-action" type="button" title="通过 SSH 在官方 TUI 中继续同一个会话" hidden><span aria-hidden="true">›_</span> SSH 接力</button></div></div></div>
+      <div class="thread-header"><button id="back-to-sessions" class="back-to-sessions" type="button" aria-label="返回会话列表">←</button><div class="thread-heading"><p id="thread-kind-label" class="eyebrow">Codex session</p><h2 id="thread-title">选择一个会话</h2><small class="thread-cwd-line"><span>当前会话目录</span><code id="thread-cwd"></code></small></div><div class="thread-controls"><div class="codex-status"><strong id="thread-state" class="pill idle" role="status" aria-live="polite">空闲</strong></div><div class="thread-actions"><button id="start-side-session" class="side-session-action compact-action" type="button" title="从当前上下文开启临时支线" hidden><span aria-hidden="true">⑂</span> Side</button><button id="thread-outline-button" class="thread-outline-action compact-action" type="button" aria-controls="conversation-outline" aria-expanded="false" hidden><span aria-hidden="true">☷</span> 大纲</button><button id="tui-handoff-button" class="ssh-handoff-action compact-action" type="button" title="通过 SSH 在官方 TUI 中继续同一个会话" hidden><span aria-hidden="true">›_</span> SSH 接力</button></div></div></div>
       <aside id="ssh-handoff-banner" class="ssh-handoff-banner" aria-label="SSH 接力提示" hidden>
         <div class="ssh-handoff-banner-copy"><span class="ssh-terminal-mark" aria-hidden="true">›_</span><div><strong>也可以通过 SSH 访问同一个会话</strong><span>登录运行 Codex 的 HPC 后，用 <code>ce tui</code> 继续；Web、SSH TUI 可随时切换，当前任务不会中断。</span></div></div>
         <div class="ssh-handoff-banner-actions"><button id="ssh-handoff-banner-button" type="button">查看方法 <span aria-hidden="true">→</span></button><button id="dismiss-ssh-handoff-banner" class="ssh-handoff-banner-dismiss" type="button" title="以后不再显示这条说明">不再提示</button></div>
+      </aside>
+      <aside id="side-session-banner" class="side-session-banner" aria-label="Side 临时支线" hidden>
+        <div class="side-session-banner-copy"><span class="side-session-mark" aria-hidden="true">⑂</span><div><strong><span>Side</span> 临时支线</strong><small id="side-session-parent">继承自主会话</small><p>这里继承主会话上下文，但不会进入会话列表；刷新或离开后无法恢复，回复也不会自动合并回主会话。</p></div></div>
+        <button id="return-from-side" class="side-session-return" type="button"><span aria-hidden="true">←</span> 返回主会话</button>
       </aside>
       <div id="timeline" class="timeline"><div class="empty empty-session"><strong>从一个任务开始</strong><span>选择左侧会话，或者新建一个 Codex 会话。</span><button id="empty-new-session" class="primary">新建会话</button></div></div>
       <button id="jump-to-latest" class="jump-to-latest" type="button" title="回到正在生成的最新回复" hidden><span aria-hidden="true">↓</span> 回到最新消息</button>
@@ -526,8 +490,7 @@ app.innerHTML = `
         </aside>
         <aside id="composer-outcome-review" class="thread-start-outcome-review composer-outcome-review" role="status" hidden><strong>发送结果需要人工核对</strong><p id="composer-outcome-review-copy">旧版 app-server 的完整历史读取连续失败，系统已停止自动重试发送。原消息可能已经提交，请刷新当前会话核对；只有确认可以承担重复消息风险后，才能放弃待确认记录。</p><div class="actions"><button id="inspect-composer-outcome" class="secondary" type="button">刷新并核对当前会话</button><button id="abandon-composer-outcome" class="ghost danger" type="button">我已核对，放弃待确认</button></div></aside>
         <div class="composer-shell">
-          <div id="slash-command-menu" class="slash-command-menu" role="listbox" aria-label="Codex 斜杠指令" hidden></div>
-          <textarea id="message-input" rows="1" placeholder="给 Codex 发送消息，输入 / 查看指令…" aria-autocomplete="list" aria-controls="slash-command-menu" disabled></textarea>
+          <textarea id="message-input" rows="1" placeholder="给 Codex 发送消息，或输入 /side 开启临时支线…" disabled></textarea>
           <div class="composer-footer">
             <div class="composer-footer-leading">
               <div id="composer-session-meta" class="composer-session-meta" aria-label="会话配置和上下文" hidden>
@@ -786,7 +749,6 @@ const workspaceScopeSelect = requiredElement<HTMLSelectElement>(
   "workspace-scope-select",
 );
 const messageInput = requiredElement<HTMLTextAreaElement>("message-input");
-const slashCommandMenu = requiredElement<HTMLElement>("slash-command-menu");
 const composerApprovals = requiredElement<HTMLElement>("composer-approvals");
 const composerApprovalList = requiredElement<HTMLElement>(
   "composer-approval-list",
@@ -1025,8 +987,18 @@ requiredElement("show-active-workspace").addEventListener(
 );
 requiredElement("back-to-sessions").addEventListener(
   "click",
-  closeActiveThreadView,
+  () => void leaveActiveThreadView(),
 );
+requiredElement("return-from-side").addEventListener(
+  "click",
+  () => void returnToSideParent(),
+);
+requiredElement("start-side-session").addEventListener("click", () => {
+  if (!activeThreadId || activeSideSession) return;
+  messageInput.value = "/side ";
+  autoResize(messageInput);
+  messageInput.focus();
+});
 threadOutlineButton.addEventListener("click", () =>
   conversationOutlineView.toggle(),
 );
@@ -1183,48 +1155,11 @@ requiredElement("thread-model").addEventListener(
 );
 messageInput.addEventListener("input", () => {
   autoResize(messageInput);
-  slashCommandSelection = 0;
-  renderSlashCommandMenu();
 });
 messageInput.addEventListener("keydown", (event) => {
-  const suggestions = visibleSlashCommandSuggestions();
-  if (suggestions.length > 0) {
-    if (event.key === "ArrowDown" || event.key === "ArrowUp") {
-      event.preventDefault();
-      const delta = event.key === "ArrowDown" ? 1 : -1;
-      slashCommandSelection =
-        (slashCommandSelection + delta + suggestions.length) %
-        suggestions.length;
-      renderSlashCommandMenu();
-      return;
-    }
-    if (event.key === "Tab") {
-      event.preventDefault();
-      completeSlashCommand(suggestions[slashCommandSelection]!);
-      return;
-    }
-    if (
-      event.key === "Enter" &&
-      !event.shiftKey &&
-      !event.isComposing &&
-      !parseSlashCommand(messageInput.value.trim())
-    ) {
-      event.preventDefault();
-      completeSlashCommand(suggestions[slashCommandSelection]!);
-      return;
-    }
-  }
-  if (event.key === "Escape" && !slashCommandMenu.hidden) {
-    event.preventDefault();
-    hideSlashCommandMenu();
-    return;
-  }
   if (event.key !== "Enter" || event.shiftKey || event.isComposing) return;
   event.preventDefault();
   if (!sendMessage.disabled) void continueThread();
-});
-messageInput.addEventListener("blur", () => {
-  window.setTimeout(() => hideSlashCommandMenu(), 120);
 });
 requiredElement<HTMLTextAreaElement>("new-prompt").addEventListener(
   "keydown",
@@ -1351,7 +1286,6 @@ if (import.meta.env.DEV) {
   if (
     preview === "workspace" ||
     preview === "new-session" ||
-    preview === "slash-commands" ||
     preview === "codex-version"
   ) {
     setup.hidden = true;
@@ -1376,27 +1310,6 @@ if (import.meta.env.DEV) {
         relation: "older",
       });
       codexVersionDialog.showModal();
-    }
-    if (preview === "slash-commands") {
-      activeThreadId = "preview-thread";
-      activeThreadCwd = "/Users/demo/CodexEverywhere";
-      activeThreadStatus = { type: "idle" };
-      activeThreadSettings = {
-        model: "gpt-5.4",
-        effort: "high",
-        approvalPolicy: "on-request",
-        sandboxPolicy: { type: "workspaceWrite", writableRoots: [] },
-      };
-      workspace.classList.add("thread-open");
-      requiredElement("thread-title").textContent = "斜杠指令预览";
-      requiredElement("thread-cwd").textContent = activeThreadCwd;
-      timelineView.clear("输入 / 查看 Codex 默认斜杠指令");
-      conversationOutlineView.setThreadActive(true);
-      messageInput.disabled = false;
-      sendMessage.disabled = false;
-      queueMessage.disabled = false;
-      setThreadStatus(activeThreadStatus);
-      renderComposerSessionMeta();
     }
   }
 }
@@ -1706,7 +1619,7 @@ async function copyRecoveryCode(): Promise<void> {
 }
 
 function openTuiHandoff(): void {
-  if (!activeThreadId || !activeThreadCwd) return;
+  if (!activeThreadId || !activeThreadCwd || activeSideSession) return;
   tuiHandoffCommandOutput.value = tuiHandoffCommand(
     activeThreadCwd,
     activeThreadId,
@@ -1720,10 +1633,11 @@ function openTuiHandoff(): void {
 }
 
 function setTuiHandoffVisible(visible: boolean): void {
-  setTuiHandoffVisibility([tuiHandoffButton], visible);
+  const effectiveVisible = visible && !activeSideSession;
+  setTuiHandoffVisibility([tuiHandoffButton], effectiveVisible);
   setTuiHandoffVisibility(
     [tuiHandoffBanner],
-    visible && !isTuiHandoffHintDismissed(window.localStorage),
+    effectiveVisible && !isTuiHandoffHintDismissed(window.localStorage),
   );
 }
 
@@ -1828,6 +1742,7 @@ async function activate(nextClient: GatewayClient): Promise<void> {
   olderHistoryLoading = false;
   activeThreadSettings = undefined;
   activeThreadTokenUsage = undefined;
+  activeSideSession = undefined;
   threadSettingsPendingNextTurn = false;
   sessionPermissionDefaults = {
     version: 1,
@@ -3448,11 +3363,12 @@ function renderThreads(threads: ThreadSummary[]): void {
     return;
   }
   const groups = groupThreadsByCwd(visible);
+  const highlightedThreadId = activeSideSession?.parent.id ?? activeThreadId;
   groups.forEach(({ cwd, threads: group }, index) => {
     const details = document.createElement("details");
     details.className = "thread-directory-group";
     const containsActiveThread = group.some(
-      (thread) => thread.id === activeThreadId,
+      (thread) => thread.id === highlightedThreadId,
     );
     const remembered = threadDirectoryOpenState.get(cwd);
     details.open =
@@ -3511,7 +3427,8 @@ function renderThreadRow(
   container: HTMLElement = threadList,
 ): void {
   const button = document.createElement("button");
-  button.className = `thread-item${thread.id === activeThreadId ? " active" : ""}`;
+  const highlightedThreadId = activeSideSession?.parent.id ?? activeThreadId;
+  button.className = `thread-item${thread.id === highlightedThreadId ? " active" : ""}`;
   const firstLine = document.createElement("span");
   firstLine.className = "thread-item-heading";
   const dot = document.createElement("i");
@@ -3594,6 +3511,7 @@ function closeActiveThreadView(): void {
   olderHistoryLoading = false;
   activeThreadSettings = undefined;
   activeThreadTokenUsage = undefined;
+  activeSideSession = undefined;
   threadSettingsPendingNextTurn = false;
   pendingRequestIds.clear();
   approvalSubmissions.clear();
@@ -3605,6 +3523,7 @@ function closeActiveThreadView(): void {
   jumpToLatestButton.hidden = true;
   requiredElement("thread-title").textContent = "选择一个会话";
   requiredElement("thread-cwd").textContent = "";
+  renderSideSessionChrome();
   setTuiHandoffVisible(false);
   renderComposerSessionMeta();
   messageInput.disabled = true;
@@ -3616,6 +3535,55 @@ function closeActiveThreadView(): void {
   if (threadId && currentClient) {
     void unsubscribeThread(threadId, currentClient);
   }
+}
+
+async function leaveActiveThreadView(): Promise<void> {
+  if (activeSideSession) {
+    await returnToSideParent();
+    return;
+  }
+  closeActiveThreadView();
+}
+
+async function returnToSideParent(): Promise<void> {
+  const side = activeSideSession;
+  if (!side) return;
+  if (composerSubmitting || activeThreadStatus?.type === "active") {
+    showToast("请等待 Side 当前回复结束，或先停止任务", "error");
+    return;
+  }
+  activeSideSession = undefined;
+  renderSideSessionChrome();
+  await openThread(side.parent);
+}
+
+function renderSideSessionChrome(): void {
+  const side = activeSideSession;
+  const banner = requiredElement("side-session-banner");
+  banner.hidden = !side;
+  conversationContent.classList.toggle("side-session-active", Boolean(side));
+  requiredElement("thread-kind-label").textContent = side
+    ? "Side conversation · 临时"
+    : "Codex session";
+  if (side) {
+    const parentTitle =
+      (side.parent.name ?? side.parent.preview) || side.parent.id;
+    requiredElement("side-session-parent").textContent =
+      `继承自「${parentTitle}」`;
+  }
+  messageInput.placeholder = side
+    ? "在 Side 临时支线中继续提问…"
+    : "给 Codex 发送消息，或输入 /side 开启临时支线…";
+  updateSideSessionAction();
+}
+
+function updateSideSessionAction(): void {
+  const button = requiredElement<HTMLButtonElement>("start-side-session");
+  button.hidden =
+    !activeThreadId ||
+    !activeNewestTurnId ||
+    Boolean(activeSideSession) ||
+    activeThreadStatus?.type === "active";
 }
 
 async function unsubscribeThread(
@@ -3651,16 +3619,43 @@ async function waitForThreadUnsubscribe(threadId: string): Promise<void> {
   }
 }
 
+function visibleTurnsForThread(
+  threadId: string,
+  turns: readonly Turn[],
+): Turn[] {
+  const side = activeSideSession;
+  return side?.threadId === threadId
+    ? sideVisibleTurns(turns, side.inheritedTurnIds)
+    : [...turns];
+}
+
 async function openThread(
   thread: ThreadSummary,
-  options: { preserveTimeline?: boolean } = {},
+  options: { preserveTimeline?: boolean; allowWhileSubmitting?: boolean } = {},
 ): Promise<void> {
-  if (composerSubmitting) {
+  if (
+    activeSideSession &&
+    activeSideSession.threadId !== thread.id &&
+    activeThreadStatus?.type === "active"
+  ) {
+    showToast("请等待 Side 当前回复结束，或先停止任务", "error");
+    return;
+  }
+  if (
+    activeSideSession &&
+    activeSideSession.threadId !== thread.id &&
+    !window.confirm("离开后无法恢复这个 Side 临时支线。确定要打开其他会话吗？")
+  ) {
+    return;
+  }
+  if (composerSubmitting && !options.allowWhileSubmitting) {
     showToast("消息正在发送，请稍候", "error");
     return;
   }
   const currentClient = client;
   if (!currentClient) return;
+  if (activeSideSession?.threadId !== thread.id) activeSideSession = undefined;
+  const openingSide = activeSideSession;
   const previousThreadId = activeThreadId;
   stopThreadSync();
   const sequence = ++openThreadSequence;
@@ -3687,9 +3682,11 @@ async function openThread(
   renderComposerSessionMeta();
   lastRealtimeEventAt = Date.now();
   workspace.classList.add("thread-open");
-  requiredElement("thread-title").textContent =
-    (thread.name ?? thread.preview) || thread.id;
+  requiredElement("thread-title").textContent = openingSide
+    ? "Side · 临时支线"
+    : (thread.name ?? thread.preview) || thread.id;
   requiredElement("thread-cwd").textContent = thread.cwd;
+  renderSideSessionChrome();
   setThreadStatus(thread.status);
   messageInput.disabled = true;
   sendMessage.disabled = true;
@@ -3720,34 +3717,42 @@ async function openThread(
       }
       return;
     }
-    activeTurnId = [...detail.thread.turns]
+    const visibleTurns = visibleTurnsForThread(thread.id, detail.thread.turns);
+    activeTurnId = [...visibleTurns]
       .reverse()
       .find((turn) => turn.status === "inProgress")?.id;
-    activeNewestTurnId = detail.thread.turns.at(-1)?.id;
-    activeHistoryNextCursor = history.nextCursor;
-    activeHistoryPaginationExhausted =
-      history.paged && history.nextCursor === undefined;
+    activeNewestTurnId = visibleTurns.at(-1)?.id;
+    activeHistoryNextCursor = openingSide ? undefined : history.nextCursor;
+    activeHistoryPaginationExhausted = openingSide
+      ? true
+      : history.paged && history.nextCursor === undefined;
     activeHistoryExhaustedNewestTurnId = activeHistoryPaginationExhausted
       ? activeNewestTurnId
       : undefined;
     activeHistoryMode = history.paged ? "paged" : "legacy";
     setThreadStatus(detail.thread.status);
-    timelineView.renderSnapshot(detail, {
-      hasOlderHistory: Boolean(activeHistoryNextCursor),
-    });
+    timelineView.renderSnapshot(
+      {
+        ...detail,
+        thread: { ...detail.thread, turns: visibleTurns },
+      },
+      { hasOlderHistory: Boolean(activeHistoryNextCursor) },
+    );
     activeThreadSettings = {
       model: detail.model,
       effort: detail.reasoningEffort,
       approvalPolicy: detail.approvalPolicy,
       sandboxPolicy: detail.sandbox,
     };
-    setTuiHandoffVisible(true);
+    setTuiHandoffVisible(!openingSide);
     renderComposerSessionMeta();
     // The authoritative initial snapshot is now committed. Queue restoration
     // may take longer, but a bounded repair can no longer race the resume.
     if (threadHistoryInitializationSequence === sequence)
       threadHistoryInitializationSequence = undefined;
-    const queueSnapshot = await renderQueuedMessages(thread.id, sequence);
+    const queueSnapshot = openingSide
+      ? undefined
+      : await renderQueuedMessages(thread.id, sequence);
     if (
       client !== currentClient ||
       sequence !== openThreadSequence ||
@@ -3760,7 +3765,7 @@ async function openThread(
     }
     reconcilePendingComposerOperations(
       thread.id,
-      detail.thread.turns,
+      visibleTurns,
       !history.paged || history.nextCursor === undefined,
       queueSnapshot,
       {
@@ -3790,6 +3795,10 @@ async function openThread(
 
 async function openNewSession(): Promise<void> {
   requiredElement("new-session-error").textContent = "";
+  if (activeSideSession) {
+    showToast("请先返回主会话，再创建新会话", "error");
+    return;
+  }
   if (threadStartManualReviewRequired()) {
     newSessionDialog.showModal();
     renderIndeterminateThreadStart();
@@ -4364,6 +4373,7 @@ function updateComposerSubmitAvailability(): void {
     composerSubmitting ||
     outcomePending ||
     inFlightComposerOperations.size > 0 ||
+    (Boolean(activeSideSession) && activeThreadStatus?.type === "active") ||
     messageInput.disabled;
   sendMessage.disabled = unavailable;
   queueMessage.disabled = unavailable;
@@ -4379,756 +4389,12 @@ function updateMutationOutcomePendingState(): void {
   );
 }
 
-function visibleSlashCommandSuggestions(): SlashCommand[] {
-  if (slashCommandMenu.hidden) return [];
-  return slashCommandSuggestions(messageInput.value);
-}
-
-function renderSlashCommandMenu(): void {
-  const suggestions = slashCommandSuggestions(messageInput.value);
-  slashCommandMenu.replaceChildren();
-  if (suggestions.length === 0 || messageInput.disabled) {
-    hideSlashCommandMenu();
-    return;
-  }
-  slashCommandSelection = Math.min(
-    slashCommandSelection,
-    suggestions.length - 1,
-  );
-  suggestions.forEach((command, index) => {
-    const item = document.createElement("button");
-    item.type = "button";
-    item.id = `slash-command-option-${index}`;
-    item.className = `slash-command-item${index === slashCommandSelection ? " selected" : ""}`;
-    item.role = "option";
-    item.ariaSelected = String(index === slashCommandSelection);
-    const name = document.createElement("code");
-    name.textContent = `/${command.name}`;
-    const description = document.createElement("span");
-    description.textContent = command.description;
-    const badge = document.createElement("small");
-    badge.textContent =
-      command.support === "web"
-        ? "Web"
-        : command.support === "platform"
-          ? "平台限定"
-          : "SSH TUI";
-    item.append(name, description, badge);
-    item.addEventListener("pointerdown", (event) => event.preventDefault());
-    item.addEventListener("click", () => {
-      completeSlashCommand(command);
-      if (!command.supportsInlineArgs) void continueThread();
-    });
-    slashCommandMenu.append(item);
-  });
-  slashCommandMenu.hidden = false;
-  const selected = slashCommandMenu.children.item(
-    slashCommandSelection,
-  ) as HTMLElement | null;
-  if (selected) messageInput.setAttribute("aria-activedescendant", selected.id);
-  selected?.scrollIntoView({ block: "nearest" });
-}
-
-function hideSlashCommandMenu(): void {
-  slashCommandMenu.hidden = true;
-  slashCommandMenu.replaceChildren();
-  messageInput.removeAttribute("aria-activedescendant");
-}
-
-function completeSlashCommand(command: SlashCommand): void {
-  messageInput.value = slashCommandCompletion(command);
-  autoResize(messageInput);
-  slashCommandSelection = 0;
-  hideSlashCommandMenu();
-  messageInput.focus();
-  messageInput.setSelectionRange(
-    messageInput.value.length,
-    messageInput.value.length,
-  );
-}
-
 async function queueForThread(): Promise<void> {
-  if (messageInput.value.trimStart().startsWith("/")) {
-    await submitSlashCommand();
-    return;
-  }
   await submitComposerMessage(true);
 }
 
 async function continueThread(): Promise<void> {
-  if (messageInput.value.trimStart().startsWith("/")) {
-    await submitSlashCommand();
-    return;
-  }
   await submitComposerMessage(false);
-}
-
-async function submitSlashCommand(): Promise<void> {
-  const raw = messageInput.value.trim();
-  const parsed = parseSlashCommand(raw);
-  if (!parsed) {
-    appendTimeline(
-      "error",
-      "未知的斜杠指令",
-      "输入 / 查看当前 Web 已适配的 Codex 指令和匹配项。该内容没有发送给 Codex。",
-    );
-    return;
-  }
-  const { command, args } = parsed;
-  if (args && !command.supportsInlineArgs) {
-    appendTimeline(
-      "error",
-      `/${command.name} 不接受参数`,
-      command.usage ?? `请直接输入 /${command.name}。该内容没有发送给 Codex。`,
-    );
-    return;
-  }
-  if (activeThreadStatus?.type === "active" && !command.availableDuringTask) {
-    consumeSlashCommand();
-    appendTimeline(
-      "event",
-      `/${command.name} 需要等待当前任务结束`,
-      "这与 Codex TUI 的忙碌状态限制一致；当前任务没有被打断，指令也没有加入消息队列。",
-    );
-    return;
-  }
-
-  consumeSlashCommand();
-  setComposerSubmitting(true);
-  try {
-    if (command.support !== "web") {
-      respondToTuiOnlyCommand(command);
-      return;
-    }
-    await executeWebSlashCommand(command.name, args);
-  } catch (error) {
-    appendTimeline("error", `/${command.name} 执行失败`, errorMessage(error));
-  } finally {
-    setComposerSubmitting(false);
-    const focused = document.activeElement;
-    if (
-      !messageInput.disabled &&
-      (!focused || focused === document.body || focused === messageInput)
-    )
-      messageInput.focus();
-  }
-}
-
-function consumeSlashCommand(): void {
-  messageInput.value = "";
-  autoResize(messageInput);
-  hideSlashCommandMenu();
-}
-
-function respondToTuiOnlyCommand(command: SlashCommand): void {
-  const explanations: Record<string, string> = {
-    app: "这是 macOS/Windows Codex TUI 的桌面接力指令；当前页面已经是 Web 客户端。",
-    ide: "IDE 上下文来自本机 IDE 扩展，浏览器无法读取；请在对应 IDE 或 SSH TUI 中使用。",
-    plan: "Plan 是 Codex TUI 的客户端协作模式，当前 app-server adapter 未提供等价切换接口，因此 Web 不会把它伪装成普通提示词。",
-    diff: "该指令由 TUI 在本地执行 Git 检查；Web 网关不会开放通用 Shell 接口。",
-    mention:
-      "文件提及依赖 TUI 文件选择器；Web 中请直接在消息里写工作区相对路径。",
-    approve:
-      "该指令依赖 TUI 保存的最近一次 Guardian 拒绝记录，Web 无法安全重建这条记录。",
-    agent: "Agent 切换器目前属于 TUI 本地界面；Web 仍会正常显示子 Agent 活动。",
-    subagents:
-      "Agent 切换器目前属于 TUI 本地界面；Web 仍会正常显示子 Agent 活动。",
-    quit: "Web 没有需要退出的 CLI 进程。关闭页面不会停止 HPC 上正在运行的任务。",
-    exit: "Web 没有需要退出的 CLI 进程。关闭页面不会停止 HPC 上正在运行的任务。",
-  };
-  const platform = command.support === "platform";
-  const explanation =
-    explanations[command.name] ??
-    (platform
-      ? "这是 Codex 的平台限定指令，在当前 Linux/HPC Web 环境中不可用。"
-      : "这是 Codex TUI 的本地界面指令；Web 已正确识别，但不会把它发送给模型。通过 SSH 接力可在官方 TUI 中使用。");
-  const handoff =
-    !platform && activeThreadCwd && activeThreadId
-      ? `\nSSH 接力：${tuiHandoffCommand(activeThreadCwd, activeThreadId)}`
-      : "";
-  appendTimeline("event", `/${command.name}`, `${explanation}${handoff}`);
-}
-
-async function executeWebSlashCommand(
-  name: string,
-  args: string,
-): Promise<void> {
-  const targetClient = client;
-  const threadId = activeThreadId;
-  if (!targetClient || !threadId) throw new Error("请先打开一个会话");
-  switch (name) {
-    case "model":
-    case "permissions":
-      await openThreadSettings();
-      requiredElement<HTMLSelectElement>(
-        name === "model" ? "thread-model" : "thread-sandbox",
-      ).focus();
-      return;
-    case "skills":
-      await showSkills(targetClient);
-      return;
-    case "review": {
-      const response = await targetClient.request<{
-        turn: { id: string };
-        reviewThreadId: string;
-      }>("review/start", {
-        threadId,
-        target: args
-          ? { type: "custom", instructions: args }
-          : { type: "uncommittedChanges" },
-      });
-      activeTurnId = response.turn.id;
-      activeNewestTurnId = response.turn.id;
-      setThreadStatus({ type: "active", activeFlags: [] });
-      appendTimeline("event", "代码审查已开始", args || "审查当前未提交修改");
-      return;
-    }
-    case "rename": {
-      const name =
-        args ||
-        window
-          .prompt(
-            "输入新的会话名称",
-            requiredElement("thread-title").textContent ?? "",
-          )
-          ?.trim();
-      if (!name) {
-        appendTimeline("event", "/rename", "已取消重命名。");
-        return;
-      }
-      await targetClient.request("thread/name/set", { threadId, name });
-      requiredElement("thread-title").textContent = name;
-      await refresh();
-      return;
-    }
-    case "new":
-    case "clear":
-      await openNewSession();
-      return;
-    case "archive":
-      if (!window.confirm("归档当前会话？之后仍可从 Codex 历史记录恢复。"))
-        return;
-      await targetClient.request("thread/archive", { threadId });
-      setComposerSubmitting(false);
-      closeActiveThreadView();
-      await refresh();
-      return;
-    case "delete":
-      if (
-        !window.confirm("永久删除当前会话及其子 Agent 会话？此操作无法撤销。")
-      )
-        return;
-      await targetClient.request("thread/delete", { threadId });
-      setComposerSubmitting(false);
-      closeActiveThreadView();
-      await refresh();
-      return;
-    case "resume":
-      await resumeSlashTarget(args);
-      return;
-    case "fork": {
-      const result = await targetClient.request<{ thread: { id: string } }>(
-        "thread/fork",
-        { threadId },
-      );
-      await refresh();
-      const forked = threadsCache.find(
-        (thread) => thread.id === result.thread.id,
-      );
-      if (!forked) throw new Error("分支已创建，但暂时未出现在会话列表中");
-      setComposerSubmitting(false);
-      await openThread(forked);
-      return;
-    }
-    case "init":
-      await sendSlashPrompt(targetClient, threadId, INIT_COMMAND_PROMPT);
-      return;
-    case "compact":
-      await targetClient.request("thread/compact/start", { threadId });
-      setThreadStatus({ type: "active", activeFlags: [] });
-      appendTimeline(
-        "event",
-        "正在压缩上下文",
-        "Codex 会保留关键内容并释放上下文空间。",
-      );
-      return;
-    case "goal":
-      await executeGoalCommand(targetClient, threadId, args);
-      return;
-    case "copy":
-      await copyLatestCodexResponse();
-      return;
-    case "status":
-      showSlashStatus();
-      return;
-    case "usage":
-      await showAccountUsage(targetClient, args);
-      return;
-    case "theme":
-      await openSettingsCenter();
-      themePreferenceSelect.focus();
-      showToast("请在外观设置中选择跟随系统、浅色或深色", "success");
-      return;
-    case "mcp":
-      await showMcpServers(targetClient, threadId, args);
-      return;
-    case "logout":
-      if (
-        !window.confirm("退出当前 Linux 用户的 Codex 账号？Web 身份不会退出。")
-      )
-        return;
-      await targetClient.request("codex/account/logout", {});
-      workspace.hidden = true;
-      provisioning.hidden = false;
-      await continueToCodexAccount();
-      return;
-    case "quit":
-    case "exit":
-      appendTimeline(
-        "event",
-        `/${name}`,
-        "Web 没有需要退出的 CLI 进程。关闭页面不会停止 HPC 上正在运行的任务。",
-      );
-      return;
-  }
-}
-
-async function sendSlashPrompt(
-  targetClient: GatewayClient,
-  threadId: string,
-  text: string,
-): Promise<void> {
-  const input: UserInput[] = [{ type: "text", text, text_elements: [] }];
-  const operation = createPendingComposerOperation(
-    "turn",
-    targetClient,
-    threadId,
-    input,
-    text,
-  );
-  beginComposerOperationRequest(operation);
-  try {
-    timelineView.appendLocalUser(input, operation.operationId);
-    await sendTurn(targetClient, operation);
-  } catch (error) {
-    if (isGatewayMutationOutcomeIndeterminate(error)) {
-      markComposerOperationIndeterminate(operation);
-      return;
-    }
-    if (isGatewayRequestOutcomeUnknown(error)) {
-      markComposerOperationUnknown(operation, targetClient, error);
-      return;
-    }
-    timelineView.removeLocalUser(operation.operationId);
-    throw error;
-  } finally {
-    completeComposerOperationRequest(operation);
-  }
-}
-
-async function resumeSlashTarget(query: string): Promise<void> {
-  if (!query) {
-    const search = requiredElement<HTMLInputElement>("thread-search");
-    search.focus();
-    showToast("在左侧选择会话；已归档会话可切换后恢复", "success");
-    return;
-  }
-  const normalized = query.toLocaleLowerCase();
-  const searchResult = await searchThreadsAcrossArchive(query);
-  const candidates = searchResult.candidates;
-  const exact = candidates.find(
-    ({ thread }) =>
-      thread.id === query || thread.name?.toLocaleLowerCase() === normalized,
-  );
-  const partial = candidates.filter(({ thread }) =>
-    threadMatchesQuery(thread, normalized),
-  );
-  const target = exact ?? (partial.length === 1 ? partial[0] : undefined);
-  if (!target) {
-    const search = requiredElement<HTMLInputElement>("thread-search");
-    search.value = query;
-    if (partial.length > 0) {
-      const archivedMatches = partial.filter((candidate) => candidate.archived);
-      const showArchived =
-        archivedMatches.length === partial.length ||
-        (threadListArchived && archivedMatches.length > 0);
-      threadListArchived = showArchived;
-      threadListRequestEpoch += 1;
-      threadListNextCursor = null;
-      threadsCache = partial
-        .filter((candidate) => candidate.archived === showArchived)
-        .map((candidate) => candidate.thread);
-    }
-    renderThreads(threadsCache);
-    search.focus();
-    appendTimeline(
-      "event",
-      "/resume",
-      partial.length > 1
-        ? `在最近和归档记录中找到 ${partial.length} 个匹配会话，请从左侧选择。`
-        : searchResult.archivedError
-          ? "最近会话中没有匹配项，且当前 Codex 版本无法搜索归档记录。请升级 Codex 或手动切换归档列表。"
-          : "最近和归档记录中都没有匹配会话；已把关键词填入左侧搜索框。",
-    );
-    return;
-  }
-  if (target.archived) {
-    await restoreArchivedThread(target.thread);
-    return;
-  }
-  if (searchResult.archiveClassificationUnknown) {
-    showToast(
-      "已按 ID 精确找到会话，但当前 Codex 无法判断其归档状态；若无法打开，请升级 Codex 后从“已归档”恢复。",
-      "error",
-    );
-  }
-  if (threadListArchived) {
-    threadListArchived = false;
-    threadListRequestEpoch += 1;
-    threadListNextCursor = null;
-    threadsCache = [target.thread];
-    renderThreads(threadsCache);
-  }
-  setComposerSubmitting(false);
-  await openThread(target.thread);
-  void refresh();
-}
-
-async function searchThreadsAcrossArchive(query: string): Promise<{
-  candidates: Array<{ thread: ThreadSummary; archived: boolean }>;
-  archivedError?: unknown;
-  archiveClassificationUnknown?: boolean;
-}> {
-  const targetClient = client;
-  if (!targetClient) return { candidates: [] };
-  const normalized = query.toLocaleLowerCase();
-  const candidates = new Map<
-    string,
-    { thread: ThreadSummary; archived: boolean }
-  >();
-  for (const thread of threadsCache) {
-    if (threadMatchesQuery(thread, normalized)) {
-      candidates.set(thread.id, { thread, archived: threadListArchived });
-    }
-  }
-  const loadedExact = [...candidates.values()].find(
-    ({ thread }) => thread.id === query,
-  );
-  if (loadedExact) return { candidates: [loadedExact] };
-
-  if (looksLikeThreadId(query)) {
-    try {
-      const response = await targetClient.request<ThreadReadResponse>(
-        "thread/read",
-        { threadId: query, includeTurns: false },
-      );
-      if (client !== targetClient) return { candidates: [] };
-      const location = await locateThreadArchiveState(targetClient, query);
-      return {
-        candidates: [
-          {
-            thread: response.thread,
-            archived: location === "archived",
-          },
-        ],
-        ...(location === "unknown"
-          ? {
-              archivedError: new Error(
-                "The current Codex version could not classify the thread archive state",
-              ),
-              archiveClassificationUnknown: true,
-            }
-          : {}),
-      };
-    } catch {
-      // Fall through to title search so a malformed or inaccessible id does
-      // not hide normal name/preview matches.
-    }
-  }
-
-  const [currentResult, archivedResult] = await Promise.allSettled([
-    requestThreadList<ThreadListPage>(
-      targetClient,
-      threadListParams(false, { searchTerm: query }),
-    ),
-    requestThreadList<ThreadListPage>(
-      targetClient,
-      threadListParams(true, { searchTerm: query }),
-    ),
-  ]);
-  if (client !== targetClient) return { candidates: [] };
-  if (currentResult.status === "fulfilled") {
-    for (const thread of currentResult.value.data) {
-      if (threadMatchesQuery(thread, normalized)) {
-        candidates.set(thread.id, { thread, archived: false });
-      }
-    }
-  }
-  if (archivedResult.status === "fulfilled") {
-    for (const thread of archivedResult.value.data) {
-      if (
-        threadMatchesQuery(thread, normalized) &&
-        !candidates.has(thread.id)
-      ) {
-        candidates.set(thread.id, { thread, archived: true });
-      }
-    }
-  }
-  return {
-    candidates: [...candidates.values()],
-    ...(archivedResult.status === "rejected"
-      ? { archivedError: archivedResult.reason }
-      : {}),
-  };
-}
-
-async function locateThreadArchiveState(
-  targetClient: GatewayClient,
-  threadId: string,
-): Promise<"current" | "archived" | "unknown"> {
-  try {
-    if (await threadListContainsId(targetClient, threadId, false)) {
-      return "current";
-    }
-    if (await threadListContainsId(targetClient, threadId, true)) {
-      return "archived";
-    }
-    return "unknown";
-  } catch {
-    return "unknown";
-  }
-}
-
-async function threadListContainsId(
-  targetClient: GatewayClient,
-  threadId: string,
-  archived: boolean,
-): Promise<boolean> {
-  let cursor: string | undefined;
-  const seenCursors = new Set<string>();
-  while (client === targetClient) {
-    const page = await requestThreadList<ThreadListPage>(
-      targetClient,
-      threadListParams(archived, cursor ? { cursor } : {}),
-    );
-    if (page.data.some((thread) => thread.id === threadId)) return true;
-    const nextCursor = page.nextCursor ?? undefined;
-    if (!nextCursor || seenCursors.has(nextCursor)) return false;
-    seenCursors.add(nextCursor);
-    cursor = nextCursor;
-  }
-  return false;
-}
-
-function looksLikeThreadId(value: string): boolean {
-  return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu.test(
-    value,
-  );
-}
-
-function threadMatchesQuery(
-  thread: ThreadSummary,
-  normalized: string,
-): boolean {
-  return [thread.id, thread.name, thread.preview, thread.cwd]
-    .filter((value): value is string => typeof value === "string")
-    .some((value) => value.toLocaleLowerCase().includes(normalized));
-}
-
-async function executeGoalCommand(
-  targetClient: GatewayClient,
-  threadId: string,
-  args: string,
-): Promise<void> {
-  if (args === "clear") {
-    await targetClient.request("thread/goal/clear", { threadId });
-    appendTimeline("event", "任务目标", "目标已清除。");
-    return;
-  }
-  if (args === "pause" || args === "resume") {
-    await targetClient.request("thread/goal/set", {
-      threadId,
-      status: args === "pause" ? "paused" : "active",
-    });
-    appendTimeline(
-      "event",
-      "任务目标",
-      args === "pause" ? "目标已暂停。" : "目标已恢复。",
-    );
-    return;
-  }
-  let objective = args;
-  if (args === "edit") {
-    const current = await targetClient.request<{
-      goal: { objective: string } | null;
-    }>("thread/goal/get", { threadId });
-    objective =
-      window.prompt("编辑长任务目标", current.goal?.objective ?? "")?.trim() ??
-      "";
-    if (!objective) return;
-  }
-  if (objective) {
-    await targetClient.request("thread/goal/set", { threadId, objective });
-    appendTimeline("event", "任务目标已设置", objective);
-    return;
-  }
-  const result = await targetClient.request<{
-    goal: {
-      objective: string;
-      status: string;
-      tokenBudget: number | null;
-      tokensUsed: number;
-      timeUsedSeconds: number;
-    } | null;
-  }>("thread/goal/get", { threadId });
-  appendTimeline(
-    "event",
-    "任务目标",
-    result.goal
-      ? `${result.goal.objective}\n状态：${result.goal.status} · 已用 ${formatNumber(result.goal.tokensUsed)} tokens · ${formatDurationSeconds(result.goal.timeUsedSeconds)}${result.goal.tokenBudget === null ? "" : ` · 预算 ${formatNumber(result.goal.tokenBudget)} tokens`}`
-      : "尚未设置。使用 /goal <目标> 创建，或使用 /goal edit 打开编辑。",
-  );
-}
-
-async function showSkills(targetClient: GatewayClient): Promise<void> {
-  const result = await targetClient.request<{
-    data: Array<{
-      cwd: string;
-      skills: Array<{ name: string; description: string; enabled: boolean }>;
-      errors: unknown[];
-    }>;
-  }>("skills/list", { cwds: activeThreadCwd ? [activeThreadCwd] : [] });
-  const skills = result.data.flatMap((entry) => entry.skills);
-  appendTimeline(
-    "event",
-    `Skills · ${skills.length}`,
-    skills.length === 0
-      ? "当前工作目录没有发现可用 Skill。"
-      : skills
-          .map(
-            (skill) =>
-              `$${skill.name}${skill.enabled ? "" : "（已禁用）"} — ${skill.description}`,
-          )
-          .join("\n"),
-  );
-}
-
-async function showMcpServers(
-  targetClient: GatewayClient,
-  threadId: string,
-  args: string,
-): Promise<void> {
-  if (args && args.toLocaleLowerCase() !== "verbose")
-    throw new Error("用法：/mcp [verbose]");
-  const verbose = args.toLocaleLowerCase() === "verbose";
-  const result = await targetClient.request<{
-    data: Array<{
-      name: string;
-      authStatus: string;
-      serverInfo: { name?: string; version?: string } | null;
-      tools: Record<string, unknown>;
-    }>;
-  }>("mcpServerStatus/list", {
-    threadId,
-    limit: 100,
-    detail: verbose ? "full" : "toolsAndAuthOnly",
-  });
-  appendTimeline(
-    "event",
-    `MCP 服务 · ${result.data.length}`,
-    result.data.length === 0
-      ? "未配置 MCP 服务。"
-      : result.data
-          .map((server) => {
-            const tools = Object.keys(server.tools);
-            const version = server.serverInfo?.version
-              ? ` · ${server.serverInfo.version}`
-              : "";
-            return `${server.name}${version} · ${server.authStatus} · ${tools.length} 个工具${verbose && tools.length > 0 ? `\n  ${tools.join(", ")}` : ""}`;
-          })
-          .join("\n"),
-  );
-}
-
-async function showAccountUsage(
-  targetClient: GatewayClient,
-  args: string,
-): Promise<void> {
-  const mode = args.toLocaleLowerCase();
-  if (mode && !["daily", "weekly", "cumulative"].includes(mode))
-    throw new Error("用法：/usage [daily|weekly|cumulative]");
-  const result = await targetClient.request<{
-    summary: Record<string, unknown>;
-    dailyUsageBuckets: Array<{ startDate: string; tokens: unknown }> | null;
-  }>("account/usage/read", {});
-  const summary = result.summary;
-  const lines = [
-    `累计 tokens：${formatNumberish(summary.lifetimeTokens)}`,
-    `单日峰值：${formatNumberish(summary.peakDailyTokens)}`,
-    `当前连续使用：${formatNumberish(summary.currentStreakDays)} 天`,
-    `最长连续使用：${formatNumberish(summary.longestStreakDays)} 天`,
-  ];
-  if (mode === "daily" || mode === "weekly") {
-    const count = mode === "daily" ? 7 : 28;
-    const buckets = (result.dailyUsageBuckets ?? []).slice(-count);
-    lines.push(
-      ...buckets.map(
-        (bucket) =>
-          `${bucket.startDate} · ${formatNumberish(bucket.tokens)} tokens`,
-      ),
-    );
-  }
-  appendTimeline("event", "Codex 账号用量", lines.join("\n"));
-}
-
-function showSlashStatus(): void {
-  const context = contextUsagePresentation(activeThreadTokenUsage);
-  appendTimeline(
-    "event",
-    "当前会话状态",
-    [
-      `状态：${statusLabel(activeThreadStatus)}`,
-      `会话：${activeThreadId ?? "—"}`,
-      `工作目录：${activeThreadCwd ?? "—"}`,
-      `模型：${activeThreadSettings?.model ?? "—"}`,
-      `推理强度：${activeThreadSettings?.effort ?? "模型默认"}`,
-      `权限：${activeThreadSettings ? `${sandboxPolicyLabel(activeThreadSettings.sandboxPolicy)} · ${approvalPolicyLabel(activeThreadSettings.approvalPolicy)}` : "—"}`,
-      `上下文：${context.label} · ${context.detail}`,
-    ].join("\n"),
-  );
-}
-
-async function copyLatestCodexResponse(): Promise<void> {
-  const responses = timeline.querySelectorAll<HTMLElement>(
-    ".timeline-entry.agent:not(.streaming)",
-  );
-  const response = responses.item(responses.length - 1);
-  const text = (
-    response?.dataset.rawText ??
-    response?.querySelector<HTMLElement>(".message-text")?.textContent
-  )?.trim();
-  if (!text) throw new Error("当前会话还没有可复制的完整回复");
-  await navigator.clipboard.writeText(text);
-  showToast("已复制最近一条 Codex 回复", "success");
-}
-
-function formatNumberish(value: unknown): string {
-  if (typeof value === "number") return formatNumber(value);
-  if (typeof value === "bigint") return value.toLocaleString("zh-CN");
-  if (typeof value === "string" && /^\d+$/u.test(value))
-    return Number(value).toLocaleString("zh-CN");
-  return "—";
-}
-
-function formatNumber(value: number): string {
-  return Number.isFinite(value) ? value.toLocaleString("zh-CN") : "—";
-}
-
-function formatDurationSeconds(seconds: number): string {
-  if (!Number.isFinite(seconds) || seconds < 0) return "—";
-  if (seconds < 60) return `${Math.round(seconds)} 秒`;
-  if (seconds < 3600) return `${Math.round(seconds / 60)} 分钟`;
-  return `${(seconds / 3600).toFixed(1)} 小时`;
 }
 
 async function submitComposerMessage(forceQueue: boolean): Promise<void> {
@@ -5136,6 +4402,26 @@ async function submitComposerMessage(forceQueue: boolean): Promise<void> {
   const targetClient = client;
   const threadId = activeThreadId;
   if (!targetClient || !threadId || composerSubmitting || !text) return;
+  const command = parseWebComposerCommand(text);
+  if (command.kind === "invalid-side") {
+    showToast("用法：/side <你想在临时支线中询问的问题>", "error");
+    return;
+  }
+  if (command.kind === "unsupported") {
+    showToast(
+      "Web 目前只支持 /side；其他斜杠指令请通过 SSH TUI 执行。",
+      "error",
+    );
+    return;
+  }
+  if (command.kind === "side") {
+    await startSideConversation(command.prompt);
+    return;
+  }
+  if (activeSideSession && activeThreadStatus?.type === "active") {
+    showToast("Side 回复尚未结束；临时支线不支持持久 Queue", "error");
+    return;
+  }
   if (
     [...pendingComposerOperations.values()].some(
       (operation) => operation.threadId === threadId,
@@ -5148,7 +4434,8 @@ async function submitComposerMessage(forceQueue: boolean): Promise<void> {
   setComposerSubmitting(true);
   const input: UserInput[] = [{ type: "text", text, text_elements: [] }];
   const shouldQueue =
-    forceQueue || threadSendMode(activeThreadStatus) === "queue";
+    !activeSideSession &&
+    (forceQueue || threadSendMode(activeThreadStatus) === "queue");
   const operation = createPendingComposerOperation(
     shouldQueue ? "queue" : "turn",
     targetClient,
@@ -5205,6 +4492,109 @@ async function submitComposerMessage(forceQueue: boolean): Promise<void> {
     }
   } finally {
     completeComposerOperationRequest(operation);
+    setComposerSubmitting(false);
+  }
+}
+
+async function startSideConversation(prompt: string): Promise<void> {
+  const targetClient = client;
+  const parent = activeThreadSnapshot();
+  if (!targetClient || !parent) return;
+  if (activeSideSession) {
+    showToast("当前已经在 Side 中；请先返回主会话", "error");
+    return;
+  }
+  if (activeThreadStatus?.type === "active") {
+    showToast("请等待主会话当前回复结束后再开启 Side", "error");
+    return;
+  }
+  if (!activeNewestTurnId) {
+    showToast("当前会话还没有可继承的对话；请先发送一条普通消息", "error");
+    return;
+  }
+  if (
+    [...pendingComposerOperations.values()].some(
+      (operation) => operation.threadId === parent.id,
+    )
+  ) {
+    showToast("请先确认上一条消息的发送结果", "error");
+    return;
+  }
+
+  setComposerSubmitting(true);
+  const forkIdempotencyKey = crypto.randomUUID();
+  let turnOperation: PendingComposerOperation | undefined;
+  try {
+    const fork = await targetClient.request<ThreadForkResponse>(
+      "thread/fork",
+      { threadId: parent.id, ephemeral: true },
+      { idempotencyKey: forkIdempotencyKey },
+    );
+    if (!fork.thread.ephemeral || fork.thread.forkedFromId !== parent.id) {
+      throw new Error("Codex did not create the requested ephemeral Side fork");
+    }
+    activeSideSession = {
+      threadId: fork.thread.id,
+      parent,
+      inheritedTurnIds: new Set(fork.thread.turns.map((turn: Turn) => turn.id)),
+    };
+    await openThread(
+      {
+        id: fork.thread.id,
+        name: null,
+        preview: "Side 临时支线",
+        cwd: fork.thread.cwd,
+        status: fork.thread.status,
+        updatedAt: fork.thread.updatedAt,
+      },
+      { allowWhileSubmitting: true },
+    );
+    if (
+      client !== targetClient ||
+      activeSideSession?.threadId !== fork.thread.id ||
+      activeThreadId !== fork.thread.id ||
+      !activeThreadSettings
+    ) {
+      throw new Error("Side 已创建，但临时会话未能安全打开");
+    }
+
+    messageInput.value = "";
+    autoResize(messageInput);
+    const input: UserInput[] = [
+      { type: "text", text: prompt, text_elements: [] },
+    ];
+    turnOperation = createPendingComposerOperation(
+      "turn",
+      targetClient,
+      fork.thread.id,
+      input,
+      prompt,
+    );
+    beginComposerOperationRequest(turnOperation);
+    timelineView.appendLocalUser(input, turnOperation.operationId);
+    await sendTurn(targetClient, turnOperation);
+    showToast("已开启 Side 临时支线", "success");
+  } catch (error) {
+    if (turnOperation && isGatewayMutationOutcomeIndeterminate(error)) {
+      markComposerOperationIndeterminate(turnOperation);
+    } else if (turnOperation && isGatewayRequestOutcomeUnknown(error)) {
+      markComposerOperationUnknown(turnOperation, targetClient, error);
+    } else if (turnOperation) {
+      timelineView.removeLocalUser(turnOperation.operationId);
+      if (!messageInput.value) messageInput.value = prompt;
+      autoResize(messageInput);
+      showToast(`Side 消息发送失败：${errorMessage(error)}`, "error");
+    } else {
+      showToast(
+        isGatewayMutationOutcomeIndeterminate(error) ||
+          isGatewayRequestOutcomeUnknown(error)
+          ? "Side 创建结果无法确认，但问题尚未发送；请核对后重试"
+          : `无法开启 Side：${errorMessage(error)}`,
+        "error",
+      );
+    }
+  } finally {
+    if (turnOperation) completeComposerOperationRequest(turnOperation);
     setComposerSubmitting(false);
   }
 }
@@ -5864,32 +5254,41 @@ async function syncActiveThread(): Promise<void> {
       )
         return;
       const detail = history.detail;
-      activeTurnId = [...detail.thread.turns]
+      const visibleTurns = visibleTurnsForThread(threadId, detail.thread.turns);
+      const syncingSide = activeSideSession?.threadId === threadId;
+      activeTurnId = [...visibleTurns]
         .reverse()
         .find((turn) => turn.status === "inProgress")?.id;
-      activeNewestTurnId = detail.thread.turns.at(-1)?.id;
-      activeHistoryNextCursor = history.nextCursor;
-      activeHistoryPaginationExhausted =
-        history.paged && history.nextCursor === undefined;
+      activeNewestTurnId = visibleTurns.at(-1)?.id;
+      activeHistoryNextCursor = syncingSide ? undefined : history.nextCursor;
+      activeHistoryPaginationExhausted = syncingSide
+        ? true
+        : history.paged && history.nextCursor === undefined;
       activeHistoryExhaustedNewestTurnId = activeHistoryPaginationExhausted
         ? activeNewestTurnId
         : undefined;
       activeHistoryMode = history.paged ? "paged" : "legacy";
-      timelineView.renderSnapshot(detail, {
-        hasOlderHistory: Boolean(activeHistoryNextCursor),
-      });
+      timelineView.renderSnapshot(
+        {
+          ...detail,
+          thread: { ...detail.thread, turns: visibleTurns },
+        },
+        { hasOlderHistory: Boolean(activeHistoryNextCursor) },
+      );
       activeThreadSettings = {
         model: detail.model,
         effort: detail.reasoningEffort,
         approvalPolicy: detail.approvalPolicy,
         sandboxPolicy: detail.sandbox,
       };
-      setTuiHandoffVisible(true);
+      setTuiHandoffVisible(!syncingSide);
       renderComposerSessionMeta();
       setThreadStatus(detail.thread.status);
       messageInput.disabled = false;
       updateComposerSubmitAvailability();
-      const queueSnapshot = await renderQueuedMessages(threadId, sequence);
+      const queueSnapshot = syncingSide
+        ? undefined
+        : await renderQueuedMessages(threadId, sequence);
       if (
         client !== currentClient ||
         sequence !== openThreadSequence ||
@@ -5898,7 +5297,7 @@ async function syncActiveThread(): Promise<void> {
         return;
       reconcilePendingComposerOperations(
         threadId,
-        detail.thread.turns,
+        visibleTurns,
         !history.paged || history.nextCursor === undefined,
         queueSnapshot,
         {
@@ -5921,8 +5320,14 @@ async function syncActiveThread(): Promise<void> {
       activeHistoryMode !== requestedHistoryMode
     )
       return;
+    const displayTurns = visibleTurnsForThread(threadId, repair.displayTurns);
+    const reconciliationTurns = visibleTurnsForThread(
+      threadId,
+      repair.reconciliationTurns,
+    );
+    const syncingSide = activeSideSession?.threadId === threadId;
     activeHistoryMode = repair.mode;
-    if (repair.mode === "paged") {
+    if (repair.mode === "paged" && !syncingSide) {
       activeHistoryNextCursor = retainRepairHistoryCursor(
         activeHistoryNextCursor,
         repair.nextCursor,
@@ -5937,7 +5342,7 @@ async function syncActiveThread(): Promise<void> {
         activeHistoryExhaustedNewestTurnId = undefined;
       }
       timelineView.setHasOlderHistory(Boolean(activeHistoryNextCursor));
-      timelineView.mergeRecentTurns(repair.displayTurns);
+      timelineView.mergeRecentTurns(displayTurns);
     } else {
       activeHistoryNextCursor = undefined;
       activeHistoryPaginationExhausted = true;
@@ -5947,20 +5352,20 @@ async function syncActiveThread(): Promise<void> {
           ...repair.detail,
           thread: {
             ...repair.detail.thread,
-            turns: repair.displayTurns,
+            turns: displayTurns,
           },
         },
         { maxTurns: HISTORY_PAGE_SIZE },
       );
     }
-    activeTurnId = [...repair.displayTurns]
+    activeTurnId = [...displayTurns]
       .reverse()
       .find((turn) => turn.status === "inProgress")?.id;
-    activeNewestTurnId = repair.displayTurns.at(-1)?.id ?? activeNewestTurnId;
+    activeNewestTurnId = displayTurns.at(-1)?.id ?? activeNewestTurnId;
     setThreadStatus(repair.detail.thread.status);
     reconcilePendingComposerOperations(
       threadId,
-      repair.reconciliationTurns,
+      reconciliationTurns,
       repair.turnsAuthoritative,
       undefined,
       {
@@ -6011,7 +5416,8 @@ async function renderQueuedMessages(
 function renderComposerQueue(): void {
   const items = [...queuedItems.values()];
   const steerableItemIds = steerableQueueItemIds(items);
-  composerQueue.hidden = items.length === 0 || !activeThreadId;
+  composerQueue.hidden =
+    items.length === 0 || !activeThreadId || Boolean(activeSideSession);
   composerQueueCount.textContent = `${String(items.length)} 条`;
   composerQueueNote.textContent = items.some(
     (item) => item.status === "confirming",
@@ -6304,7 +5710,7 @@ function renderEvent(event: EventEnvelope): void {
     return;
   }
   if (event.type === "codex/thread/name/updated") {
-    if (typeof payload.name === "string")
+    if (!activeSideSession && typeof payload.name === "string")
       requiredElement("thread-title").textContent = payload.name;
     void refresh();
     return;
@@ -6946,6 +6352,7 @@ function setThreadStatus(status: unknown): void {
     }
   }
   updateComposerMode();
+  updateSideSessionAction();
 }
 
 function updatePendingApprovalState(): void {
@@ -7148,8 +6555,11 @@ function isThreadTokenUsage(value: unknown): value is ThreadTokenUsage {
 
 function updateComposerMode(): void {
   const active = activeThreadStatus?.type === "active";
+  const side = Boolean(activeSideSession);
   const label = sendMessage.querySelector("span");
-  if (label) label.textContent = active ? "加入队列" : "发送";
+  if (label)
+    label.textContent =
+      side && active ? "Side 处理中" : active ? "加入队列" : "发送";
   queueMessage.hidden = true;
   const interrupt = requiredElement<HTMLButtonElement>("interrupt-turn");
   interrupt.hidden = !active || !activeTurnId;
@@ -7160,8 +6570,12 @@ function updateComposerMode(): void {
     ? "审批请求已不可见时，可停止当前任务后继续"
     : "停止当前 Codex 任务";
   requiredElement("thread-state").title = active
-    ? "新消息会保存在 HPC 队列中，并在当前任务结束后发送"
+    ? side
+      ? "Side 是临时支线，不支持持久 Queue；请等待当前回复结束"
+      : "新消息会保存在 HPC 队列中，并在当前任务结束后发送"
     : "";
+  updateComposerSubmitAvailability();
+  updateSideSessionAction();
   renderComposerQueue();
 }
 

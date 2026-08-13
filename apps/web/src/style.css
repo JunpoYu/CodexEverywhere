@@ -2885,6 +2885,123 @@ dialog::backdrop {
   border-color: transparent;
 }
 
+.side-session-action {
+  color: #5b3ca7;
+  background: #f3efff;
+  border-color: #d6c8f5;
+}
+
+.side-session-action:hover {
+  color: #43247f;
+  background: #e9e0ff;
+  border-color: #bca7ec;
+}
+
+.side-session-banner {
+  display: flex;
+  min-width: 0;
+  gap: 18px;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px max(22px, calc((100% - 900px) / 2));
+  color: #49366f;
+  background: linear-gradient(90deg, #f2edff, #faf7ff);
+  border-bottom: 1px solid #dacdf5;
+}
+
+.side-session-banner[hidden] {
+  display: none;
+}
+
+.side-session-banner-copy {
+  display: flex;
+  min-width: 0;
+  gap: 11px;
+  align-items: center;
+}
+
+.side-session-mark {
+  display: grid;
+  width: 34px;
+  height: 34px;
+  flex: 0 0 auto;
+  place-items: center;
+  color: #fff;
+  background: #6548ad;
+  border-radius: 10px;
+  font-size: 18px;
+  font-weight: 800;
+}
+
+.side-session-banner-copy > div {
+  display: grid;
+  min-width: 0;
+  gap: 1px;
+}
+
+.side-session-banner-copy strong {
+  color: #38225f;
+  font-size: 11px;
+}
+
+.side-session-banner-copy strong > span {
+  margin-right: 5px;
+  padding: 2px 6px;
+  color: #fff;
+  background: #6548ad;
+  border-radius: 99px;
+  font-size: 8px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.side-session-banner-copy small,
+.side-session-banner-copy p {
+  overflow: hidden;
+  margin: 0;
+  color: #6f5b91;
+  font-size: 9px;
+  line-height: 1.4;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.side-session-banner-copy small {
+  color: #4e3975;
+  font-weight: 700;
+}
+
+.side-session-return {
+  min-height: 32px;
+  flex: 0 0 auto;
+  padding: 6px 12px;
+  color: #4b307e;
+  background: #fff;
+  border: 1px solid #cbbbea;
+  font-size: 10px;
+  font-weight: 750;
+}
+
+.side-session-return:hover {
+  background: #ece4ff;
+  border-color: #aa91df;
+}
+
+.content.side-session-active {
+  background:
+    radial-gradient(circle at 74% 0, #eee8ff 0, transparent 24%), var(--canvas);
+}
+
+.content.side-session-active .thread-header {
+  border-bottom-color: #d8cdf0;
+}
+
+.content.side-session-active .thread-header .eyebrow {
+  color: #7555bc;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+}
+
 .thread-settings-dialog {
   width: min(620px, calc(100vw - 32px));
 }
@@ -3785,60 +3902,6 @@ dialog::backdrop {
   font-size: 9px;
 }
 
-.slash-command-menu {
-  max-height: min(330px, 42vh);
-  padding: 6px;
-  overflow-y: auto;
-  border-bottom: 1px solid #eceef1;
-  overscroll-behavior: contain;
-}
-
-.slash-command-item {
-  width: 100%;
-  min-height: 42px;
-  padding: 8px 9px;
-  display: grid;
-  grid-template-columns: minmax(128px, 0.8fr) minmax(180px, 2fr) auto;
-  align-items: center;
-  gap: 10px;
-  color: #41454c;
-  text-align: left;
-  background: transparent;
-  border: 0;
-  border-radius: 9px;
-}
-
-.slash-command-item:hover,
-.slash-command-item.selected {
-  color: #202226;
-  background: #f2f3f5;
-}
-
-.slash-command-item code {
-  overflow: hidden;
-  color: #c44e2c;
-  font-weight: 700;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.slash-command-item span {
-  overflow: hidden;
-  font-size: 12px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.slash-command-item small {
-  padding: 2px 6px;
-  color: #858a93;
-  font-size: 9px;
-  line-height: 1.4;
-  background: #e9ebee;
-  border-radius: 999px;
-  white-space: nowrap;
-}
-
 .composer textarea {
   min-height: 47px;
   max-height: 180px;
@@ -4469,6 +4532,31 @@ button.session-meta-item:focus-visible,
     font-size: 9px;
   }
 
+  .side-session-banner {
+    gap: 8px;
+    padding: 8px 10px;
+  }
+
+  .side-session-mark,
+  .side-session-banner-copy p {
+    display: none;
+  }
+
+  .side-session-banner-copy strong {
+    font-size: 10px;
+  }
+
+  .side-session-banner-copy small {
+    max-width: 42vw;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .side-session-return {
+    min-height: 34px;
+    padding: 6px 10px;
+  }
+
   .thread-header h2 {
     font-size: 13px;
   }
@@ -4531,19 +4619,6 @@ button.session-meta-item:focus-visible,
 
   .composer-footer {
     justify-content: flex-end;
-  }
-
-  .slash-command-menu {
-    max-height: min(290px, 38vh);
-  }
-
-  .slash-command-item {
-    grid-template-columns: minmax(110px, auto) 1fr;
-    gap: 7px;
-  }
-
-  .slash-command-item small {
-    display: none;
   }
 
   dialog {
@@ -4986,6 +5061,38 @@ button.session-meta-item:focus-visible,
   border-bottom-color: #284233;
 }
 
+:root[data-theme="dark"] .side-session-action {
+  color: #eadfff;
+  background: #38275f;
+  border-color: #604a91;
+}
+
+:root[data-theme="dark"] .side-session-banner {
+  color: #d4c5f2;
+  background: linear-gradient(90deg, #211a31, #191820);
+  border-bottom-color: #3f315d;
+}
+
+:root[data-theme="dark"] .side-session-banner-copy strong {
+  color: #eadfff;
+}
+
+:root[data-theme="dark"] .side-session-banner-copy small,
+:root[data-theme="dark"] .side-session-banner-copy p {
+  color: #ae9bcf;
+}
+
+:root[data-theme="dark"] .side-session-return {
+  color: #eadfff;
+  background: #2b213e;
+  border-color: #594675;
+}
+
+:root[data-theme="dark"] .content.side-session-active {
+  background:
+    radial-gradient(circle at 74% 0, #251c38 0, transparent 24%), var(--canvas);
+}
+
 :root[data-theme="dark"] .ssh-terminal-mark {
   color: #b8f0ce;
   background: #1f533a;
@@ -5287,29 +5394,6 @@ button.session-meta-item:focus-visible,
 :root[data-theme="dark"] .thread-settings-section.permission-section {
   background: #2b211d;
   border-color: #50362d;
-}
-
-:root[data-theme="dark"] .slash-command-menu {
-  border-color: #34373d;
-}
-
-:root[data-theme="dark"] .slash-command-item {
-  color: #c7cad0;
-}
-
-:root[data-theme="dark"] .slash-command-item:hover,
-:root[data-theme="dark"] .slash-command-item.selected {
-  color: #f2f3f5;
-  background: #2c2f34;
-}
-
-:root[data-theme="dark"] .slash-command-item code {
-  color: #f08b67;
-}
-
-:root[data-theme="dark"] .slash-command-item small {
-  color: #b5b9c0;
-  background: #3a3d43;
 }
 
 :root[data-theme="dark"] .queue-action:hover:not(:disabled) {

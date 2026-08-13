@@ -11,7 +11,8 @@ import type { HostStateStore } from "./state-store.js";
 export type IdempotentResult =
   { ok: true; result: unknown } | { ok: false; error: ProtocolError };
 
-export type DurableMutationMethod = "thread/start" | "turn/start" | "queue/add";
+export type DurableMutationMethod =
+  "thread/start" | "thread/fork" | "turn/start" | "queue/add";
 
 type DurableMutationClaim = Pick<RequestEnvelope, "payload"> & {
   method: DurableMutationMethod;
@@ -21,6 +22,7 @@ type DurableMutationIdentity = {
   method: DurableMutationMethod;
   threadId: string | null;
   clientUserMessageId: string | null;
+  ephemeral: boolean | null;
 };
 
 const RESULT_TTL_MS = 24 * 60 * 60_000;
@@ -143,6 +145,7 @@ export function usesDurableMutationClaim(
 ): method is DurableMutationMethod {
   return (
     method === "thread/start" ||
+    method === "thread/fork" ||
     method === "turn/start" ||
     method === "queue/add"
   );
@@ -519,9 +522,13 @@ function durableMutationIdentity(
         ? null
         : safeIdentityString(payload?.threadId),
     clientUserMessageId:
-      claim.method === "thread/start"
+      claim.method === "thread/start" || claim.method === "thread/fork"
         ? null
         : safeIdentityString(payload?.clientUserMessageId),
+    ephemeral:
+      claim.method === "thread/fork" && typeof payload?.ephemeral === "boolean"
+        ? payload.ephemeral
+        : null,
   };
 }
 
@@ -700,6 +707,18 @@ function isVerifiableMutationSuccess(
     (identity.threadId === null || identity.clientUserMessageId === null)
   ) {
     return false;
+  }
+  if (method === "thread/fork") {
+    const thread = record.thread;
+    return (
+      identity.threadId !== null &&
+      identity.ephemeral !== null &&
+      thread !== null &&
+      typeof thread === "object" &&
+      safeIdentityString((thread as Record<string, unknown>).id) !== null &&
+      (thread as Record<string, unknown>).forkedFromId === identity.threadId &&
+      (thread as Record<string, unknown>).ephemeral === identity.ephemeral
+    );
   }
   const entity = record[method === "thread/start" ? "thread" : "turn"];
   return (

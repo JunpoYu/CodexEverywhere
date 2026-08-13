@@ -4,6 +4,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- 移除 Web 中复制 Codex TUI 完整清单的斜杠指令补全和手工 adapter，仅新增经过独立设计的 `/side <问题>`：后端调用原生 `thread/fork` 并要求 `ephemeral: true`，前端以明确的 Side 顶栏、主会话返回入口和移动端布局隔离临时支线。Side 不进入会话列表、不使用持久 Queue，继承历史只作为模型上下文而不重复渲染；其他 `/` 输入继续失败关闭。
+
 ### Fixed
 
 - Web 打开活动会话时使用显式的历史初始化状态，分页结果确定前不会启动完整历史 snapshot；初始化请求瞬时失败后会继续重试 `thread/resume`，并绕过普通 repair 的 1.25 秒实时静默门槛，所有 turn 完成/空闲路径也会保留初始化计时器，不会永久停在不可修复的 `initializing` 状态。新会话从首个 turn 起使用有界分页同步，延迟到达的 legacy 完整快照也不能覆盖最近 20 个 turn。后台 repair 会为尚未建立分页状态的新会话保留更早历史 cursor；用户已经加载到历史尽头时，只要 repair 页仍覆盖当时已加载的最新边界就保持 exhaustion，若边界已被更多新 turn 推出窗口则重新建立 cursor，使漏失的中间 turn 仍可分页到达。旧 app-server 不支持 `thread/turns/list` 时，新会话会自动降级到 legacy repair。legacy 完整结果仍只向 DOM 提交最近 20 个 turn，但待确认发送使用未截断结果做安全对账，不再把窗口外的已完成操作误判为缺失。

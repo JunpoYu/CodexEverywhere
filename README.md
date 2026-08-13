@@ -57,6 +57,7 @@ CodexEverywhere **不是 Web Terminal**，也不替代 SSH、Slurm、Codex CLI �
 - 创建、恢复和实时查看 app-server thread；支持 Markdown、KaTeX、代码、计划、命令、文件修改、MCP、subagent 和错误卡片。
 - 长会话默认只渲染最近 20 个 turn；更早历史按需分页，流式内容与后台 snapshot 按稳定身份合并，旧协议的完整响应也不会绕过默认窗口。
 - 只在用户停留于底部时自动跟随；桌面大纲和移动端抽屉帮助快速定位历史消息。
+- 输入 `/side <问题>` 可基于当前上下文开启真正的 Codex ephemeral fork。Web 会用独立的 Side 标识和返回入口隔离这条临时支线；它不进入会话列表、不能持久排队，刷新或离开后不可恢复，回复也不会自动合并回主会话。
 
 ### 移动端优先的审批与 Queue
 

@@ -181,6 +181,7 @@ describe("CodexGatewaySession notifications", () => {
           });
         } else if (message.method === "thread/fork") {
           slashMethodPayloads.set(message.method, message.params);
+          const forkParams = message.params as Record<string, unknown>;
           sendToClient?.({
             id: message.id,
             result: {
@@ -189,6 +190,8 @@ describe("CodexGatewaySession notifications", () => {
                 cwd: workspacePath,
                 status: { type: "idle" },
                 turns: [],
+                forkedFromId: "thread-1",
+                ephemeral: forkParams.ephemeral === true,
               },
               approvalPolicy: "never",
               approvalsReviewer: "user",
@@ -702,9 +705,25 @@ describe("CodexGatewaySession notifications", () => {
         requestId: "slash-fork",
         idempotencyKey: "slash-fork",
         method: "thread/fork",
-        payload: { threadId: "thread-1" },
+        payload: { threadId: "thread-1", ephemeral: true },
       }),
     ).resolves.toMatchObject({ thread: { id: "thread-fork" } });
+    await expect(threadPermissions.read("thread-fork")).resolves.toMatchObject({
+      approvalPolicy: "never",
+      sandbox: "danger-full-access",
+    });
+    await expect(
+      session.request({
+        version: PROTOCOL_VERSION,
+        requestId: "side-unsubscribe",
+        idempotencyKey: "side-unsubscribe",
+        method: "thread/unsubscribe",
+        payload: { threadId: "thread-fork" },
+      }),
+    ).resolves.toEqual({ status: "unsubscribed" });
+    await expect(
+      threadPermissions.read("thread-fork"),
+    ).resolves.toBeUndefined();
 
     await expect(
       session.request({

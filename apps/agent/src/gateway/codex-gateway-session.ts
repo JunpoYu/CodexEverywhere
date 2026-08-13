@@ -66,6 +66,7 @@ export class CodexGatewaySession implements GatewaySession {
   readonly #closeListeners = new Set<() => void>();
   readonly #serverRequests = new Map<string, CodexServerRequest>();
   readonly #authorizedThreads = new Map<string, number>();
+  readonly #ephemeralThreads = new Set<string>();
   readonly #unsubscribeQueue: (() => void) | undefined;
   readonly #unsubscribeConsumptionRepair: (() => void) | undefined;
   readonly #unsubscribeConsumptionPauseRepair: (() => void) | undefined;
@@ -258,13 +259,22 @@ export class CodexGatewaySession implements GatewaySession {
         await this.#authorizeThread(threadId);
         return this.#resumeThread(payload);
       }
-      case "thread/unsubscribe":
       case "thread/name/set":
       case "thread/archive":
       case "thread/unarchive": {
         const threadId = requiredString(payload, "threadId");
         await this.#authorizeThread(threadId);
         return this.#client.request(request.method, payload);
+      }
+      case "thread/unsubscribe": {
+        const threadId = requiredString(payload, "threadId");
+        await this.#authorizeThread(threadId);
+        const result = await this.#client.request(request.method, payload);
+        if (this.#ephemeralThreads.delete(threadId)) {
+          this.#authorizedThreads.delete(threadId);
+          await this.#threadPermissions.remove(threadId);
+        }
+        return result;
       }
       case "thread/settings/update": {
         const threadId = requiredString(payload, "threadId");
@@ -320,6 +330,9 @@ export class CodexGatewaySession implements GatewaySession {
           response,
           permissionObservation,
         );
+        if (forkPayload.ephemeral === true) {
+          this.#ephemeralThreads.add(response.thread.id);
+        }
         return response;
       }
       case "thread/compact/start":
@@ -381,6 +394,14 @@ export class CodexGatewaySession implements GatewaySession {
     this.#unsubscribeConsumptionPauseRepair?.();
     this.#serverRequests.clear();
     this.#closeListeners.clear();
+    const ephemeralThreads = [...this.#ephemeralThreads];
+    this.#ephemeralThreads.clear();
+    await Promise.allSettled(
+      ephemeralThreads.map(async (threadId) => {
+        this.#authorizedThreads.delete(threadId);
+        await this.#threadPermissions.remove(threadId);
+      }),
+    );
     await this.#client.close();
     if (this.#ownsConsumptionRepairer) {
       await this.#consumptionRepairer.close();
@@ -426,6 +447,8 @@ export class CodexGatewaySession implements GatewaySession {
       response.thread.cwd,
     );
     this.#authorizedThreads.set(response.thread.id, authorization.revision);
+    if (response.thread.ephemeral)
+      this.#ephemeralThreads.add(response.thread.id);
     return response;
   }
 
@@ -465,6 +488,8 @@ export class CodexGatewaySession implements GatewaySession {
         response.thread.cwd,
       );
       this.#authorizedThreads.set(response.thread.id, authorization.revision);
+      if (response.thread.ephemeral)
+        this.#ephemeralThreads.add(response.thread.id);
       const repair = resumePermissionRepair(resumePayload, response);
       if (!repair) {
         await this.#threadPermissions.saveResponse(

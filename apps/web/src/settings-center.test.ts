@@ -41,12 +41,6 @@ describe("user settings center", () => {
     );
   });
 
-  it("opens the settings center before focusing the /theme control", () => {
-    expect(source).toContain(
-      'case "theme":\n      await openSettingsCenter();\n      themePreferenceSelect.focus();',
-    );
-  });
-
   it("keeps thread settings next to the composer without a duplicate header action", () => {
     expect(source).not.toContain('id="thread-settings-button"');
     expect(source).toContain('id="thread-permission-summary"');

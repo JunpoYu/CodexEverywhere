@@ -60,7 +60,7 @@ describe("frontend reliability contracts", () => {
     expect(threadSync).toContain("readThreadRepairSnapshot");
     expect(threadSync).toContain("retainRepairHistoryCursor");
     expect(threadSync).toContain(
-      "repair.reconciliationTurns,\n      repair.turnsAuthoritative",
+      "reconciliationTurns,\n      repair.turnsAuthoritative",
     );
     expect(threadSync).toContain("activeHistoryMode = repair.mode");
   });
@@ -360,10 +360,6 @@ describe("frontend reliability contracts", () => {
       mainSource.indexOf("async function submitComposerMessage"),
       mainSource.indexOf("async function sendTurn"),
     );
-    const slashPrompt = mainSource.slice(
-      mainSource.indexOf("async function sendSlashPrompt"),
-      mainSource.indexOf("async function resumeSlashTarget"),
-    );
     const retry = mainSource.slice(
       mainSource.indexOf("async function retryPendingComposerOperation"),
       mainSource.indexOf("function hasAutomaticComposerReconciliation"),
@@ -382,11 +378,6 @@ describe("frontend reliability contracts", () => {
     );
     expect(submission).toContain("isGatewayMutationOutcomeIndeterminate");
     expect(submission).toContain("markComposerOperationIndeterminate");
-    expect(slashPrompt).toContain("isGatewayMutationOutcomeIndeterminate");
-    expect(slashPrompt).toContain("markComposerOperationIndeterminate");
-    expect(
-      slashPrompt.indexOf("markComposerOperationIndeterminate"),
-    ).toBeLessThan(slashPrompt.indexOf("timelineView.removeLocalUser"));
     expect(retry).toContain("isGatewayMutationOutcomeIndeterminate");
     expect(retry).toContain("markComposerOperationIndeterminate");
     expect(indeterminate).toContain("pendingComposerOperations.set");
@@ -400,19 +391,12 @@ describe("frontend reliability contracts", () => {
       mainSource.indexOf("async function completeStartedTask"),
       mainSource.indexOf("function setComposerSubmitting"),
     );
-    const slashPrompt = mainSource.slice(
-      mainSource.indexOf("async function sendSlashPrompt"),
-      mainSource.indexOf("async function resumeSlashTarget"),
-    );
     const submission = mainSource.slice(
       mainSource.indexOf("async function submitComposerMessage"),
       mainSource.indexOf("async function sendTurn"),
     );
     expect(firstTurn.indexOf("beginComposerOperationRequest")).toBeLessThan(
       firstTurn.indexOf('"turn/start"'),
-    );
-    expect(slashPrompt.indexOf("beginComposerOperationRequest")).toBeLessThan(
-      slashPrompt.indexOf("await sendTurn"),
     );
     expect(submission.indexOf("beginComposerOperationRequest")).toBeLessThan(
       submission.indexOf('"queue/add"'),
@@ -426,7 +410,7 @@ describe("frontend reliability contracts", () => {
     expect(mainSource).toContain(
       "inFlightComposerOperations.delete(operation.operationId)",
     );
-    for (const caller of [firstTurn, slashPrompt, submission]) {
+    for (const caller of [firstTurn, submission]) {
       expect(caller).toContain("finally");
       expect(caller).toContain("completeComposerOperationRequest");
       expect(caller.indexOf("markComposerOperationIndeterminate")).toBeLessThan(

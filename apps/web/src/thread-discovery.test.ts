@@ -13,21 +13,4 @@ describe("thread discovery contracts", () => {
     expect(mainSource).toContain("page.nextCursor");
     expect(mainSource).not.toContain('id="delete-thread"');
   });
-
-  it("keeps the default list compatible and isolates optional archive search failures", () => {
-    expect(mainSource).toContain("...(archived ? { archived: true } : {})");
-    expect(mainSource).toContain("Promise.allSettled");
-    expect(mainSource).toContain("archiveClassificationUnknown");
-  });
-
-  it("probes UUID targets directly instead of relying on the first title page", () => {
-    const discovery = mainSource.slice(
-      mainSource.indexOf("async function searchThreadsAcrossArchive"),
-      mainSource.indexOf("async function executeGoalCommand"),
-    );
-    expect(discovery).toContain('"thread/read"');
-    expect(discovery).toContain("includeTurns: false");
-    expect(discovery).toContain("threadListContainsId");
-    expect(discovery).toContain("nextCursor");
-  });
 });
