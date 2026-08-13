@@ -149,6 +149,47 @@ export async function resumeThreadHistory(
   }
 }
 
+export async function readEphemeralThreadHistory(
+  client: ThreadHistoryClient,
+  threadId: string,
+  fallback: ThreadResumeResponse,
+): Promise<OpenThreadHistory> {
+  let detail = await client.request<ThreadReadResponse>("thread/read", {
+    threadId,
+    includeTurns: false,
+  });
+  if (detail.thread.status.type === "active") {
+    try {
+      return await resumeThreadHistory(client, threadId);
+    } catch (error) {
+      // An ephemeral turn can finish between the read and resume. Recheck the
+      // live in-memory thread before treating the missing rollout as fatal.
+      detail = await client.request<ThreadReadResponse>("thread/read", {
+        threadId,
+        includeTurns: false,
+      });
+      if (detail.thread.status.type === "active") throw error;
+    }
+  }
+  const page = await client.request<TurnsPage>("thread/turns/list", {
+    threadId,
+    limit: HISTORY_PAGE_SIZE,
+    sortDirection: "desc",
+    itemsView: "full",
+  });
+  return {
+    detail: {
+      ...fallback,
+      thread: {
+        ...detail.thread,
+        turns: newestPageInReadingOrder(page),
+      },
+    },
+    nextCursor: page.nextCursor ?? undefined,
+    paged: true,
+  };
+}
+
 export function newestPageInReadingOrder(page: TurnsPage): Turn[] {
   return [...page.data].reverse();
 }

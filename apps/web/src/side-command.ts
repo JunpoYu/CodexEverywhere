@@ -4,10 +4,24 @@ export type WebComposerCommand =
   | { kind: "invalid-side" }
   | { kind: "unsupported" };
 
+const SIDE_COMMAND = "/side";
+
+export function offersSideCommandCompletion(input: string): boolean {
+  return (
+    input.length > 0 &&
+    input.length <= SIDE_COMMAND.length &&
+    SIDE_COMMAND.startsWith(input.toLowerCase())
+  );
+}
+
+export function isSideThreadUnavailableError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /no rollout found for thread id/iu.test(message);
+}
+
 export function parseWebComposerCommand(input: string): WebComposerCommand {
-  const trimmed = input.trim();
-  if (!trimmed.startsWith("/")) return { kind: "message" };
-  const match = /^\/side(?:\s+([\s\S]*))?$/iu.exec(trimmed);
+  if (!input.startsWith("/")) return { kind: "message" };
+  const match = /^\/side(?:\s+([\s\S]*))?\s*$/iu.exec(input);
   if (!match) return { kind: "unsupported" };
   const prompt = match[1]?.trim() ?? "";
   return prompt ? { kind: "side", prompt } : { kind: "invalid-side" };

@@ -84,6 +84,8 @@ import {
 } from "./session-controls.js";
 import { savedHostDisplayName, savedHostLoginName } from "./saved-host-view.js";
 import {
+  offersSideCommandCompletion,
+  isSideThreadUnavailableError,
   parseWebComposerCommand,
   sideRecoveryDisposition,
   sideVisibleTurns,
@@ -108,9 +110,11 @@ import {
   HISTORY_PAGE_SIZE,
   newestPageInReadingOrder,
   readThreadRepairSnapshot,
+  readEphemeralThreadHistory,
   retainRepairHistoryCursor,
   resumeThreadHistory,
   threadHistorySyncStrategy,
+  type OpenThreadHistory,
   type ThreadHistoryMode,
 } from "./thread-history.js";
 import {
@@ -231,6 +235,7 @@ type ActiveSideSession = {
   parent: ThreadSummary;
   inheritedThroughTurnId: string;
   appServerInstanceId: string;
+  fallbackDetail: ThreadResumeResponse;
   firstSideTurnId?: string;
 };
 
@@ -498,7 +503,7 @@ app.innerHTML = `
       <div class="thread-list-footer"><button id="load-more-threads" type="button" hidden>加载更多</button><small id="thread-list-state" aria-live="polite"></small></div>
     </aside>
     <section id="conversation-content" class="content">
-      <div class="thread-header"><button id="back-to-sessions" class="back-to-sessions" type="button" aria-label="返回会话列表">←</button><div class="thread-heading"><p id="thread-kind-label" class="eyebrow">Codex session</p><h2 id="thread-title">选择一个会话</h2><small class="thread-cwd-line"><span>当前会话目录</span><code id="thread-cwd"></code></small></div><div class="thread-controls"><div class="codex-status"><strong id="thread-state" class="pill idle" role="status" aria-live="polite">空闲</strong></div><div class="thread-actions"><button id="start-side-session" class="side-session-action compact-action" type="button" title="从当前上下文开启临时支线" hidden><span aria-hidden="true">⑂</span> Side</button><button id="thread-outline-button" class="thread-outline-action compact-action" type="button" aria-controls="conversation-outline" aria-expanded="false" hidden><span aria-hidden="true">☷</span> 大纲</button><button id="tui-handoff-button" class="ssh-handoff-action compact-action" type="button" title="通过 SSH 在官方 TUI 中继续同一个会话" hidden><span aria-hidden="true">›_</span> SSH 接力</button></div></div></div>
+      <div class="thread-header"><button id="back-to-sessions" class="back-to-sessions" type="button" aria-label="返回会话列表">←</button><div class="thread-heading"><p id="thread-kind-label" class="eyebrow">Codex session</p><h2 id="thread-title">选择一个会话</h2><small class="thread-cwd-line"><span>当前会话目录</span><code id="thread-cwd"></code></small></div><div class="thread-controls"><div class="codex-status"><strong id="thread-state" class="pill idle" role="status" aria-live="polite">空闲</strong></div><div class="thread-actions"><button id="thread-outline-button" class="thread-outline-action compact-action" type="button" aria-controls="conversation-outline" aria-expanded="false" hidden><span aria-hidden="true">☷</span> 大纲</button><button id="tui-handoff-button" class="ssh-handoff-action compact-action" type="button" title="通过 SSH 在官方 TUI 中继续同一个会话" hidden><span aria-hidden="true">›_</span> SSH 接力</button></div></div></div>
       <aside id="ssh-handoff-banner" class="ssh-handoff-banner" aria-label="SSH 接力提示" hidden>
         <div class="ssh-handoff-banner-copy"><span class="ssh-terminal-mark" aria-hidden="true">›_</span><div><strong>也可以通过 SSH 访问同一个会话</strong><span>登录运行 Codex 的 HPC 后，用 <code>ce tui</code> 继续；Web、SSH TUI 可随时切换，当前任务不会中断。</span></div></div>
         <div class="ssh-handoff-banner-actions"><button id="ssh-handoff-banner-button" type="button">查看方法 <span aria-hidden="true">→</span></button><button id="dismiss-ssh-handoff-banner" class="ssh-handoff-banner-dismiss" type="button" title="以后不再显示这条说明">不再提示</button></div>
@@ -525,7 +530,8 @@ app.innerHTML = `
         </aside>
         <aside id="composer-outcome-review" class="thread-start-outcome-review composer-outcome-review" role="status" hidden><strong>发送结果需要人工核对</strong><p id="composer-outcome-review-copy">旧版 app-server 的完整历史读取连续失败，系统已停止自动重试发送。原消息可能已经提交，请刷新当前会话核对；只有确认可以承担重复消息风险后，才能放弃待确认记录。</p><div class="actions"><button id="inspect-composer-outcome" class="secondary" type="button">刷新并核对当前会话</button><button id="abandon-composer-outcome" class="ghost danger" type="button">我已核对，放弃待确认</button></div></aside>
         <div class="composer-shell">
-          <textarea id="message-input" rows="1" placeholder="给 Codex 发送消息，或输入 /side 开启临时支线…" disabled></textarea>
+          <div id="side-command-completion" class="side-command-completion" role="listbox" aria-label="命令补全" hidden><button id="complete-side-command" type="button" role="option"><code>/side</code><span><strong>开启 Side 临时支线</strong><small>继承当前上下文，但不写入会话列表</small></span><kbd>Tab</kbd></button></div>
+          <textarea id="message-input" rows="1" placeholder="给 Codex 发送消息，或输入 /side 开启临时支线…" aria-autocomplete="list" aria-controls="side-command-completion" aria-expanded="false" disabled></textarea>
           <div class="composer-footer">
             <div class="composer-footer-leading">
               <div id="composer-session-meta" class="composer-session-meta" aria-label="会话配置和上下文" hidden>
@@ -784,6 +790,9 @@ const workspaceScopeSelect = requiredElement<HTMLSelectElement>(
   "workspace-scope-select",
 );
 const messageInput = requiredElement<HTMLTextAreaElement>("message-input");
+const sideCommandCompletion = requiredElement<HTMLElement>(
+  "side-command-completion",
+);
 const composerApprovals = requiredElement<HTMLElement>("composer-approvals");
 const composerApprovalList = requiredElement<HTMLElement>(
   "composer-approval-list",
@@ -1036,12 +1045,16 @@ requiredElement("abandon-side-fork-outcome").addEventListener(
   "click",
   abandonPendingSideForkOperation,
 );
-requiredElement("start-side-session").addEventListener("click", () => {
-  if (!activeThreadId || activeSideSession) return;
+requiredElement("complete-side-command").addEventListener("click", () => {
+  completeSideCommand();
+});
+
+function completeSideCommand(): void {
   messageInput.value = "/side ";
   autoResize(messageInput);
+  renderSideCommandCompletion();
   messageInput.focus();
-});
+}
 threadOutlineButton.addEventListener("click", () =>
   conversationOutlineView.toggle(),
 );
@@ -1198,8 +1211,24 @@ requiredElement("thread-model").addEventListener(
 );
 messageInput.addEventListener("input", () => {
   autoResize(messageInput);
+  renderSideCommandCompletion();
 });
 messageInput.addEventListener("keydown", (event) => {
+  if (
+    !sideCommandCompletion.hidden &&
+    (event.key === "Tab" ||
+      (event.key === "Enter" && !event.shiftKey && !event.isComposing))
+  ) {
+    event.preventDefault();
+    completeSideCommand();
+    return;
+  }
+  if (event.key === "Escape" && !sideCommandCompletion.hidden) {
+    event.preventDefault();
+    sideCommandCompletion.hidden = true;
+    messageInput.setAttribute("aria-expanded", "false");
+    return;
+  }
   if (event.key !== "Enter" || event.shiftKey || event.isComposing) return;
   event.preventDefault();
   if (!sendMessage.disabled) void continueThread();
@@ -2005,7 +2034,19 @@ async function fallbackFromUnavailableSide(
     ) !== "vanished"
   )
     return;
+  await returnFromUnavailableSide(expectedSide);
+}
+
+async function returnFromUnavailableSide(
+  expectedSide: ActiveSideSession,
+): Promise<void> {
+  if (
+    activeSideSession !== expectedSide ||
+    activeThreadId !== expectedSide.threadId
+  )
+    return;
   markUnavailableSideOperationsForReview(expectedSide.threadId);
+  stopThreadSync();
   activeSideSession = undefined;
   renderSideSessionChrome();
   showToast("Side 临时支线无法重新打开，已返回主会话", "error");
@@ -3712,17 +3753,18 @@ function renderSideSessionChrome(): void {
     : client?.supportsCapability(GATEWAY_CAPABILITIES.sideForkV1)
       ? "给 Codex 发送消息，或输入 /side 开启临时支线…"
       : "给 Codex 发送消息…";
-  updateSideSessionAction();
+  renderSideCommandCompletion();
 }
 
-function updateSideSessionAction(): void {
-  const button = requiredElement<HTMLButtonElement>("start-side-session");
-  button.hidden =
-    !activeThreadId ||
-    !activeNewestTurnId ||
-    !client?.supportsCapability(GATEWAY_CAPABILITIES.sideForkV1) ||
-    Boolean(activeSideSession) ||
-    activeThreadStatus?.type === "active";
+function renderSideCommandCompletion(): void {
+  const visible =
+    Boolean(activeThreadId) &&
+    !activeSideSession &&
+    !messageInput.disabled &&
+    client?.supportsCapability(GATEWAY_CAPABILITIES.sideForkV1) === true &&
+    offersSideCommandCompletion(messageInput.value);
+  sideCommandCompletion.hidden = !visible;
+  messageInput.setAttribute("aria-expanded", String(visible));
 }
 
 async function unsubscribeThread(
@@ -3776,7 +3818,11 @@ function hasPendingComposerOperationForThread(threadId: string): boolean {
 
 async function openThread(
   thread: ThreadSummary,
-  options: { preserveTimeline?: boolean; allowWhileSubmitting?: boolean } = {},
+  options: {
+    preserveTimeline?: boolean;
+    allowWhileSubmitting?: boolean;
+    initialHistory?: OpenThreadHistory;
+  } = {},
 ): Promise<boolean> {
   if (
     pendingSideForkOperation &&
@@ -3859,7 +3905,15 @@ async function openThread(
       activeThreadId !== thread.id
     )
       return false;
-    const history = await resumeThreadHistory(currentClient, thread.id);
+    const history =
+      options.initialHistory ??
+      (openingSide
+        ? await readEphemeralThreadHistory(
+            currentClient,
+            thread.id,
+            openingSide.fallbackDetail,
+          )
+        : await resumeThreadHistory(currentClient, thread.id));
     const detail = history.detail;
     if (
       client !== currentClient ||
@@ -3898,6 +3952,7 @@ async function openThread(
       approvalPolicy: detail.approvalPolicy,
       sandboxPolicy: detail.sandbox,
     };
+    if (openingSide) openingSide.fallbackDetail = detail;
     setTuiHandoffVisible(!openingSide);
     renderComposerSessionMeta();
     // The authoritative initial snapshot is now committed. Queue restoration
@@ -3940,6 +3995,10 @@ async function openThread(
       activeThreadId !== thread.id
     )
       return false;
+    if (openingSide && isSideThreadUnavailableError(error)) {
+      await returnFromUnavailableSide(openingSide);
+      return false;
+    }
     appendTimeline("error", "无法读取 thread", errorMessage(error));
     startThreadSync();
     renderThreads(threadsCache);
@@ -4563,11 +4622,12 @@ async function continueThread(): Promise<void> {
 }
 
 async function submitComposerMessage(forceQueue: boolean): Promise<void> {
-  const text = messageInput.value.trim();
+  const rawText = messageInput.value;
+  const text = rawText.trim();
   const targetClient = client;
   const threadId = activeThreadId;
   if (!targetClient || !threadId || composerSubmitting || !text) return;
-  const command = parseWebComposerCommand(text);
+  const command = parseWebComposerCommand(rawText);
   if (command.kind === "invalid-side") {
     showToast("用法：/side <你想在临时支线中询问的问题>", "error");
     return;
@@ -4615,6 +4675,7 @@ async function submitComposerMessage(forceQueue: boolean): Promise<void> {
     messageInput.value = "";
     messageCleared = true;
     autoResize(messageInput);
+    renderSideCommandCompletion();
     if (shouldQueue) {
       const item = await targetClient.request<QueueItem>(
         "queue/add",
@@ -4815,6 +4876,7 @@ async function completeSideForkOperation(
       parent: operation.parent,
       inheritedThroughTurnId: operation.inheritedThroughTurnId,
       appServerInstanceId: fork.sideFork.appServerInstanceId,
+      fallbackDetail: fork,
     };
     await openThread(
       {
@@ -4825,7 +4887,14 @@ async function completeSideForkOperation(
         status: fork.thread.status,
         updatedAt: fork.thread.updatedAt,
       },
-      { allowWhileSubmitting: true },
+      {
+        allowWhileSubmitting: true,
+        initialHistory: {
+          detail: fork,
+          nextCursor: undefined,
+          paged: true,
+        },
+      },
     );
     if (
       client !== targetClient ||
@@ -5598,7 +5667,17 @@ async function syncActiveThread(): Promise<void> {
     if (syncStrategy === "skip") return;
     const requestedHistoryMode = activeHistoryMode;
     if (syncStrategy === "initialize") {
-      const history = await resumeThreadHistory(currentClient, threadId);
+      const syncingSide =
+        activeSideSession?.threadId === threadId
+          ? activeSideSession
+          : undefined;
+      const history = syncingSide
+        ? await readEphemeralThreadHistory(
+            currentClient,
+            threadId,
+            syncingSide.fallbackDetail,
+          )
+        : await resumeThreadHistory(currentClient, threadId);
       if (
         client !== currentClient ||
         sequence !== openThreadSequence ||
@@ -5608,13 +5687,13 @@ async function syncActiveThread(): Promise<void> {
         return;
       const detail = history.detail;
       const visibleTurns = visibleTurnsForThread(threadId, detail.thread.turns);
-      const syncingSide = activeSideSession?.threadId === threadId;
+      const isSyncingSide = Boolean(syncingSide);
       activeTurnId = [...visibleTurns]
         .reverse()
         .find((turn) => turn.status === "inProgress")?.id;
       activeNewestTurnId = visibleTurns.at(-1)?.id;
-      activeHistoryNextCursor = syncingSide ? undefined : history.nextCursor;
-      activeHistoryPaginationExhausted = syncingSide
+      activeHistoryNextCursor = isSyncingSide ? undefined : history.nextCursor;
+      activeHistoryPaginationExhausted = isSyncingSide
         ? true
         : history.paged && history.nextCursor === undefined;
       activeHistoryExhaustedNewestTurnId = activeHistoryPaginationExhausted
@@ -5634,12 +5713,13 @@ async function syncActiveThread(): Promise<void> {
         approvalPolicy: detail.approvalPolicy,
         sandboxPolicy: detail.sandbox,
       };
-      setTuiHandoffVisible(!syncingSide);
+      if (syncingSide) syncingSide.fallbackDetail = detail;
+      setTuiHandoffVisible(!isSyncingSide);
       renderComposerSessionMeta();
       setThreadStatus(detail.thread.status);
       messageInput.disabled = false;
       updateComposerSubmitAvailability();
-      const queueSnapshot = syncingSide
+      const queueSnapshot = isSyncingSide
         ? undefined
         : await renderQueuedMessages(threadId, sequence);
       if (
@@ -5730,7 +5810,17 @@ async function syncActiveThread(): Promise<void> {
     );
     lastRealtimeEventAt = Date.now();
     if (repair.detail.thread.status.type !== "active") stopThreadSync();
-  } catch {
+  } catch (error) {
+    const unavailableSide =
+      activeSideSession?.threadId === threadId ? activeSideSession : undefined;
+    if (
+      unavailableSide &&
+      sequence === openThreadSequence &&
+      isSideThreadUnavailableError(error)
+    ) {
+      await returnFromUnavailableSide(unavailableSide);
+      return;
+    }
     // Live notifications remain primary. Retry snapshot synchronization on a
     // later tick without surfacing transient read failures as timeline noise.
   } finally {
@@ -6705,7 +6795,7 @@ function setThreadStatus(status: unknown): void {
     }
   }
   updateComposerMode();
-  updateSideSessionAction();
+  renderSideCommandCompletion();
 }
 
 function updatePendingApprovalState(): void {
@@ -6928,7 +7018,7 @@ function updateComposerMode(): void {
       : "新消息会保存在 HPC 队列中，并在当前任务结束后发送"
     : "";
   updateComposerSubmitAvailability();
-  updateSideSessionAction();
+  renderSideCommandCompletion();
   renderComposerQueue();
 }
 

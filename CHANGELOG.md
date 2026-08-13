@@ -4,6 +4,14 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Web 不再用对话页顶栏按钮填入 Side 命令；输入框只在首字符开始的 `/`、`/s`、`/si`、`/sid` 或 `/side` 显示单项补全，并支持点击、Tab 或 Enter 完成 `/side `。只有绝对位于输入首部、带斜杠且包含非空问题的 `/side <问题>` 才会触发临时分叉，前导空格、普通 `side` 和正文中的 `/side` 均按普通消息处理。
+
+### Fixed
+
+- Web 创建空闲 ephemeral Side 后不再立即把它当作磁盘 rollout 调用 `thread/resume`，避免成功分叉后报 `no rollout found for thread id`、首条 Side 问题未发送并停在骨架屏。新分叉直接使用有界 `thread/fork` 内存快照；重连时先只读检查内存 thread，只有仍在运行的 Side 才调用 resume 重新订阅事件。确定 Side 已不存在时停止同步并安全返回主会话，不再以短周期、不同幂等键持续缓存失败的 resume 结果并放大 Host SQLite。
+
 ## [0.3.0-alpha.9] - 2026-08-13
 
 ### Changed

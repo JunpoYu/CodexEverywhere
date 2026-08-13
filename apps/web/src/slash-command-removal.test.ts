@@ -9,7 +9,7 @@ const styleSource = readFileSync(
 );
 
 describe("minimal Web command surface", () => {
-  it("does not restore the former command registry or autocomplete menu", () => {
+  it("keeps only a bounded /side completion instead of a command registry", () => {
     expect(existsSync(new URL("./slash-commands.ts", import.meta.url))).toBe(
       false,
     );
@@ -17,6 +17,9 @@ describe("minimal Web command surface", () => {
     expect(mainSource).not.toContain("./slash-commands.js");
     expect(mainSource).toContain("/side 开启临时支线");
     expect(styleSource).not.toContain(".slash-command-item");
+    expect(mainSource).toContain('id="side-command-completion"');
+    expect(mainSource).toContain("offersSideCommandCompletion");
+    expect(mainSource).not.toContain('id="start-side-session"');
   });
 
   it("implements /side as an ephemeral fork with explicit Side chrome", () => {
@@ -44,6 +47,9 @@ describe("minimal Web command surface", () => {
     expect(side).toContain("operation.idempotencyKey");
     expect(side).toContain("lastTurnId: operation.inheritedThroughTurnId");
     expect(side).not.toContain("fork.thread.turns.map");
+    expect(side).toContain("initialHistory: {");
+    expect(side).toContain("detail: fork");
+    expect(side).toContain("fallbackDetail: fork");
     expect(mainSource).toContain('id="side-session-banner"');
     expect(mainSource).toContain('id="return-from-side"');
     expect(mainSource).toContain('id="side-fork-outcome-review"');
