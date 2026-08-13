@@ -78,6 +78,7 @@ describe("CodexGatewaySession notifications", () => {
     let threadListPayload: Record<string, unknown> | undefined;
     let threadResumePayload: Record<string, unknown> | undefined;
     let delayNextResume = false;
+    let forkStillLive = true;
     let delayedResumeMessage: Record<string, unknown> | undefined;
     let revokedServerRequestResponse: Record<string, unknown> | undefined;
     let revisionFailureResponse: Record<string, unknown> | undefined;
@@ -138,7 +139,7 @@ describe("CodexGatewaySession notifications", () => {
                 cwd: workspacePath,
                 status: { type: "idle" },
                 turns: [],
-                ephemeral: threadId === "thread-fork",
+                ephemeral: threadId === "thread-fork" && forkStillLive,
               },
             },
           });
@@ -723,6 +724,40 @@ describe("CodexGatewaySession notifications", () => {
       sideFork: { version: 1, inheritedThroughTurnId: "parent-turn" },
     });
     expect(JSON.stringify(sideFork)).not.toContain("PRIVATE HISTORY");
+    await expect(
+      session.validateDurableResult(
+        {
+          version: PROTOCOL_VERSION,
+          requestId: "validate-live-side",
+          idempotencyKey: "validate-live-side",
+          method: "thread/fork",
+          payload: {
+            threadId: "thread-1",
+            lastTurnId: "parent-turn",
+            ephemeral: true,
+          },
+        },
+        sideFork,
+      ),
+    ).resolves.toBeUndefined();
+    forkStillLive = false;
+    await expect(
+      session.validateDurableResult(
+        {
+          version: PROTOCOL_VERSION,
+          requestId: "validate-stale-side",
+          idempotencyKey: "validate-stale-side",
+          method: "thread/fork",
+          payload: {
+            threadId: "thread-1",
+            lastTurnId: "parent-turn",
+            ephemeral: true,
+          },
+        },
+        sideFork,
+      ),
+    ).rejects.toThrow("no longer exists");
+    forkStillLive = true;
     await expect(threadPermissions.read("thread-fork")).resolves.toMatchObject({
       approvalPolicy: "never",
       sandbox: "danger-full-access",

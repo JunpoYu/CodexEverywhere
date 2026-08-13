@@ -1755,6 +1755,13 @@ async function runLoginButtonAction(
 }
 
 async function activate(nextClient: GatewayClient): Promise<void> {
+  const reauthenticatedClient =
+    temporaryReauthenticationClient?.host.deviceId === nextClient.host.deviceId
+      ? temporaryReauthenticationClient
+      : undefined;
+  const sideToRestore = reauthenticatedClient
+    ? { session: activeSideSession, thread: activeThreadSnapshot() }
+    : undefined;
   stopThreadSync();
   stopCodexLoginMonitoring();
   clearSelectedCodexAuthFile();
@@ -1772,6 +1779,12 @@ async function activate(nextClient: GatewayClient): Promise<void> {
   activeThreadSettings = undefined;
   activeThreadTokenUsage = undefined;
   activeSideSession = undefined;
+  if (sideToRestore?.session && sideToRestore.thread) {
+    activeSideSession = sideToRestore.session;
+    activeThreadId = sideToRestore.thread.id;
+    activeThreadCwd = sideToRestore.thread.cwd;
+    activeThreadStatus = sideToRestore.thread.status;
+  }
   threadSettingsPendingNextTurn = false;
   sessionPermissionDefaults = {
     version: 1,
@@ -1787,10 +1800,6 @@ async function activate(nextClient: GatewayClient): Promise<void> {
   jumpToLatestButton.hidden = true;
   renderComposerSessionMeta();
   const previousClient = client;
-  const reauthenticatedClient =
-    temporaryReauthenticationClient?.host.deviceId === nextClient.host.deviceId
-      ? temporaryReauthenticationClient
-      : undefined;
   if (reauthenticatedClient) temporaryReauthenticationClient = undefined;
   bindActiveClient(nextClient);
   if (reauthenticatedClient !== previousClient) reauthenticatedClient?.close();
@@ -1803,6 +1812,9 @@ async function activate(nextClient: GatewayClient): Promise<void> {
   requiredElement("set-password-button").hidden = false;
   requiredElement("settings-button").hidden = false;
   await continueAfterHostAuthentication();
+  if (client === nextClient && sideToRestore?.session && sideToRestore.thread) {
+    await openThread(sideToRestore.thread, { preserveTimeline: true });
+  }
 }
 
 function bindActiveClient(nextClient: GatewayClient): void {
@@ -4679,7 +4691,9 @@ async function resumePendingSideForkOperation(): Promise<void> {
   })();
   sideForkReconciliation = reconciliation.finally(() => {
     sideForkReconciliation = undefined;
+    renderPendingSideForkOperation();
   });
+  renderPendingSideForkOperation();
   return sideForkReconciliation;
 }
 
@@ -4769,11 +4783,17 @@ function renderPendingSideForkOperation(): void {
       : "Side 创建结果尚未确认。系统会保留原操作编号继续确认，不会用新编号重复分叉。";
   requiredElement<HTMLButtonElement>("retry-side-fork-outcome").disabled =
     operation.manualReviewRequired || Boolean(sideForkReconciliation);
+  requiredElement<HTMLButtonElement>("abandon-side-fork-outcome").disabled =
+    !operation.outcomeUnknown || Boolean(sideForkReconciliation);
 }
 
 function abandonPendingSideForkOperation(): void {
   const operation = pendingSideForkOperation;
   if (!operation) return;
+  if (!operation.outcomeUnknown || sideForkReconciliation) {
+    showToast("Side 创建请求仍在执行，暂时不能放弃", "error");
+    return;
+  }
   if (
     !window.confirm(
       "只有在确认可以承担重复 Side 风险后才应放弃。确定清除这条待确认记录吗？",
@@ -4943,6 +4963,12 @@ function confirmComposerOperation(
   composerTurnSnapshotReader.forget(operation.operationId);
   queuedItems.delete(`confirming-${operation.operationId}`);
   if (outcome.kind === "turn" && activeThreadId === operation.threadId) {
+    if (
+      activeSideSession?.threadId === operation.threadId &&
+      !activeSideSession.firstSideTurnId
+    ) {
+      activeSideSession.firstSideTurnId = outcome.turnId;
+    }
     timelineView.bindLocalUserToTurn(outcome.turnId, operation.operationId);
     if (outcome.turnStatus === "inProgress") {
       activeTurnId = outcome.turnId;

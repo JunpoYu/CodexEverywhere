@@ -149,6 +149,27 @@ export class CodexGatewaySession implements GatewaySession {
     return new CodexGatewaySession(client, options);
   }
 
+  async validateDurableResult(
+    request: RequestEnvelope,
+    result: unknown,
+  ): Promise<void> {
+    if (request.method !== "thread/fork" || !isRecord(result)) return;
+    const thread = result.thread;
+    if (!isRecord(thread) || thread.ephemeral !== true) return;
+    const threadId = requiredString(thread, "id");
+    const live = await this.#client.request<ThreadReadResponse>("thread/read", {
+      threadId,
+      includeTurns: false,
+    });
+    if (live.thread.id !== threadId || live.thread.ephemeral !== true) {
+      throw new Error("Ephemeral fork no longer exists in app-server");
+    }
+    // A durable replay can arrive on a new Gateway session. Adopt the live
+    // ephemeral thread so unsubscribe/connection close still removes its
+    // permission cache and subscription state.
+    this.#ephemeralThreads.add(threadId);
+  }
+
   onEvent(listener: (event: EventEnvelope) => void): () => void {
     this.#events.on("event", listener);
     return () => this.#events.off("event", listener);

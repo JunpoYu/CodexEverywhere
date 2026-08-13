@@ -833,17 +833,103 @@ describe("IdempotencyRegistry", () => {
     await expect(
       registry.execute("device-a", "persistent-fork-key", operation, options),
     ).resolves.toMatchObject({
-      ok: true,
-      result: {
-        thread: {
-          id: "persistent-fork",
-          forkedFromId: "parent-thread",
-          ephemeral: false,
-          turns: [],
+      ok: false,
+      error: { code: "IDEMPOTENCY_OUTCOME_INDETERMINATE" },
+    });
+    expect(operation).toHaveBeenCalledOnce();
+  });
+
+  it("rejects reuse of a fork key with a different inherited boundary", async () => {
+    directory = await mkdtemp(join(tmpdir(), "ce-idempotency-"));
+    state = await HostStateStore.open(join(directory, "state.sqlite"));
+    const registry = new IdempotencyRegistry(state);
+    const operation = vi.fn(async () => ({
+      thread: {
+        id: "side-thread",
+        forkedFromId: "parent-thread",
+        ephemeral: true,
+        turns: [],
+      },
+      sideFork: { version: 1, inheritedThroughTurnId: "turn-a" },
+    }));
+
+    await registry.execute("device-a", "side-boundary-key", operation, {
+      durableClaim: {
+        method: "thread/fork",
+        payload: {
+          threadId: "parent-thread",
+          lastTurnId: "turn-a",
+          ephemeral: true,
         },
       },
     });
+    await expect(
+      registry.execute("device-a", "side-boundary-key", operation, {
+        durableClaim: {
+          method: "thread/fork",
+          payload: {
+            threadId: "parent-thread",
+            lastTurnId: "turn-b",
+            ephemeral: true,
+          },
+        },
+      }),
+    ).resolves.toMatchObject({
+      ok: false,
+      error: { code: "IDEMPOTENCY_KEY_REUSED" },
+    });
     expect(operation).toHaveBeenCalledOnce();
+  });
+
+  it("fails an older boundary-less fork claim closed during upgrade", async () => {
+    directory = await mkdtemp(join(tmpdir(), "ce-idempotency-"));
+    state = await HostStateStore.open(join(directory, "state.sqlite"));
+    const key = createHash("sha256")
+      .update("ce-idempotency-v1\0")
+      .update("device-a")
+      .update("\0")
+      .update("legacy-side-key")
+      .digest("base64url");
+    const legacyFingerprint = createHash("sha256")
+      .update("ce-durable-idempotency-v2\0")
+      .update(
+        JSON.stringify({
+          method: "thread/fork",
+          threadId: "parent-thread",
+          clientUserMessageId: null,
+          ephemeral: true,
+        }),
+      )
+      .digest("base64url");
+    await state.transaction((database) => {
+      database.run(
+        "INSERT INTO durable_mutation_claims (key, method, request_fingerprint, result_json, created_at, completed_at) VALUES (?, 'thread/fork', ?, NULL, ?, NULL)",
+        [key, legacyFingerprint, new Date().toISOString()],
+      );
+    });
+    const operation = vi.fn(async () => ({ duplicate: true }));
+
+    await expect(
+      new IdempotencyRegistry(state).execute(
+        "device-a",
+        "legacy-side-key",
+        operation,
+        {
+          durableClaim: {
+            method: "thread/fork",
+            payload: {
+              threadId: "parent-thread",
+              lastTurnId: "parent-turn",
+              ephemeral: true,
+            },
+          },
+        },
+      ),
+    ).resolves.toMatchObject({
+      ok: false,
+      error: { code: "IDEMPOTENCY_OUTCOME_INDETERMINATE" },
+    });
+    expect(operation).not.toHaveBeenCalled();
   });
 
   it.each([

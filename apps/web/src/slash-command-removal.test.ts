@@ -33,6 +33,13 @@ describe("minimal Web command surface", () => {
     expect(mainSource).toContain('id="side-session-banner"');
     expect(mainSource).toContain('id="return-from-side"');
     expect(mainSource).toContain('id="side-fork-outcome-review"');
+    expect(mainSource).toContain(
+      "!operation.outcomeUnknown || sideForkReconciliation",
+    );
+    expect(mainSource).toContain(
+      "activeSideSession.firstSideTurnId = outcome.turnId",
+    );
+    expect(mainSource).toContain("const sideToRestore = reauthenticatedClient");
     expect(mainSource).toContain("临时支线不支持持久 Queue");
   });
 

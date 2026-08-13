@@ -296,6 +296,75 @@ describe("DirectGateway", () => {
     await state.close();
   });
 
+  it("fails a durable success closed when its live app-server state vanished", async () => {
+    const state = await stateStore();
+    const devices = new DeviceRegistry(state);
+    const grant = await devices.issuePairing();
+    const hostKeys = generateStaticKeyPair();
+    const deviceKeys = generateStaticKeyPair();
+    let validations = 0;
+    const gateway = await DirectGateway.start({
+      host: "127.0.0.1",
+      port: 0,
+      nodeId: "node-1",
+      userId: "unix:1000",
+      identity: hostKeys,
+      hostFingerprint: `sha256:${"A".repeat(43)}`,
+      state,
+      createSession: () => ({
+        request: async () => ({
+          thread: {
+            id: "side-thread",
+            forkedFromId: "parent-thread",
+            ephemeral: true,
+            turns: [],
+          },
+        }),
+        validateDurableResult: async () => {
+          validations += 1;
+          throw new Error("ephemeral thread vanished");
+        },
+      }),
+    });
+    const client = await connectClient({
+      port: gateway.port,
+      deviceKeys,
+      hostPublicKey: hostKeys.publicKey,
+      auth: {
+        mode: "pair",
+        pairingId: grant.pairingId,
+        secret: grant.secret,
+        deviceName: "Test browser",
+      },
+    });
+
+    await expect(
+      requestOutcomeWithKey(
+        client.socket,
+        client.session,
+        "thread/fork",
+        {
+          threadId: "parent-thread",
+          lastTurnId: "parent-turn",
+          ephemeral: true,
+        },
+        "stale-side-fork-key",
+      ),
+    ).resolves.toMatchObject({
+      ok: false,
+      error: {
+        code: "IDEMPOTENCY_OUTCOME_INDETERMINATE",
+        retryable: false,
+      },
+    });
+    expect(validations).toBe(1);
+
+    client.socket.close();
+    await onceClosed(client.socket);
+    await gateway.close();
+    await state.close();
+  });
+
   it("returns a claimed turn/queue success once and permanently disables content replay", async () => {
     const state = await stateStore();
     const devices = new DeviceRegistry(state);
