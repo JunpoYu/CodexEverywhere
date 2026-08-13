@@ -160,34 +160,80 @@ export async function readEphemeralThreadHistory(
   });
   if (detail.thread.status.type === "active") {
     try {
-      return await resumeThreadHistory(client, threadId);
-    } catch (error) {
-      // An ephemeral turn can finish between the read and resume. Recheck the
-      // live in-memory thread before treating the missing rollout as fatal.
+      const resumed = await resumeThreadHistory(client, threadId);
+      return {
+        detail: withThreadTurns(
+          resumed.detail,
+          newestTurnsWithinLimit(resumed.detail.thread.turns),
+        ),
+        nextCursor: undefined,
+        paged: false,
+      };
+    } catch {
+      // Ephemeral threads deliberately have no rollout. Current app-server
+      // versions can therefore reject thread/resume even while thread/read
+      // still exposes the live in-memory Side. Re-read its current status.
       detail = await client.request<ThreadReadResponse>("thread/read", {
         threadId,
         includeTurns: false,
       });
-      if (detail.thread.status.type === "active") throw error;
     }
   }
-  const page = await client.request<TurnsPage>("thread/turns/list", {
-    threadId,
-    limit: HISTORY_PAGE_SIZE,
-    sortDirection: "desc",
-    itemsView: "full",
-  });
   return {
     detail: {
       ...fallback,
       thread: {
+        ...fallback.thread,
         ...detail.thread,
-        turns: newestPageInReadingOrder(page),
+        // Current app-server versions expose ephemeral status through
+        // thread/read but reject includeTurns and return no rollout history.
+        // Preserve the bounded fork/event snapshot owned by this page.
+        forkedFromId: fallback.thread.forkedFromId,
+        turns: newestTurnsWithinLimit(fallback.thread.turns),
       },
     },
-    nextCursor: page.nextCursor ?? undefined,
-    paged: true,
+    nextCursor: undefined,
+    paged: false,
   };
+}
+
+export async function readEphemeralThreadRepairSnapshot(
+  client: ThreadHistoryClient,
+  threadId: string,
+  fallback: ThreadResumeResponse,
+): Promise<ThreadRepairSnapshot> {
+  const detail = await client.request<ThreadReadResponse>("thread/read", {
+    threadId,
+    includeTurns: false,
+  });
+  const turns = fallback.thread.turns;
+  return {
+    detail: {
+      thread: {
+        ...fallback.thread,
+        ...detail.thread,
+        forkedFromId: fallback.thread.forkedFromId,
+        turns: newestTurnsWithinLimit(turns),
+      },
+    },
+    displayTurns: newestTurnsWithinLimit(turns),
+    reconciliationTurns: turns,
+    // The page snapshot can confirm known turns, but it cannot prove absence
+    // after a transport gap because ephemeral history cannot be re-read.
+    turnsAuthoritative: false,
+    mode: "legacy",
+    nextCursor: undefined,
+  };
+}
+
+export function mergeEphemeralCompletedTurn(
+  detail: ThreadResumeResponse,
+  turn: Turn,
+): ThreadResumeResponse {
+  const turns = (detail.thread.turns as Turn[]).filter(
+    (candidate) => candidate.id !== turn.id,
+  );
+  return withThreadTurns(detail, newestTurnsWithinLimit([...turns, turn]));
 }
 
 export function newestPageInReadingOrder(page: TurnsPage): Turn[] {

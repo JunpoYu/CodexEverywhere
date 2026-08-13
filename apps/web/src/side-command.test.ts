@@ -2,7 +2,6 @@ import { describe, expect, it } from "vitest";
 
 import {
   offersSideCommandCompletion,
-  isSideThreadUnavailableError,
   parseWebComposerCommand,
   sideRecoveryDisposition,
   sideVisibleTurns,
@@ -43,17 +42,6 @@ describe("Web /side command", () => {
     expect(offersSideCommandCompletion(" /side")).toBe(false);
     expect(offersSideCommandCompletion("ask /side")).toBe(false);
     expect(offersSideCommandCompletion("/status")).toBe(false);
-  });
-
-  it("recognizes definitive loss of an in-memory Side thread", () => {
-    expect(
-      isSideThreadUnavailableError(
-        new Error("no rollout found for thread id side-1"),
-      ),
-    ).toBe(true);
-    expect(isSideThreadUnavailableError(new Error("request timed out"))).toBe(
-      false,
-    );
   });
 
   it("hides inherited parent turns from the Side timeline", () => {

@@ -35,6 +35,9 @@ type ThreadForkResponse = ThreadStartResponse & {
     ephemeral: boolean;
   };
 };
+type ThreadReadResponse = {
+  thread: ThreadForkResponse["thread"] & { turns: unknown[] };
+};
 type TurnStartResponse = { turn: { id: string } };
 type TurnCompletedParams = {
   threadId: string;
@@ -103,6 +106,83 @@ async function connect(
 }
 
 describe("real Codex app-server contract", () => {
+  it("reads an idle ephemeral Side from memory without a rollout", async () => {
+    const { socketPath, workspace } = await startServer();
+    const client = await connect(socketPath, "ce_ephemeral_side_read_contract");
+    let parentThreadId: string | undefined;
+    let sideThreadId: string | undefined;
+
+    try {
+      const parent = await client.request<ThreadStartResponse>("thread/start", {
+        cwd: workspace,
+        approvalPolicy: "never",
+        sandbox: "danger-full-access",
+        ephemeral: false,
+      });
+      parentThreadId = parent.thread.id;
+      // Materialize the parent rollout without invoking a model so the
+      // contract remains part of the default integration suite.
+      await client.request("thread/name/set", {
+        threadId: parentThreadId,
+        name: "Ephemeral Side Read Contract",
+      });
+
+      const side = await client.request<ThreadForkResponse>("thread/fork", {
+        threadId: parentThreadId,
+        ephemeral: true,
+      });
+      sideThreadId = side.thread.id;
+
+      const read = await client.request<ThreadReadResponse>("thread/read", {
+        threadId: sideThreadId,
+        includeTurns: false,
+      });
+      expect(read.thread).toMatchObject({
+        id: sideThreadId,
+        ephemeral: true,
+      });
+      expect(read.thread.turns).toEqual([]);
+
+      await expect(
+        client.request("thread/read", {
+          threadId: sideThreadId,
+          includeTurns: true,
+        }),
+      ).rejects.toThrow("ephemeral threads do not support includeTurns");
+
+      await expect(
+        client.request("thread/turns/list", {
+          threadId: sideThreadId,
+          limit: 20,
+          sortDirection: "desc",
+          itemsView: "full",
+        }),
+      ).rejects.toThrow("ephemeral threads do not support thread/turns/list");
+      await expect(
+        client.request("thread/resume", { threadId: sideThreadId }),
+      ).rejects.toThrow("no rollout found for thread id");
+
+      // A failed resume is not evidence that the in-memory Side disappeared.
+      await expect(
+        client.request<ThreadReadResponse>("thread/read", {
+          threadId: sideThreadId,
+          includeTurns: false,
+        }),
+      ).resolves.toMatchObject({ thread: { id: sideThreadId } });
+    } finally {
+      if (sideThreadId) {
+        await client
+          .request("thread/unsubscribe", { threadId: sideThreadId })
+          .catch(() => undefined);
+      }
+      if (parentThreadId) {
+        await client
+          .request("thread/delete", { threadId: parentThreadId })
+          .catch(() => undefined);
+      }
+    }
+  });
+
   it.skipIf(process.env.CE_RUN_MODEL_INTEGRATION !== "1")(
     "creates a true ephemeral Side fork that is absent from persistent thread lists",
     async () => {

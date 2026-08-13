@@ -1586,7 +1586,7 @@ function isFileUpdateChange(value: unknown): value is FileUpdateChange {
   );
 }
 
-function isTurn(value: unknown): value is Turn {
+export function isTurn(value: unknown): value is Turn {
   return (
     isRecord(value) &&
     typeof value.id === "string" &&
