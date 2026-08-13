@@ -11,6 +11,7 @@ import {
   newestPageInReadingOrder,
   newestTurnsWithinLimit,
   readThreadRepairSnapshot,
+  readEphemeralThreadHistory,
   retainRepairHistoryCursor,
   resumeThreadHistory,
   threadHistorySyncStrategy,
@@ -61,6 +62,45 @@ describe("thread history pagination", () => {
       sortDirection: "desc",
       itemsView: "full",
     });
+  });
+
+  it("reads an idle ephemeral thread from memory without trying disk resume", async () => {
+    const fallback = resumeResponse([]);
+    const idle = resumeResponse([]);
+    const request = vi
+      .fn()
+      .mockResolvedValueOnce({ thread: idle.thread })
+      .mockResolvedValueOnce(turnsPage([turn("side-latest")], null));
+
+    await expect(
+      readEphemeralThreadHistory({ request }, "side-1", fallback),
+    ).resolves.toMatchObject({
+      detail: { thread: { turns: [{ id: "side-latest" }] } },
+      paged: true,
+    });
+    expect(request.mock.calls.map(([method]) => method)).toEqual([
+      "thread/read",
+      "thread/turns/list",
+    ]);
+  });
+
+  it("resumes an active ephemeral thread to rejoin its notifications", async () => {
+    const fallback = resumeResponse([]);
+    const active = resumeResponse([]);
+    active.thread.status = { type: "active", activeFlags: [] };
+    const page = turnsPage([turn("running-side")], null);
+    const request = vi
+      .fn()
+      .mockResolvedValueOnce({ thread: active.thread })
+      .mockResolvedValueOnce({ ...active, initialTurnsPage: page });
+
+    await expect(
+      readEphemeralThreadHistory({ request }, "side-1", fallback),
+    ).resolves.toMatchObject({ paged: true });
+    expect(request.mock.calls.map(([method]) => method)).toEqual([
+      "thread/read",
+      "thread/resume",
+    ]);
   });
 
   it("falls back to full history only for an older unsupported server", async () => {

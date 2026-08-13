@@ -1,19 +1,30 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  offersSideCommandCompletion,
+  isSideThreadUnavailableError,
   parseWebComposerCommand,
   sideRecoveryDisposition,
   sideVisibleTurns,
 } from "./side-command.js";
 
 describe("Web /side command", () => {
-  it("recognizes only /side with a non-empty question", () => {
+  it("recognizes /side only at the absolute start with a non-empty question", () => {
     expect(parseWebComposerCommand("normal message")).toEqual({
       kind: "message",
     });
-    expect(parseWebComposerCommand(" /side compare both approaches ")).toEqual({
+    expect(parseWebComposerCommand("/side compare both approaches ")).toEqual({
       kind: "side",
       prompt: "compare both approaches",
+    });
+    expect(parseWebComposerCommand(" /side compare both approaches")).toEqual({
+      kind: "message",
+    });
+    expect(parseWebComposerCommand("compare /side approaches")).toEqual({
+      kind: "message",
+    });
+    expect(parseWebComposerCommand("side compare both approaches")).toEqual({
+      kind: "message",
     });
     expect(parseWebComposerCommand("/side")).toEqual({
       kind: "invalid-side",
@@ -21,6 +32,28 @@ describe("Web /side command", () => {
     expect(parseWebComposerCommand("/status")).toEqual({
       kind: "unsupported",
     });
+  });
+
+  it("offers completion only for a leading slash-command prefix", () => {
+    expect(offersSideCommandCompletion("/")).toBe(true);
+    expect(offersSideCommandCompletion("/s")).toBe(true);
+    expect(offersSideCommandCompletion("/side")).toBe(true);
+    expect(offersSideCommandCompletion("/side ")).toBe(false);
+    expect(offersSideCommandCompletion("side")).toBe(false);
+    expect(offersSideCommandCompletion(" /side")).toBe(false);
+    expect(offersSideCommandCompletion("ask /side")).toBe(false);
+    expect(offersSideCommandCompletion("/status")).toBe(false);
+  });
+
+  it("recognizes definitive loss of an in-memory Side thread", () => {
+    expect(
+      isSideThreadUnavailableError(
+        new Error("no rollout found for thread id side-1"),
+      ),
+    ).toBe(true);
+    expect(isSideThreadUnavailableError(new Error("request timed out"))).toBe(
+      false,
+    );
   });
 
   it("hides inherited parent turns from the Side timeline", () => {
