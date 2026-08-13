@@ -4,6 +4,12 @@
 
 ## [Unreleased]
 
+## [0.3.0-alpha.11] - 2026-08-14
+
+### Fixed
+
+- Web 创建和修复 ephemeral Side 时不再调用 app-server 明确禁止的 `thread/read(includeTurns:true)` 或 `thread/turns/list`，也不再把 `thread/resume` 返回的 `no rollout found` 当成 Side 已消失。新分叉使用有界 `thread/fork` 内存快照，当前页面再用完整 turn 事件更新该快照，并只通过 `thread/read(includeTurns:false)` 核对实时状态；暂时读取失败保留 Side，只有 app-server 实例代次明确变化才安全返回主会话。
+
 ## [0.3.0-alpha.10] - 2026-08-13
 
 ### Changed
@@ -12,7 +18,7 @@
 
 ### Fixed
 
-- Web 创建和修复 ephemeral Side 时不再调用 app-server 明确禁止的 `thread/read(includeTurns:true)` 或 `thread/turns/list`，也不再把 `thread/resume` 返回的 `no rollout found` 当成 Side 已消失。新分叉使用有界 `thread/fork` 内存快照，当前页面再用完整 turn 事件更新该快照，并只通过 `thread/read(includeTurns:false)` 核对实时状态；暂时读取失败保留 Side，只有 app-server 实例代次明确变化才安全返回主会话。
+- Web 创建空闲 ephemeral Side 后不再立即把它当作磁盘 rollout 调用 `thread/resume`，避免成功分叉后报 `no rollout found for thread id`、首条 Side 问题未发送并停在骨架屏。新分叉直接使用有界 `thread/fork` 内存快照；重连时先只读检查内存 thread，只有仍在运行的 Side 才调用 resume 重新订阅事件。确定 Side 已不存在时停止同步并安全返回主会话，不再以短周期、不同幂等键持续缓存失败的 resume 结果并放大 Host SQLite。
 
 ## [0.3.0-alpha.9] - 2026-08-13
 
