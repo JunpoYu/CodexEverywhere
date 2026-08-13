@@ -1,8 +1,13 @@
-import type { ThreadItem } from "@codex-everywhere/codex-app-server-schema/v2";
+import type {
+  ThreadItem,
+  ThreadReadResponse,
+  Turn,
+} from "@codex-everywhere/codex-app-server-schema/v2";
 import { describe, expect, it } from "vitest";
 
 import {
   completedStreamingCandidateId,
+  boundedThreadSnapshot,
   describeThreadItem,
   FileChangeDisclosureState,
   fileChangeItemFromPatchUpdate,
@@ -11,17 +16,74 @@ import {
   isReasoningEventType,
   isVisibleThreadItem,
   localUserReconciledByTurns,
+  looseItemReconciledByTurn,
   mcpServerStartupNotice,
   preferredMessageTimestamp,
   queuedMessageText,
+  repairTurnInsertion,
   relativeMessageTime,
   shouldFollowTimeline,
   StreamingDeltaBuffer,
+  streamingCardReconciliation,
   streamingItemCandidateId,
   TRANSIENT_TIMELINE_SELECTOR,
   threadSnapshotRevision,
   threadSendMode,
 } from "./thread-view.js";
+
+describe("boundedThreadSnapshot", () => {
+  it("prevents a repair snapshot from expanding beyond its turn window", () => {
+    const turns = Array.from({ length: 25 }, (_, index) =>
+      testTurn(`turn-${index + 1}`),
+    );
+    const response = {
+      thread: { id: "thread-1", turns },
+    } as ThreadReadResponse;
+
+    const bounded = boundedThreadSnapshot(response, 20);
+
+    expect(bounded.thread.turns).toHaveLength(20);
+    expect(bounded.thread.turns.at(0)?.id).toBe("turn-6");
+    expect(response.thread.turns).toHaveLength(25);
+  });
+});
+
+describe("repairTurnInsertion", () => {
+  it("inserts a missed earlier turn before the later turn already rendered", () => {
+    const rendered = new Set(["turn-n-plus-1"]);
+    expect(
+      repairTurnInsertion(
+        ["turn-n", "turn-n-plus-1"],
+        0,
+        rendered.has.bind(rendered),
+      ),
+    ).toEqual({ turnId: "turn-n-plus-1", position: "before" });
+  });
+
+  it("inserts after the nearest earlier page neighbor when no later one is rendered", () => {
+    const rendered = new Set(["turn-n-plus-1"]);
+    expect(
+      repairTurnInsertion(
+        ["turn-n", "turn-n-plus-1", "turn-n-plus-2"],
+        2,
+        rendered.has.bind(rendered),
+      ),
+    ).toEqual({ turnId: "turn-n-plus-1", position: "after" });
+  });
+});
+
+function testTurn(id: string): Turn {
+  return {
+    id,
+    items: [],
+    itemsView: "full",
+    status: "completed",
+    error: null,
+    startedAt: null,
+    completedAt: null,
+    durationMs: null,
+  };
+}
 
 describe("relativeMessageTime", () => {
   const now = Date.UTC(2026, 7, 9, 10, 0, 0);
@@ -406,17 +468,90 @@ describe("composer delivery", () => {
     ] as never;
 
     expect(
-      streamingItemCandidateId("turn-new", "agent-streaming", turns),
+      streamingItemCandidateId(
+        "turn-new",
+        "agent-streaming",
+        "agent",
+        "未匹配",
+        turns,
+      ),
     ).toBeUndefined();
     expect(
-      streamingItemCandidateId("turn-new", "agent-authoritative", turns),
+      streamingItemCandidateId(
+        "turn-new",
+        "agent-authoritative",
+        "agent",
+        "首次回复",
+        turns,
+      ),
     ).toBe("agent-authoritative");
     expect(
-      streamingItemCandidateId("turn-other", "agent-streaming", turns),
+      streamingItemCandidateId(
+        "turn-other",
+        "agent-streaming",
+        "agent",
+        "首次回复",
+        turns,
+      ),
     ).toBeUndefined();
     expect(
-      streamingItemCandidateId("turn-new", "unknown-tool-stream", turns),
+      streamingItemCandidateId(
+        "turn-new",
+        "unknown-tool-stream",
+        "tool",
+        "首次回复",
+        turns,
+      ),
     ).toBeUndefined();
+    expect(
+      streamingItemCandidateId(
+        "turn-new",
+        "agent-streaming",
+        "agent",
+        "首次回复",
+        turns,
+      ),
+    ).toBe("agent-authoritative");
+  });
+
+  it("does not guess between authoritative items with identical content", () => {
+    const turns = [
+      {
+        id: "turn-new",
+        status: "completed",
+        error: null,
+        items: [
+          { type: "agentMessage", id: "agent-1", text: "same", phase: null },
+          { type: "agentMessage", id: "agent-2", text: "same", phase: null },
+        ],
+      },
+    ] as never;
+
+    expect(
+      streamingItemCandidateId(
+        "turn-new",
+        "agent-streaming",
+        "agent",
+        "same",
+        turns,
+      ),
+    ).toBeUndefined();
+  });
+
+  it("keeps only streams whose authoritative turn is still running", () => {
+    const turns = [
+      testTurn("completed-turn"),
+      { ...testTurn("active-turn"), status: "inProgress" },
+    ] as Turn[];
+
+    expect(streamingCardReconciliation("active-turn", turns)).toBe("preserve");
+    expect(streamingCardReconciliation("completed-turn", turns)).toBe(
+      "discard",
+    );
+    expect(streamingCardReconciliation("outside-repair-window", turns)).toBe(
+      "finalize",
+    );
+    expect(streamingCardReconciliation(undefined, turns)).toBe("preserve");
   });
 
   it("reconciles a changed completed id only to one unambiguous active stream", () => {
@@ -455,10 +590,71 @@ describe("composer delivery", () => {
             turnId: "turn-new",
             itemId: "still-streaming",
             kind: "tool",
+            rawText: "still running",
           },
         ],
         true,
+        "done",
       ),
     ).toBeUndefined();
+  });
+
+  it("preserves sibling streams when the exact completed item exists", () => {
+    expect(
+      completedStreamingCandidateId(
+        "turn-new",
+        "agent",
+        [
+          {
+            turnId: "turn-new",
+            itemId: "stale-stream",
+            kind: "agent",
+            rawText: "首次回复",
+          },
+        ],
+        true,
+        "首次回复",
+      ),
+    ).toBeUndefined();
+  });
+
+  it("reconciles loose user cards only by stable item or client identity", () => {
+    const turn = {
+      id: "turn-new",
+      items: [
+        {
+          type: "userMessage",
+          id: "user-authoritative",
+          clientId: "operation-1",
+          content: [{ type: "text", text: "你好", text_elements: [] }],
+        },
+      ],
+    } as never;
+
+    expect(
+      looseItemReconciledByTurn(
+        {
+          itemId: "user-started-id",
+          clientUserMessageId: "operation-1",
+        },
+        turn,
+      ),
+    ).toBe(true);
+    expect(
+      looseItemReconciledByTurn(
+        {
+          itemId: "user-authoritative",
+        },
+        turn,
+      ),
+    ).toBe(true);
+    expect(
+      looseItemReconciledByTurn(
+        {
+          itemId: "user-started-id",
+        },
+        turn,
+      ),
+    ).toBe(false);
   });
 });

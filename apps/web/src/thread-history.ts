@@ -1,4 +1,5 @@
 import type {
+  ThreadReadResponse,
   ThreadResumeResponse,
   Turn,
   TurnsPage,
@@ -6,6 +7,8 @@ import type {
 
 export const HISTORY_PAGE_SIZE = 20;
 export const HISTORY_SYNC_TURN_LIMIT = 5;
+
+export type ThreadHistoryMode = "none" | "initializing" | "paged" | "legacy";
 
 export type ThreadHistoryClient = {
   request<T>(method: string, payload: unknown): Promise<T>;
@@ -20,6 +23,74 @@ export type OpenThreadHistory = {
   nextCursor: string | undefined;
   paged: boolean;
 };
+
+export type ThreadRepairSnapshot = {
+  detail: ThreadReadResponse;
+  displayTurns: Turn[];
+  reconciliationTurns: Turn[];
+  turnsAuthoritative: boolean;
+  mode: "paged" | "legacy";
+  nextCursor: string | undefined;
+};
+
+export async function readThreadRepairSnapshot(
+  client: ThreadHistoryClient,
+  threadId: string,
+  mode: "paged" | "legacy",
+): Promise<ThreadRepairSnapshot> {
+  if (mode === "paged") {
+    try {
+      const [detail, page] = await Promise.all([
+        client.request<ThreadReadResponse>("thread/read", {
+          threadId,
+          includeTurns: false,
+        }),
+        client.request<TurnsPage>("thread/turns/list", {
+          threadId,
+          limit: HISTORY_SYNC_TURN_LIMIT,
+          sortDirection: "desc",
+          itemsView: "full",
+        }),
+      ]);
+      const turns = newestPageInReadingOrder(page);
+      return {
+        detail,
+        displayTurns: turns,
+        reconciliationTurns: turns,
+        turnsAuthoritative: page.nextCursor == null,
+        mode: "paged",
+        nextCursor: page.nextCursor ?? undefined,
+      };
+    } catch (error) {
+      if (!isTurnsPaginationUnsupported(error)) throw error;
+    }
+  }
+
+  const detail = await client.request<ThreadReadResponse>("thread/read", {
+    threadId,
+    includeTurns: true,
+  });
+  return {
+    detail,
+    displayTurns: newestTurnsWithinLimit(detail.thread.turns),
+    reconciliationTurns: detail.thread.turns,
+    turnsAuthoritative: true,
+    mode: "legacy",
+    nextCursor: undefined,
+  };
+}
+
+export function retainRepairHistoryCursor(
+  currentCursor: string | undefined,
+  repairCursor: string | undefined,
+  exhausted: boolean,
+  exhaustedBoundaryVisible: boolean,
+): string | undefined {
+  return (
+    currentCursor ??
+    (exhausted && exhaustedBoundaryVisible ? undefined : repairCursor)
+  );
+}
 
 export async function resumeThreadHistory(
   client: ThreadHistoryClient,
@@ -55,17 +126,54 @@ export async function resumeThreadHistory(
   } catch (error) {
     if (!isTurnsPaginationUnsupported(error)) throw error;
     if (resumed) {
-      return { detail: resumed, nextCursor: undefined, paged: false };
+      return {
+        detail: withThreadTurns(
+          resumed,
+          newestTurnsWithinLimit(resumed.thread.turns),
+        ),
+        nextCursor: undefined,
+        paged: false,
+      };
     }
     const detail = await client.request<ThreadResumeResponse>("thread/resume", {
       threadId,
     });
-    return { detail, nextCursor: undefined, paged: false };
+    return {
+      detail: withThreadTurns(
+        detail,
+        newestTurnsWithinLimit(detail.thread.turns),
+      ),
+      nextCursor: undefined,
+      paged: false,
+    };
   }
 }
 
 export function newestPageInReadingOrder(page: TurnsPage): Turn[] {
   return [...page.data].reverse();
+}
+
+export function newestTurnsWithinLimit(
+  turns: readonly Turn[],
+  limit = HISTORY_PAGE_SIZE,
+): Turn[] {
+  return turns.slice(-limit);
+}
+
+export function threadHistorySyncStrategy(
+  mode: ThreadHistoryMode,
+): "skip" | "initialize" | "paged" | "legacy" {
+  if (mode === "initializing") return "initialize";
+  if (mode === "paged") return "paged";
+  if (mode === "legacy") return "legacy";
+  return "skip";
+}
+
+export function legacyHistorySyncIsCurrent(
+  requestedMode: ThreadHistoryMode,
+  currentMode: ThreadHistoryMode,
+): boolean {
+  return requestedMode === "legacy" && currentMode === requestedMode;
 }
 
 export function isTurnsPaginationUnsupported(error: unknown): boolean {

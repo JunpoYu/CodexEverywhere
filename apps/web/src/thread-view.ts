@@ -158,6 +158,7 @@ export type StreamingTimelineIdentity = {
   turnId: string | undefined;
   itemId: string | undefined;
   kind: StreamingTimelineKind | undefined;
+  rawText?: string | undefined;
 };
 
 export type BufferedStreamingDelta = {
@@ -197,13 +198,15 @@ export function completedStreamingCandidateId(
   completedKind: StreamingTimelineKind | undefined,
   candidates: ReadonlyArray<StreamingTimelineIdentity>,
   exactItemPresent = false,
+  completedText?: string,
 ): string | undefined {
   if (exactItemPresent || !completedTurnId || !completedKind) return undefined;
   const matches = candidates.filter(
     (candidate) =>
       candidate.turnId === completedTurnId &&
       candidate.kind === completedKind &&
-      candidate.itemId,
+      candidate.itemId &&
+      (completedText === undefined || candidate.rawText === completedText),
   );
   return matches.length === 1 ? matches[0]?.itemId : undefined;
 }
@@ -211,16 +214,70 @@ export function completedStreamingCandidateId(
 export function streamingItemCandidateId(
   streamTurnId: string | undefined,
   streamItemId: string | undefined,
+  streamKind: StreamingTimelineKind | undefined,
+  streamText: string | undefined,
   turns: ReadonlyArray<Turn>,
 ): string | undefined {
   if (!streamTurnId || !streamItemId) return undefined;
   const turn = turns.find((candidate) => candidate.id === streamTurnId);
   if (!turn) return undefined;
-  return turn.items.some(
-    (item: ThreadItem) => isVisibleThreadItem(item) && item.id === streamItemId,
+  if (
+    turn.items.some(
+      (item: ThreadItem) =>
+        isVisibleThreadItem(item) && item.id === streamItemId,
+    )
   )
-    ? streamItemId
-    : undefined;
+    return streamItemId;
+  if (!streamKind || streamText === undefined) return undefined;
+  const semanticMatches: VisibleThreadItem[] = [];
+  for (const item of turn.items) {
+    if (
+      isVisibleThreadItem(item) &&
+      itemTimelineKind(item) === streamKind &&
+      itemTimelineReconciliationText(item) === streamText
+    )
+      semanticMatches.push(item);
+  }
+  return semanticMatches.length === 1 ? semanticMatches[0]?.id : undefined;
+}
+
+export function streamingCardReconciliation(
+  streamTurnId: string | undefined,
+  turns: ReadonlyArray<Turn>,
+): "preserve" | "finalize" | "discard" {
+  if (!streamTurnId) return "preserve";
+  const authoritativeTurn = turns.find((turn) => turn.id === streamTurnId);
+  if (!authoritativeTurn) return "finalize";
+  return authoritativeTurn.status === "inProgress" ? "preserve" : "discard";
+}
+
+export type LooseTimelineIdentity = {
+  itemId?: string | undefined;
+  clientUserMessageId?: string | undefined;
+};
+
+export function looseItemReconciledByTurn(
+  identity: LooseTimelineIdentity,
+  turn: Pick<Turn, "id" | "items">,
+): boolean {
+  if (
+    identity.itemId &&
+    turn.items.some(
+      (item: ThreadItem) =>
+        isVisibleThreadItem(item) && item.id === identity.itemId,
+    )
+  )
+    return true;
+  if (
+    identity.clientUserMessageId &&
+    turn.items.some(
+      (item: ThreadItem) =>
+        item.type === "userMessage" &&
+        item.clientId === identity.clientUserMessageId,
+    )
+  )
+    return true;
+  return false;
 }
 
 const FOLLOW_LATEST_THRESHOLD_PX = 64;
@@ -502,21 +559,30 @@ export class ThreadTimelineView {
     this.#renderHistoryPager();
   }
 
+  setHasOlderHistory(hasOlderHistory: boolean): void {
+    this.#hasOlderHistory = hasOlderHistory;
+    this.#renderHistoryPager();
+  }
+
   prependTurns(turns: Turn[], hasOlderHistory: boolean): void {
     this.#flushStreamingDeltas();
     const previousHeight = this.#container.scrollHeight;
-    const anchor = this.#container.querySelector(
-      ".turn-block, .timeline-entry:not(.history-pagination)",
-    );
     const fragment = document.createDocumentFragment();
     for (const turn of turns) {
       if (
         this.#container.querySelector(`[data-turn-id="${CSS.escape(turn.id)}"]`)
       )
         continue;
+      this.#removeFinalizedStreamAliases(turn);
       const section = this.#turnElement(turn);
       if (section) fragment.append(section);
     }
+    // Alias reconciliation can remove the first content node. Resolve the
+    // insertion point afterwards so insertBefore never receives a detached
+    // anchor and the caller can safely commit its pagination cursor.
+    const anchor = this.#container.querySelector(
+      ".turn-block, .timeline-entry:not(.history-pagination)",
+    );
     this.#container.insertBefore(fragment, anchor);
     this.#hasOlderHistory = hasOlderHistory;
     this.#loadingOlderHistory = false;
@@ -534,21 +600,51 @@ export class ThreadTimelineView {
         TRANSIENT_TIMELINE_SELECTOR,
       ),
     );
-    for (const card of transientCards) card.remove();
-    for (const turn of turns) {
+    const detachedTransientCards: HTMLElement[] = [];
+    for (const card of transientCards) {
+      if (
+        card.classList.contains("streaming") &&
+        streamingCardReconciliation(card.dataset.streamTurnId, turns) ===
+          "finalize"
+      ) {
+        this.#finalizeStreamingCard(card);
+        continue;
+      }
+      card.remove();
+      detachedTransientCards.push(card);
+    }
+    const repairTurnIds = turns.map((turn) => turn.id);
+    for (const [index, turn] of turns.entries()) {
       const replacement = this.#turnElement(turn, existingTimestamps);
       const existing = this.#container.querySelector<HTMLElement>(
         `[data-turn-id="${CSS.escape(turn.id)}"]`,
       );
       this.#removeLooseTurnItems(turn);
+      this.#removeFinalizedStreamAliases(turn);
       if (existing) {
         if (replacement) existing.replaceWith(replacement);
         else existing.remove();
       } else if (replacement) {
-        this.#container.append(replacement);
+        const insertion = repairTurnInsertion(
+          repairTurnIds,
+          index,
+          (turnId) =>
+            this.#container.querySelector<HTMLElement>(
+              `[data-turn-id="${CSS.escape(turnId)}"]`,
+            ) !== null,
+        );
+        const neighbor = insertion
+          ? this.#container.querySelector<HTMLElement>(
+              `[data-turn-id="${CSS.escape(insertion.turnId)}"]`,
+            )
+          : null;
+        if (neighbor && insertion?.position === "before")
+          neighbor.before(replacement);
+        else if (neighbor) neighbor.after(replacement);
+        else this.#container.append(replacement);
       }
     }
-    for (const card of transientCards) {
+    for (const card of detachedTransientCards) {
       if (
         localUserReconciledByTurns(
           card.dataset.localTurnId,
@@ -557,24 +653,37 @@ export class ThreadTimelineView {
         )
       )
         continue;
+      const reconciliation = streamingCardReconciliation(
+        card.dataset.streamTurnId,
+        turns,
+      );
+      if (reconciliation === "discard") continue;
       const candidateId = streamingItemCandidateId(
         card.dataset.streamTurnId,
         card.dataset.itemId,
+        streamingKind(card.dataset.streamKind),
+        card.dataset.rawText,
         turns,
       );
       const snapshotCard = candidateId
         ? this.#findItem(candidateId)
         : undefined;
-      if (snapshotCard) snapshotCard.replaceWith(card);
+      if (snapshotCard && candidateId === card.dataset.itemId)
+        snapshotCard.replaceWith(card);
+      else if (snapshotCard) continue;
       else this.#container.append(card);
     }
     this.#renderHistoryPager();
     this.#finishContentUpdate(followLatest);
   }
 
-  reconcileSnapshot(response: ThreadReadResponse): boolean {
+  reconcileSnapshot(
+    response: ThreadReadResponse,
+    options: { maxTurns?: number } = {},
+  ): boolean {
     this.#flushStreamingDeltas();
-    const revision = threadSnapshotRevision(response);
+    const boundedResponse = boundedThreadSnapshot(response, options.maxTurns);
+    const revision = threadSnapshotRevision(boundedResponse);
     if (revision === this.#snapshotRevision) return false;
     const followLatest = this.#isNearLatest();
     const previousScrollTop = this.#container.scrollTop;
@@ -584,25 +693,53 @@ export class ThreadTimelineView {
         TRANSIENT_TIMELINE_SELECTOR,
       ),
     );
-    this.#replaceSnapshot(response, existingTimestamps);
+    const finalizedCards = transientCards.filter(
+      (card) =>
+        card.classList.contains("streaming") &&
+        streamingCardReconciliation(
+          card.dataset.streamTurnId,
+          boundedResponse.thread.turns,
+        ) === "finalize",
+    );
+    for (const card of finalizedCards) this.#finalizeStreamingCard(card);
+    const finalizedCardSet = new Set(finalizedCards);
+    this.#replaceSnapshot(boundedResponse, existingTimestamps);
+    if (finalizedCards.length > 0) {
+      const fragment = document.createDocumentFragment();
+      for (const card of finalizedCards) fragment.append(card);
+      const anchor = this.#container.querySelector(
+        ".turn-block, .timeline-entry:not(.history-pagination)",
+      );
+      this.#container.insertBefore(fragment, anchor);
+    }
     for (const card of transientCards) {
+      if (finalizedCardSet.has(card)) continue;
       if (
         localUserReconciledByTurns(
           card.dataset.localTurnId,
-          response.thread.turns,
+          boundedResponse.thread.turns,
           card.dataset.localOperationId,
         )
       )
         continue;
+      const reconciliation = streamingCardReconciliation(
+        card.dataset.streamTurnId,
+        boundedResponse.thread.turns,
+      );
+      if (reconciliation === "discard") continue;
       const candidateId = streamingItemCandidateId(
         card.dataset.streamTurnId,
         card.dataset.itemId,
-        response.thread.turns,
+        streamingKind(card.dataset.streamKind),
+        card.dataset.rawText,
+        boundedResponse.thread.turns,
       );
       const snapshotCard = candidateId
         ? this.#findItem(candidateId)
         : undefined;
-      if (snapshotCard) snapshotCard.replaceWith(card);
+      if (snapshotCard && candidateId === card.dataset.itemId)
+        snapshotCard.replaceWith(card);
+      else if (snapshotCard) continue;
       else this.#container.append(card);
     }
     if (followLatest) this.followLatest();
@@ -732,11 +869,10 @@ export class ThreadTimelineView {
         const followLatest = this.#isNearLatest();
         this.#upsertItem(
           payload.item,
-          event.type === "codex/item/completed" &&
-            typeof payload.turnId === "string"
-            ? payload.turnId
-            : undefined,
+          typeof payload.turnId === "string" ? payload.turnId : undefined,
           lifecycleItemTimestamp(event.type, payload, payload.item),
+          false,
+          event.type === "codex/item/completed",
         );
         this.#finishContentUpdate(followLatest);
         return true;
@@ -765,11 +901,14 @@ export class ThreadTimelineView {
       for (const item of payload.turn.items) {
         this.#upsertItem(
           item,
-          undefined,
+          payload.turn.id,
           turnItemTimestamp(payload.turn, item),
+          true,
           true,
         );
       }
+      this.#removeFinalizedStreamAliases(payload.turn);
+      this.#removeStreamingTurnCards(payload.turn.id);
       if (payload.turn.error) {
         this.#appendNoticeElement(
           "Codex 错误",
@@ -923,9 +1062,10 @@ export class ThreadTimelineView {
 
   #upsertItem(
     item: ThreadItem,
-    completedTurnId?: string,
+    lifecycleTurnId?: string,
     timestampMs?: number,
     preserveExistingTimestamp = false,
+    reconcileCompletedStream = false,
   ): void {
     if (!isVisibleThreadItem(item)) return;
     this.#container.querySelector(".empty")?.remove();
@@ -936,12 +1076,15 @@ export class ThreadTimelineView {
       local?.remove();
     }
     const [existing, ...duplicates] = this.#findItems(item.id);
-    const completedStreamId = completedStreamingCandidateId(
-      completedTurnId,
-      itemTimelineKind(item),
-      this.#streamingIdentities(),
-      Boolean(existing),
-    );
+    const completedStreamId = reconcileCompletedStream
+      ? completedStreamingCandidateId(
+          lifecycleTurnId,
+          itemTimelineKind(item),
+          this.#completionCandidateIdentities(),
+          Boolean(existing),
+          itemTimelineReconciliationText(item),
+        )
+      : undefined;
     const completedStream = completedStreamId
       ? this.#findItem(completedStreamId)
       : undefined;
@@ -955,9 +1098,12 @@ export class ThreadTimelineView {
         preserveExistingTimestamp,
       ),
     );
+    if (lifecycleTurnId) replacement.dataset.lifecycleTurnId = lifecycleTurnId;
     if (existing) existing.replaceWith(replacement);
     else if (completedStream) completedStream.replaceWith(replacement);
     else this.#container.append(replacement);
+    if (existing && completedStream && completedStream !== existing)
+      completedStream.remove();
     for (const duplicate of duplicates) duplicate.remove();
   }
 
@@ -1051,16 +1197,46 @@ export class ThreadTimelineView {
     );
   }
 
-  #streamingIdentities(): StreamingTimelineIdentity[] {
+  #completionCandidateIdentities(): StreamingTimelineIdentity[] {
     return Array.from(
       this.#container.querySelectorAll<HTMLElement>(
-        ".timeline-entry.streaming",
+        '.timeline-entry.streaming, .timeline-entry[data-finalized-stream="true"]',
       ),
     ).map((candidate) => ({
       turnId: candidate.dataset.streamTurnId,
       itemId: candidate.dataset.itemId,
       kind: streamingKind(candidate.dataset.streamKind),
+      rawText: candidate.dataset.rawText,
     }));
+  }
+
+  #removeStreamingTurnCards(turnId: string): void {
+    for (const card of this.#container.querySelectorAll<HTMLElement>(
+      `.timeline-entry.streaming[data-stream-turn-id="${CSS.escape(turnId)}"]`,
+    ))
+      card.remove();
+  }
+
+  #finalizeStreamingCard(card: HTMLElement): void {
+    card.classList.remove("streaming");
+    card.dataset.finalizedStream = "true";
+  }
+
+  #removeFinalizedStreamAliases(turn: Turn): void {
+    for (const card of this.#container.querySelectorAll<HTMLElement>(
+      `[data-finalized-stream="true"][data-stream-turn-id="${CSS.escape(turn.id)}"]`,
+    )) {
+      if (
+        streamingItemCandidateId(
+          card.dataset.streamTurnId,
+          card.dataset.itemId,
+          streamingKind(card.dataset.streamKind),
+          card.dataset.rawText,
+          [turn],
+        )
+      )
+        card.remove();
+    }
   }
 
   #itemTimestamps(): Map<string, number> {
@@ -1078,14 +1254,18 @@ export class ThreadTimelineView {
   }
 
   #removeLooseTurnItems(turn: Turn): void {
-    const itemIds = new Set(
-      turn.items.filter(isVisibleThreadItem).map((item: ThreadItem) => item.id),
-    );
-    if (itemIds.size === 0) return;
     for (const card of this.#container.querySelectorAll<HTMLElement>(
       "[data-item-id]",
     )) {
-      if (card.dataset.itemId && itemIds.has(card.dataset.itemId))
+      if (
+        looseItemReconciledByTurn(
+          {
+            itemId: card.dataset.itemId,
+            clientUserMessageId: card.dataset.clientUserMessageId,
+          },
+          turn,
+        )
+      )
         card.remove();
     }
   }
@@ -1214,6 +1394,37 @@ export class ThreadTimelineView {
   }
 }
 
+export function boundedThreadSnapshot(
+  response: ThreadReadResponse,
+  maxTurns?: number,
+): ThreadReadResponse {
+  if (maxTurns === undefined || response.thread.turns.length <= maxTurns)
+    return response;
+  return {
+    ...response,
+    thread: {
+      ...response.thread,
+      turns: response.thread.turns.slice(-maxTurns),
+    },
+  };
+}
+
+export function repairTurnInsertion(
+  orderedTurnIds: readonly string[],
+  targetIndex: number,
+  isRendered: (turnId: string) => boolean,
+): { turnId: string; position: "before" | "after" } | undefined {
+  for (let index = targetIndex + 1; index < orderedTurnIds.length; index += 1) {
+    const turnId = orderedTurnIds[index];
+    if (turnId && isRendered(turnId)) return { turnId, position: "before" };
+  }
+  for (let index = targetIndex - 1; index >= 0; index -= 1) {
+    const turnId = orderedTurnIds[index];
+    if (turnId && isRendered(turnId)) return { turnId, position: "after" };
+  }
+  return undefined;
+}
+
 function turnItemTimestamp(turn: Turn, item?: ThreadItem): number {
   const phase = item?.type === "userMessage" ? "started" : "completed";
   return turnTimestamp(turn, phase) ?? Date.now();
@@ -1298,6 +1509,14 @@ function itemTimelineKind(
   if (item.type === "commandExecution" || item.type === "fileChange")
     return "tool";
   return undefined;
+}
+
+function itemTimelineReconciliationText(
+  item: VisibleThreadItem,
+): string | undefined {
+  return item.type === "agentMessage" || item.type === "plan"
+    ? item.text
+    : undefined;
 }
 
 function streamingKind(

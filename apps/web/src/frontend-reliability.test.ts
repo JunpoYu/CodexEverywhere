@@ -34,6 +34,159 @@ describe("frontend reliability contracts", () => {
     expect(openThread).not.toContain("messageInput.focus");
   });
 
+  it("does not allow background repair to outrun history pagination", () => {
+    const openThread = mainSource.slice(
+      mainSource.indexOf("async function openThread"),
+      mainSource.indexOf("async function openNewSession"),
+    );
+    const newThread = mainSource.slice(
+      mainSource.indexOf("async function completeStartedTask"),
+      mainSource.indexOf("function sessionStartPayload"),
+    );
+    const threadSync = mainSource.slice(
+      mainSource.indexOf("async function syncActiveThread"),
+      mainSource.indexOf("async function renderQueuedMessages"),
+    );
+
+    expect(
+      openThread.indexOf('activeHistoryMode = "initializing"'),
+    ).toBeLessThan(openThread.indexOf("setThreadStatus(thread.status)"));
+    expect(newThread).toContain('activeHistoryMode = "paged"');
+    expect(threadSync).toContain('if (syncStrategy === "skip") return;');
+    expect(threadSync).toContain('if (syncStrategy === "initialize")');
+    expect(threadSync).toContain(
+      "resumeThreadHistory(currentClient, threadId)",
+    );
+    expect(threadSync).toContain("readThreadRepairSnapshot");
+    expect(threadSync).toContain("retainRepairHistoryCursor");
+    expect(threadSync).toContain(
+      "repair.reconciliationTurns,\n      repair.turnsAuthoritative",
+    );
+    expect(threadSync).toContain("activeHistoryMode = repair.mode");
+  });
+
+  it("finalizes stale streaming cards from completed turns", () => {
+    const mainUsesMerge = mainSource.includes("timelineView.mergeRecentTurns");
+    const threadViewSource = readFileSync(
+      new URL("./thread-view.ts", import.meta.url),
+      "utf8",
+    );
+    const completion = threadViewSource.slice(
+      threadViewSource.indexOf('event.type === "codex/turn/completed"'),
+      threadViewSource.indexOf("const deltaKinds"),
+    );
+
+    expect(mainUsesMerge).toBe(true);
+    expect(threadViewSource).toContain("streamingCardReconciliation");
+    expect(threadViewSource).toContain(
+      'authoritativeTurn.status === "inProgress"',
+    );
+    expect(completion).toContain("#removeStreamingTurnCards(payload.turn.id)");
+    const lifecycle = threadViewSource.slice(
+      threadViewSource.indexOf('event.type === "codex/item/started"'),
+      threadViewSource.indexOf("const patchUpdate"),
+    );
+    expect(lifecycle).toContain('event.type === "codex/item/completed"');
+    const merge = threadViewSource.slice(
+      threadViewSource.indexOf("mergeRecentTurns(turns"),
+      threadViewSource.indexOf("reconcileSnapshot("),
+    );
+    expect(merge.indexOf("#finalizeStreamingCard(card)")).toBeLessThan(
+      merge.indexOf("card.remove()"),
+    );
+    expect(merge).toContain("detachedTransientCards.push(card)");
+    expect(threadViewSource).toContain(
+      '.timeline-entry.streaming, .timeline-entry[data-finalized-stream="true"]',
+    );
+  });
+
+  it("does not race the initial resume with its retry timer", () => {
+    const openThread = mainSource.slice(
+      mainSource.indexOf("async function openThread"),
+      mainSource.indexOf("async function openNewSession"),
+    );
+    const sync = mainSource.slice(
+      mainSource.indexOf("async function syncActiveThread"),
+      mainSource.indexOf("async function renderQueuedMessages"),
+    );
+
+    expect(
+      openThread.indexOf("threadHistoryInitializationSequence = sequence"),
+    ).toBeLessThan(openThread.indexOf("setThreadStatus(thread.status)"));
+    expect(openThread).toContain(
+      "if (threadHistoryInitializationSequence === sequence)",
+    );
+    expect(sync).toContain(
+      "threadHistoryInitializationSequence === openThreadSequence",
+    );
+  });
+
+  it("does not revive an exhausted history cursor and retries failed initialization", () => {
+    const openThread = mainSource.slice(
+      mainSource.indexOf("async function openThread"),
+      mainSource.indexOf("async function openNewSession"),
+    );
+    const loadOlder = mainSource.slice(
+      mainSource.indexOf("async function loadOlderHistory"),
+      mainSource.indexOf("async function syncActiveThread"),
+    );
+    const sync = mainSource.slice(
+      mainSource.indexOf("async function syncActiveThread"),
+      mainSource.indexOf("async function renderQueuedMessages"),
+    );
+
+    expect(openThread).toContain("startThreadSync()");
+    expect(loadOlder).toContain(
+      "activeHistoryPaginationExhausted = nextCursor === undefined",
+    );
+    expect(loadOlder.indexOf("timelineView.prependTurns(")).toBeLessThan(
+      loadOlder.indexOf("activeHistoryNextCursor = nextCursor"),
+    );
+    expect(sync).toContain("activeHistoryPaginationExhausted");
+    expect(sync).toContain("activeHistoryExhaustedNewestTurnId");
+    expect(sync).toContain("repair.displayTurns.some");
+    expect(sync).toContain('syncStrategy === "initialize"');
+    expect(sync).toContain("resumeThreadHistory(currentClient, threadId)");
+    expect(sync).toContain(
+      'activeHistoryMode !== "initializing" &&\n      (activeThreadStatus?.type !== "active" ||',
+    );
+    const status = mainSource.slice(
+      mainSource.indexOf("function setThreadStatus"),
+      mainSource.indexOf("function updatePendingApprovalState"),
+    );
+    expect(status).toContain(
+      'if (activeHistoryMode === "initializing") startThreadSync()',
+    );
+    const activity = mainSource.slice(
+      mainSource.indexOf("function updateThreadActivity"),
+      mainSource.indexOf("function updateTokenUsage"),
+    );
+    expect(activity).toContain(
+      'if (activeHistoryMode === "initializing") startThreadSync()',
+    );
+  });
+
+  it("keeps finalized stream identity until its authoritative page arrives", () => {
+    const threadViewSource = readFileSync(
+      new URL("./thread-view.ts", import.meta.url),
+      "utf8",
+    );
+    const prepend = threadViewSource.slice(
+      threadViewSource.indexOf("prependTurns(turns"),
+      threadViewSource.indexOf("mergeRecentTurns(turns"),
+    );
+    expect(threadViewSource).toContain('card.dataset.finalizedStream = "true"');
+    expect(threadViewSource).not.toContain("delete card.dataset.streamTurnId");
+    expect(threadViewSource).toContain("#removeFinalizedStreamAliases");
+    expect(prepend).toContain("#removeFinalizedStreamAliases(turn)");
+    expect(prepend.indexOf("#removeFinalizedStreamAliases(turn)")).toBeLessThan(
+      prepend.indexOf("const anchor = this.#container.querySelector"),
+    );
+    expect(prepend).toContain(
+      "// Alias reconciliation can remove the first content node.",
+    );
+  });
+
   it("exposes connection changes to assistive technology and keeps a non-color mobile symbol", () => {
     expect(mainSource).toContain(
       'id="connection-status" class="connection-badge" role="status" aria-live="polite"',
@@ -333,7 +486,7 @@ describe("frontend reliability contracts", () => {
     expect(reconciliation).toContain(
       "negativeEvidenceAllowed: turnsNegativeEvidenceAllowed",
     );
-    expect(threadSync.match(/negativeEvidenceAllowed: true/g)).toHaveLength(2);
+    expect(threadSync).toContain("negativeEvidenceAllowed: true");
     expect(reconcileOperation).toContain(
       "if (!negativeEvidenceAllowed) continue;",
     );
