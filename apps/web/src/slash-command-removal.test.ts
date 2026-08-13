@@ -25,6 +25,9 @@ describe("minimal Web command surface", () => {
       mainSource.indexOf("async function sendTurn"),
     );
     expect(side).toContain('"thread/fork"');
+    expect(side).toContain(
+      "targetClient.supportsCapability(GATEWAY_CAPABILITIES.sideForkV1)",
+    );
     expect(side).toContain("ephemeral: true");
     expect(side).toContain("requestRecoverableGatewayMutation");
     expect(side).toContain("operation.idempotencyKey");
@@ -46,8 +49,7 @@ describe("minimal Web command surface", () => {
     expect(mainSource).toContain(
       "const restored = await openThread(sideToRestore.thread",
     );
-    expect(mainSource).toContain("activeSideSession === sideToRestore.session");
-    expect(mainSource).toContain("activeThreadId === sideToRestore.thread.id");
+    expect(mainSource).toContain("fallbackFromUnavailableSide");
     expect(mainSource).toContain("activeSideSession = undefined");
     expect(mainSource).toContain("临时支线不支持持久 Queue");
   });

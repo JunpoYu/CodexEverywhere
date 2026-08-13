@@ -18,6 +18,7 @@ import {
   generateStaticKeyPair,
 } from "@codex-everywhere/crypto";
 import {
+  GATEWAY_CAPABILITIES,
   PROTOCOL_VERSION,
   parseGatewayCipherFrame,
 } from "@codex-everywhere/protocol";
@@ -286,6 +287,45 @@ describe("ambiguous gateway request outcomes", () => {
     expect(simulation.handshakeModes()).toEqual(["connect", "resume"]);
     expect(JSON.stringify(client.host)).not.toContain("resume-token");
     expect(JSON.stringify(client)).not.toContain("resume-token");
+  });
+
+  it("negotiates optional encrypted Gateway capabilities", async () => {
+    const device = generateStaticKeyPair();
+    const hostIdentity = generateStaticKeyPair();
+    const capable = simulatedHostWebSocket(hostIdentity, {
+      capabilities: [GATEWAY_CAPABILITIES.sideForkV1],
+    });
+    vi.stubGlobal("WebSocket", capable.WebSocketClass);
+    const client = await GatewayClient.connect({
+      id: "node-1",
+      name: "alice",
+      endpoint: "wss://hpc.example/gateway",
+      transport: "direct",
+      nodeId: "node-1",
+      userId: "unix:1000",
+      hostPublicKey: bytesToBase64Url(hostIdentity.publicKey),
+      hostFingerprint: `sha256:${"B".repeat(43)}`,
+      deviceId: "device-1",
+      deviceName: "Browser",
+      devicePublicKey: bytesToBase64Url(device.publicKey),
+      deviceSecretKey: bytesToBase64Url(device.secretKey),
+    });
+
+    expect(client.supportsCapability(GATEWAY_CAPABILITIES.sideForkV1)).toBe(
+      true,
+    );
+    client.close();
+
+    const legacy = simulatedHostWebSocket(hostIdentity);
+    vi.stubGlobal("WebSocket", legacy.WebSocketClass);
+    const legacyClient = await GatewayClient.connect({
+      ...client.host,
+      deviceId: "legacy-device",
+    });
+    expect(
+      legacyClient.supportsCapability(GATEWAY_CAPABILITIES.sideForkV1),
+    ).toBe(false);
+    legacyClient.close();
   });
 
   it("defers interactive authentication when an in-memory resume token is rejected", async () => {
@@ -667,7 +707,11 @@ describe("ambiguous gateway request outcomes", () => {
 
 function simulatedHostWebSocket(
   hostIdentity: ReturnType<typeof generateStaticKeyPair>,
-  options: { rejectResume?: boolean; onResumeHello?: () => void } = {},
+  options: {
+    rejectResume?: boolean;
+    onResumeHello?: () => void;
+    capabilities?: string[];
+  } = {},
 ): {
   WebSocketClass: typeof WebSocket;
   socket(): SimulatedHostSocket;
@@ -735,6 +779,9 @@ function simulatedHostWebSocket(
                     ok: true,
                     principal: "user",
                     loginName: "alice",
+                    ...(options.capabilities
+                      ? { capabilities: options.capabilities }
+                      : {}),
                   }),
             }),
           ),

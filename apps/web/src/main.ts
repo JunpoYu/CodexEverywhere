@@ -18,6 +18,7 @@ import type {
 import type { ReasoningEffort } from "@codex-everywhere/codex-app-server-schema";
 import {
   CODEX_INSTALL_PROGRESS_EVENT,
+  GATEWAY_CAPABILITIES,
   IDEMPOTENCY_OUTCOME_INDETERMINATE,
   type CodexAuthImportResult,
   type CodexVersionStatus,
@@ -1816,18 +1817,12 @@ async function activate(nextClient: GatewayClient): Promise<void> {
     const restored = await openThread(sideToRestore.thread, {
       preserveTimeline: true,
     });
-    if (
-      !restored &&
-      client === nextClient &&
-      activeSideSession === sideToRestore.session &&
-      activeThreadId === sideToRestore.thread.id
-    ) {
-      const parent = sideToRestore.session.parent;
-      activeSideSession = undefined;
-      renderSideSessionChrome();
-      showToast("Side 临时支线无法重新打开，已返回主会话", "error");
-      await openThread(parent);
-    }
+    await fallbackFromUnavailableSide(
+      nextClient,
+      sideToRestore.thread,
+      sideToRestore.session,
+      restored,
+    );
   }
 }
 
@@ -1901,6 +1896,7 @@ async function recoverConnection(previous: GatewayClient): Promise<void> {
   const existing = connectionRecovery;
   if (existing?.client === previous) return existing.promise;
   const thread = activeThreadSnapshot();
+  const side = activeSideSession;
   const wakeup = new ConnectionRetryWakeup();
   const recovery = async () => {
     try {
@@ -1934,9 +1930,18 @@ async function recoverConnection(previous: GatewayClient): Promise<void> {
       bindActiveClient(nextClient);
       if (client !== nextClient) return;
       const threadToRestore = activeThreadSnapshot() ?? thread;
-      if (threadToRestore)
-        await openThread(threadToRestore, { preserveTimeline: true });
-      else await refresh();
+      if (threadToRestore) {
+        const restored = await openThread(threadToRestore, {
+          preserveTimeline: true,
+        });
+        if (side)
+          await fallbackFromUnavailableSide(
+            nextClient,
+            threadToRestore,
+            side,
+            restored,
+          );
+      } else await refresh();
       showToast("连接已恢复", "success");
     } catch (error) {
       if (client !== previous) return;
@@ -1952,6 +1957,26 @@ async function recoverConnection(previous: GatewayClient): Promise<void> {
   });
   connectionRecovery = { client: previous, promise: tracked, wakeup };
   return tracked;
+}
+
+async function fallbackFromUnavailableSide(
+  targetClient: GatewayClient,
+  attemptedThread: ThreadSummary,
+  expectedSide: ActiveSideSession,
+  restored: boolean,
+): Promise<void> {
+  if (
+    restored ||
+    client !== targetClient ||
+    activeSideSession !== expectedSide ||
+    expectedSide.threadId !== attemptedThread.id ||
+    activeThreadId !== attemptedThread.id
+  )
+    return;
+  activeSideSession = undefined;
+  renderSideSessionChrome();
+  showToast("Side 临时支线无法重新打开，已返回主会话", "error");
+  await openThread(expectedSide.parent);
 }
 
 function activeThreadSnapshot(): ThreadSummary | undefined {
@@ -3638,7 +3663,9 @@ function renderSideSessionChrome(): void {
   }
   messageInput.placeholder = side
     ? "在 Side 临时支线中继续提问…"
-    : "给 Codex 发送消息，或输入 /side 开启临时支线…";
+    : client?.supportsCapability(GATEWAY_CAPABILITIES.sideForkV1)
+      ? "给 Codex 发送消息，或输入 /side 开启临时支线…"
+      : "给 Codex 发送消息…";
   updateSideSessionAction();
 }
 
@@ -3647,6 +3674,7 @@ function updateSideSessionAction(): void {
   button.hidden =
     !activeThreadId ||
     !activeNewestTurnId ||
+    !client?.supportsCapability(GATEWAY_CAPABILITIES.sideForkV1) ||
     Boolean(activeSideSession) ||
     activeThreadStatus?.type === "active";
 }
@@ -4591,6 +4619,10 @@ async function startSideConversation(prompt: string): Promise<void> {
   const targetClient = client;
   const parent = activeThreadSnapshot();
   if (!targetClient || !parent) return;
+  if (!targetClient.supportsCapability(GATEWAY_CAPABILITIES.sideForkV1)) {
+    showToast("当前 Agent 版本不支持 Side；请先完成 Agent 升级", "error");
+    return;
+  }
   if (activeSideSession) {
     showToast("当前已经在 Side 中；请先返回主会话", "error");
     return;

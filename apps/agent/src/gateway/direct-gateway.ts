@@ -14,6 +14,7 @@ import {
   type StaticKeyPair,
 } from "@codex-everywhere/crypto";
 import {
+  GATEWAY_CAPABILITIES,
   PROTOCOL_VERSION,
   parseGatewayAuthenticationPayload,
   type GatewayCipherFrame,
@@ -372,6 +373,7 @@ class GatewayConnection {
           ok: true,
           version: PROTOCOL_VERSION,
           principal: this.#options.principal ?? "user",
+          capabilities: [GATEWAY_CAPABILITIES.sideForkV1],
           ...(this.#options.loginName
             ? { loginName: this.#options.loginName }
             : {}),

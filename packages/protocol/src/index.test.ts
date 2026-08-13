@@ -66,8 +66,13 @@ describe("gateway wire validation", () => {
         version: 1,
         ok: true,
         principal: "user",
+        capabilities: ["side-fork-v1", "future-feature"],
       }),
-    ).toMatchObject({ ok: true, principal: "user" });
+    ).toMatchObject({
+      ok: true,
+      principal: "user",
+      capabilities: ["side-fork-v1", "future-feature"],
+    });
     expect(
       parseGatewayHandshakeResult({
         version: 1,
@@ -122,6 +127,17 @@ describe("gateway wire validation", () => {
         ciphertext: "YWJj",
       }),
     ).toThrow("Invalid gateway cipher frame");
+  });
+
+  it("rejects malformed handshake capability lists", () => {
+    expect(() =>
+      parseGatewayHandshakeAccepted({
+        version: 1,
+        ok: true,
+        principal: "user",
+        capabilities: ["side-fork-v1", 42],
+      }),
+    ).toThrow("Invalid gateway handshake result");
   });
 
   it("rejects malformed cipher frame fields before decryption", () => {

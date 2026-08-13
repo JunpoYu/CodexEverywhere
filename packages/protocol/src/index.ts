@@ -178,7 +178,12 @@ export type GatewayHandshakeAccepted = {
   ok: true;
   principal: "user" | "host-admin";
   loginName?: string;
+  capabilities?: string[];
 };
+
+export const GATEWAY_CAPABILITIES = {
+  sideForkV1: "side-fork-v1",
+} as const;
 
 export type GatewayHandshakeRejected = {
   version: ProtocolVersion;
@@ -273,7 +278,11 @@ export function parseGatewayHandshakeAccepted(
     value.ok !== true ||
     (value.principal !== "user" && value.principal !== "host-admin") ||
     (value.loginName !== undefined &&
-      !isBoundedIdentifier(value.loginName, 128))
+      !isBoundedIdentifier(value.loginName, 128)) ||
+    (value.capabilities !== undefined &&
+      (!Array.isArray(value.capabilities) ||
+        value.capabilities.length > 64 ||
+        !value.capabilities.every((entry) => isBoundedIdentifier(entry, 128))))
   ) {
     throw new Error("Invalid gateway handshake result");
   }

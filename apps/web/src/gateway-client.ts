@@ -7,6 +7,7 @@ import {
   type SecureSession,
 } from "@codex-everywhere/crypto";
 import {
+  GATEWAY_CAPABILITIES,
   PROTOCOL_VERSION,
   RELAY_MESSAGE_TYPES,
   RELAY_PROTOCOL_VERSION,
@@ -163,6 +164,7 @@ export type GatewayRequestOptions = {
 export class GatewayClient {
   readonly host: SavedHost;
   readonly transport: "direct" | "relay";
+  readonly capabilities: ReadonlySet<string>;
   readonly #socket: WebSocket;
   readonly #session: SecureSession;
   readonly #pending = new Map<
@@ -187,11 +189,13 @@ export class GatewayClient {
     socket: WebSocket,
     session: SecureSession,
     transport: "direct" | "relay",
+    capabilities: readonly string[] = [],
   ) {
     this.host = host;
     this.transport = transport;
     this.#socket = socket;
     this.#session = session;
+    this.capabilities = new Set(capabilities);
     socket.addEventListener("message", (event) => this.#handleMessage(event));
     socket.addEventListener("close", () =>
       this.#invalidate(new Error("Host connection closed"), false),
@@ -621,6 +625,7 @@ export class GatewayClient {
         socket,
         completed.session,
         target.transport,
+        accepted.capabilities,
       );
       pendingSession = undefined;
       return client;
@@ -629,6 +634,12 @@ export class GatewayClient {
       socket.close();
       throw error;
     }
+  }
+
+  supportsCapability(
+    capability: (typeof GATEWAY_CAPABILITIES)[keyof typeof GATEWAY_CAPABILITIES],
+  ): boolean {
+    return this.capabilities.has(capability);
   }
 
   async #authenticate(

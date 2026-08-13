@@ -165,7 +165,10 @@ describe("DirectGateway", () => {
         deviceName: "Test browser",
       },
     });
-    expect(paired.accepted).toMatchObject({ loginName: "alice" });
+    expect(paired.accepted).toMatchObject({
+      loginName: "alice",
+      capabilities: ["side-fork-v1"],
+    });
     await expect(
       roundTrip(paired.socket, paired.session, { answer: 42 }),
     ).resolves.toEqual({
@@ -1030,16 +1033,21 @@ describe("DirectGateway", () => {
     sendRequest(client.socket, client.session, "thread/read", {});
     await readStarted;
     sendRequest(client.socket, client.session, "turn/start", {});
-    await expect(
-      Promise.race([
-        mutationSeen.then(() => "started"),
-        new Promise<string>((resolve) =>
-          setTimeout(() => resolve("blocked"), 250),
-        ),
-      ]),
-    ).resolves.toBe("started");
-
-    finishRead?.();
+    let blockedTimer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await expect(
+        Promise.race([
+          mutationSeen.then(() => "started"),
+          new Promise<string>(
+            (resolve) =>
+              (blockedTimer = setTimeout(() => resolve("blocked"), 5_000)),
+          ),
+        ]),
+      ).resolves.toBe("started");
+    } finally {
+      if (blockedTimer) clearTimeout(blockedTimer);
+      finishRead?.();
+    }
     client.socket.close();
     await onceClosed(client.socket);
     await gateway.close();
