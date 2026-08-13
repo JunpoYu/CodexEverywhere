@@ -360,19 +360,29 @@ export class IdempotencyRegistry {
         if (legacy.step()) {
           const row = legacy.getAsObject() as { result_json?: unknown };
           let value: IdempotentResult;
-          try {
-            if (typeof row.result_json !== "string")
-              throw new Error("Missing legacy result");
-            const parsed = parseDurableMutationResult(
-              identity,
-              JSON.parse(row.result_json),
-            );
-            if (!parsed) throw new Error("Invalid legacy result shape");
-            value = durableReplayResult(identity, parsed);
-          } catch {
+          if (method === "thread/fork") {
+            // The former generic cache did not bind the fork parent or its
+            // inherited lastTurnId. Even a well-shaped cached response could
+            // therefore belong to a different fork boundary. Never rebind or
+            // replay it under the durable fork protocol.
             value = indeterminateMutationResult(
-              `A legacy idempotency result conflicts with ${method}; automatic replay is disabled`,
+              "A legacy thread/fork result did not bind its inherited boundary; inspect existing threads before retrying",
             );
+          } else {
+            try {
+              if (typeof row.result_json !== "string")
+                throw new Error("Missing legacy result");
+              const parsed = parseDurableMutationResult(
+                identity,
+                JSON.parse(row.result_json),
+              );
+              if (!parsed) throw new Error("Invalid legacy result shape");
+              value = durableReplayResult(identity, parsed);
+            } catch {
+              value = indeterminateMutationResult(
+                `A legacy idempotency result conflicts with ${method}; automatic replay is disabled`,
+              );
+            }
           }
           database.run(
             "INSERT INTO durable_mutation_claims (key, method, request_fingerprint, result_json, created_at, completed_at) VALUES (?, ?, ?, ?, ?, ?)",

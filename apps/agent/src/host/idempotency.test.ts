@@ -738,6 +738,77 @@ describe("IdempotencyRegistry", () => {
     expect(serialized).not.toContain("parent-turn");
   });
 
+  it("fails a generic legacy thread/fork cache entry closed", async () => {
+    directory = await mkdtemp(join(tmpdir(), "ce-idempotency-"));
+    state = await HostStateStore.open(join(directory, "state.sqlite"));
+    const key = testDigestKey("device-a", "legacy-fork-key");
+    await state.transaction((database) =>
+      database.run(
+        "INSERT INTO idempotency_keys (key, result_json, expires_at) VALUES (?, ?, ?)",
+        [
+          key,
+          JSON.stringify({
+            ok: true,
+            result: {
+              thread: {
+                id: "legacy-side",
+                forkedFromId: "parent-thread",
+                ephemeral: true,
+                turns: [],
+              },
+            },
+          }),
+          "9999-12-31T23:59:59.999Z",
+        ],
+      ),
+    );
+    const operation = vi.fn(async () => ({
+      thread: { id: "duplicate-side" },
+    }));
+
+    await expect(
+      new IdempotencyRegistry(state).execute(
+        "device-a",
+        "legacy-fork-key",
+        operation,
+        {
+          durableClaim: {
+            method: "thread/fork",
+            payload: {
+              threadId: "parent-thread",
+              lastTurnId: "parent-turn",
+              ephemeral: true,
+            },
+          },
+        },
+      ),
+    ).resolves.toMatchObject({
+      ok: false,
+      error: { code: "IDEMPOTENCY_OUTCOME_INDETERMINATE" },
+    });
+    expect(operation).not.toHaveBeenCalled();
+    await expect(
+      state.read((database) =>
+        database.exec(
+          `SELECT method, request_fingerprint, result_json
+           FROM durable_mutation_claims WHERE key = '${key}'`,
+        ),
+      ),
+    ).resolves.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          values: [
+            expect.arrayContaining([
+              "thread/fork",
+              expect.any(String),
+              expect.stringContaining("IDEMPOTENCY_OUTCOME_INDETERMINATE"),
+            ]),
+          ],
+        }),
+      ]),
+    );
+  });
+
   it.each([
     {
       method: "thread/start" as const,

@@ -1813,7 +1813,21 @@ async function activate(nextClient: GatewayClient): Promise<void> {
   requiredElement("settings-button").hidden = false;
   await continueAfterHostAuthentication();
   if (client === nextClient && sideToRestore?.session && sideToRestore.thread) {
-    await openThread(sideToRestore.thread, { preserveTimeline: true });
+    const restored = await openThread(sideToRestore.thread, {
+      preserveTimeline: true,
+    });
+    if (
+      !restored &&
+      client === nextClient &&
+      activeSideSession === sideToRestore.session &&
+      activeThreadId === sideToRestore.thread.id
+    ) {
+      const parent = sideToRestore.session.parent;
+      activeSideSession = undefined;
+      renderSideSessionChrome();
+      showToast("Side 临时支线无法重新打开，已返回主会话", "error");
+      await openThread(parent);
+    }
   }
 }
 
@@ -3689,14 +3703,14 @@ function hasPendingComposerOperationForThread(threadId: string): boolean {
 async function openThread(
   thread: ThreadSummary,
   options: { preserveTimeline?: boolean; allowWhileSubmitting?: boolean } = {},
-): Promise<void> {
+): Promise<boolean> {
   if (
     pendingSideForkOperation &&
     pendingSideForkOperation.parent.id !== thread.id
   ) {
     showToast("请先确认或明确放弃 Side 创建结果", "error");
     renderPendingSideForkOperation();
-    return;
+    return false;
   }
   if (
     activeSideSession &&
@@ -3705,21 +3719,21 @@ async function openThread(
       hasPendingComposerOperationForThread(activeSideSession.threadId))
   ) {
     showToast("请先结束 Side 回复并确认待处理消息，再打开其他会话", "error");
-    return;
+    return false;
   }
   if (
     activeSideSession &&
     activeSideSession.threadId !== thread.id &&
     !window.confirm("离开后无法恢复这个 Side 临时支线。确定要打开其他会话吗？")
   ) {
-    return;
+    return false;
   }
   if (composerSubmitting && !options.allowWhileSubmitting) {
     showToast("消息正在发送，请稍候", "error");
-    return;
+    return false;
   }
   const currentClient = client;
-  if (!currentClient) return;
+  if (!currentClient) return false;
   if (activeSideSession?.threadId !== thread.id) activeSideSession = undefined;
   const openingSide = activeSideSession;
   const previousThreadId = activeThreadId;
@@ -3770,7 +3784,7 @@ async function openThread(
       sequence !== openThreadSequence ||
       activeThreadId !== thread.id
     )
-      return;
+      return false;
     const history = await resumeThreadHistory(currentClient, thread.id);
     const detail = history.detail;
     if (
@@ -3781,7 +3795,7 @@ async function openThread(
       if (client !== currentClient || activeThreadId !== thread.id) {
         await unsubscribeThread(thread.id, currentClient);
       }
-      return;
+      return false;
     }
     const visibleTurns = visibleTurnsForThread(thread.id, detail.thread.turns);
     activeTurnId = [...visibleTurns]
@@ -3827,7 +3841,7 @@ async function openThread(
       if (client !== currentClient || activeThreadId !== thread.id) {
         await unsubscribeThread(thread.id, currentClient);
       }
-      return;
+      return false;
     }
     reconcilePendingComposerOperations(
       thread.id,
@@ -3843,20 +3857,23 @@ async function openThread(
     );
     messageInput.disabled = false;
     updateComposerSubmitAvailability();
+    renderThreads(threadsCache);
+    return true;
   } catch (error) {
     if (
       client !== currentClient ||
       sequence !== openThreadSequence ||
       activeThreadId !== thread.id
     )
-      return;
+      return false;
     appendTimeline("error", "无法读取 thread", errorMessage(error));
     startThreadSync();
+    renderThreads(threadsCache);
+    return false;
   } finally {
     if (threadHistoryInitializationSequence === sequence)
       threadHistoryInitializationSequence = undefined;
   }
-  renderThreads(threadsCache);
 }
 
 async function openNewSession(): Promise<void> {
@@ -4824,6 +4841,12 @@ async function sendTurn(
   );
   if (client !== targetClient || activeThreadId !== operation.threadId)
     return response;
+  if (
+    activeSideSession?.threadId === operation.threadId &&
+    !activeSideSession.firstSideTurnId
+  ) {
+    activeSideSession.firstSideTurnId = response.turn.id;
+  }
   activeTurnId = response.turn.id;
   activeNewestTurnId = response.turn.id;
   timelineView.bindLocalUserToTurn(response.turn.id, operation.operationId);

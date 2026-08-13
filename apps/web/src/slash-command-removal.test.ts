@@ -39,7 +39,16 @@ describe("minimal Web command surface", () => {
     expect(mainSource).toContain(
       "activeSideSession.firstSideTurnId = outcome.turnId",
     );
+    expect(mainSource).toContain(
+      "activeSideSession.firstSideTurnId = response.turn.id",
+    );
     expect(mainSource).toContain("const sideToRestore = reauthenticatedClient");
+    expect(mainSource).toContain(
+      "const restored = await openThread(sideToRestore.thread",
+    );
+    expect(mainSource).toContain("activeSideSession === sideToRestore.session");
+    expect(mainSource).toContain("activeThreadId === sideToRestore.thread.id");
+    expect(mainSource).toContain("activeSideSession = undefined");
     expect(mainSource).toContain("临时支线不支持持久 Queue");
   });
 
