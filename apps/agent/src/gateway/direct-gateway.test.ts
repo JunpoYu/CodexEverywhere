@@ -165,7 +165,10 @@ describe("DirectGateway", () => {
         deviceName: "Test browser",
       },
     });
-    expect(paired.accepted).toMatchObject({ loginName: "alice" });
+    expect(paired.accepted).toMatchObject({
+      loginName: "alice",
+      capabilities: ["side-fork-v1"],
+    });
     await expect(
       roundTrip(paired.socket, paired.session, { answer: 42 }),
     ).resolves.toEqual({
@@ -289,6 +292,75 @@ describe("DirectGateway", () => {
       JSON.stringify({ ok: false, error: first.error }),
       "9999-12-31T23:59:59.999Z",
     ]);
+
+    client.socket.close();
+    await onceClosed(client.socket);
+    await gateway.close();
+    await state.close();
+  });
+
+  it("fails a durable success closed when its live app-server state vanished", async () => {
+    const state = await stateStore();
+    const devices = new DeviceRegistry(state);
+    const grant = await devices.issuePairing();
+    const hostKeys = generateStaticKeyPair();
+    const deviceKeys = generateStaticKeyPair();
+    let validations = 0;
+    const gateway = await DirectGateway.start({
+      host: "127.0.0.1",
+      port: 0,
+      nodeId: "node-1",
+      userId: "unix:1000",
+      identity: hostKeys,
+      hostFingerprint: `sha256:${"A".repeat(43)}`,
+      state,
+      createSession: () => ({
+        request: async () => ({
+          thread: {
+            id: "side-thread",
+            forkedFromId: "parent-thread",
+            ephemeral: true,
+            turns: [],
+          },
+        }),
+        validateDurableResult: async () => {
+          validations += 1;
+          throw new Error("ephemeral thread vanished");
+        },
+      }),
+    });
+    const client = await connectClient({
+      port: gateway.port,
+      deviceKeys,
+      hostPublicKey: hostKeys.publicKey,
+      auth: {
+        mode: "pair",
+        pairingId: grant.pairingId,
+        secret: grant.secret,
+        deviceName: "Test browser",
+      },
+    });
+
+    await expect(
+      requestOutcomeWithKey(
+        client.socket,
+        client.session,
+        "thread/fork",
+        {
+          threadId: "parent-thread",
+          lastTurnId: "parent-turn",
+          ephemeral: true,
+        },
+        "stale-side-fork-key",
+      ),
+    ).resolves.toMatchObject({
+      ok: false,
+      error: {
+        code: "IDEMPOTENCY_OUTCOME_INDETERMINATE",
+        retryable: false,
+      },
+    });
+    expect(validations).toBe(1);
 
     client.socket.close();
     await onceClosed(client.socket);
@@ -961,16 +1033,21 @@ describe("DirectGateway", () => {
     sendRequest(client.socket, client.session, "thread/read", {});
     await readStarted;
     sendRequest(client.socket, client.session, "turn/start", {});
-    await expect(
-      Promise.race([
-        mutationSeen.then(() => "started"),
-        new Promise<string>((resolve) =>
-          setTimeout(() => resolve("blocked"), 250),
-        ),
-      ]),
-    ).resolves.toBe("started");
-
-    finishRead?.();
+    let blockedTimer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await expect(
+        Promise.race([
+          mutationSeen.then(() => "started"),
+          new Promise<string>(
+            (resolve) =>
+              (blockedTimer = setTimeout(() => resolve("blocked"), 5_000)),
+          ),
+        ]),
+      ).resolves.toBe("started");
+    } finally {
+      if (blockedTimer) clearTimeout(blockedTimer);
+      finishRead?.();
+    }
     client.socket.close();
     await onceClosed(client.socket);
     await gateway.close();

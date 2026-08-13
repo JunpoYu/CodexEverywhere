@@ -11,17 +11,31 @@ import type { HostStateStore } from "./state-store.js";
 export type IdempotentResult =
   { ok: true; result: unknown } | { ok: false; error: ProtocolError };
 
-export type DurableMutationMethod = "thread/start" | "turn/start" | "queue/add";
+export type DurableMutationMethod =
+  "thread/start" | "thread/fork" | "turn/start" | "queue/add";
 
 type DurableMutationClaim = Pick<RequestEnvelope, "payload"> & {
   method: DurableMutationMethod;
 };
 
-type DurableMutationIdentity = {
-  method: DurableMutationMethod;
-  threadId: string | null;
-  clientUserMessageId: string | null;
-};
+type DurableMutationIdentity =
+  | {
+      method: "thread/start";
+      threadId: null;
+      clientUserMessageId: null;
+    }
+  | {
+      method: "thread/fork";
+      threadId: string | null;
+      clientUserMessageId: null;
+      ephemeral: boolean;
+      lastTurnId: string | null;
+    }
+  | {
+      method: "turn/start" | "queue/add";
+      threadId: string | null;
+      clientUserMessageId: string | null;
+    };
 
 const RESULT_TTL_MS = 24 * 60 * 60_000;
 const PERMANENT_IDEMPOTENCY_EXPIRY = "9999-12-31T23:59:59.999Z";
@@ -143,6 +157,7 @@ export function usesDurableMutationClaim(
 ): method is DurableMutationMethod {
   return (
     method === "thread/start" ||
+    method === "thread/fork" ||
     method === "turn/start" ||
     method === "queue/add"
   );
@@ -251,9 +266,15 @@ export class IdempotencyRegistry {
             method === "thread/start" &&
             row.method === method &&
             row.request_fingerprint === LEGACY_THREAD_START_CLAIM_FINGERPRINT;
+          const legacyForkClaim =
+            identity.method === "thread/fork" &&
+            row.method === method &&
+            row.request_fingerprint === legacyForkFingerprint(identity);
           if (
             row.method !== method ||
-            (row.request_fingerprint !== fingerprint && !legacyThreadStartClaim)
+            (row.request_fingerprint !== fingerprint &&
+              !legacyThreadStartClaim &&
+              !legacyForkClaim)
           ) {
             return {
               kind: "result" as const,
@@ -268,6 +289,21 @@ export class IdempotencyRegistry {
               "UPDATE durable_mutation_claims SET request_fingerprint = ? WHERE key = ?",
               [fingerprint, key],
             );
+          }
+          if (legacyForkClaim) {
+            // The earlier unreleased fingerprint omitted lastTurnId, so its
+            // original boundary cannot be reconstructed safely. Never treat
+            // the retry as a definitive key-reuse failure or replay a fork
+            // that may have inherited a different boundary.
+            const value = indeterminateMutationResult(
+              "A previous thread/fork claim did not bind its inherited boundary; inspect existing threads before retrying",
+            );
+            database.run(
+              "UPDATE durable_mutation_claims SET result_json = ?, completed_at = ? WHERE key = ?",
+              [JSON.stringify(value), now, key],
+            );
+            writeLegacyIdempotencyMirror(database, key, value);
+            return { kind: "result" as const, value };
           }
           if (typeof row.result_json !== "string") {
             const value = indeterminateMutationResult(
@@ -285,7 +321,7 @@ export class IdempotencyRegistry {
               JSON.parse(row.result_json),
             );
             if (!parsed) throw new Error("Invalid durable result shape");
-            const value = durableReplayResult(method, parsed);
+            const value = durableReplayResult(identity, parsed);
             if (value !== parsed) {
               database.run(
                 "UPDATE durable_mutation_claims SET result_json = ?, completed_at = ? WHERE key = ?",
@@ -324,19 +360,29 @@ export class IdempotencyRegistry {
         if (legacy.step()) {
           const row = legacy.getAsObject() as { result_json?: unknown };
           let value: IdempotentResult;
-          try {
-            if (typeof row.result_json !== "string")
-              throw new Error("Missing legacy result");
-            const parsed = parseDurableMutationResult(
-              identity,
-              JSON.parse(row.result_json),
-            );
-            if (!parsed) throw new Error("Invalid legacy result shape");
-            value = durableReplayResult(method, parsed);
-          } catch {
+          if (method === "thread/fork") {
+            // The former generic cache did not bind the fork parent or its
+            // inherited lastTurnId. Even a well-shaped cached response could
+            // therefore belong to a different fork boundary. Never rebind or
+            // replay it under the durable fork protocol.
             value = indeterminateMutationResult(
-              `A legacy idempotency result conflicts with ${method}; automatic replay is disabled`,
+              "A legacy thread/fork result did not bind its inherited boundary; inspect existing threads before retrying",
             );
+          } else {
+            try {
+              if (typeof row.result_json !== "string")
+                throw new Error("Missing legacy result");
+              const parsed = parseDurableMutationResult(
+                identity,
+                JSON.parse(row.result_json),
+              );
+              if (!parsed) throw new Error("Invalid legacy result shape");
+              value = durableReplayResult(identity, parsed);
+            } catch {
+              value = indeterminateMutationResult(
+                `A legacy idempotency result conflicts with ${method}; automatic replay is disabled`,
+              );
+            }
           }
           database.run(
             "INSERT INTO durable_mutation_claims (key, method, request_fingerprint, result_json, created_at, completed_at) VALUES (?, ?, ?, ?, ?, ?)",
@@ -512,16 +558,30 @@ function durableMutationIdentity(
     claim.payload && typeof claim.payload === "object"
       ? (claim.payload as Record<string, unknown>)
       : undefined;
+  if (claim.method === "thread/start") {
+    // Keep the exact v2 identity shape used by released Agents. Adding even a
+    // null field changes JSON.stringify and would make pre-upgrade claims look
+    // like a reused key.
+    return {
+      method: claim.method,
+      threadId: null,
+      clientUserMessageId: null,
+    };
+  }
+  if (claim.method === "thread/fork") {
+    return {
+      method: claim.method,
+      threadId: safeIdentityString(payload?.threadId),
+      clientUserMessageId: null,
+      // Codex defaults the optional field to a persistent fork.
+      ephemeral: payload?.ephemeral === true,
+      lastTurnId: safeIdentityString(payload?.lastTurnId),
+    };
+  }
   return {
     method: claim.method,
-    threadId:
-      claim.method === "thread/start"
-        ? null
-        : safeIdentityString(payload?.threadId),
-    clientUserMessageId:
-      claim.method === "thread/start"
-        ? null
-        : safeIdentityString(payload?.clientUserMessageId),
+    threadId: safeIdentityString(payload?.threadId),
+    clientUserMessageId: safeIdentityString(payload?.clientUserMessageId),
   };
 }
 
@@ -531,8 +591,28 @@ function durableMutationFingerprint(identity: DurableMutationIdentity): string {
   // for low-entropy prompts. The random per-device idempotency key is the
   // primary identity; these non-content fields only detect obvious key reuse.
   return createHash("sha256")
-    .update("ce-durable-idempotency-v2\0")
+    .update(
+      identity.method === "thread/fork"
+        ? "ce-durable-idempotency-fork-v3\0"
+        : "ce-durable-idempotency-v2\0",
+    )
     .update(JSON.stringify(identity))
+    .digest("base64url");
+}
+
+function legacyForkFingerprint(
+  identity: Extract<DurableMutationIdentity, { method: "thread/fork" }>,
+): string {
+  return createHash("sha256")
+    .update("ce-durable-idempotency-v2\0")
+    .update(
+      JSON.stringify({
+        method: identity.method,
+        threadId: identity.threadId,
+        clientUserMessageId: null,
+        ephemeral: identity.ephemeral,
+      }),
+    )
     .digest("base64url");
 }
 
@@ -579,11 +659,17 @@ async function captureDurableMutationResult(
     return {
       returned: parsed,
       persisted:
-        method === "thread/start"
-          ? parsed
-          : indeterminateMutationResult(
-              `The claimed ${method} operation completed, but replay of its content-bearing response is disabled; reconcile by clientUserMessageId`,
-            ),
+        method === "thread/fork" && identity.ephemeral
+          ? boundedPersistedForkResult(parsed)
+          : method === "thread/start"
+            ? parsed
+            : method === "thread/fork"
+              ? indeterminateMutationResult(
+                  "The persistent thread/fork completed, but its full response is not stored; inspect the thread list before retrying",
+                )
+              : indeterminateMutationResult(
+                  `The claimed ${method} operation completed, but replay of its content-bearing response is disabled; reconcile by clientUserMessageId`,
+                ),
     };
   } catch {
     // The handler boundary can include an app-server mutation followed by
@@ -594,6 +680,28 @@ async function captureDurableMutationResult(
     );
     return { returned: indeterminate, persisted: indeterminate };
   }
+}
+
+function boundedPersistedForkResult(value: IdempotentResult): IdempotentResult {
+  if (!value.ok || !value.result || typeof value.result !== "object")
+    return value;
+  const result = value.result as Record<string, unknown>;
+  const thread = result.thread as Record<string, unknown>;
+  return {
+    ok: true,
+    result: {
+      ...result,
+      instructionSources: [],
+      thread: {
+        ...thread,
+        preview: "",
+        name: null,
+        path: null,
+        gitInfo: null,
+        turns: [],
+      },
+    },
+  };
 }
 
 function requestFailure(
@@ -632,10 +740,18 @@ function writeLegacyIdempotencyMirror(
 }
 
 function durableReplayResult(
-  method: DurableMutationMethod,
+  identity: DurableMutationIdentity,
   value: IdempotentResult,
 ): IdempotentResult {
+  const { method } = identity;
   if (!value.ok || method === "thread/start") return value;
+  if (method === "thread/fork") {
+    return identity.ephemeral
+      ? value
+      : indeterminateMutationResult(
+          "A previous persistent thread/fork completed, but its exact response is unavailable; inspect the thread list before retrying",
+        );
+  }
   return indeterminateMutationResult(
     `A previous ${method} completed, but replay of its content-bearing response is disabled; reconcile by clientUserMessageId`,
   );
@@ -700,6 +816,17 @@ function isVerifiableMutationSuccess(
     (identity.threadId === null || identity.clientUserMessageId === null)
   ) {
     return false;
+  }
+  if (method === "thread/fork") {
+    const thread = record.thread;
+    return (
+      identity.threadId !== null &&
+      thread !== null &&
+      typeof thread === "object" &&
+      safeIdentityString((thread as Record<string, unknown>).id) !== null &&
+      (thread as Record<string, unknown>).forkedFromId === identity.threadId &&
+      (thread as Record<string, unknown>).ephemeral === identity.ephemeral
+    );
   }
   const entity = record[method === "thread/start" ? "thread" : "turn"];
   return (

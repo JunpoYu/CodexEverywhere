@@ -45,6 +45,7 @@ const LEGACY_THREAD_LIST_TIMEOUT_MS = 110_000;
 
 export type CodexGatewaySessionOptions = {
   socketPath: string;
+  appServerInstanceId: string;
   workspaces: WorkspaceRegistry;
   nodeStatus(): Promise<unknown> | unknown;
   queue: QueueRegistry;
@@ -53,8 +54,18 @@ export type CodexGatewaySessionOptions = {
   consumptionRepairer?: QueueConsumptionRepairer;
 };
 
+type BoundedEphemeralForkResponse = Omit<ThreadForkResponse, "thread"> & {
+  thread: Omit<ThreadForkResponse["thread"], "turns"> & { turns: [] };
+  sideFork: {
+    version: 1;
+    inheritedThroughTurnId: string | null;
+    appServerInstanceId: string;
+  };
+};
+
 export class CodexGatewaySession implements GatewaySession {
   readonly #client: CodexAppServerClient;
+  readonly #appServerInstanceId: string;
   readonly #workspaces: WorkspaceRegistry;
   readonly #nodeStatus: () => Promise<unknown> | unknown;
   readonly #queue: QueueRegistry;
@@ -66,6 +77,7 @@ export class CodexGatewaySession implements GatewaySession {
   readonly #closeListeners = new Set<() => void>();
   readonly #serverRequests = new Map<string, CodexServerRequest>();
   readonly #authorizedThreads = new Map<string, number>();
+  readonly #ephemeralThreads = new Set<string>();
   readonly #unsubscribeQueue: (() => void) | undefined;
   readonly #unsubscribeConsumptionRepair: (() => void) | undefined;
   readonly #unsubscribeConsumptionPauseRepair: (() => void) | undefined;
@@ -76,6 +88,7 @@ export class CodexGatewaySession implements GatewaySession {
     options: CodexGatewaySessionOptions,
   ) {
     this.#client = client;
+    this.#appServerInstanceId = options.appServerInstanceId;
     this.#workspaces = options.workspaces;
     this.#nodeStatus = options.nodeStatus;
     this.#queue = options.queue;
@@ -138,6 +151,27 @@ export class CodexGatewaySession implements GatewaySession {
       experimentalApi: true,
     });
     return new CodexGatewaySession(client, options);
+  }
+
+  async validateDurableResult(
+    request: RequestEnvelope,
+    result: unknown,
+  ): Promise<void> {
+    if (request.method !== "thread/fork" || !isRecord(result)) return;
+    const thread = result.thread;
+    if (!isRecord(thread) || thread.ephemeral !== true) return;
+    const threadId = requiredString(thread, "id");
+    const live = await this.#client.request<ThreadReadResponse>("thread/read", {
+      threadId,
+      includeTurns: false,
+    });
+    if (live.thread.id !== threadId || live.thread.ephemeral !== true) {
+      throw new Error("Ephemeral fork no longer exists in app-server");
+    }
+    // A durable replay can arrive on a new Gateway session. Adopt the live
+    // ephemeral thread so unsubscribe/connection close still removes its
+    // permission cache and subscription state.
+    this.#ephemeralThreads.add(threadId);
   }
 
   onEvent(listener: (event: EventEnvelope) => void): () => void {
@@ -258,13 +292,22 @@ export class CodexGatewaySession implements GatewaySession {
         await this.#authorizeThread(threadId);
         return this.#resumeThread(payload);
       }
-      case "thread/unsubscribe":
       case "thread/name/set":
       case "thread/archive":
       case "thread/unarchive": {
         const threadId = requiredString(payload, "threadId");
         await this.#authorizeThread(threadId);
         return this.#client.request(request.method, payload);
+      }
+      case "thread/unsubscribe": {
+        const threadId = requiredString(payload, "threadId");
+        await this.#authorizeThread(threadId);
+        const result = await this.#client.request(request.method, payload);
+        if (this.#ephemeralThreads.delete(threadId)) {
+          this.#authorizedThreads.delete(threadId);
+          await this.#threadPermissions.remove(threadId);
+        }
+        return result;
       }
       case "thread/settings/update": {
         const threadId = requiredString(payload, "threadId");
@@ -320,7 +363,16 @@ export class CodexGatewaySession implements GatewaySession {
           response,
           permissionObservation,
         );
-        return response;
+        if (response.thread.ephemeral) {
+          this.#ephemeralThreads.add(response.thread.id);
+        }
+        return response.thread.ephemeral
+          ? boundedEphemeralForkResponse(
+              response,
+              forkPayload,
+              this.#appServerInstanceId,
+            )
+          : response;
       }
       case "thread/compact/start":
       case "thread/goal/set":
@@ -381,6 +433,14 @@ export class CodexGatewaySession implements GatewaySession {
     this.#unsubscribeConsumptionPauseRepair?.();
     this.#serverRequests.clear();
     this.#closeListeners.clear();
+    const ephemeralThreads = [...this.#ephemeralThreads];
+    this.#ephemeralThreads.clear();
+    await Promise.allSettled(
+      ephemeralThreads.map(async (threadId) => {
+        this.#authorizedThreads.delete(threadId);
+        await this.#threadPermissions.remove(threadId);
+      }),
+    );
     await this.#client.close();
     if (this.#ownsConsumptionRepairer) {
       await this.#consumptionRepairer.close();
@@ -426,6 +486,8 @@ export class CodexGatewaySession implements GatewaySession {
       response.thread.cwd,
     );
     this.#authorizedThreads.set(response.thread.id, authorization.revision);
+    if (response.thread.ephemeral)
+      this.#ephemeralThreads.add(response.thread.id);
     return response;
   }
 
@@ -465,6 +527,8 @@ export class CodexGatewaySession implements GatewaySession {
         response.thread.cwd,
       );
       this.#authorizedThreads.set(response.thread.id, authorization.revision);
+      if (response.thread.ephemeral)
+        this.#ephemeralThreads.add(response.thread.id);
       const repair = resumePermissionRepair(resumePayload, response);
       if (!repair) {
         await this.#threadPermissions.saveResponse(
@@ -518,6 +582,14 @@ export class CodexGatewaySession implements GatewaySession {
       threadId,
       includeTurns: false,
     });
+    if (
+      this.#ephemeralThreads.has(threadId) ||
+      thread.thread.ephemeral === true
+    ) {
+      throw new Error(
+        "Persistent Queue is not supported for ephemeral Side threads",
+      );
+    }
     const { threadId: _threadId, ...turnPayload } = payload;
     if (!Array.isArray(turnPayload.input))
       throw new Error("queue/add requires input");
@@ -875,6 +947,36 @@ function optionalString(
 ): string | undefined {
   if (value[key] === undefined) return undefined;
   return requiredString(value, key);
+}
+
+function boundedEphemeralForkResponse(
+  response: ThreadForkResponse,
+  request: Record<string, unknown>,
+  appServerInstanceId: string,
+): BoundedEphemeralForkResponse {
+  const requestedBoundary =
+    typeof request.lastTurnId === "string" ? request.lastTurnId : undefined;
+  return {
+    ...response,
+    // Side responses cross the encrypted Gateway and may otherwise contain
+    // an unbounded inherited rollout. The Web needs settings plus a single
+    // causal boundary, never the parent's prompt/tool history.
+    instructionSources: [],
+    thread: {
+      ...response.thread,
+      preview: "",
+      name: null,
+      path: null,
+      gitInfo: null,
+      turns: [],
+    },
+    sideFork: {
+      version: 1,
+      appServerInstanceId,
+      inheritedThroughTurnId:
+        requestedBoundary ?? response.thread.turns.at(-1)?.id ?? null,
+    },
+  };
 }
 
 function rejectLocalImageInput(value: unknown): void {

@@ -14,6 +14,7 @@ import {
   type StaticKeyPair,
 } from "@codex-everywhere/crypto";
 import {
+  GATEWAY_CAPABILITIES,
   PROTOCOL_VERSION,
   parseGatewayAuthenticationPayload,
   type GatewayCipherFrame,
@@ -33,6 +34,7 @@ import {
 import {
   EphemeralIdempotencyRegistry,
   IdempotencyRegistry,
+  type IdempotentResult,
   usesDurableMutationClaim,
   usesEphemeralGatewayIdempotency,
 } from "../host/idempotency.js";
@@ -53,6 +55,10 @@ const assemblyBudgets = new WeakMap<
 
 export type GatewaySession = {
   request(request: RequestEnvelope): Promise<unknown>;
+  validateDurableResult?(
+    request: RequestEnvelope,
+    result: unknown,
+  ): Promise<void> | void;
   onEvent?(listener: (event: EventEnvelope) => void): () => void;
   onClose?(listener: () => void): () => void;
   close?(): Promise<void> | void;
@@ -367,6 +373,7 @@ class GatewayConnection {
           ok: true,
           version: PROTOCOL_VERSION,
           principal: this.#options.principal ?? "user",
+          capabilities: [GATEWAY_CAPABILITIES.sideForkV1],
           ...(this.#options.loginName
             ? { loginName: this.#options.loginName }
             : {}),
@@ -421,7 +428,7 @@ class GatewayConnection {
     if (!this.#handler) throw new Error("Handshake incomplete");
     const operationStartedAt = Date.now();
     const execute = () => this.#handler!.request(request);
-    const outcome = readOnly
+    let outcome: IdempotentResult = readOnly
       ? await captureResult(execute)
       : usesEphemeralGatewayIdempotency(request.method)
         ? await this.#ephemeralIdempotency.execute(request, execute)
@@ -438,6 +445,21 @@ class GatewayConnection {
                 }
               : undefined,
           );
+    if (outcome.ok && usesDurableMutationClaim(request.method)) {
+      try {
+        await this.#handler.validateDurableResult?.(request, outcome.result);
+      } catch {
+        outcome = {
+          ok: false,
+          error: {
+            code: "IDEMPOTENCY_OUTCOME_INDETERMINATE",
+            message:
+              "The durable mutation result no longer refers to live app-server state; automatic replay is disabled",
+            retryable: false,
+          },
+        };
+      }
+    }
     const completedAt = Date.now();
     if (completedAt - receivedAt >= SLOW_REQUEST_THRESHOLD_MS) {
       console.warn(

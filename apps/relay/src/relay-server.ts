@@ -496,7 +496,7 @@ export class RelayServer extends EventEmitter<{ listening: [number] }> {
     windowMs: number,
   ): boolean {
     const address = this.#socketAddress.get(socket) ?? "unknown";
-    const now = Date.now();
+    const now = this.#expirationClock.now();
     let bucket = buckets.get(address);
     if (bucket && now - bucket.startedAt >= windowMs) {
       buckets.delete(address);

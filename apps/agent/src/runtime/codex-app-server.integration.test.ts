@@ -28,6 +28,13 @@ type ThreadUnsubscribeResponse = {
 type ThreadListResponse = {
   data: Array<{ id: string; cwd: string }>;
 };
+type ThreadForkResponse = ThreadStartResponse & {
+  thread: {
+    id: string;
+    forkedFromId: string | null;
+    ephemeral: boolean;
+  };
+};
 type TurnStartResponse = { turn: { id: string } };
 type TurnCompletedParams = {
   threadId: string;
@@ -96,6 +103,72 @@ async function connect(
 }
 
 describe("real Codex app-server contract", () => {
+  it.skipIf(process.env.CE_RUN_MODEL_INTEGRATION !== "1")(
+    "creates a true ephemeral Side fork that is absent from persistent thread lists",
+    async () => {
+      const { socketPath, workspace } = await startServer({ withAuth: true });
+      const client = await connect(socketPath, "ce_ephemeral_side_contract");
+      let parentThreadId: string | undefined;
+
+      try {
+        const parent = await client.request<ThreadStartResponse>(
+          "thread/start",
+          {
+            cwd: workspace,
+            approvalPolicy: "never",
+            sandbox: "danger-full-access",
+            ephemeral: false,
+          },
+        );
+        parentThreadId = parent.thread.id;
+        const completion = client.waitForNotification<TurnCompletedParams>(
+          (notification) =>
+            notification.method === "turn/completed" &&
+            notification.params.threadId === parentThreadId,
+          90_000,
+        );
+        await client.request<TurnStartResponse>("turn/start", {
+          threadId: parentThreadId,
+          input: [
+            {
+              type: "text",
+              text: "Reply with exactly CE_SIDE_PARENT_READY.",
+            },
+          ],
+        });
+        await completion;
+
+        const side = await client.request<ThreadForkResponse>("thread/fork", {
+          threadId: parentThreadId,
+          ephemeral: true,
+        });
+        expect(side.thread).toMatchObject({
+          forkedFromId: parentThreadId,
+          ephemeral: true,
+        });
+
+        const listed = await client.request<ThreadListResponse>("thread/list", {
+          cwd: workspace,
+          limit: 100,
+          sourceKinds: ["cli", "vscode", "appServer"],
+          useStateDbOnly: true,
+        });
+        expect(listed.data.some((thread) => thread.id === side.thread.id)).toBe(
+          false,
+        );
+        await client.request("thread/unsubscribe", {
+          threadId: side.thread.id,
+        });
+      } finally {
+        if (parentThreadId) {
+          await client
+            .request("thread/delete", { threadId: parentThreadId })
+            .catch(() => undefined);
+        }
+      }
+    },
+  );
+
   it("keeps explicit thread permissions after a complete app-server restart", async () => {
     const { processHandle, socketPath, workspace, directory, codexHome } =
       await startServer();

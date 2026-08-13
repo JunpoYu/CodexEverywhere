@@ -34,7 +34,7 @@
 - 尚未选择会话时，会话时间线保持空白，不消费 app-server 通知；`configWarning`、`remoteControl/status/changed` 和账号状态等宿主机级事件即使在会话打开后也不作为原始 JSON 混入对话。MCP 启动失败使用不含 Transport 堆栈的结构化提示，并区分网络失败与需要重新授权；正常启动状态不写入时间线。当前 thread 的未知事件仍作为 generic event 显示，以保持协议向前兼容。
 - app-server 重启后，发送消息会自动将 `notLoaded` 的磁盘 thread 恢复到内存，不要求用户手动执行 `thread/resume`。
 - 日常工作区采用高密度会话侧栏、结构化时间线和固定底部输入器；提供加载骨架、状态动效、操作 Toast、输入失败恢复、移动端底部会话面板，以及 `Enter` 发送、`Shift+Enter` 换行、`Cmd/Ctrl+K` 搜索和 `Cmd/Ctrl+N` 新建会话。
-- 输入器以经过回归测试的 Codex `0.144.1` 官方发布清单作为 Web 斜杠指令基线，并注册 `/pet`、`/clean` 别名；它不是 CLI 运行版本白名单。用户输入 `/` 时显示按官方顺序排列、可搜索且支持方向键、Tab、Enter 和触控的补全菜单；执行前在 Web 本地解析，绝不把未知指令、无效参数或忙碌期禁止执行的指令当作普通 prompt 或 Queue 消息。`/compact`、`/review`、`/rename`、`/new`、`/archive`、`/delete`、`/resume`、`/fork`、`/init`、`/goal`、`/skills`、`/mcp`、`/status`、`/usage`、`/copy`、`/theme`、`/logout` 等调用受限 app-server 方法或现有 Web 界面；依赖 TUI 本地状态、IDE、通用 Shell 或特定操作系统的指令仍被识别，并给出 SSH TUI 或平台限制说明。Web 网关不会为了 `/diff` 暴露任意命令执行接口；新版 CLI 新增指令需要后续 Web adapter 更新，但不会阻止其余兼容能力运行。
+- 输入器不复制 TUI 的完整斜杠指令清单，也不开放任意 Shell adapter。当前唯一原生 Web 指令是 `/side <问题>`：Agent 在 Noise 加密握手的可选 capability 列表声明 `side-fork-v1`，Web 缺少该能力时必须在发送 mutation 前拒绝，并在未知结果重连后再次验证新 client，因而滚动升级或回滚期间不会让旧 Agent 先创建普通 fork、再因缺少有界响应而留下不可达支线。协商成功后 Agent 通过 app-server `thread/fork` 创建 `ephemeral: true` 的真实临时 fork，跨 Gateway 的响应会清空继承 rollout，只用 `sideFork.version=1`、`inheritedThroughTurnId` 和当前 app-server 进程身份的不可逆摘要告诉 Web 从哪里开始隐藏父历史、该 ephemeral thread 属于哪一实例代次。继承边界参与 fork 的 durable identity；缓存成功响应每次返回前都用 `thread/read` 向当前 app-server 验证 ephemeral thread 仍存在，app-server 重启后的失效 ID 因而会转为人工核对而不是假成功。普通持久 fork 不回放裁剪后的 Side 响应。Web 只渲染 fork 后新增的 turn，并持续显示 Side 身份、来源主会话和返回入口；分叉结果未知时保留原幂等键恢复，不生成第二个 fork，请求仍在途时禁止放弃。同宿主机重新认证和静默重连共用同一条 Side 重开/失败回退路径；成功时恢复原 Side 和待确认状态，同一 app-server 代次上的 socket 再断、deadline 或临时读取错误不会被当成 thread 消失。只有 `node/status` 返回的实例摘要与创建 Side 时不同，才清除失效 Side 并返回父 thread；原 Side 的 unknown/indeterminate 发送会改为父 thread 中可见的人工核对记录，停止轮询不存在的 thread，且仍需用户明确承担重复风险后才能放弃。由历史对账或直接发送确认的第一条 Side turn 都会建立分页边界。Side 不进入普通 thread 列表，Agent 在 `queue/add` 入口再次拒绝持久 Queue；刷新、app-server 重启、关闭或主动离开后不可恢复，结果也不会自动合并回父 thread。父 thread、Side 仍在运行或 Side 存在待确认消息时不得切换，以免丢失临时执行视图。其他以 `/` 开头的输入失败关闭，不作为 prompt 或 Queue 消息发送；后续必要指令仍需逐项设计和测试。
 - 对话时间线是内容区内唯一的纵向滚动容器；会话头和输入器始终留在视口中，Codex 回复完成后自动滚动到最新消息。
 - 已完成初始化的用户登录后直接进入工作区；Codex 直连/代理配置位于设置菜单，修改前明确提示会中断活动 turn，保存后重启 app-server 并自动重新连接。
 - 会话头以紧凑状态区根据 app-server 增量事件实时显示正在思考、回复、执行命令、修改文件、调用工具、等待操作、完成或异常，而不是只显示笼统的 active 状态；完整会话设置保留明确的图标入口，常用的权限与模型设置同时在输入框状态栏中直接可见、可修改。
@@ -53,7 +53,7 @@
 - 写请求幂等、Agent/app-server 分离生命周期、官方 remote TUI 接力。
 - CentOS 7 友好的纯 WASM SQLite、PID/文件锁、tmux + crontab watchdog 和 `ce doctor`。
 
-以下能力仍属于后续版本，不应被误认为已经完成：完整 Queue 编辑与排序管理、文件浏览与传输、Schedule、Web Push、加密离线对话缓存、二维码引导和完整生产部署自动化。一次性宿主机 provisioner、用户自助初始化、最小宿主机管理员控制面，以及通过斜杠指令执行 thread 重命名/归档/删除已经实现；当前 PWA 的 Service Worker 只缓存完整应用外壳，离线时不能操作 Codex。
+以下能力仍属于后续版本，不应被误认为已经完成：完整 Queue 编辑与排序管理、文件浏览与传输、Schedule、Web Push、加密离线对话缓存、二维码引导、除 `/side` 外的 Web 原生指令、thread 行内重命名/归档/删除菜单和完整生产部署自动化。一次性宿主机 provisioner、用户自助初始化和最小宿主机管理员控制面已经实现；当前 PWA 的 Service Worker 只缓存完整应用外壳，离线时不能操作 Codex。
 
 ### 本地构建与验证
 
@@ -639,7 +639,7 @@ Queue 的推进属于长期 Agent，而不是创建队列项的浏览器连接�
 
 - 登录和首次初始化完成后，首页是会话列表，不在同一页面顶部堆叠新建表单、安全配置和连接配置。
 - 桌面端采用“会话列表 + 当前会话”双栏；移动端采用“会话列表 → 全屏会话”的单层导航，并保留明确的返回入口。
-- 会话列表按 workspace 分组，行内显示标题、状态、最近活动时间、目录和等待用户操作标记；支持服务端分页、搜索、active/archived 过滤和归档恢复。重命名、归档和删除当前通过受限斜杠指令执行，后续再补行内菜单。
+- 会话列表按 workspace 分组，行内显示标题、状态、最近活动时间、目录和等待用户操作标记；支持服务端分页、搜索、active/archived 过滤和归档恢复。重命名、归档和删除的行内操作菜单仍待实现。
 - 安全、Passkey、密码、网络、Codex 安装和工作目录进入独立设置区域，不占用日常会话页面的主要空间；可信设备撤销与完整设备管理仍是后续能力。
 
 ### 启动会话
@@ -655,7 +655,7 @@ Queue 的推进属于长期 Agent，而不是创建队列项的浏览器连接�
 - 用户消息、assistant Markdown、计划、命令执行、文件修改、MCP 调用、subagent、审批、用户问题、错误和未知 generic event 使用不同的结构化组件；reasoning item 不在 Web 中展示。
 - 命令与工具默认显示紧凑摘要、运行/成功/失败状态和耗时，展开后查看输入输出；文件修改优先显示文件名、增删统计和 diff。
 - 审批和 `requestUserInput` 在输入框上方固定托盘内处理，同时在会话列表标记“需要操作”；多设备回答后所有界面同步为已处理。托盘不会触发时间线滚动，也不会抢走用户正在阅读的历史位置。
-- 会话头显示标题、目录、状态，输入区状态栏显示模型、reasoning effort 和上下文使用量；重命名、归档、删除和 fork 当前由受限斜杠指令提供，后续再补行内菜单与 export。
+- 会话头显示标题、目录、状态，输入区状态栏显示模型、reasoning effort 和上下文使用量；重命名、归档、删除、fork 的行内操作菜单与 export 仍待实现。
 - 输入区固定在底部，明确区分发送、Steer、Queue 和 interrupt。运行中默认 Queue；排队内容固定在输入框上方的 Queue 托盘中，同一 thread 仅队首未投递项可点击“转为 Steer”立即补充到当前 turn。出现审批时审批托盘优先，Queue 自动压缩但仍可展开查看。
 - `turn/start` 或 `queue/add` 的响应结果未知时，当前页面保留原 operation/idempotency key 并先做权威对账。两种方法在 Agent 侧都已有副作用前 durable claim；若同 key 到达已完成的永久 tombstone，Agent 返回 `IDEMPOTENCY_OUTCOME_INDETERMINATE` 而不会再次执行，页面立即停止自动重试并保留人工核对状态。新版分页接口以有界近期 turn 为主：只要命中 operation ID 即可正向确认；只有完整页，或该页仍包含发送前记录的最新 turn ID 边界时，才能以“未找到”驱动同键重试。旧 app-server 的回退完整快照可在当前页面缓存，但缓存永远只用于 operation ID 的正向命中，不能与以后轮次恢复的 Queue 快照拼成负证据；Queue 负向对账必须在同一轮先成功读取 `queue/list`，再成功读取新的完整 `thread/read`。完整历史读取按 client/operation 总计最多 3 次或 30 秒，Queue 当轮缺失时的成功读取也消耗一次；失败或退避时可用缓存正向收口，耗尽则停止自动 mutation replay 并要求人工刷新核对或风险确认后显式放弃。
 - 上述发送 operation key、待确认状态和快照缓存只存在于当前已加载页面的内存，不写入 `sessionStorage`，也不持久化 prompt 或其他业务数据；手动刷新会丢失这些状态，页面因此在仍有待确认发送时注册离开提示。该边界不同于 `thread/start`：只有会话创建使用不含业务内容的 opaque 跨刷新标记来强制人工核对。
@@ -714,7 +714,7 @@ Push subscription 保存在宿主机，Agent 直接调用浏览器 Push service�
 
 - 已重构为移动优先的会话列表/会话详情导航，并将新建会话从当前会话页拆分为独立流程。
 - 已实现 thread 快照与 notification reducer，以及用户消息、assistant、plan、tool、diff、approval、requestUserInput 和 generic event 的结构化渲染；reasoning 事件会被有意忽略。
-- 已完成会话搜索、状态提示、创建、服务端分页、active/archived 过滤与归档恢复；重命名、归档、删除、恢复和 fork 可通过受限斜杠指令执行，行内操作菜单仍待实现。
+- 已完成会话搜索、状态提示、创建、服务端分页、active/archived 过滤与归档恢复；重命名、归档、删除和 fork 的行内操作菜单仍待实现。
 - 已完成 model、reasoning effort 的 app-server 动态选项和 sandbox、approval 启动设置；service tier 与 personality 仍待接入实际能力。
 - 已实现 Steer、持久 Queue、interrupt、等待操作提示和断线重同步；Service Worker 当前只缓存应用外壳，设备级加密离线会话缓存仍待实现。
 - 会话输入器当前仅支持文本；图片和文件附件上传不属于当前 PWA 实现，受限文件服务仍属于 Phase 4。

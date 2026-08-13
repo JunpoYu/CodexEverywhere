@@ -806,6 +806,7 @@ describe("RelayServer", () => {
   it("bounds high-cardinality address buckets and admits a new address after expiry", async () => {
     const signingKey = generateRelaySigningKey();
     const route = issueRouteCapability(signingKey, { loginName: "alice" });
+    const clock = new ManualExpirationClock();
     relay = await RelayServer.start({
       host: "127.0.0.1",
       port: 0,
@@ -815,6 +816,7 @@ describe("RelayServer", () => {
       maxAddressRateBuckets: 2,
       maxLookupsPerWindow: 10,
       lookupWindowMs: 20,
+      expirationClock: clock.relayClock,
     });
     const endpoint = `ws://127.0.0.1:${relay.port}`;
     const control = await open(endpoint);
@@ -863,7 +865,7 @@ describe("RelayServer", () => {
       reason: "lookup rate exceeded",
     });
 
-    await new Promise((resolve) => setTimeout(resolve, 30));
+    clock.advanceBy(20);
     const afterExpiry = await open(endpoint, true, {
       "X-Real-IP": "2001:db8::4",
     });
