@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 
-import { parseWebComposerCommand, sideVisibleTurns } from "./side-command.js";
+import {
+  parseWebComposerCommand,
+  sideRecoveryDisposition,
+  sideVisibleTurns,
+} from "./side-command.js";
 
 describe("Web /side command", () => {
   it("recognizes only /side with a non-empty question", () => {
@@ -37,5 +41,15 @@ describe("Web /side command", () => {
         "side-1",
       ),
     ).toEqual([{ id: "side-21" }, { id: "side-22" }]);
+  });
+
+  it("drops Side only after the app-server generation definitively changes", () => {
+    expect(sideRecoveryDisposition("generation-1", "generation-1")).toBe(
+      "retain",
+    );
+    expect(sideRecoveryDisposition("generation-1", undefined)).toBe("retain");
+    expect(sideRecoveryDisposition("generation-1", "generation-2")).toBe(
+      "vanished",
+    );
   });
 });

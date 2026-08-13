@@ -45,6 +45,7 @@ const LEGACY_THREAD_LIST_TIMEOUT_MS = 110_000;
 
 export type CodexGatewaySessionOptions = {
   socketPath: string;
+  appServerInstanceId: string;
   workspaces: WorkspaceRegistry;
   nodeStatus(): Promise<unknown> | unknown;
   queue: QueueRegistry;
@@ -58,11 +59,13 @@ type BoundedEphemeralForkResponse = Omit<ThreadForkResponse, "thread"> & {
   sideFork: {
     version: 1;
     inheritedThroughTurnId: string | null;
+    appServerInstanceId: string;
   };
 };
 
 export class CodexGatewaySession implements GatewaySession {
   readonly #client: CodexAppServerClient;
+  readonly #appServerInstanceId: string;
   readonly #workspaces: WorkspaceRegistry;
   readonly #nodeStatus: () => Promise<unknown> | unknown;
   readonly #queue: QueueRegistry;
@@ -85,6 +88,7 @@ export class CodexGatewaySession implements GatewaySession {
     options: CodexGatewaySessionOptions,
   ) {
     this.#client = client;
+    this.#appServerInstanceId = options.appServerInstanceId;
     this.#workspaces = options.workspaces;
     this.#nodeStatus = options.nodeStatus;
     this.#queue = options.queue;
@@ -363,7 +367,11 @@ export class CodexGatewaySession implements GatewaySession {
           this.#ephemeralThreads.add(response.thread.id);
         }
         return response.thread.ephemeral
-          ? boundedEphemeralForkResponse(response, forkPayload)
+          ? boundedEphemeralForkResponse(
+              response,
+              forkPayload,
+              this.#appServerInstanceId,
+            )
           : response;
       }
       case "thread/compact/start":
@@ -944,6 +952,7 @@ function optionalString(
 function boundedEphemeralForkResponse(
   response: ThreadForkResponse,
   request: Record<string, unknown>,
+  appServerInstanceId: string,
 ): BoundedEphemeralForkResponse {
   const requestedBoundary =
     typeof request.lastTurnId === "string" ? request.lastTurnId : undefined;
@@ -963,6 +972,7 @@ function boundedEphemeralForkResponse(
     },
     sideFork: {
       version: 1,
+      appServerInstanceId,
       inheritedThroughTurnId:
         requestedBoundary ?? response.thread.turns.at(-1)?.id ?? null,
     },

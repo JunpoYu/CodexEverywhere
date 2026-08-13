@@ -33,3 +33,13 @@ export function sideVisibleTurns<T extends { id: string }>(
   // boundary instead of leaking inherited parent history into the Side UI.
   return boundaryIndex >= 0 ? turns.slice(boundaryIndex + 1) : [];
 }
+
+export function sideRecoveryDisposition(
+  expectedAppServerInstanceId: string,
+  currentAppServerInstanceId: string | undefined,
+): "retain" | "vanished" {
+  return currentAppServerInstanceId &&
+    currentAppServerInstanceId !== expectedAppServerInstanceId
+    ? "vanished"
+    : "retain";
+}

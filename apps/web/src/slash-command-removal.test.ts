@@ -28,6 +28,17 @@ describe("minimal Web command surface", () => {
     expect(side).toContain(
       "targetClient.supportsCapability(GATEWAY_CAPABILITIES.sideForkV1)",
     );
+    expect(side).toContain(
+      "client.supportsCapability(GATEWAY_CAPABILITIES.sideForkV1)",
+    );
+    const threadStartRecovery = mainSource.slice(
+      mainSource.indexOf("async function resumePendingThreadStartOperation"),
+      mainSource.indexOf("async function startSideConversation"),
+    );
+    expect(threadStartRecovery).not.toContain(
+      "supportsCapability(GATEWAY_CAPABILITIES.sideForkV1)",
+    );
+    expect(side).toContain("SideCapabilityUnavailableAfterRecovery");
     expect(side).toContain("ephemeral: true");
     expect(side).toContain("requestRecoverableGatewayMutation");
     expect(side).toContain("operation.idempotencyKey");
@@ -50,6 +61,9 @@ describe("minimal Web command surface", () => {
       "const restored = await openThread(sideToRestore.thread",
     );
     expect(mainSource).toContain("fallbackFromUnavailableSide");
+    expect(mainSource).toContain("sideRecoveryDisposition(");
+    expect(mainSource).toContain("markUnavailableSideOperationsForReview");
+    expect(mainSource).toContain('manualReviewReason = "side-unavailable"');
     expect(mainSource).toContain("activeSideSession = undefined");
     expect(mainSource).toContain("临时支线不支持持久 Queue");
   });

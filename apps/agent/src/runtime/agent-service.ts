@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import { rm } from "node:fs/promises";
 import { hostname, userInfo } from "node:os";
 
@@ -245,8 +246,10 @@ export async function runAgentService(paths: HostPaths): Promise<void> {
             setup.request(request, emitEvent),
           createInner: async () => {
             await ensureCodexReady();
+            const appServerInstanceId = await readAppServerInstanceId(paths);
             return CodexGatewaySession.connect({
               socketPath: paths.appServerSocket,
+              appServerInstanceId,
               workspaces,
               queue,
               threadPermissions,
@@ -256,6 +259,7 @@ export async function runAgentService(paths: HostPaths): Promise<void> {
                 nodeId: config.nodeId,
                 transport: config.transport.mode,
                 appServer: await probeAppServer(paths.appServerSocket),
+                appServerInstanceId: await readAppServerInstanceId(paths),
                 workspaceRoots: await workspaces.list(),
               }),
             });
@@ -310,6 +314,23 @@ export async function runAgentService(paths: HostPaths): Promise<void> {
     await rm(paths.agentPidFile, { force: true });
     await lock.release();
   }
+}
+
+async function readAppServerInstanceId(paths: HostPaths): Promise<string> {
+  const record = await readProcessRecord(paths.appServerPidFile);
+  if (!record) throw new Error("Codex app-server process identity is missing");
+  return createHash("sha256")
+    .update(
+      JSON.stringify({
+        pid: record.pid,
+        host: record.host ?? null,
+        procStartTime: record.procStartTime ?? null,
+        bootId: record.bootId ?? null,
+        uid: record.uid ?? null,
+        startedAt: record.startedAt,
+      }),
+    )
+    .digest("base64url");
 }
 
 function safeServiceError(error: unknown): string {

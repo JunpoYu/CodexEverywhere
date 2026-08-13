@@ -237,6 +237,7 @@ describe("CodexGatewaySession notifications", () => {
 
     const session = await CodexGatewaySession.connect({
       socketPath,
+      appServerInstanceId: "app-server-generation-1",
       workspaces,
       queue,
       threadPermissions,
@@ -721,7 +722,11 @@ describe("CodexGatewaySession notifications", () => {
     });
     expect(sideFork).toMatchObject({
       thread: { id: "thread-fork", turns: [] },
-      sideFork: { version: 1, inheritedThroughTurnId: "parent-turn" },
+      sideFork: {
+        version: 1,
+        inheritedThroughTurnId: "parent-turn",
+        appServerInstanceId: "app-server-generation-1",
+      },
     });
     expect(JSON.stringify(sideFork)).not.toContain("PRIVATE HISTORY");
     await expect(

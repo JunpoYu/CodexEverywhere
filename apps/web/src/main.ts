@@ -83,7 +83,11 @@ import {
   sandboxModeForPolicy,
 } from "./session-controls.js";
 import { savedHostDisplayName, savedHostLoginName } from "./saved-host-view.js";
-import { parseWebComposerCommand, sideVisibleTurns } from "./side-command.js";
+import {
+  parseWebComposerCommand,
+  sideRecoveryDisposition,
+  sideVisibleTurns,
+} from "./side-command.js";
 import { deleteHost, listHosts, saveHost, type SavedHost } from "./storage.js";
 import {
   initializeTheme,
@@ -199,7 +203,8 @@ type PendingComposerOperation = {
   authoritativeChecks: number;
   reconciliationBoundaryTurnId?: string;
   manualReviewRequired: boolean;
-  manualReviewReason?: "history-unavailable" | "host-indeterminate";
+  manualReviewReason?:
+    "history-unavailable" | "host-indeterminate" | "side-unavailable";
 };
 
 type PendingThreadStartOperation = {
@@ -225,6 +230,7 @@ type ActiveSideSession = {
   threadId: string;
   parent: ThreadSummary;
   inheritedThroughTurnId: string;
+  appServerInstanceId: string;
   firstSideTurnId?: string;
 };
 
@@ -232,7 +238,12 @@ type SideThreadForkResponse = ThreadForkResponse & {
   sideFork: {
     version: 1;
     inheritedThroughTurnId: string | null;
+    appServerInstanceId: string;
   };
+};
+
+type NodeStatus = {
+  appServerInstanceId?: string;
 };
 
 type PendingSideForkOperation = {
@@ -244,6 +255,8 @@ type PendingSideForkOperation = {
   outcomeUnknown: boolean;
   manualReviewRequired: boolean;
 };
+
+class SideCapabilityUnavailableAfterRecovery extends Error {}
 
 const app = requiredElement<HTMLDivElement>("app");
 const themeController = initializeTheme();
@@ -1973,10 +1986,43 @@ async function fallbackFromUnavailableSide(
     activeThreadId !== attemptedThread.id
   )
     return;
+  let status: NodeStatus;
+  try {
+    status = await targetClient.request<NodeStatus>("node/status", {});
+  } catch {
+    // A second transport failure or temporary app-server problem is not
+    // evidence that an ephemeral thread vanished. Retain its only handle and
+    // let the normal connection supervisor retry.
+    return;
+  }
+  if (
+    client !== targetClient ||
+    activeSideSession !== expectedSide ||
+    activeThreadId !== attemptedThread.id ||
+    sideRecoveryDisposition(
+      expectedSide.appServerInstanceId,
+      status.appServerInstanceId,
+    ) !== "vanished"
+  )
+    return;
+  markUnavailableSideOperationsForReview(expectedSide.threadId);
   activeSideSession = undefined;
   renderSideSessionChrome();
   showToast("Side 临时支线无法重新打开，已返回主会话", "error");
   await openThread(expectedSide.parent);
+  renderComposerOutcomeReview();
+  updateComposerSubmitAvailability();
+}
+
+function markUnavailableSideOperationsForReview(threadId: string): void {
+  for (const operation of pendingComposerOperations.values()) {
+    if (operation.threadId !== threadId) continue;
+    operation.manualReviewRequired = true;
+    operation.manualReviewReason = "side-unavailable";
+    composerReconciliations.delete(operation.operationId);
+    composerTurnSnapshotReader.forget(operation.operationId);
+  }
+  stopPendingComposerReconciliationIfIdle();
 }
 
 function activeThreadSnapshot(): ThreadSummary | undefined {
@@ -4701,10 +4747,16 @@ async function resumePendingSideForkOperation(): Promise<void> {
             await recoverConnection(failedClient);
             if (!client || client === failedClient)
               throw new Error("Host connection has not recovered yet");
+            if (!client.supportsCapability(GATEWAY_CAPABILITIES.sideForkV1)) {
+              throw new SideCapabilityUnavailableAfterRecovery(
+                "The recovered Agent does not advertise bounded Side support",
+              );
+            }
             return client;
           },
         });
       if (pendingSideForkOperation !== operation) return;
+      assertSideForkResponse(recovered.value, operation);
       pendingSideForkOperation = undefined;
       updateMutationOutcomePendingState();
       renderPendingSideForkOperation();
@@ -4719,6 +4771,10 @@ async function resumePendingSideForkOperation(): Promise<void> {
         operation.outcomeUnknown = true;
         operation.manualReviewRequired = true;
         showToast("Side 创建结果无法证明；已停止自动重放", "error");
+      } else if (error instanceof SideCapabilityUnavailableAfterRecovery) {
+        operation.outcomeUnknown = true;
+        operation.manualReviewRequired = true;
+        showToast("Agent 无法提供当前 Side 安全边界；已停止自动重放", "error");
       } else if (
         isGatewayRequestOutcomeUnknown(error) ||
         error instanceof GatewayMutationRecoveryPendingError
@@ -4753,18 +4809,12 @@ async function completeSideForkOperation(
 ): Promise<void> {
   let turnOperation: PendingComposerOperation | undefined;
   try {
-    if (
-      !fork.thread.ephemeral ||
-      fork.thread.forkedFromId !== operation.parent.id ||
-      fork.sideFork?.version !== 1 ||
-      fork.sideFork.inheritedThroughTurnId !== operation.inheritedThroughTurnId
-    ) {
-      throw new Error("Codex did not create the requested ephemeral Side fork");
-    }
+    assertSideForkResponse(fork, operation);
     activeSideSession = {
       threadId: fork.thread.id,
       parent: operation.parent,
       inheritedThroughTurnId: operation.inheritedThroughTurnId,
+      appServerInstanceId: fork.sideFork.appServerInstanceId,
     };
     await openThread(
       {
@@ -4818,6 +4868,24 @@ async function completeSideForkOperation(
     } else showToast(`无法完成 Side 初始化：${errorMessage(error)}`, "error");
   } finally {
     if (turnOperation) completeComposerOperationRequest(turnOperation);
+  }
+}
+
+function assertSideForkResponse(
+  fork: SideThreadForkResponse,
+  operation: PendingSideForkOperation,
+): void {
+  if (
+    !fork.thread.ephemeral ||
+    fork.thread.forkedFromId !== operation.parent.id ||
+    fork.sideFork?.version !== 1 ||
+    fork.sideFork.inheritedThroughTurnId !== operation.inheritedThroughTurnId ||
+    typeof fork.sideFork.appServerInstanceId !== "string" ||
+    !fork.sideFork.appServerInstanceId
+  ) {
+    throw new SideCapabilityUnavailableAfterRecovery(
+      "Codex did not return a bounded Side response for the current app-server instance",
+    );
   }
 }
 
@@ -5144,7 +5212,9 @@ function manualComposerOperationForActiveThread():
   PendingComposerOperation | undefined {
   return [...pendingComposerOperations.values()].find(
     (operation) =>
-      operation.manualReviewRequired && operation.threadId === activeThreadId,
+      operation.manualReviewRequired &&
+      (operation.threadId === activeThreadId ||
+        operation.manualReviewReason === "side-unavailable"),
   );
 }
 
@@ -5153,16 +5223,23 @@ function renderComposerOutcomeReview(): void {
   const review = requiredElement("composer-outcome-review");
   review.hidden = !operation;
   if (!operation) return;
+  const sideUnavailable = operation.manualReviewReason === "side-unavailable";
   const hostIndeterminate =
     operation.manualReviewReason === "host-indeterminate";
-  requiredElement("composer-outcome-review-copy").textContent =
-    hostIndeterminate
+  requiredElement("composer-outcome-review-copy").textContent = sideUnavailable
+    ? "Side 所属 app-server 已重启，临时支线无法恢复；原消息仍可能在重启前提交。系统已停止自动核对和重放。请根据主会话或其他运行记录人工核对，只有确认可以承担重复消息风险后，才能放弃待确认记录。"
+    : hostIndeterminate
       ? operation.kind === "queue"
         ? "宿主机已锁定这次排队操作，但 app-server 的最终结果无法证明；系统不会自动重放。原消息可能已经进入队列或开始执行，请刷新当前会话核对，只有确认可以承担重复消息风险后，才能放弃待确认记录。"
         : "宿主机已锁定这次发送操作，但 app-server 的最终结果无法证明；系统不会自动重放。原消息可能已经提交，请刷新当前会话核对，只有确认可以承担重复消息风险后，才能放弃待确认记录。"
       : operation.kind === "queue"
         ? "旧版 app-server 的完整历史读取连续失败，系统已停止自动重试排队。原消息可能已经进入队列或开始执行；请刷新当前会话核对，只有确认可以承担重复消息风险后，才能放弃待确认记录。"
         : "旧版 app-server 的完整历史读取连续失败，系统已停止自动重试发送。原消息可能已经提交；请刷新当前会话核对，只有确认可以承担重复消息风险后，才能放弃待确认记录。";
+  const inspect = requiredElement<HTMLButtonElement>(
+    "inspect-composer-outcome",
+  );
+  inspect.hidden = sideUnavailable;
+  inspect.disabled = sideUnavailable;
 }
 
 function markComposerOperationManualReview(
@@ -5185,6 +5262,10 @@ async function inspectManualComposerOutcome(): Promise<void> {
   const operation = manualComposerOperationForActiveThread();
   const targetClient = client;
   if (!operation || !targetClient) return;
+  if (operation.manualReviewReason === "side-unavailable") {
+    showToast("临时 Side 已随 app-server 重启消失，无法再读取其历史", "error");
+    return;
+  }
   const inspect = requiredElement<HTMLButtonElement>(
     "inspect-composer-outcome",
   );
@@ -5251,6 +5332,7 @@ function abandonManualComposerOutcome(): void {
     timelineView.removeLocalUser(operation.operationId);
   stopPendingComposerReconciliationIfIdle();
   renderComposerQueue();
+  renderComposerOutcomeReview();
   updateComposerSubmitAvailability();
   showToast("已放弃待确认记录；系统没有自动恢复或重新发送原消息。", "success");
 }
