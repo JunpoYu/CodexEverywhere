@@ -45,6 +45,206 @@ type PendingAuthenticationState =
 
 const AUTHENTICATION_STATE_TTL_MS = 5 * 60_000;
 const AUTHENTICATED_SESSION_RECHECK_MS = 10_000;
+const MAX_CONTINUITY_BUFFERED_EVENTS = 4_096;
+const MAX_CONTINUITY_BUFFERED_EVENT_BYTES = 16 * 1024 * 1024;
+
+/**
+ * Keeps one app-server client alive while a browser page moves between
+ * physical Gateway transports. Resume tickets hold one reference and each
+ * live transport holds another. Ordinary inner clients are released when the
+ * last transport leaves; an inner with ephemeral state remains subscribed
+ * until a resumed transport adopts it or every reference is gone.
+ */
+export class AuthenticatedGatewaySessionContinuity {
+  readonly #createInner: () => Promise<GatewaySession>;
+  readonly #listeners = new Set<(event: EventEnvelope) => void>();
+  readonly #bufferedEvents: Array<{ event: EventEnvelope; bytes: number }> = [];
+  #inner: GatewaySession | undefined;
+  #innerPromise: Promise<GatewaySession> | undefined;
+  #unsubscribeInner: (() => void) | undefined;
+  #unsubscribeInnerClose: (() => void) | undefined;
+  #sessionReferences = 0;
+  #ticketReferences = 0;
+  #bufferedEventBytes = 0;
+  #disposed = false;
+
+  constructor(
+    createInner: () => Promise<GatewaySession>,
+    initialInner?: GatewaySession,
+  ) {
+    this.#createInner = createInner;
+    if (initialInner) {
+      this.#inner = initialInner;
+      this.#unsubscribeInnerClose = initialInner.onClose?.(() =>
+        this.#discardInner(initialInner),
+      );
+    }
+  }
+
+  open(): GatewaySession {
+    if (this.#disposed)
+      throw new Error("Authenticated page session continuity was released");
+    this.#sessionReferences += 1;
+    let released = false;
+    return {
+      request: (request) =>
+        this.#ensureInner().then((inner) => inner.request(request)),
+      validateDurableResult: (request, result) =>
+        this.#ensureInner().then((inner) =>
+          inner.validateDurableResult?.(request, result),
+        ),
+      onEvent: (listener) => {
+        this.#listeners.add(listener);
+        this.#subscribeInner();
+        if (this.#bufferedEvents.length > 0) {
+          const buffered = this.#bufferedEvents.splice(0);
+          this.#bufferedEventBytes = 0;
+          for (const { event } of buffered) listener(event);
+        }
+        return () => this.#listeners.delete(listener);
+      },
+      close: async () => {
+        if (released) return;
+        released = true;
+        this.#sessionReferences -= 1;
+        await this.#releaseInnerUnlessContinuityIsRequired();
+        await this.#disposeIfUnreferenced();
+      },
+    };
+  }
+
+  retainTicket(): void {
+    if (this.#disposed)
+      throw new Error("Authenticated page session continuity was released");
+    this.#ticketReferences += 1;
+  }
+
+  releaseTicket(): void {
+    if (this.#ticketReferences === 0) return;
+    this.#ticketReferences -= 1;
+    void this.#disposeIfUnreferenced();
+  }
+
+  async #ensureInner(): Promise<GatewaySession> {
+    if (this.#disposed)
+      throw new Error("Authenticated page session continuity was released");
+    if (this.#inner) return this.#inner;
+    if (!this.#innerPromise) {
+      const pending = this.#createInner()
+        .then(async (inner) => {
+          if (this.#disposed) {
+            await inner.close?.();
+            throw new Error(
+              "Authenticated page session continuity was released",
+            );
+          }
+          this.#inner = inner;
+          this.#unsubscribeInnerClose = inner.onClose?.(() =>
+            this.#discardInner(inner),
+          );
+          this.#subscribeInner();
+          return inner;
+        })
+        .catch((error: unknown) => {
+          if (this.#innerPromise === pending) this.#innerPromise = undefined;
+          throw error;
+        });
+      this.#innerPromise = pending;
+    }
+    return this.#innerPromise;
+  }
+
+  #subscribeInner(): void {
+    if (!this.#inner || this.#unsubscribeInner || this.#listeners.size === 0)
+      return;
+    this.#unsubscribeInner = this.#inner.onEvent?.((event) => {
+      if (this.#listeners.size > 0) {
+        for (const listener of this.#listeners) listener(event);
+        return;
+      }
+      if (this.#inner?.shouldRetainAcrossReconnect?.() !== true) return;
+      const bytes = Buffer.byteLength(JSON.stringify(event), "utf8");
+      this.#bufferedEvents.push({ event, bytes });
+      this.#bufferedEventBytes += bytes;
+      while (
+        this.#bufferedEvents.length > MAX_CONTINUITY_BUFFERED_EVENTS ||
+        this.#bufferedEventBytes > MAX_CONTINUITY_BUFFERED_EVENT_BYTES
+      ) {
+        const removed = this.#bufferedEvents.shift();
+        if (!removed) break;
+        this.#bufferedEventBytes -= removed.bytes;
+      }
+    });
+  }
+
+  #discardInner(inner: GatewaySession): void {
+    if (this.#inner !== inner) return;
+    this.#unsubscribeInner?.();
+    this.#unsubscribeInner = undefined;
+    this.#unsubscribeInnerClose?.();
+    this.#unsubscribeInnerClose = undefined;
+    this.#inner = undefined;
+    this.#innerPromise = undefined;
+    try {
+      void Promise.resolve(inner.close?.()).catch(() => undefined);
+    } catch {
+      // The transport is already closed. Cleanup is best effort.
+    }
+  }
+
+  async #disposeIfUnreferenced(): Promise<void> {
+    if (
+      this.#disposed ||
+      this.#sessionReferences !== 0 ||
+      this.#ticketReferences !== 0
+    ) {
+      return;
+    }
+    this.#disposed = true;
+    this.#listeners.clear();
+    this.#bufferedEvents.length = 0;
+    this.#bufferedEventBytes = 0;
+    this.#unsubscribeInner?.();
+    this.#unsubscribeInner = undefined;
+    this.#unsubscribeInnerClose?.();
+    this.#unsubscribeInnerClose = undefined;
+    const inner = this.#inner;
+    this.#inner = undefined;
+    const pending = this.#innerPromise;
+    this.#innerPromise = undefined;
+    if (inner) await inner.close?.();
+    else if (pending) {
+      try {
+        await (await pending).close?.();
+      } catch {
+        // A failed or concurrently closed app-server connection is already
+        // released; continuity disposal must remain idempotent.
+      }
+    }
+  }
+
+  async #releaseInnerUnlessContinuityIsRequired(): Promise<void> {
+    if (
+      this.#disposed ||
+      this.#sessionReferences !== 0 ||
+      this.#ticketReferences === 0 ||
+      !this.#inner ||
+      this.#inner.shouldRetainAcrossReconnect?.() === true
+    ) {
+      return;
+    }
+    const inner = this.#inner;
+    this.#unsubscribeInner?.();
+    this.#unsubscribeInner = undefined;
+    this.#unsubscribeInnerClose?.();
+    this.#unsubscribeInnerClose = undefined;
+    this.#inner = undefined;
+    this.#innerPromise = undefined;
+    this.#bufferedEvents.length = 0;
+    this.#bufferedEventBytes = 0;
+    await inner.close?.();
+  }
+}
 
 export class AuthenticatedGatewaySession implements GatewaySession {
   readonly #createInner: () => Promise<GatewaySession>;
@@ -64,7 +264,11 @@ export class AuthenticatedGatewaySession implements GatewaySession {
       ) => (() => void) | undefined)
     | undefined;
   readonly #issueResumeTicket:
-    ((expectedGeneration: number) => string | undefined) | undefined;
+    | ((
+        expectedGeneration: number,
+        continuity: AuthenticatedGatewaySessionContinuity,
+      ) => string | undefined)
+    | undefined;
   readonly #runCredentialMutation: CredentialMutationRunner | undefined;
   readonly #onCredentialsRecovered: (() => Promise<void> | void) | undefined;
   readonly #assertAuthenticatedSessionCurrent:
@@ -76,6 +280,7 @@ export class AuthenticatedGatewaySession implements GatewaySession {
         emitEvent: (event: EventEnvelope) => void,
       ) => Promise<AuthenticatedRequestResult>)
     | undefined;
+  readonly #continuity: AuthenticatedGatewaySessionContinuity;
   readonly #listeners = new Set<
     Parameters<NonNullable<GatewaySession["onEvent"]>>[0]
   >();
@@ -116,8 +321,17 @@ export class AuthenticatedGatewaySession implements GatewaySession {
     resumeAuthenticatedSession?: (
       token: string,
       revoke: () => void,
-    ) => { unregister: () => void; generation: number } | undefined;
-    issueResumeTicket?: (expectedGeneration: number) => string | undefined;
+    ) =>
+      | {
+          unregister: () => void;
+          generation: number;
+          continuity?: AuthenticatedGatewaySessionContinuity;
+        }
+      | undefined;
+    issueResumeTicket?: (
+      expectedGeneration: number,
+      continuity: AuthenticatedGatewaySessionContinuity,
+    ) => string | undefined;
     runCredentialMutation?: CredentialMutationRunner;
     onCredentialsRecovered?: () => Promise<void> | void;
     assertAuthenticatedSessionCurrent?: () => Promise<void>;
@@ -131,7 +345,6 @@ export class AuthenticatedGatewaySession implements GatewaySession {
       throw new Error(
         "Authenticated session requires an inner session factory",
       );
-    this.#inner = options.inner;
     this.#createInner = options.createInner ?? (async () => options.inner!);
     this.#passkeys = options.passkeys;
     this.#passwords = options.passwords;
@@ -158,10 +371,16 @@ export class AuthenticatedGatewaySession implements GatewaySession {
       );
     }
     this.#handleAuthenticatedRequest = options.handleAuthenticatedRequest;
+    let resumed:
+      | {
+          unregister: () => void;
+          generation: number;
+          continuity?: AuthenticatedGatewaySessionContinuity;
+        }
+      | undefined;
     if (options.resumeToken !== undefined) {
-      const resumed = options.resumeAuthenticatedSession?.(
-        options.resumeToken,
-        () => this.#revoke(),
+      resumed = options.resumeAuthenticatedSession?.(options.resumeToken, () =>
+        this.#revoke(),
       );
       if (!resumed) {
         throw new Error("REAUTH_REQUIRED: session resume ticket is invalid");
@@ -172,6 +391,13 @@ export class AuthenticatedGatewaySession implements GatewaySession {
       this.#authenticatedGeneration = resumed.generation;
       this.#startAuthenticationRecheck();
     }
+    this.#continuity =
+      resumed?.continuity ??
+      new AuthenticatedGatewaySessionContinuity(
+        this.#createInner,
+        options.inner,
+      );
+    this.#inner = this.#continuity.open();
   }
 
   onEvent(
@@ -410,6 +636,15 @@ export class AuthenticatedGatewaySession implements GatewaySession {
     }
   }
 
+  async validateDurableResult(
+    request: RequestEnvelope,
+    result: unknown,
+  ): Promise<void> {
+    if (this.#revoked || !this.#authenticated)
+      throw new Error("Passkey authentication required");
+    await (await this.#ensureInner()).validateDurableResult?.(request, result);
+  }
+
   async close(): Promise<void> {
     this.#unregisterAuthenticatedSession?.();
     this.#unregisterAuthenticatedSession = undefined;
@@ -457,7 +692,10 @@ export class AuthenticatedGatewaySession implements GatewaySession {
       if (this.#issueResumeTicket) {
         if (expectedGeneration === undefined)
           throw new Error("Authentication generation is missing");
-        resumeToken = this.#issueResumeTicket(expectedGeneration);
+        resumeToken = this.#issueResumeTicket(
+          expectedGeneration,
+          this.#continuity,
+        );
         if (!resumeToken)
           throw new Error("Authentication was invalidated; reconnect");
       }

@@ -61,6 +61,7 @@ export type GatewaySession = {
   ): Promise<void> | void;
   onEvent?(listener: (event: EventEnvelope) => void): () => void;
   onClose?(listener: () => void): () => void;
+  shouldRetainAcrossReconnect?(): boolean;
   close?(): Promise<void> | void;
 };
 
@@ -382,9 +383,6 @@ class GatewayConnection {
     );
     this.#session = completed.session;
     this.#trustedDeviceId = device.id;
-    this.#unsubscribe = this.#handler.onEvent?.((event) =>
-      this.#sendEncrypted(event),
-    );
     this.#socket.on("message", (data) => {
       const receivedAt = Date.now();
       this.#receiveQueue = this.#receiveQueue
@@ -398,6 +396,9 @@ class GatewayConnection {
       void this.#handler?.close?.();
     });
     await sendHandshakeReply(this.#socket, completed.message);
+    this.#unsubscribe = this.#handler.onEvent?.((event) =>
+      this.#sendEncrypted(event),
+    );
   }
 
   #receiveEncrypted(data: RawData, receivedAt: number): void {

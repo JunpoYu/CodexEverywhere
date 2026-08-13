@@ -63,10 +63,17 @@ export class AuthenticatedSessionRegistry<TResumeMetadata = undefined> {
   readonly #resumeTickets = new Map<string, ResumeTicket<TResumeMetadata>>();
   readonly #resumeTicketsByDevice = new Map<string, Set<string>>();
   readonly #maxResumeTickets: number;
+  readonly #onResumeTicketDeleted:
+    ((metadata: TResumeMetadata) => void) | undefined;
   #generation = 0;
   #credentialMutationTail: Promise<void> = Promise.resolve();
 
-  constructor(options: { maxResumeTickets?: number } = {}) {
+  constructor(
+    options: {
+      maxResumeTickets?: number;
+      onResumeTicketDeleted?: (metadata: TResumeMetadata) => void;
+    } = {},
+  ) {
     this.#maxResumeTickets =
       options.maxResumeTickets ?? DEFAULT_MAX_RESUME_TICKETS;
     if (
@@ -75,6 +82,7 @@ export class AuthenticatedSessionRegistry<TResumeMetadata = undefined> {
     ) {
       throw new Error("Authenticated session ticket limit must be positive");
     }
+    this.#onResumeTicketDeleted = options.onResumeTicketDeleted;
   }
 
   captureGeneration(): number {
@@ -236,8 +244,8 @@ export class AuthenticatedSessionRegistry<TResumeMetadata = undefined> {
 
   #revokeAllNow(): void {
     this.#generation += 1;
-    this.#resumeTickets.clear();
-    this.#resumeTicketsByDevice.clear();
+    for (const digest of [...this.#resumeTickets.keys()])
+      this.#deleteResumeTicket(digest);
     const sessions = [...this.#activeSessions.values()];
     this.#activeSessions.clear();
     for (const session of sessions) session.revoke();
@@ -251,6 +259,7 @@ export class AuthenticatedSessionRegistry<TResumeMetadata = undefined> {
     deviceTickets?.delete(digest);
     if (deviceTickets?.size === 0)
       this.#resumeTicketsByDevice.delete(ticket.deviceKey);
+    this.#onResumeTicketDeleted?.(ticket.metadata);
   }
 }
 

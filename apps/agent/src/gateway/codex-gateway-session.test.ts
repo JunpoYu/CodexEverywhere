@@ -709,6 +709,7 @@ describe("CodexGatewaySession notifications", () => {
       });
     }
 
+    expect(session.shouldRetainAcrossReconnect()).toBe(false);
     const sideFork = await session.request({
       version: PROTOCOL_VERSION,
       requestId: "slash-fork",
@@ -729,6 +730,7 @@ describe("CodexGatewaySession notifications", () => {
       },
     });
     expect(JSON.stringify(sideFork)).not.toContain("PRIVATE HISTORY");
+    expect(session.shouldRetainAcrossReconnect()).toBe(true);
     await expect(
       session.validateDurableResult(
         {
@@ -792,6 +794,7 @@ describe("CodexGatewaySession notifications", () => {
         payload: { threadId: "thread-fork" },
       }),
     ).resolves.toEqual({ status: "unsubscribed" });
+    expect(session.shouldRetainAcrossReconnect()).toBe(false);
     await expect(
       threadPermissions.read("thread-fork"),
     ).resolves.toBeUndefined();

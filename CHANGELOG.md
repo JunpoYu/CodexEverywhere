@@ -4,6 +4,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Agent 将存在 ephemeral Side 的 app-server 客户端绑定到页面内存中的认证恢复票据：Direct 或 Relay WebSocket 断开时只移交 Gateway 事件监听，不再关闭原 app-server 订阅；传输空窗内的事件进入有界内存缓冲，并在新握手回复后按顺序交付，因此静默恢复后的页面继续收到 Side 的增量、完成和审批事件。普通页面仍在断线后立即释放 app-server 客户端，票据撤销、设备撤销或淘汰后也会在最后一个活动传输退出时关闭保留连接，避免把所有登录票据变成长驻客户端。
+
 ## [0.3.0-alpha.11] - 2026-08-14
 
 ### Fixed

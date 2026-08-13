@@ -179,6 +179,10 @@ export class CodexGatewaySession implements GatewaySession {
     return () => this.#events.off("event", listener);
   }
 
+  shouldRetainAcrossReconnect(): boolean {
+    return this.#ephemeralThreads.size > 0;
+  }
+
   onClose(listener: () => void): () => void {
     if (this.#client.closed) {
       queueMicrotask(listener);

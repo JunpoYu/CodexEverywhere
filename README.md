@@ -58,7 +58,7 @@ CodexEverywhere **不是 Web Terminal**，也不替代 SSH、Slurm、Codex CLI �
 - 长会话默认只渲染最近 20 个 turn；更早历史按需分页，流式内容与后台 snapshot 按稳定身份合并，旧协议的完整响应也不会绕过默认窗口。
 - 只在用户停留于底部时自动跟随；桌面大纲和移动端抽屉帮助快速定位历史消息。
 - 在输入框首部键入 `/` 可补全 `/side <问题>`，并基于当前上下文开启真正的 Codex ephemeral fork；只有位于输入首部且带 `/` 的完整命令才会触发 Side。Web 会先通过 Noise 加密握手确认 Agent 支持有界 Side 协议，并在断线重试前再次确认能力，再用独立的 Side 标识和返回入口隔离临时支线；Agent 只返回版本化的继承边界与不透明 app-server 实例代次，不把完整父历史再次传给浏览器，并在协议入口拒绝向 Side 写入持久 Queue。创建连接中断时 Web 保留原幂等键继续确认，并在返回缓存结果前验证临时 thread 仍存在；同宿主机重新认证或静默重连会恢复 Side 视图，暂时读取失败不会丢弃 Side，只有实例代次明确变化才判定它已随 app-server 重启消失并安全返回主会话。此时待确认发送仍在父会话显示为人工核对项，不会变成不可访问的后台记录。Side 内仍有待确认消息时禁止主动离开。它不进入会话列表，刷新、app-server 重启或主动离开后不可恢复，回复也不会自动合并回主会话。
-- Codex app-server 当前不允许对 ephemeral thread 使用 `includeTurns`、`thread/turns/list`，并可能因为没有磁盘 rollout 拒绝 `thread/resume`。因此 Side 的“恢复视图”只恢复当前页面已经收到的有界 fork/完成事件快照，再用 `thread/read(includeTurns:false)` 核对实时状态；Web 不会用空 read 覆盖已有内容，也不会把 `no rollout found` 误判为 Side 已消失。
+- Codex app-server 当前不允许对 ephemeral thread 使用 `includeTurns`、`thread/turns/list`，并可能因为没有磁盘 rollout 拒绝 `thread/resume`。因此 Agent 会让持有 Side 的页面认证票据继续持有原 app-server 客户端：Direct 或 Relay WebSocket 物理断开并静默恢复时只切换加密 Gateway 传输，Side 的实时订阅不断开，空窗期事件由 Agent 有界缓存并在新握手后按序交付。Web 仍只用 `thread/read(includeTurns:false)` 核对状态，并以当前页面已经收到的有界 fork/完成事件快照恢复视图；不会用空 read 覆盖已有内容，也不会把 `no rollout found` 误判为 Side 已消失。若页面票据、Agent 或 app-server 本身已经失效，则无法补回此前未收到的 ephemeral 历史。
 
 ### 移动端优先的审批与 Queue
 

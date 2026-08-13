@@ -8,11 +8,34 @@ import type {
 import type { PasskeyRegistry } from "../host/passkeys.js";
 import type { PasswordRegistry } from "../host/passwords.js";
 import { AuthenticatedSessionRegistry } from "../host/auth-security.js";
-import { AuthenticatedGatewaySession } from "./authenticated-session.js";
+import {
+  AuthenticatedGatewaySession,
+  AuthenticatedGatewaySessionContinuity,
+} from "./authenticated-session.js";
 
 afterEach(() => vi.useRealTimers());
 
 describe("AuthenticatedGatewaySession", () => {
+  it("does not retain an ordinary app-server client for the lifetime of a page ticket", async () => {
+    const close = vi.fn(async () => undefined);
+    const continuity = new AuthenticatedGatewaySessionContinuity(
+      async () => ({ request: async () => "unused" }),
+      {
+        request: async () => "ordinary",
+        shouldRetainAcrossReconnect: () => false,
+        close,
+      },
+    );
+    continuity.retainTicket();
+    const transport = continuity.open();
+
+    await transport.close?.();
+    expect(close).toHaveBeenCalledOnce();
+
+    continuity.releaseTicket();
+    expect(close).toHaveBeenCalledOnce();
+  });
+
   it("gates Codex requests until a newly paired device registers a Passkey", async () => {
     const request = vi.fn(async () => "codex-result");
     const createInner = vi.fn(async () => ({ request }));
@@ -714,6 +737,104 @@ describe("AuthenticatedGatewaySession", () => {
     await expect(
       resumed.request(envelope("workspace/list", {})),
     ).rejects.toThrow("session was revoked");
+  });
+
+  it("hands the live app-server subscription to a silently resumed transport", async () => {
+    let innerListener: ((event: EventEnvelope) => void) | undefined;
+    const closeInner = vi.fn(async () => undefined);
+    const connectInner = vi.fn(async () => ({
+      request: async () => "shared",
+      onEvent: (listener: (event: EventEnvelope) => void) => {
+        innerListener = listener;
+        return () => {
+          innerListener = undefined;
+        };
+      },
+      shouldRetainAcrossReconnect: () => true,
+      close: closeInner,
+    }));
+    const registry =
+      new AuthenticatedSessionRegistry<AuthenticatedGatewaySessionContinuity>({
+        onResumeTicketDeleted: (continuity) => continuity.releaseTicket(),
+      });
+    const binding = sessionBinding();
+    const passkeys = {
+      count: vi.fn(async () => 1),
+      authenticationOptions: vi.fn(async () => ({ challenge: "login" })),
+      verifyAuthentication: vi.fn(async () => undefined),
+    } as unknown as PasskeyRegistry;
+    const sessionOptions = {
+      passkeys,
+      newlyPaired: false,
+      captureAuthenticationGeneration: () => registry.captureGeneration(),
+      registerAuthenticatedSession: (generation: number, revoke: () => void) =>
+        registry.register(generation, binding, revoke),
+      resumeAuthenticatedSession: (token: string, revoke: () => void) => {
+        const resumed = registry.resume(token, binding, revoke);
+        return resumed
+          ? { ...resumed, continuity: resumed.metadata }
+          : undefined;
+      },
+      issueResumeTicket: (
+        generation: number,
+        continuity: AuthenticatedGatewaySessionContinuity,
+      ) => {
+        continuity.retainTicket();
+        const token = registry.issueResumeTicket(
+          generation,
+          binding,
+          continuity,
+        );
+        if (!token) continuity.releaseTicket();
+        return token;
+      },
+    };
+    const first = new AuthenticatedGatewaySession({
+      ...sessionOptions,
+      createInner: connectInner,
+    });
+    await first.request(envelope("auth/login/options", {}));
+    const authenticated = (await first.request(
+      envelope("auth/login/verify", { response: { id: "passkey" } }),
+    )) as { resumeToken: string };
+    await expect(first.request(envelope("workspace/list", {}))).resolves.toBe(
+      "shared",
+    );
+    await first.close();
+
+    expect(closeInner).not.toHaveBeenCalled();
+    innerListener?.({
+      version: 1,
+      eventId: "side-gap-delta",
+      cursor: "1",
+      type: "item/agentMessage/delta",
+      payload: { threadId: "side-thread", delta: "during reconnect" },
+    });
+    const resumed = new AuthenticatedGatewaySession({
+      ...sessionOptions,
+      resumeToken: authenticated.resumeToken,
+      createInner: async () => {
+        throw new Error("resumed transport must reuse the original client");
+      },
+    });
+    const events: string[] = [];
+    resumed.onEvent((event) => events.push(event.type));
+    innerListener?.({
+      version: 1,
+      eventId: "side-completed",
+      cursor: "2",
+      type: "turn/completed",
+      payload: { threadId: "side-thread" },
+    });
+
+    await expect(resumed.request(envelope("workspace/list", {}))).resolves.toBe(
+      "shared",
+    );
+    expect(connectInner).toHaveBeenCalledOnce();
+    expect(events).toEqual(["item/agentMessage/delta", "turn/completed"]);
+
+    await registry.revokeAll();
+    expect(closeInner).toHaveBeenCalledOnce();
   });
 
   it("rejects an invalid resume ticket before invoking WebAuthn", () => {
