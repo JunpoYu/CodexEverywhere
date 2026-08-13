@@ -8,8 +8,10 @@ import { describe, expect, it, vi } from "vitest";
 import {
   HISTORY_PAGE_SIZE,
   legacyHistorySyncIsCurrent,
+  mergeEphemeralCompletedTurn,
   newestPageInReadingOrder,
   newestTurnsWithinLimit,
+  readEphemeralThreadRepairSnapshot,
   readThreadRepairSnapshot,
   readEphemeralThreadHistory,
   retainRepairHistoryCursor,
@@ -65,23 +67,20 @@ describe("thread history pagination", () => {
   });
 
   it("reads an idle ephemeral thread from memory without trying disk resume", async () => {
-    const fallback = resumeResponse([]);
+    const fallback = resumeResponse([turn("side-latest")]);
     const idle = resumeResponse([]);
-    const request = vi
-      .fn()
-      .mockResolvedValueOnce({ thread: idle.thread })
-      .mockResolvedValueOnce(turnsPage([turn("side-latest")], null));
+    const request = vi.fn().mockResolvedValueOnce({ thread: idle.thread });
 
     await expect(
       readEphemeralThreadHistory({ request }, "side-1", fallback),
     ).resolves.toMatchObject({
       detail: { thread: { turns: [{ id: "side-latest" }] } },
-      paged: true,
+      paged: false,
     });
-    expect(request.mock.calls.map(([method]) => method)).toEqual([
-      "thread/read",
-      "thread/turns/list",
-    ]);
+    expect(request).toHaveBeenCalledWith("thread/read", {
+      threadId: "side-1",
+      includeTurns: false,
+    });
   });
 
   it("resumes an active ephemeral thread to rejoin its notifications", async () => {
@@ -96,11 +95,75 @@ describe("thread history pagination", () => {
 
     await expect(
       readEphemeralThreadHistory({ request }, "side-1", fallback),
-    ).resolves.toMatchObject({ paged: true });
+    ).resolves.toMatchObject({ paged: false });
     expect(request.mock.calls.map(([method]) => method)).toEqual([
       "thread/read",
       "thread/resume",
     ]);
+  });
+
+  it("keeps an active ephemeral thread when disk resume has no rollout", async () => {
+    const fallback = resumeResponse([]);
+    const active = resumeResponse([]);
+    active.thread.status = { type: "active", activeFlags: [] };
+    fallback.thread.turns = [turn("running-side")];
+    const request = vi
+      .fn()
+      .mockResolvedValueOnce({ thread: active.thread })
+      .mockRejectedValueOnce(new Error("no rollout found for thread id side-1"))
+      .mockResolvedValueOnce({ thread: active.thread });
+
+    await expect(
+      readEphemeralThreadHistory({ request }, "side-1", fallback),
+    ).resolves.toMatchObject({
+      detail: { thread: { id: "thread-1", turns: [{ id: "running-side" }] } },
+      paged: false,
+    });
+    expect(request.mock.calls.map(([method]) => method)).toEqual([
+      "thread/read",
+      "thread/resume",
+      "thread/read",
+    ]);
+  });
+
+  it("repairs ephemeral history only through the in-memory read contract", async () => {
+    const turns = Array.from({ length: 25 }, (_, index) =>
+      turn(`side-${index + 1}`),
+    );
+    const fallback = resumeResponse(turns);
+    const detail = resumeResponse([]);
+    const request = vi.fn().mockResolvedValueOnce({ thread: detail.thread });
+
+    const repair = await readEphemeralThreadRepairSnapshot(
+      { request },
+      "side-1",
+      fallback,
+    );
+
+    expect(repair.mode).toBe("legacy");
+    expect(repair.displayTurns).toHaveLength(HISTORY_PAGE_SIZE);
+    expect(repair.displayTurns.at(0)?.id).toBe("side-6");
+    expect(repair.reconciliationTurns).toHaveLength(25);
+    expect(repair.turnsAuthoritative).toBe(false);
+    expect(request).toHaveBeenCalledWith("thread/read", {
+      threadId: "side-1",
+      includeTurns: false,
+    });
+  });
+
+  it("keeps a bounded Side snapshot current from completed turn events", () => {
+    const detail = resumeResponse(
+      Array.from({ length: 20 }, (_, index) => turn(`side-${index + 1}`)),
+    );
+
+    const updated = mergeEphemeralCompletedTurn(detail, turn("side-21"));
+    const replaced = mergeEphemeralCompletedTurn(updated, turn("side-21"));
+
+    expect(updated.thread.turns).toHaveLength(20);
+    expect(updated.thread.turns.at(0)?.id).toBe("side-2");
+    expect(
+      (replaced.thread.turns as Turn[]).filter(({ id }) => id === "side-21"),
+    ).toHaveLength(1);
   });
 
   it("falls back to full history only for an older unsupported server", async () => {

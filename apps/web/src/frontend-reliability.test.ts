@@ -58,6 +58,7 @@ describe("frontend reliability contracts", () => {
       "resumeThreadHistory(currentClient, threadId)",
     );
     expect(threadSync).toContain("readThreadRepairSnapshot");
+    expect(threadSync).toContain("readEphemeralThreadRepairSnapshot");
     expect(threadSync).toContain("retainRepairHistoryCursor");
     expect(threadSync).toContain(
       "reconciliationTurns,\n      repair.turnsAuthoritative",

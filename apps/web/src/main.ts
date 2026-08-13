@@ -85,7 +85,6 @@ import {
 import { savedHostDisplayName, savedHostLoginName } from "./saved-host-view.js";
 import {
   offersSideCommandCompletion,
-  isSideThreadUnavailableError,
   parseWebComposerCommand,
   sideRecoveryDisposition,
   sideVisibleTurns,
@@ -97,6 +96,7 @@ import {
   themePreferenceLabel,
 } from "./theme.js";
 import {
+  isTurn,
   queuedMessageText,
   threadSendMode,
   ThreadTimelineView,
@@ -108,7 +108,9 @@ import {
 } from "./thread-list.js";
 import {
   HISTORY_PAGE_SIZE,
+  mergeEphemeralCompletedTurn,
   newestPageInReadingOrder,
+  readEphemeralThreadRepairSnapshot,
   readThreadRepairSnapshot,
   readEphemeralThreadHistory,
   retainRepairHistoryCursor,
@@ -3995,10 +3997,6 @@ async function openThread(
       activeThreadId !== thread.id
     )
       return false;
-    if (openingSide && isSideThreadUnavailableError(error)) {
-      await returnFromUnavailableSide(openingSide);
-      return false;
-    }
     appendTimeline("error", "无法读取 thread", errorMessage(error));
     startThreadSync();
     renderThreads(threadsCache);
@@ -5741,11 +5739,15 @@ async function syncActiveThread(): Promise<void> {
       lastRealtimeEventAt = Date.now();
       return;
     }
-    const repair = await readThreadRepairSnapshot(
-      currentClient,
-      threadId,
-      syncStrategy,
-    );
+    const syncingSide =
+      activeSideSession?.threadId === threadId ? activeSideSession : undefined;
+    const repair = syncingSide
+      ? await readEphemeralThreadRepairSnapshot(
+          currentClient,
+          threadId,
+          syncingSide.fallbackDetail,
+        )
+      : await readThreadRepairSnapshot(currentClient, threadId, syncStrategy);
     if (
       client !== currentClient ||
       sequence !== openThreadSequence ||
@@ -5758,7 +5760,6 @@ async function syncActiveThread(): Promise<void> {
       threadId,
       repair.reconciliationTurns,
     );
-    const syncingSide = activeSideSession?.threadId === threadId;
     activeHistoryMode = repair.mode;
     if (repair.mode === "paged" && !syncingSide) {
       activeHistoryNextCursor = retainRepairHistoryCursor(
@@ -5811,16 +5812,6 @@ async function syncActiveThread(): Promise<void> {
     lastRealtimeEventAt = Date.now();
     if (repair.detail.thread.status.type !== "active") stopThreadSync();
   } catch (error) {
-    const unavailableSide =
-      activeSideSession?.threadId === threadId ? activeSideSession : undefined;
-    if (
-      unavailableSide &&
-      sequence === openThreadSequence &&
-      isSideThreadUnavailableError(error)
-    ) {
-      await returnFromUnavailableSide(unavailableSide);
-      return;
-    }
     // Live notifications remain primary. Retry snapshot synchronization on a
     // later tick without surfacing transient read failures as timeline noise.
   } finally {
@@ -6173,6 +6164,18 @@ function renderEvent(event: EventEnvelope): void {
     activeThreadTokenUsage = payload.tokenUsage;
     renderComposerSessionMeta();
     return;
+  }
+  const eventSideSession =
+    activeSideSession?.threadId === threadId ? activeSideSession : undefined;
+  if (
+    event.type === "codex/turn/completed" &&
+    eventSideSession &&
+    isTurn(payload.turn)
+  ) {
+    eventSideSession.fallbackDetail = mergeEphemeralCompletedTurn(
+      eventSideSession.fallbackDetail,
+      payload.turn,
+    );
   }
   if (
     event.type === "codex/model/rerouted" &&

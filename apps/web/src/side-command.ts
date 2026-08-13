@@ -14,11 +14,6 @@ export function offersSideCommandCompletion(input: string): boolean {
   );
 }
 
-export function isSideThreadUnavailableError(error: unknown): boolean {
-  const message = error instanceof Error ? error.message : String(error);
-  return /no rollout found for thread id/iu.test(message);
-}
-
 export function parseWebComposerCommand(input: string): WebComposerCommand {
   if (!input.startsWith("/")) return { kind: "message" };
   const match = /^\/side(?:\s+([\s\S]*))?\s*$/iu.exec(input);
