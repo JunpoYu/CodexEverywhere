@@ -2,6 +2,11 @@ import type {
   AuthenticationResponseJSON,
   RegistrationResponseJSON,
 } from "@simplewebauthn/server";
+import { randomUUID } from "node:crypto";
+import {
+  GATEWAY_CONTINUITY_ACK_METHOD,
+  GATEWAY_CONTINUITY_OVERFLOW_EVENT,
+} from "@codex-everywhere/protocol";
 import type {
   EventEnvelope,
   RequestEnvelope,
@@ -66,6 +71,7 @@ export class AuthenticatedGatewaySessionContinuity {
   #sessionReferences = 0;
   #ticketReferences = 0;
   #bufferedEventBytes = 0;
+  #overflowed = false;
   #activeHandleId = 0;
   #disposed = false;
 
@@ -114,9 +120,7 @@ export class AuthenticatedGatewaySessionContinuity {
         this.#listeners.add(listener);
         this.#subscribeInner();
         if (this.#bufferedEvents.length > 0) {
-          const buffered = this.#bufferedEvents.splice(0);
-          this.#bufferedEventBytes = 0;
-          for (const { event } of buffered) listener(event);
+          for (const { event } of this.#bufferedEvents) listener(event);
         }
         return () => this.#listeners.delete(listener);
       },
@@ -160,6 +164,10 @@ export class AuthenticatedGatewaySessionContinuity {
             this.#discardInner(inner),
           );
           this.#subscribeInner();
+          // The transport may have closed while createInner() was pending.
+          // Re-run the lifetime decision after installation so an ordinary
+          // app-server client cannot be retained by a ticket alone.
+          await this.#releaseInnerUnlessContinuityIsRequired();
           return inner;
         })
         .catch((error: unknown) => {
@@ -175,23 +183,62 @@ export class AuthenticatedGatewaySessionContinuity {
     if (!this.#inner || this.#unsubscribeInner || this.#listeners.size === 0)
       return;
     this.#unsubscribeInner = this.#inner.onEvent?.((event) => {
-      if (this.#listeners.size > 0) {
+      if (this.#overflowed) return;
+      if (this.#inner?.shouldRetainAcrossReconnect?.() !== true) {
         for (const listener of this.#listeners) listener(event);
         return;
       }
-      if (this.#inner?.shouldRetainAcrossReconnect?.() !== true) return;
       const bytes = Buffer.byteLength(JSON.stringify(event), "utf8");
+      if (
+        this.#bufferedEvents.length + 1 > MAX_CONTINUITY_BUFFERED_EVENTS ||
+        this.#bufferedEventBytes + bytes > MAX_CONTINUITY_BUFFERED_EVENT_BYTES
+      ) {
+        const payload = asRecord(event.payload);
+        const overflow: EventEnvelope = {
+          version: 1,
+          eventId: randomUUID(),
+          cursor: event.cursor,
+          type: GATEWAY_CONTINUITY_OVERFLOW_EVENT,
+          payload: {
+            version: 1,
+            reason: "buffer-limit",
+            ...(typeof payload.threadId === "string"
+              ? { threadId: payload.threadId }
+              : {}),
+          },
+        };
+        const overflowBytes = Buffer.byteLength(
+          JSON.stringify(overflow),
+          "utf8",
+        );
+        this.#bufferedEvents.length = 0;
+        this.#bufferedEvents.push({ event: overflow, bytes: overflowBytes });
+        this.#bufferedEventBytes = overflowBytes;
+        this.#overflowed = true;
+        for (const listener of this.#listeners) listener(overflow);
+        return;
+      }
       this.#bufferedEvents.push({ event, bytes });
       this.#bufferedEventBytes += bytes;
-      while (
-        this.#bufferedEvents.length > MAX_CONTINUITY_BUFFERED_EVENTS ||
-        this.#bufferedEventBytes > MAX_CONTINUITY_BUFFERED_EVENT_BYTES
-      ) {
-        const removed = this.#bufferedEvents.shift();
-        if (!removed) break;
-        this.#bufferedEventBytes -= removed.bytes;
-      }
+      for (const listener of this.#listeners) listener(event);
     });
+  }
+
+  acknowledgeEvent(eventId: string): boolean {
+    const index = this.#bufferedEvents.findIndex(
+      ({ event }) => event.eventId === eventId,
+    );
+    if (index < 0) return false;
+    const acknowledged = this.#bufferedEvents.splice(0, index + 1);
+    for (const entry of acknowledged) this.#bufferedEventBytes -= entry.bytes;
+    if (
+      acknowledged.some(
+        ({ event }) => event.type === GATEWAY_CONTINUITY_OVERFLOW_EVENT,
+      )
+    ) {
+      this.#overflowed = false;
+    }
+    return true;
   }
 
   #discardInner(inner: GatewaySession): void {
@@ -452,6 +499,21 @@ export class AuthenticatedGatewaySession implements GatewaySession {
           throw new Error("Passkey authentication required");
         return {
           released: this.#releaseResumeTickets?.(this.#continuity) ?? 0,
+        };
+      }
+      case GATEWAY_CONTINUITY_ACK_METHOD: {
+        if (!this.#authenticated)
+          throw new Error("Passkey authentication required");
+        if (
+          payload.version !== 1 ||
+          typeof payload.eventId !== "string" ||
+          payload.eventId.length === 0 ||
+          payload.eventId.length > 256
+        ) {
+          throw new Error("Invalid continuity event acknowledgement");
+        }
+        return {
+          acknowledged: this.#continuity.acknowledgeEvent(payload.eventId),
         };
       }
       case "auth/register/options": {

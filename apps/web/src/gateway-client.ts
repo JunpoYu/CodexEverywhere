@@ -8,6 +8,7 @@ import {
 } from "@codex-everywhere/crypto";
 import {
   GATEWAY_CAPABILITIES,
+  GATEWAY_CONTINUITY_ACK_METHOD,
   PROTOCOL_VERSION,
   RELAY_MESSAGE_TYPES,
   RELAY_PROTOCOL_VERSION,
@@ -178,7 +179,14 @@ export class GatewayClient {
     }
   >();
   readonly #eventListeners = new Set<(event: EventEnvelope) => void>();
+  readonly #pendingEvents: EventEnvelope[] = [];
   readonly #connectionListeners = new Set<(error: Error) => void>();
+  #eventDeliveryState: {
+    delivered: Set<string>;
+    order: string[];
+  } = { delivered: new Set(), order: [] };
+  #pendingAckEventId: string | undefined;
+  #eventAckTimer: ReturnType<typeof setTimeout> | undefined;
   #reconnectMode: GatewayReconnectMode = "trusted-device";
   #resumeToken: string | undefined;
   #reauthenticationRequired = false;
@@ -834,6 +842,10 @@ export class GatewayClient {
 
   onEvent(listener: (event: EventEnvelope) => void): () => void {
     this.#eventListeners.add(listener);
+    if (this.#pendingEvents.length > 0) {
+      const pending = this.#pendingEvents.splice(0);
+      for (const event of pending) this.#deliverEvent(event);
+    }
     return () => this.#eventListeners.delete(listener);
   }
 
@@ -880,6 +892,7 @@ export class GatewayClient {
         });
         client.#resumeToken = resumeToken;
         client.#reconnectMode = this.#reconnectMode;
+        client.#eventDeliveryState = this.#eventDeliveryState;
         return client;
       } catch (error) {
         if (!isGatewayReauthenticationRequired(error)) throw error;
@@ -961,6 +974,7 @@ export class GatewayClient {
       throw error;
     }
     client.#reconnectMode = gatewayReconnectMode("passkey", rememberDevice);
+    client.#eventDeliveryState = this.#eventDeliveryState;
     if (rememberDevice) await saveHost(client.host);
     return client;
   }
@@ -981,6 +995,7 @@ export class GatewayClient {
       throw error;
     }
     client.#reconnectMode = gatewayReconnectMode("password", rememberDevice);
+    client.#eventDeliveryState = this.#eventDeliveryState;
     if (rememberDevice) await saveHost(client.host);
     return client;
   }
@@ -1013,6 +1028,9 @@ export class GatewayClient {
   #invalidate(error: Error, closeSocket = true): void {
     if (!this.#usable) return;
     this.#usable = false;
+    if (this.#eventAckTimer) clearTimeout(this.#eventAckTimer);
+    this.#eventAckTimer = undefined;
+    this.#pendingAckEventId = undefined;
     this.#session.dispose();
     for (const pending of this.#pending.values()) {
       clearTimeout(pending.timeout);
@@ -1070,7 +1088,8 @@ export class GatewayClient {
           pending.reject(new Error("Host request failed"));
         }
       } else {
-        for (const listener of this.#eventListeners) listener(envelope);
+        if (this.#eventListeners.size === 0) this.#pendingEvents.push(envelope);
+        else this.#deliverEvent(envelope);
       }
     } catch (error) {
       this.#invalidate(
@@ -1079,6 +1098,35 @@ export class GatewayClient {
         }),
       );
     }
+  }
+
+  #deliverEvent(event: EventEnvelope): void {
+    if (!this.#eventDeliveryState.delivered.has(event.eventId)) {
+      for (const listener of this.#eventListeners) listener(event);
+      this.#eventDeliveryState.delivered.add(event.eventId);
+      this.#eventDeliveryState.order.push(event.eventId);
+      while (this.#eventDeliveryState.order.length > 8_192) {
+        const oldest = this.#eventDeliveryState.order.shift();
+        if (oldest) this.#eventDeliveryState.delivered.delete(oldest);
+      }
+    }
+    this.#scheduleEventAcknowledgement(event.eventId);
+  }
+
+  #scheduleEventAcknowledgement(eventId: string): void {
+    this.#pendingAckEventId = eventId;
+    if (this.#eventAckTimer) return;
+    this.#eventAckTimer = setTimeout(() => {
+      this.#eventAckTimer = undefined;
+      const acknowledgedEventId = this.#pendingAckEventId;
+      this.#pendingAckEventId = undefined;
+      if (!acknowledgedEventId || !this.#usable) return;
+      void this.request(
+        GATEWAY_CONTINUITY_ACK_METHOD,
+        { version: 1, eventId: acknowledgedEventId },
+        { timeoutMs: 4_000 },
+      ).catch(() => undefined);
+    }, 50);
   }
 }
 

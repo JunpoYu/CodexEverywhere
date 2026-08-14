@@ -36,6 +36,112 @@ describe("AuthenticatedGatewaySession", () => {
     expect(close).toHaveBeenCalledOnce();
   });
 
+  it("releases an ordinary inner that resolves after its transport closed", async () => {
+    let resolveInner:
+      | ((inner: {
+          request: () => Promise<string>;
+          shouldRetainAcrossReconnect: () => boolean;
+          close: () => Promise<void>;
+        }) => void)
+      | undefined;
+    const close = vi.fn(async () => undefined);
+    const innerPending = new Promise<{
+      request: () => Promise<string>;
+      shouldRetainAcrossReconnect: () => boolean;
+      close: () => Promise<void>;
+    }>((resolve) => {
+      resolveInner = resolve;
+    });
+    const continuity = new AuthenticatedGatewaySessionContinuity(
+      () => innerPending,
+    );
+    continuity.retainTicket();
+    const transport = continuity.open();
+    const request = transport.request(envelope("workspace/list", {}));
+    await transport.close?.();
+
+    resolveInner?.({
+      request: async () => "late",
+      shouldRetainAcrossReconnect: () => false,
+      close,
+    });
+    await expect(request).resolves.toBe("late");
+    expect(close).toHaveBeenCalledOnce();
+    continuity.releaseTicket();
+  });
+
+  it("replays continuity events until the browser acknowledges them", async () => {
+    let emit: ((event: EventEnvelope) => void) | undefined;
+    const continuity = new AuthenticatedGatewaySessionContinuity(async () => ({
+      request: async () => "ok",
+      onEvent: (listener: (event: EventEnvelope) => void) => {
+        emit = listener;
+        return () => undefined;
+      },
+      shouldRetainAcrossReconnect: () => true,
+    }));
+    continuity.retainTicket();
+    const first = continuity.open();
+    const firstEvents: string[] = [];
+    first.onEvent?.((event) => firstEvents.push(event.eventId));
+    await first.request(envelope("workspace/list", {}));
+    emit?.({
+      version: 1,
+      eventId: "event-1",
+      cursor: "1",
+      type: "turn/started",
+      payload: { threadId: "side-1" },
+    });
+    expect(firstEvents).toEqual(["event-1"]);
+
+    const second = continuity.open();
+    const replayed: string[] = [];
+    second.onEvent?.((event) => replayed.push(event.eventId));
+    expect(replayed).toEqual(["event-1"]);
+    expect(continuity.acknowledgeEvent("event-1")).toBe(true);
+
+    const third = continuity.open();
+    const afterAck: string[] = [];
+    third.onEvent?.((event) => afterAck.push(event.eventId));
+    expect(afterAck).toEqual([]);
+    await first.close?.();
+    await second.close?.();
+    await third.close?.();
+    continuity.releaseTicket();
+  });
+
+  it("emits a versioned gap instead of silently dropping buffered events", async () => {
+    let emit: ((event: EventEnvelope) => void) | undefined;
+    const continuity = new AuthenticatedGatewaySessionContinuity(async () => ({
+      request: async () => "ok",
+      onEvent: (listener: (event: EventEnvelope) => void) => {
+        emit = listener;
+        return () => undefined;
+      },
+      shouldRetainAcrossReconnect: () => true,
+    }));
+    continuity.retainTicket();
+    const transport = continuity.open();
+    const events: EventEnvelope[] = [];
+    transport.onEvent?.((event) => events.push(event));
+    await transport.request(envelope("workspace/list", {}));
+    for (let index = 0; index <= 4_096; index += 1) {
+      emit?.({
+        version: 1,
+        eventId: `event-${index}`,
+        cursor: String(index),
+        type: "item/agentMessage/delta",
+        payload: { threadId: "side-1", delta: "x" },
+      });
+    }
+    expect(events.at(-1)).toMatchObject({
+      type: "gateway/session/continuity-overflow",
+      payload: { version: 1, reason: "buffer-limit", threadId: "side-1" },
+    });
+    await transport.close?.();
+    continuity.releaseTicket();
+  });
+
   it("opens app-server live validation only for an ephemeral fork replay", async () => {
     const registry = new AuthenticatedSessionRegistry();
     const binding = sessionBinding();

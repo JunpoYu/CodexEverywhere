@@ -19,6 +19,7 @@ import type { ReasoningEffort } from "@codex-everywhere/codex-app-server-schema"
 import {
   CODEX_INSTALL_PROGRESS_EVENT,
   GATEWAY_CAPABILITIES,
+  GATEWAY_CONTINUITY_OVERFLOW_EVENT,
   IDEMPOTENCY_OUTCOME_INDETERMINATE,
   type CodexAuthImportResult,
   type CodexVersionStatus,
@@ -210,7 +211,10 @@ type PendingComposerOperation = {
   reconciliationBoundaryTurnId?: string;
   manualReviewRequired: boolean;
   manualReviewReason?:
-    "history-unavailable" | "host-indeterminate" | "side-unavailable";
+    | "history-unavailable"
+    | "host-indeterminate"
+    | "side-unavailable"
+    | "side-continuity-overflow";
 };
 
 type PendingThreadStartOperation = {
@@ -2044,27 +2048,40 @@ async function fallbackFromUnavailableSide(
 
 async function returnFromUnavailableSide(
   expectedSide: ActiveSideSession,
+  options: {
+    reason?: "side-unavailable" | "side-continuity-overflow";
+    message?: string;
+  } = {},
 ): Promise<void> {
   if (
     activeSideSession !== expectedSide ||
     activeThreadId !== expectedSide.threadId
   )
     return;
-  markUnavailableSideOperationsForReview(expectedSide.threadId);
+  markUnavailableSideOperationsForReview(
+    expectedSide.threadId,
+    options.reason ?? "side-unavailable",
+  );
   stopThreadSync();
   activeSideSession = undefined;
   renderSideSessionChrome();
-  showToast("Side 临时支线无法重新打开，已返回主会话", "error");
+  showToast(
+    options.message ?? "Side 临时支线无法重新打开，已返回主会话",
+    "error",
+  );
   await openThread(expectedSide.parent);
   renderComposerOutcomeReview();
   updateComposerSubmitAvailability();
 }
 
-function markUnavailableSideOperationsForReview(threadId: string): void {
+function markUnavailableSideOperationsForReview(
+  threadId: string,
+  reason: "side-unavailable" | "side-continuity-overflow",
+): void {
   for (const operation of pendingComposerOperations.values()) {
     if (operation.threadId !== threadId) continue;
     operation.manualReviewRequired = true;
-    operation.manualReviewReason = "side-unavailable";
+    operation.manualReviewReason = reason;
     composerReconciliations.delete(operation.operationId);
     composerTurnSnapshotReader.forget(operation.operationId);
   }
@@ -5284,7 +5301,8 @@ function manualComposerOperationForActiveThread():
     (operation) =>
       operation.manualReviewRequired &&
       (operation.threadId === activeThreadId ||
-        operation.manualReviewReason === "side-unavailable"),
+        operation.manualReviewReason === "side-unavailable" ||
+        operation.manualReviewReason === "side-continuity-overflow"),
   );
 }
 
@@ -5293,11 +5311,17 @@ function renderComposerOutcomeReview(): void {
   const review = requiredElement("composer-outcome-review");
   review.hidden = !operation;
   if (!operation) return;
-  const sideUnavailable = operation.manualReviewReason === "side-unavailable";
+  const sideUnavailable =
+    operation.manualReviewReason === "side-unavailable" ||
+    operation.manualReviewReason === "side-continuity-overflow";
+  const sideOverflow =
+    operation.manualReviewReason === "side-continuity-overflow";
   const hostIndeterminate =
     operation.manualReviewReason === "host-indeterminate";
   requiredElement("composer-outcome-review-copy").textContent = sideUnavailable
-    ? "Side 所属 app-server 已重启，临时支线无法恢复；原消息仍可能在重启前提交。系统已停止自动核对和重放。请根据主会话或其他运行记录人工核对，只有确认可以承担重复消息风险后，才能放弃待确认记录。"
+    ? sideOverflow
+      ? "Side 重连期间的事件超过安全缓冲，临时支线的事件完整性无法保证。系统已停止自动核对和重放。请根据主会话或其他运行记录人工核对，只有确认可以承担重复消息风险后，才能放弃待确认记录。"
+      : "Side 所属 app-server 已重启，临时支线无法恢复；原消息仍可能在重启前提交。系统已停止自动核对和重放。请根据主会话或其他运行记录人工核对，只有确认可以承担重复消息风险后，才能放弃待确认记录。"
     : hostIndeterminate
       ? operation.kind === "queue"
         ? "宿主机已锁定这次排队操作，但 app-server 的最终结果无法证明；系统不会自动重放。原消息可能已经进入队列或开始执行，请刷新当前会话核对，只有确认可以承担重复消息风险后，才能放弃待确认记录。"
@@ -6045,6 +6069,18 @@ async function acknowledgeIndeterminateQueuedMessage(
 }
 
 function renderEvent(event: EventEnvelope): void {
+  if (event.type === GATEWAY_CONTINUITY_OVERFLOW_EVENT) {
+    const side = activeSideSession;
+    if (side) {
+      void returnFromUnavailableSide(side, {
+        reason: "side-continuity-overflow",
+        message: "Side 重连事件超过安全缓冲，无法保证完整性，已返回主会话",
+      });
+    } else {
+      showToast("重连事件超过安全缓冲，请重新打开当前会话", "error");
+    }
+    return;
+  }
   if (event.type === CODEX_INSTALL_PROGRESS_EVENT) {
     renderCodexInstallProgress(event.payload);
     return;

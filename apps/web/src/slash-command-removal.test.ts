@@ -69,7 +69,8 @@ describe("minimal Web command surface", () => {
     expect(mainSource).toContain("fallbackFromUnavailableSide");
     expect(mainSource).toContain("sideRecoveryDisposition(");
     expect(mainSource).toContain("markUnavailableSideOperationsForReview");
-    expect(mainSource).toContain('manualReviewReason = "side-unavailable"');
+    expect(mainSource).toContain("operation.manualReviewReason = reason");
+    expect(mainSource).toContain('"side-continuity-overflow"');
     expect(mainSource).toContain("activeSideSession = undefined");
     expect(mainSource).toContain("临时支线不支持持久 Queue");
   });

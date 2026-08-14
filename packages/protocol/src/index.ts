@@ -38,6 +38,21 @@ export type EventEnvelope<T = unknown> = {
   payload: T;
 };
 
+export const GATEWAY_CONTINUITY_ACK_METHOD = "auth/session/events/ack" as const;
+export const GATEWAY_CONTINUITY_OVERFLOW_EVENT =
+  "gateway/session/continuity-overflow" as const;
+
+export type GatewayContinuityAckRequest = {
+  version: 1;
+  eventId: string;
+};
+
+export type GatewayContinuityOverflowPayload = {
+  version: 1;
+  reason: "buffer-limit";
+  threadId?: string;
+};
+
 export const CODEX_INSTALL_PROGRESS_EVENT =
   "setup/codex/install/progress" as const;
 
