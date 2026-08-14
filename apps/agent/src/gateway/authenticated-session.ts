@@ -11,6 +11,7 @@ import {
 } from "@codex-everywhere/protocol";
 import type {
   EventEnvelope,
+  GatewayContinuityOverflowPayload,
   RequestEnvelope,
 } from "@codex-everywhere/protocol";
 
@@ -91,8 +92,10 @@ export class AuthenticatedGatewaySessionContinuity {
     if (initialInner) {
       this.#inner = initialInner;
       this.#unsubscribeInnerClose = initialInner.onClose?.(() => {
-        if (initialInner.shouldRetainAcrossReconnect?.() === true)
+        if (initialInner.shouldRetainAcrossReconnect?.() === true) {
           this.#requiresDisconnectedExpiry = true;
+          this.#signalContinuityGap("inner-closed");
+        }
         this.#discardInner(initialInner);
       });
     }
@@ -192,8 +195,10 @@ export class AuthenticatedGatewaySessionContinuity {
           }
           this.#inner = inner;
           this.#unsubscribeInnerClose = inner.onClose?.(() => {
-            if (inner.shouldRetainAcrossReconnect?.() === true)
+            if (inner.shouldRetainAcrossReconnect?.() === true) {
               this.#requiresDisconnectedExpiry = true;
+              this.#signalContinuityGap("inner-closed");
+            }
             this.#discardInner(inner);
           });
           this.#subscribeInner();
@@ -246,34 +251,43 @@ export class AuthenticatedGatewaySessionContinuity {
         this.#bufferedEventBytes + bytes > MAX_CONTINUITY_BUFFERED_EVENT_BYTES
       ) {
         const payload = asRecord(event.payload);
-        const overflow: EventEnvelope = {
-          version: 1,
-          eventId: randomUUID(),
-          cursor: event.cursor,
-          type: GATEWAY_CONTINUITY_OVERFLOW_EVENT,
-          payload: {
-            version: 1,
-            reason: "buffer-limit",
-            ...(typeof payload.threadId === "string"
-              ? { threadId: payload.threadId }
-              : {}),
-          },
-        };
-        const overflowBytes = Buffer.byteLength(
-          JSON.stringify(overflow),
-          "utf8",
+        this.#signalContinuityGap(
+          "buffer-limit",
+          event.cursor,
+          typeof payload.threadId === "string" ? payload.threadId : undefined,
         );
-        this.#bufferedEvents.length = 0;
-        this.#bufferedEvents.push({ event: overflow, bytes: overflowBytes });
-        this.#bufferedEventBytes = overflowBytes;
-        this.#overflowed = true;
-        for (const listener of this.#listeners) listener(overflow);
         return;
       }
       this.#bufferedEvents.push({ event, bytes });
       this.#bufferedEventBytes += bytes;
       for (const listener of this.#listeners) listener(event);
     });
+  }
+
+  #signalContinuityGap(
+    reason: GatewayContinuityOverflowPayload["reason"],
+    cursor = this.#bufferedEvents.at(-1)?.event.cursor ?? "0",
+    threadId = continuityThreadId(this.#bufferedEvents),
+  ): void {
+    if (this.#overflowed) return;
+    const payload: GatewayContinuityOverflowPayload = {
+      version: 1,
+      reason,
+      ...(threadId ? { threadId } : {}),
+    };
+    const gap: EventEnvelope = {
+      version: 1,
+      eventId: randomUUID(),
+      cursor,
+      type: GATEWAY_CONTINUITY_OVERFLOW_EVENT,
+      payload,
+    };
+    const bytes = Buffer.byteLength(JSON.stringify(gap), "utf8");
+    this.#bufferedEvents.length = 0;
+    this.#bufferedEvents.push({ event: gap, bytes });
+    this.#bufferedEventBytes = bytes;
+    this.#overflowed = this.#acknowledgedDeliveryEnabled;
+    for (const listener of this.#listeners) listener(gap);
   }
 
   acknowledgeEvent(eventId: string): boolean {
@@ -1209,6 +1223,18 @@ export class AuthenticatedGatewaySession implements GatewaySession {
       throw new Error("Password login identifiers are not configured");
     return this.#opaqueIdentifiers;
   }
+}
+
+function continuityThreadId(
+  entries: ReadonlyArray<{ event: EventEnvelope }>,
+): string | undefined {
+  for (let index = entries.length - 1; index >= 0; index -= 1) {
+    const value = entries[index]?.event.payload;
+    if (!value || typeof value !== "object") continue;
+    const threadId = (value as Record<string, unknown>).threadId;
+    if (typeof threadId === "string") return threadId;
+  }
+  return undefined;
 }
 
 function asRecord(value: unknown): Record<string, unknown> {

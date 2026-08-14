@@ -55,6 +55,7 @@ CodexEverywhere **不是 Web Terminal**，也不替代 SSH、Slurm、Codex CLI �
 ### 随时继续真实 Codex 会话
 
 - 每条首次认证或静默恢复产生的新物理连接，都会在接管页面状态前重新协商 Side 事件 ACK；协商失败会关闭尚未绑定的连接，不会让恢复后的页面停止确认事件或泄漏会话。静默恢复票据仍有效时会继续自动重试，只有 Host 明确要求重新认证才切换到 Passkey 登录。事件 ACK 的临时失败同样持续退避重试，overflow 确认不会静默丢失并让后续实时更新永久停止。
+- 认证已经成功但首次 ACK enable 暂时失败时，Web 会复用刚签发的页面恢复票据继续重连，不让用户重复 Passkey。若 overflow 发生在活动 Side turn 中，Web 会先停止任务；停止无法确认时保留 Side 控制入口。Agent 与 retained app-server 的本地连接意外关闭也会生成明确的 continuity gap，避免把不可恢复的 ephemeral 事件缺口显示成正常恢复。
 - 创建、恢复和实时查看 app-server thread；支持 Markdown、KaTeX、代码、计划、命令、文件修改、MCP、subagent 和错误卡片。
 - 长会话默认只渲染最近 20 个 turn；更早历史按需分页，流式内容与后台 snapshot 按稳定身份合并，旧协议的完整响应也不会绕过默认窗口。
 - 只在用户停留于底部时自动跟随；桌面大纲和移动端抽屉帮助快速定位历史消息。

@@ -1810,8 +1810,40 @@ async function runLoginButtonAction(
   }
 }
 
+async function prepareAuthenticatedClientForActivation(
+  initialClient: GatewayClient,
+): Promise<GatewayClient> {
+  let candidate = initialClient;
+  let firstAttempt = true;
+  const prepared = await reconnectWithUnlimitedAttempts({
+    isCurrent: () => true,
+    canAttempt: () => true,
+    reconnect: async () => {
+      if (firstAttempt) firstAttempt = false;
+      else {
+        candidate = await candidate.reconnect({ allowInteractive: false });
+      }
+      return prepareClientForBinding(candidate, {
+        retryOnFailure: candidate.canReconnectSilently,
+      });
+    },
+    isRetryable: (error) =>
+      error instanceof RetryableClientPreparationError ||
+      isRetryableConnectionFailure(error),
+    onBeforeAttempt: (attempt, delayMs) => {
+      if (attempt === 0) return;
+      setStatus(
+        "connecting",
+        `登录已完成，正在建立可靠事件连接；${formatRetryDelay(delayMs)}后继续重试…`,
+      );
+    },
+  });
+  if (!prepared) throw new Error("Client activation was superseded");
+  return prepared;
+}
+
 async function activate(nextClient: GatewayClient): Promise<void> {
-  await prepareClientForBinding(nextClient);
+  nextClient = await prepareAuthenticatedClientForActivation(nextClient);
   const reauthenticatedClient =
     temporaryReauthenticationClient?.host.deviceId === nextClient.host.deviceId
       ? temporaryReauthenticationClient
@@ -2073,6 +2105,38 @@ async function returnFromUnavailableSide(
     activeThreadId !== expectedSide.threadId
   )
     return;
+  if (
+    options.reason === "side-continuity-overflow" &&
+    (activeThreadStatus?.type === "active" || activeTurnId)
+  ) {
+    const currentClient = client;
+    const turnId = activeTurnId;
+    if (!currentClient || !turnId) {
+      showToast(
+        "Side 事件已不完整，但无法确认活动任务已停止；已保留 Side 控制界面",
+        "error",
+      );
+      return;
+    }
+    try {
+      await currentClient.request("turn/interrupt", {
+        threadId: expectedSide.threadId,
+        turnId,
+      });
+    } catch (error) {
+      showToast(
+        `Side 事件已不完整，但停止任务失败：${errorMessage(error)}；已保留 Side 控制界面`,
+        "error",
+      );
+      return;
+    }
+    if (
+      client !== currentClient ||
+      activeSideSession !== expectedSide ||
+      activeThreadId !== expectedSide.threadId
+    )
+      return;
+  }
   markUnavailableSideOperationsForReview(
     expectedSide.threadId,
     options.reason ?? "side-unavailable",
@@ -6087,9 +6151,16 @@ function renderEvent(event: EventEnvelope): void {
   if (event.type === GATEWAY_CONTINUITY_OVERFLOW_EVENT) {
     const side = activeSideSession;
     if (side) {
+      const gapReason =
+        event.payload && typeof event.payload === "object"
+          ? (event.payload as Record<string, unknown>).reason
+          : undefined;
       void returnFromUnavailableSide(side, {
         reason: "side-continuity-overflow",
-        message: "Side 重连事件超过安全缓冲，无法保证完整性，已返回主会话",
+        message:
+          gapReason === "inner-closed"
+            ? "Side 与 Codex 的本地连接意外中断，无法补回缺失事件，已返回主会话"
+            : "Side 重连事件超过安全缓冲，无法保证完整性，已返回主会话",
       });
     } else {
       showToast("重连事件超过安全缓冲，请重新打开当前会话", "error");

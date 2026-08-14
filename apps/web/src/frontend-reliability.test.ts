@@ -523,6 +523,37 @@ describe("frontend reliability contracts", () => {
     expect(recovery).not.toContain("await activate(nextClient)");
   });
 
+  it("retries initial ACK negotiation through the newly authenticated ticket", () => {
+    const preparation = mainSource.slice(
+      mainSource.indexOf(
+        "async function prepareAuthenticatedClientForActivation",
+      ),
+      mainSource.indexOf("async function activate"),
+    );
+    expect(preparation).toContain("reconnectWithUnlimitedAttempts");
+    expect(preparation).toContain(
+      "candidate.reconnect({ allowInteractive: false })",
+    );
+    expect(preparation).toContain(
+      "retryOnFailure: candidate.canReconnectSilently",
+    );
+    expect(preparation).toContain(
+      "error instanceof RetryableClientPreparationError",
+    );
+  });
+
+  it("stops an active Side turn before abandoning an overflowed view", () => {
+    const fallback = mainSource.slice(
+      mainSource.indexOf("async function returnFromUnavailableSide"),
+      mainSource.indexOf("function markUnavailableSideOperationsForReview"),
+    );
+    expect(fallback).toContain('currentClient.request("turn/interrupt"');
+    expect(
+      fallback.indexOf('currentClient.request("turn/interrupt"'),
+    ).toBeLessThan(fallback.indexOf("markUnavailableSideOperationsForReview"));
+    expect(fallback).toContain("已保留 Side 控制界面");
+  });
+
   it("waits while hidden but leaves the retry loop for visible reauthentication", () => {
     const userRecovery = mainSource.slice(
       mainSource.indexOf("async function recoverConnection"),

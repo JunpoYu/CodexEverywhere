@@ -204,6 +204,43 @@ describe("AuthenticatedGatewaySession", () => {
     expect(expired).toHaveBeenCalledOnce();
   });
 
+  it("emits and replays a continuity gap when a retained inner closes", async () => {
+    let notifyInnerClosed: (() => void) | undefined;
+    const continuity = new AuthenticatedGatewaySessionContinuity(
+      async () => ({ request: async () => "unused" }),
+      {
+        request: async () => "side",
+        shouldRetainAcrossReconnect: () => true,
+        onClose: (listener) => {
+          notifyInnerClosed = listener;
+          return () => undefined;
+        },
+      },
+    );
+    continuity.retainTicket();
+    continuity.enableAcknowledgedDelivery();
+    const first = continuity.open();
+    const firstEvents: EventEnvelope[] = [];
+    first.onEvent?.((event) => firstEvents.push(event));
+
+    notifyInnerClosed?.();
+    expect(firstEvents).toHaveLength(1);
+    expect(firstEvents[0]).toMatchObject({
+      type: "gateway/session/continuity-overflow",
+      payload: { version: 1, reason: "inner-closed" },
+    });
+
+    const resumed = continuity.open();
+    const replayed: EventEnvelope[] = [];
+    resumed.onEvent?.((event) => replayed.push(event));
+    expect(replayed).toEqual(firstEvents);
+    expect(continuity.acknowledgeEvent(firstEvents[0]!.eventId)).toBe(true);
+
+    await first.close?.();
+    await resumed.close?.();
+    continuity.releaseTicket();
+  });
+
   it("keeps legacy cached clients on consume-on-replay delivery", async () => {
     let emit: ((event: EventEnvelope) => void) | undefined;
     const continuity = new AuthenticatedGatewaySessionContinuity(async () => ({

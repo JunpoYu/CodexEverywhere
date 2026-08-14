@@ -66,7 +66,7 @@ export type GatewayContinuityEnableResponse = {
 
 export type GatewayContinuityOverflowPayload = {
   version: 1;
-  reason: "buffer-limit";
+  reason: "buffer-limit" | "inner-closed";
   threadId?: string;
 };
 
