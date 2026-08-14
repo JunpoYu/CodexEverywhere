@@ -497,6 +497,92 @@ describe("ambiguous gateway request outcomes", () => {
     client.close();
   });
 
+  it("retries a lost continuity acknowledgement until the Host responds", async () => {
+    vi.useFakeTimers();
+    const device = generateStaticKeyPair();
+    const hostIdentity = generateStaticKeyPair();
+    const simulation = simulatedHostWebSocket(hostIdentity, {
+      capabilities: [GATEWAY_CAPABILITIES.sideContinuityAckV1],
+      dropContinuityAckResponses: 1,
+    });
+    vi.stubGlobal("WebSocket", simulation.WebSocketClass);
+    const client = await GatewayClient.connect({
+      id: "node-1",
+      name: "alice",
+      endpoint: "wss://hpc.example/gateway",
+      transport: "direct",
+      nodeId: "node-1",
+      userId: "unix:1000",
+      hostPublicKey: bytesToBase64Url(hostIdentity.publicKey),
+      hostFingerprint: `sha256:${"B".repeat(43)}`,
+      deviceId: "device-1",
+      deviceName: "Browser",
+      devicePublicKey: bytesToBase64Url(device.publicKey),
+      deviceSecretKey: bytesToBase64Url(device.secretKey),
+    });
+    await client.enableSideContinuityAcknowledgements();
+    client.onEvent(() => undefined);
+    simulation.socket().deliverServerEnvelope({
+      version: 1,
+      eventId: "overflow-event",
+      cursor: "4097",
+      type: "gateway/session/continuity-overflow",
+      payload: { version: 1, reason: "buffer-limit", threadId: "side-1" },
+    });
+
+    await vi.advanceTimersByTimeAsync(50);
+    expect(simulation.continuityAckRequests()).toBe(1);
+    await vi.advanceTimersByTimeAsync(4_100);
+    expect(simulation.continuityAckRequests()).toBe(2);
+    expect(simulation.socket().lastRequest).toMatchObject({
+      method: "auth/session/events/ack",
+      payload: { version: 1, eventId: "overflow-event" },
+    });
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(simulation.continuityAckRequests()).toBe(2);
+    client.close();
+  });
+
+  it("cancels continuity acknowledgement retries when the transport closes", async () => {
+    vi.useFakeTimers();
+    const device = generateStaticKeyPair();
+    const hostIdentity = generateStaticKeyPair();
+    const simulation = simulatedHostWebSocket(hostIdentity, {
+      capabilities: [GATEWAY_CAPABILITIES.sideContinuityAckV1],
+      dropContinuityAckResponses: 10,
+    });
+    vi.stubGlobal("WebSocket", simulation.WebSocketClass);
+    const client = await GatewayClient.connect({
+      id: "node-1",
+      name: "alice",
+      endpoint: "wss://hpc.example/gateway",
+      transport: "direct",
+      nodeId: "node-1",
+      userId: "unix:1000",
+      hostPublicKey: bytesToBase64Url(hostIdentity.publicKey),
+      hostFingerprint: `sha256:${"B".repeat(43)}`,
+      deviceId: "device-1",
+      deviceName: "Browser",
+      devicePublicKey: bytesToBase64Url(device.publicKey),
+      deviceSecretKey: bytesToBase64Url(device.secretKey),
+    });
+    await client.enableSideContinuityAcknowledgements();
+    client.onEvent(() => undefined);
+    simulation.socket().deliverServerEnvelope({
+      version: 1,
+      eventId: "side-event-before-close",
+      cursor: "2",
+      type: "turn/completed",
+      payload: { threadId: "side-1" },
+    });
+    await vi.advanceTimersByTimeAsync(50);
+    expect(simulation.continuityAckRequests()).toBe(1);
+
+    simulation.socket().close();
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(simulation.continuityAckRequests()).toBe(1);
+  });
+
   it("does not retry WebAuthn after visible reauthentication is cancelled", async () => {
     const device = generateStaticKeyPair();
     const hostIdentity = generateStaticKeyPair();
@@ -829,6 +915,7 @@ function simulatedHostWebSocket(
     rejectResume?: boolean;
     onResumeHello?: () => void;
     capabilities?: string[];
+    dropContinuityAckResponses?: number;
   } = {},
 ): {
   WebSocketClass: typeof WebSocket;
@@ -836,6 +923,7 @@ function simulatedHostWebSocket(
   handshakeModes(): string[];
   handshakeAuthentications(): Record<string, unknown>[];
   loginOptionDiscoverability(): unknown[];
+  continuityAckRequests(): number;
   failNextLoginOptions(): void;
 } {
   let current: SimulatedHostSocket | undefined;
@@ -843,6 +931,9 @@ function simulatedHostWebSocket(
   const handshakeAuthentications: Record<string, unknown>[] = [];
   const loginOptionDiscoverability: unknown[] = [];
   let failNextLoginOptions = false;
+  let continuityAckRequests = 0;
+  let remainingDroppedContinuityAckResponses =
+    options.dropContinuityAckResponses ?? 0;
 
   class SimulatedHostSocket extends EventTarget {
     static readonly CONNECTING = 0;
@@ -937,6 +1028,20 @@ function simulatedHostWebSocket(
         payload?: Record<string, unknown>;
       };
       this.lastRequest = request;
+      if (request.method === "auth/session/events/ack") {
+        continuityAckRequests += 1;
+        if (remainingDroppedContinuityAckResponses > 0) {
+          remainingDroppedContinuityAckResponses -= 1;
+          return;
+        }
+        this.deliverServerEnvelope({
+          version: PROTOCOL_VERSION,
+          requestId: request.requestId,
+          ok: true,
+          result: { version: 1, acknowledged: true },
+        });
+        return;
+      }
       if (request.method === "auth/login/options") {
         loginOptionDiscoverability.push(request.payload?.discoverable);
       }
@@ -1028,6 +1133,7 @@ function simulatedHostWebSocket(
         ...authentication,
       })),
     loginOptionDiscoverability: () => [...loginOptionDiscoverability],
+    continuityAckRequests: () => continuityAckRequests,
     failNextLoginOptions: () => {
       failNextLoginOptions = true;
     },

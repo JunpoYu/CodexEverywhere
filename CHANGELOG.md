@@ -6,7 +6,7 @@
 
 ### Fixed
 
-- Web 在首次认证和每次 silent resume 后都会先重新协商 Side continuity ACK，再接管新 transport；协商失败时立即关闭未绑定连接，避免恢复后停止 ACK 导致缓冲溢出，也避免 socket、session 和恢复票据泄漏。silent resume 使用的票据仍然有效时，临时协商失败会留在同一条无限恢复循环中重试，不会误切到 Passkey 登录；只有明确要求重新认证时才进入交互流程。
+- Web 在首次认证和每次 silent resume 后都会先重新协商 Side continuity ACK，再接管新 transport；协商失败时立即关闭未绑定连接，避免恢复后停止 ACK 导致缓冲溢出，也避免 socket、session 和恢复票据泄漏。silent resume 使用的票据仍然有效时，临时协商失败会留在同一条无限恢复循环中重试，不会误切到 Passkey 登录；只有明确要求重新认证时才进入交互流程。事件 ACK 失败时保留最新累计 event ID 并以封顶 5 秒的指数退避持续重试，尤其不会因 overflow ACK 丢失而让 Agent 永久抑制后续实时事件；transport 失效时取消旧循环，由新连接重新协商和接管。
 - Agent 将存在 ephemeral Side 的 app-server 客户端绑定到页面内存中的认证恢复票据：有效 silent resume 一开始就独占连续体并移除旧 transport 的 listener，即使旧 WebSocket 尚未报告 close，之后的事件也只会进入新 transport 或有界内存缓冲。ACK 交付由独立 `side-continuity-ack-v1` capability 与 version 1 enable 请求显式协商；缓存旧 PWA 继续采用 listener 注册即消费的兼容路径，不会因不发送 ACK 而触发新版 overflow，新 Web 连接未声明该 capability 的旧 Agent 时也完全不调度 ACK 请求。新版浏览器处理后按稳定 event ID 确认并接收 version 1 ACK 结果，确认丢失只会去重重放，不会提前清空缓冲；缓冲触及 4096 条或 16 MiB 时发送版本化 gap 并让 Web 失败关闭 Side、返回主会话人工核对。普通 durable mutation 的缓存成功不再为无须验证的方法冷启动 app-server；transport 在 inner 创建完成前关闭时，迟到的普通 inner 也会立即释放。普通页面仍在断线后立即释放 app-server 客户端；页面正常刷新或关闭时会在销毁内存 token 前发送 version 1 加密 `auth/session/release` 并接收 version 1 结果。网络断线和后台挂起不会触发释放，活动 transport 不设空闲 TTL；最后一个 transport 消失后，Side continuity 最多保留 24 小时等待 resume，重连会取消并在下次断线重新计时，已分类 continuity 不会因 app-server socket 先关闭而逃过到期回收。票据撤销、设备撤销、显式释放或淘汰后，也会在最后一个活动 transport 退出时关闭保留连接。
 
 ## [0.3.0-alpha.11] - 2026-08-14

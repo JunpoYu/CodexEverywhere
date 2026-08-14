@@ -20,6 +20,7 @@ import {
   parseGatewayServerEnvelope,
   parseRelayWireMessage,
   type EventEnvelope,
+  type GatewayContinuityAckResponse,
   type ProtocolError,
 } from "@codex-everywhere/protocol";
 import {
@@ -37,6 +38,8 @@ import {
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
+const CONTINUITY_ACK_INITIAL_DELAY_MS = 50;
+const CONTINUITY_ACK_MAX_RETRY_DELAY_MS = 5_000;
 
 export type PairingDocument = {
   version: 1;
@@ -189,6 +192,8 @@ export class GatewayClient {
   } = { delivered: new Set(), order: [] };
   #pendingAckEventId: string | undefined;
   #eventAckTimer: ReturnType<typeof setTimeout> | undefined;
+  #eventAckInFlight = false;
+  #eventAckRetryAttempt = 0;
   #continuityAcknowledgementsEnabled = false;
   #reconnectMode: GatewayReconnectMode = "trusted-device";
   #resumeToken: string | undefined;
@@ -1049,6 +1054,7 @@ export class GatewayClient {
     if (this.#eventAckTimer) clearTimeout(this.#eventAckTimer);
     this.#eventAckTimer = undefined;
     this.#pendingAckEventId = undefined;
+    this.#eventAckRetryAttempt = 0;
     this.#session.dispose();
     for (const pending of this.#pending.values()) {
       clearTimeout(pending.timeout);
@@ -1134,18 +1140,52 @@ export class GatewayClient {
   #scheduleEventAcknowledgement(eventId: string): void {
     if (!this.#continuityAcknowledgementsEnabled) return;
     this.#pendingAckEventId = eventId;
-    if (this.#eventAckTimer) return;
+    if (this.#eventAckTimer || this.#eventAckInFlight) return;
+    this.#schedulePendingEventAcknowledgement(CONTINUITY_ACK_INITIAL_DELAY_MS);
+  }
+
+  #schedulePendingEventAcknowledgement(delayMs: number): void {
+    if (this.#eventAckTimer || !this.#pendingAckEventId || !this.#usable)
+      return;
     this.#eventAckTimer = setTimeout(() => {
       this.#eventAckTimer = undefined;
-      const acknowledgedEventId = this.#pendingAckEventId;
-      this.#pendingAckEventId = undefined;
-      if (!acknowledgedEventId || !this.#usable) return;
-      void this.request(
+      void this.#acknowledgePendingEvent();
+    }, delayMs);
+  }
+
+  async #acknowledgePendingEvent(): Promise<void> {
+    const acknowledgedEventId = this.#pendingAckEventId;
+    if (!acknowledgedEventId || !this.#usable || this.#eventAckInFlight) return;
+    this.#eventAckInFlight = true;
+    let retry = false;
+    try {
+      const result = await this.request<GatewayContinuityAckResponse>(
         GATEWAY_CONTINUITY_ACK_METHOD,
         { version: 1, eventId: acknowledgedEventId },
         { timeoutMs: 4_000 },
-      ).catch(() => undefined);
-    }, 50);
+      );
+      if (result.version !== 1 || typeof result.acknowledged !== "boolean") {
+        throw new Error("Host returned an invalid continuity ACK result");
+      }
+      if (this.#pendingAckEventId === acknowledgedEventId)
+        this.#pendingAckEventId = undefined;
+      this.#eventAckRetryAttempt = 0;
+    } catch {
+      if (!this.#usable) return;
+      retry = true;
+      this.#eventAckRetryAttempt += 1;
+    } finally {
+      this.#eventAckInFlight = false;
+      if (this.#pendingAckEventId && this.#usable) {
+        const delayMs = retry
+          ? Math.min(
+              CONTINUITY_ACK_INITIAL_DELAY_MS * 2 ** this.#eventAckRetryAttempt,
+              CONTINUITY_ACK_MAX_RETRY_DELAY_MS,
+            )
+          : CONTINUITY_ACK_INITIAL_DELAY_MS;
+        this.#schedulePendingEventAcknowledgement(delayMs);
+      }
+    }
   }
 }
 

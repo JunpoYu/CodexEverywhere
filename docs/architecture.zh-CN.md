@@ -10,7 +10,7 @@
 
 当前版本已经形成从浏览器到真实 Codex app-server 的可用闭环：
 
-Side 连续体的 ACK 是逐物理连接协商的能力：首次认证和 silent resume 都必须在 Web 接管活动状态前完成 enable；协商失败时关闭尚未绑定的 transport。silent resume 的可复用票据仍有效时，协商错误作为同一次连接恢复尝试失败进入无限退避，不触发 WebAuthn；只有明确的 `REAUTH_REQUIRED` 才转入交互认证。旧 Agent 未声明能力时保持兼容交付语义。
+Side 连续体的 ACK 是逐物理连接协商的能力：首次认证和 silent resume 都必须在 Web 接管活动状态前完成 enable；协商失败时关闭尚未绑定的 transport。silent resume 的可复用票据仍有效时，协商错误作为同一次连接恢复尝试失败进入无限退避，不触发 WebAuthn；只有明确的 `REAUTH_REQUIRED` 才转入交互认证。启用后的累计 event ACK 保留最新待确认 ID，失败时以 50 ms 起步、5 秒封顶的指数退避持续重试；overflow ACK 不会因一次响应丢失而被遗忘，transport 失效则清理 timer，由新连接重新协商。旧 Agent 未声明能力时保持兼容交付语义。
 
 - 每个 Linux 用户一个独立 Agent 和长期 app-server，使用自己的 `~/.codex` 登录状态。
 - 管理员只需创建一个无特权专用部署账号并完成一次固定全局 launcher 安装；共享运行时、版本化 Agent 和宿主机 provisioner 此后都由该账号维护。任何能够通过现有 HPC 策略 SSH 登录、可由 NSS 查询且 home/shell 合规的 Linux 用户，都可直接执行 `ce device pair` 自行初始化，无需管理员逐个开通或调用 sudo。
