@@ -6,7 +6,7 @@
 
 ### Fixed
 
-- Agent 将存在 ephemeral Side 的 app-server 客户端绑定到页面内存中的认证恢复票据：有效 silent resume 一开始就独占连续体并移除旧 transport 的 listener，即使旧 WebSocket 尚未报告 close，之后的事件也只会进入新 transport 或有界内存缓冲；Noise 握手回复后再按顺序交付，浏览器处理后按稳定 event ID 确认，确认丢失只会去重重放，不会提前清空缓冲。缓冲触及 4096 条或 16 MiB 时发送版本化 gap 并让 Web 失败关闭 Side、返回主会话人工核对，不再静默删除最旧事件。普通 durable mutation 的缓存成功不再为无须验证的方法冷启动 app-server；transport 在 inner 创建完成前关闭时，迟到的普通 inner 也会立即释放。普通页面仍在断线后立即释放 app-server 客户端；页面正常刷新或关闭时还会在销毁内存 token 前发送加密的 `auth/session/release`，而网络断线和后台挂起不会触发释放。票据撤销、设备撤销、显式释放或淘汰后，会在最后一个活动 transport 退出时关闭保留连接。
+- Agent 将存在 ephemeral Side 的 app-server 客户端绑定到页面内存中的认证恢复票据：有效 silent resume 一开始就独占连续体并移除旧 transport 的 listener，即使旧 WebSocket 尚未报告 close，之后的事件也只会进入新 transport 或有界内存缓冲；Noise 握手回复后再按顺序交付，浏览器处理后按稳定 event ID 确认，确认丢失只会去重重放，不会提前清空缓冲。缓冲触及 4096 条或 16 MiB 时发送版本化 gap 并让 Web 失败关闭 Side、返回主会话人工核对，不再静默删除最旧事件。普通 durable mutation 的缓存成功不再为无须验证的方法冷启动 app-server；transport 在 inner 创建完成前关闭时，迟到的普通 inner 也会立即释放。普通页面仍在断线后立即释放 app-server 客户端；页面正常刷新或关闭时会在销毁内存 token 前发送 version 1 加密 `auth/session/release` 并接收 version 1 结果。网络断线和后台挂起不会触发释放，活动 transport 不设空闲 TTL；最后一个 transport 消失后，Side continuity 最多保留 24 小时等待 resume，重连会取消并在下次断线重新计时，宽限到期才删除无人可恢复的 ticket 并关闭连接。票据撤销、设备撤销、显式释放或淘汰后，也会在最后一个活动 transport 退出时关闭保留连接。
 
 ## [0.3.0-alpha.11] - 2026-08-14
 

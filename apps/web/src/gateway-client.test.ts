@@ -406,6 +406,7 @@ describe("ambiguous gateway request outcomes", () => {
     expect(client.canReconnectSilently).toBe(false);
     expect(simulation.socket().lastRequest).toMatchObject({
       method: "auth/session/release",
+      payload: { version: 1 },
     });
     await vi.advanceTimersByTimeAsync(1_000);
   });
@@ -765,7 +766,13 @@ function simulatedHostWebSocket(
 
     readyState = SimulatedHostSocket.CONNECTING;
     serverSession: SecureSession | undefined;
-    lastRequest: { requestId: string; method: string } | undefined;
+    lastRequest:
+      | {
+          requestId: string;
+          method: string;
+          payload?: Record<string, unknown>;
+        }
+      | undefined;
 
     constructor(_endpoint: string) {
       super();
@@ -940,7 +947,13 @@ function simulatedHostWebSocket(
 
 type SimulatedHostSocket = EventTarget & {
   readyState: number;
-  lastRequest: { requestId: string; method: string } | undefined;
+  lastRequest:
+    | {
+        requestId: string;
+        method: string;
+        payload?: Record<string, unknown>;
+      }
+    | undefined;
   deliverServerEnvelope(value: unknown): void;
   close(): void;
 };

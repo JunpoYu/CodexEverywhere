@@ -142,6 +142,38 @@ describe("AuthenticatedGatewaySession", () => {
     continuity.releaseTicket();
   });
 
+  it("expires only a disconnected Side continuity after its grace period", async () => {
+    vi.useFakeTimers();
+    const close = vi.fn(async () => undefined);
+    const continuity = new AuthenticatedGatewaySessionContinuity(
+      async () => ({ request: async () => "unused" }),
+      {
+        request: async () => "side",
+        shouldRetainAcrossReconnect: () => true,
+        close,
+      },
+    );
+    continuity.retainTicket();
+    continuity.configureDisconnectedExpiry(
+      () => continuity.releaseTicket(),
+      100,
+    );
+    const first = continuity.open();
+
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(close).not.toHaveBeenCalled();
+    await first.close?.();
+    await vi.advanceTimersByTimeAsync(99);
+    expect(close).not.toHaveBeenCalled();
+
+    const resumed = continuity.open();
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(close).not.toHaveBeenCalled();
+    await resumed.close?.();
+    await vi.advanceTimersByTimeAsync(100);
+    expect(close).toHaveBeenCalledOnce();
+  });
+
   it("opens app-server live validation only for an ephemeral fork replay", async () => {
     const registry = new AuthenticatedSessionRegistry();
     const binding = sessionBinding();
@@ -989,7 +1021,10 @@ describe("AuthenticatedGatewaySession", () => {
 
     await expect(
       resumed.request(envelope("auth/session/release", {})),
-    ).resolves.toEqual({ released: 1 });
+    ).rejects.toThrow("Unsupported page-session release version");
+    await expect(
+      resumed.request(envelope("auth/session/release", { version: 1 })),
+    ).resolves.toEqual({ version: 1, released: 1 });
     expect(closeInner).not.toHaveBeenCalled();
     await resumed.close();
     expect(closeInner).toHaveBeenCalledOnce();

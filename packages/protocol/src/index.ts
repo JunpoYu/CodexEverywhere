@@ -39,6 +39,7 @@ export type EventEnvelope<T = unknown> = {
 };
 
 export const GATEWAY_CONTINUITY_ACK_METHOD = "auth/session/events/ack" as const;
+export const GATEWAY_SESSION_RELEASE_METHOD = "auth/session/release" as const;
 export const GATEWAY_CONTINUITY_OVERFLOW_EVENT =
   "gateway/session/continuity-overflow" as const;
 
@@ -51,6 +52,15 @@ export type GatewayContinuityOverflowPayload = {
   version: 1;
   reason: "buffer-limit";
   threadId?: string;
+};
+
+export type GatewaySessionReleaseRequest = {
+  version: 1;
+};
+
+export type GatewaySessionReleaseResponse = {
+  version: 1;
+  released: number;
 };
 
 export const CODEX_INSTALL_PROGRESS_EVENT =

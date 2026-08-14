@@ -6,6 +6,7 @@ import { randomUUID } from "node:crypto";
 import {
   GATEWAY_CONTINUITY_ACK_METHOD,
   GATEWAY_CONTINUITY_OVERFLOW_EVENT,
+  GATEWAY_SESSION_RELEASE_METHOD,
 } from "@codex-everywhere/protocol";
 import type {
   EventEnvelope,
@@ -52,6 +53,7 @@ const AUTHENTICATION_STATE_TTL_MS = 5 * 60_000;
 const AUTHENTICATED_SESSION_RECHECK_MS = 10_000;
 const MAX_CONTINUITY_BUFFERED_EVENTS = 4_096;
 const MAX_CONTINUITY_BUFFERED_EVENT_BYTES = 16 * 1024 * 1024;
+const DEFAULT_DISCONNECTED_SIDE_GRACE_MS = 24 * 60 * 60_000;
 
 /**
  * Keeps one app-server client alive while a browser page moves between
@@ -73,6 +75,9 @@ export class AuthenticatedGatewaySessionContinuity {
   #bufferedEventBytes = 0;
   #overflowed = false;
   #activeHandleId = 0;
+  #disconnectedExpiryTimer: ReturnType<typeof setTimeout> | undefined;
+  #expireDisconnectedTickets: (() => void) | undefined;
+  #disconnectedGraceMs = DEFAULT_DISCONNECTED_SIDE_GRACE_MS;
   #disposed = false;
 
   constructor(
@@ -92,6 +97,7 @@ export class AuthenticatedGatewaySessionContinuity {
     if (this.#disposed)
       throw new Error("Authenticated page session continuity was released");
     this.#sessionReferences += 1;
+    this.#cancelDisconnectedExpiry();
     const handleId = ++this.#activeHandleId;
     // A valid silent resume is an ownership transfer. Stop forwarding to the
     // previous physical transport immediately, even if its half-open socket
@@ -129,6 +135,7 @@ export class AuthenticatedGatewaySessionContinuity {
         released = true;
         this.#sessionReferences -= 1;
         await this.#releaseInnerUnlessContinuityIsRequired();
+        this.#scheduleDisconnectedExpiryIfRequired();
         await this.#disposeIfUnreferenced();
       },
     };
@@ -144,6 +151,17 @@ export class AuthenticatedGatewaySessionContinuity {
     if (this.#ticketReferences === 0) return;
     this.#ticketReferences -= 1;
     void this.#disposeIfUnreferenced();
+  }
+
+  configureDisconnectedExpiry(
+    expireTickets: () => void,
+    graceMs = DEFAULT_DISCONNECTED_SIDE_GRACE_MS,
+  ): void {
+    if (!Number.isSafeInteger(graceMs) || graceMs <= 0)
+      throw new Error("Disconnected Side grace period must be positive");
+    this.#expireDisconnectedTickets = expireTickets;
+    this.#disconnectedGraceMs = graceMs;
+    this.#scheduleDisconnectedExpiryIfRequired();
   }
 
   async #ensureInner(): Promise<GatewaySession> {
@@ -265,6 +283,7 @@ export class AuthenticatedGatewaySessionContinuity {
       return;
     }
     this.#disposed = true;
+    this.#cancelDisconnectedExpiry();
     this.#listeners.clear();
     this.#bufferedEvents.length = 0;
     this.#bufferedEventBytes = 0;
@@ -307,6 +326,38 @@ export class AuthenticatedGatewaySessionContinuity {
     this.#bufferedEvents.length = 0;
     this.#bufferedEventBytes = 0;
     await inner.close?.();
+  }
+
+  #scheduleDisconnectedExpiryIfRequired(): void {
+    if (
+      this.#disposed ||
+      this.#disconnectedExpiryTimer ||
+      this.#sessionReferences !== 0 ||
+      this.#ticketReferences === 0 ||
+      !this.#expireDisconnectedTickets ||
+      this.#inner?.shouldRetainAcrossReconnect?.() !== true
+    ) {
+      return;
+    }
+    this.#disconnectedExpiryTimer = setTimeout(() => {
+      this.#disconnectedExpiryTimer = undefined;
+      if (
+        this.#disposed ||
+        this.#sessionReferences !== 0 ||
+        this.#ticketReferences === 0 ||
+        this.#inner?.shouldRetainAcrossReconnect?.() !== true
+      ) {
+        return;
+      }
+      this.#expireDisconnectedTickets?.();
+    }, this.#disconnectedGraceMs);
+    this.#disconnectedExpiryTimer.unref?.();
+  }
+
+  #cancelDisconnectedExpiry(): void {
+    if (!this.#disconnectedExpiryTimer) return;
+    clearTimeout(this.#disconnectedExpiryTimer);
+    this.#disconnectedExpiryTimer = undefined;
   }
 }
 
@@ -401,6 +452,7 @@ export class AuthenticatedGatewaySession implements GatewaySession {
     releaseResumeTickets?: (
       continuity: AuthenticatedGatewaySessionContinuity,
     ) => number;
+    disconnectedSideGraceMs?: number;
     runCredentialMutation?: CredentialMutationRunner;
     onCredentialsRecovered?: () => Promise<void> | void;
     assertAuthenticatedSessionCurrent?: () => Promise<void>;
@@ -467,6 +519,12 @@ export class AuthenticatedGatewaySession implements GatewaySession {
         this.#createInner,
         options.inner,
       );
+    if (options.releaseResumeTickets) {
+      this.#continuity.configureDisconnectedExpiry(
+        () => options.releaseResumeTickets?.(this.#continuity),
+        options.disconnectedSideGraceMs,
+      );
+    }
     this.#inner = this.#continuity.open();
   }
 
@@ -494,10 +552,13 @@ export class AuthenticatedGatewaySession implements GatewaySession {
           passwordEnabled: await this.#passwords?.hasPassword(),
         };
       }
-      case "auth/session/release": {
+      case GATEWAY_SESSION_RELEASE_METHOD: {
         if (!this.#authenticated)
           throw new Error("Passkey authentication required");
+        if (payload.version !== 1)
+          throw new Error("Unsupported page-session release version");
         return {
+          version: 1,
           released: this.#releaseResumeTickets?.(this.#continuity) ?? 0,
         };
       }

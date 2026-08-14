@@ -9,6 +9,7 @@ import {
 import {
   GATEWAY_CAPABILITIES,
   GATEWAY_CONTINUITY_ACK_METHOD,
+  GATEWAY_SESSION_RELEASE_METHOD,
   PROTOCOL_VERSION,
   RELAY_MESSAGE_TYPES,
   RELAY_PROTOCOL_VERSION,
@@ -1020,9 +1021,11 @@ export class GatewayClient {
     // returns. pagehide cannot await the response, but a normally closing or
     // refreshing page still gives the Agent an explicit chance to release its
     // retained Side subscription; transport loss keeps the ticket intact.
-    void this.request("auth/session/release", {}, { timeoutMs: 1_000 }).catch(
-      () => undefined,
-    );
+    void this.request(
+      GATEWAY_SESSION_RELEASE_METHOD,
+      { version: 1 },
+      { timeoutMs: 1_000 },
+    ).catch(() => undefined);
   }
 
   #invalidate(error: Error, closeSocket = true): void {
