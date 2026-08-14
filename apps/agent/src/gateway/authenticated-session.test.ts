@@ -36,6 +36,43 @@ describe("AuthenticatedGatewaySession", () => {
     expect(close).toHaveBeenCalledOnce();
   });
 
+  it("opens app-server live validation only for an ephemeral fork replay", async () => {
+    const registry = new AuthenticatedSessionRegistry();
+    const binding = sessionBinding();
+    const ticket = registry.issueResumeTicket(
+      registry.captureGeneration(),
+      binding,
+    )!;
+    const validateDurableResult = vi.fn(async () => undefined);
+    const createInner = vi.fn(async () => ({
+      request: async () => "unused",
+      validateDurableResult,
+    }));
+    const session = new AuthenticatedGatewaySession({
+      createInner,
+      passkeys: { count: vi.fn(async () => 1) } as unknown as PasskeyRegistry,
+      newlyPaired: false,
+      resumeToken: ticket,
+      resumeAuthenticatedSession: (token, revoke) =>
+        registry.resume(token, binding, revoke),
+    });
+
+    await session.validateDurableResult(
+      envelope("turn/start", { threadId: "thread-1" }),
+      { turn: { id: "turn-1" } },
+    );
+    expect(createInner).not.toHaveBeenCalled();
+
+    const forkRequest = envelope("thread/fork", {
+      threadId: "thread-1",
+      ephemeral: true,
+    });
+    const forkResult = { thread: { id: "side-1", ephemeral: true } };
+    await session.validateDurableResult(forkRequest, forkResult);
+    expect(createInner).toHaveBeenCalledOnce();
+    expect(validateDurableResult).toHaveBeenCalledWith(forkRequest, forkResult);
+  });
+
   it("gates Codex requests until a newly paired device registers a Passkey", async () => {
     const request = vi.fn(async () => "codex-result");
     const createInner = vi.fn(async () => ({ request }));
@@ -788,6 +825,9 @@ describe("AuthenticatedGatewaySession", () => {
         if (!token) continuity.releaseTicket();
         return token;
       },
+      releaseResumeTickets: (
+        continuity: AuthenticatedGatewaySessionContinuity,
+      ) => registry.releaseResumeTickets(continuity),
     };
     const first = new AuthenticatedGatewaySession({
       ...sessionOptions,
@@ -800,16 +840,10 @@ describe("AuthenticatedGatewaySession", () => {
     await expect(first.request(envelope("workspace/list", {}))).resolves.toBe(
       "shared",
     );
-    await first.close();
+    const staleTransportEvents: string[] = [];
+    first.onEvent((event) => staleTransportEvents.push(event.type));
 
     expect(closeInner).not.toHaveBeenCalled();
-    innerListener?.({
-      version: 1,
-      eventId: "side-gap-delta",
-      cursor: "1",
-      type: "item/agentMessage/delta",
-      payload: { threadId: "side-thread", delta: "during reconnect" },
-    });
     const resumed = new AuthenticatedGatewaySession({
       ...sessionOptions,
       resumeToken: authenticated.resumeToken,
@@ -817,6 +851,16 @@ describe("AuthenticatedGatewaySession", () => {
         throw new Error("resumed transport must reuse the original client");
       },
     });
+    // The valid resume has already displaced the old half-open transport, but
+    // the new encrypted handshake has not installed its listener yet.
+    innerListener?.({
+      version: 1,
+      eventId: "side-gap-delta",
+      cursor: "1",
+      type: "item/agentMessage/delta",
+      payload: { threadId: "side-thread", delta: "during reconnect" },
+    });
+    expect(staleTransportEvents).toEqual([]);
     const events: string[] = [];
     resumed.onEvent((event) => events.push(event.type));
     innerListener?.({
@@ -832,9 +876,20 @@ describe("AuthenticatedGatewaySession", () => {
     );
     expect(connectInner).toHaveBeenCalledOnce();
     expect(events).toEqual(["item/agentMessage/delta", "turn/completed"]);
+    await expect(first.request(envelope("workspace/list", {}))).rejects.toThrow(
+      "superseded",
+    );
+    await first.close();
 
-    await registry.revokeAll();
+    await expect(
+      resumed.request(envelope("auth/session/release", {})),
+    ).resolves.toEqual({ released: 1 });
+    expect(closeInner).not.toHaveBeenCalled();
+    await resumed.close();
     expect(closeInner).toHaveBeenCalledOnce();
+    expect(
+      registry.resume(authenticated.resumeToken, binding, vi.fn()),
+    ).toBeUndefined();
   });
 
   it("rejects an invalid resume ticket before invoking WebAuthn", () => {

@@ -998,6 +998,18 @@ export class GatewayClient {
     this.#invalidate(new Error("Host connection closed"));
   }
 
+  releasePageSession(): void {
+    if (!this.#resumeToken) return;
+    this.#resumeToken = undefined;
+    // request() encrypts and queues every frame synchronously before it
+    // returns. pagehide cannot await the response, but a normally closing or
+    // refreshing page still gives the Agent an explicit chance to release its
+    // retained Side subscription; transport loss keeps the ticket intact.
+    void this.request("auth/session/release", {}, { timeoutMs: 1_000 }).catch(
+      () => undefined,
+    );
+  }
+
   #invalidate(error: Error, closeSocket = true): void {
     if (!this.#usable) return;
     this.#usable = false;

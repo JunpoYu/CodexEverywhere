@@ -242,6 +242,16 @@ export class AuthenticatedSessionRegistry<TResumeMetadata = undefined> {
     await revoked;
   }
 
+  releaseResumeTickets(metadata: TResumeMetadata): number {
+    let released = 0;
+    for (const [digest, ticket] of [...this.#resumeTickets]) {
+      if (!Object.is(ticket.metadata, metadata)) continue;
+      this.#deleteResumeTicket(digest);
+      released += 1;
+    }
+    return released;
+  }
+
   #revokeAllNow(): void {
     this.#generation += 1;
     for (const digest of [...this.#resumeTickets.keys()])

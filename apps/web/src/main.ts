@@ -1160,6 +1160,9 @@ requiredElement("abandon-thread-start-outcome").addEventListener(
   abandonIndeterminateThreadStart,
 );
 window.addEventListener("beforeunload", warnBeforeUnresolvedMutationUnload);
+window.addEventListener("pagehide", (event) => {
+  if (!event.persisted) client?.releasePageSession();
+});
 sendMessage.addEventListener("click", () => void continueThread());
 queueMessage.addEventListener("click", () => void queueForThread());
 requiredElement("interrupt-turn").addEventListener(

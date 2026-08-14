@@ -240,6 +240,8 @@ export async function runAgentService(paths: HostPaths): Promise<void> {
               throw error;
             }
           },
+          releaseResumeTickets: (continuity) =>
+            authenticatedSessions.releaseResumeTickets(continuity),
           runCredentialMutation: (expectedGeneration, operation, options) =>
             authenticatedSessions.runCredentialMutation(
               expectedGeneration,

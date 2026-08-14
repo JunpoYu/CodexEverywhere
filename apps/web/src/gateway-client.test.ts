@@ -379,6 +379,37 @@ describe("ambiguous gateway request outcomes", () => {
     }
   });
 
+  it("sends an explicit page-session release before discarding its resume token", async () => {
+    vi.useFakeTimers();
+    const device = generateStaticKeyPair();
+    const hostIdentity = generateStaticKeyPair();
+    const simulation = simulatedHostWebSocket(hostIdentity);
+    vi.stubGlobal("WebSocket", simulation.WebSocketClass);
+    const client = await GatewayClient.connect({
+      id: "node-1",
+      name: "alice",
+      endpoint: "wss://hpc.example/gateway",
+      transport: "direct",
+      nodeId: "node-1",
+      userId: "unix:1000",
+      hostPublicKey: bytesToBase64Url(hostIdentity.publicKey),
+      hostFingerprint: `sha256:${"B".repeat(43)}`,
+      deviceId: "device-1",
+      deviceName: "Browser",
+      devicePublicKey: bytesToBase64Url(device.publicKey),
+      deviceSecretKey: bytesToBase64Url(device.secretKey),
+    });
+    expect(client.canReconnectSilently).toBe(true);
+
+    client.releasePageSession();
+
+    expect(client.canReconnectSilently).toBe(false);
+    expect(simulation.socket().lastRequest).toMatchObject({
+      method: "auth/session/release",
+    });
+    await vi.advanceTimersByTimeAsync(1_000);
+  });
+
   it("does not retry WebAuthn after visible reauthentication is cancelled", async () => {
     const device = generateStaticKeyPair();
     const hostIdentity = generateStaticKeyPair();

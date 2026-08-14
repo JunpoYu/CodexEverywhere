@@ -6,7 +6,7 @@
 
 ### Fixed
 
-- Agent 将存在 ephemeral Side 的 app-server 客户端绑定到页面内存中的认证恢复票据：Direct 或 Relay WebSocket 断开时只移交 Gateway 事件监听，不再关闭原 app-server 订阅；传输空窗内的事件进入有界内存缓冲，并在新握手回复后按顺序交付，因此静默恢复后的页面继续收到 Side 的增量、完成和审批事件。普通页面仍在断线后立即释放 app-server 客户端，票据撤销、设备撤销或淘汰后也会在最后一个活动传输退出时关闭保留连接，避免把所有登录票据变成长驻客户端。
+- Agent 将存在 ephemeral Side 的 app-server 客户端绑定到页面内存中的认证恢复票据：有效 silent resume 一开始就独占连续体并移除旧 transport 的 listener，即使旧 WebSocket 尚未报告 close，之后的事件也只会进入新 transport 或有界内存缓冲；Noise 握手回复后再按顺序交付，避免半开旧连接吞掉 Side 的增量、完成和审批事件。普通 durable mutation 的缓存成功不再为无须验证的方法冷启动 app-server。普通页面仍在断线后立即释放 app-server 客户端；页面正常刷新或关闭时还会在销毁内存 token 前发送加密的 `auth/session/release`，而网络断线和后台挂起不会触发释放。票据撤销、设备撤销、显式释放或淘汰后，会在最后一个活动 transport 退出时关闭保留连接。
 
 ## [0.3.0-alpha.11] - 2026-08-14
 

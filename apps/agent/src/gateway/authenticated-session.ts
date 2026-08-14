@@ -66,6 +66,7 @@ export class AuthenticatedGatewaySessionContinuity {
   #sessionReferences = 0;
   #ticketReferences = 0;
   #bufferedEventBytes = 0;
+  #activeHandleId = 0;
   #disposed = false;
 
   constructor(
@@ -85,15 +86,31 @@ export class AuthenticatedGatewaySessionContinuity {
     if (this.#disposed)
       throw new Error("Authenticated page session continuity was released");
     this.#sessionReferences += 1;
+    const handleId = ++this.#activeHandleId;
+    // A valid silent resume is an ownership transfer. Stop forwarding to the
+    // previous physical transport immediately, even if its half-open socket
+    // has not emitted close yet; events now enter the continuity buffer until
+    // the new transport installs its listener after the handshake reply.
+    this.#listeners.clear();
     let released = false;
+    const assertCurrent = (): void => {
+      if (released || handleId !== this.#activeHandleId)
+        throw new Error("Authenticated Gateway transport was superseded");
+    };
     return {
-      request: (request) =>
-        this.#ensureInner().then((inner) => inner.request(request)),
-      validateDurableResult: (request, result) =>
-        this.#ensureInner().then((inner) =>
+      request: (request) => {
+        assertCurrent();
+        return this.#ensureInner().then((inner) => inner.request(request));
+      },
+      validateDurableResult: (request, result) => {
+        assertCurrent();
+        return this.#ensureInner().then((inner) =>
           inner.validateDurableResult?.(request, result),
-        ),
+        );
+      },
       onEvent: (listener) => {
+        if (released || handleId !== this.#activeHandleId)
+          return () => undefined;
         this.#listeners.add(listener);
         this.#subscribeInner();
         if (this.#bufferedEvents.length > 0) {
@@ -269,6 +286,8 @@ export class AuthenticatedGatewaySession implements GatewaySession {
         continuity: AuthenticatedGatewaySessionContinuity,
       ) => string | undefined)
     | undefined;
+  readonly #releaseResumeTickets:
+    ((continuity: AuthenticatedGatewaySessionContinuity) => number) | undefined;
   readonly #runCredentialMutation: CredentialMutationRunner | undefined;
   readonly #onCredentialsRecovered: (() => Promise<void> | void) | undefined;
   readonly #assertAuthenticatedSessionCurrent:
@@ -332,6 +351,9 @@ export class AuthenticatedGatewaySession implements GatewaySession {
       expectedGeneration: number,
       continuity: AuthenticatedGatewaySessionContinuity,
     ) => string | undefined;
+    releaseResumeTickets?: (
+      continuity: AuthenticatedGatewaySessionContinuity,
+    ) => number;
     runCredentialMutation?: CredentialMutationRunner;
     onCredentialsRecovered?: () => Promise<void> | void;
     assertAuthenticatedSessionCurrent?: () => Promise<void>;
@@ -356,6 +378,7 @@ export class AuthenticatedGatewaySession implements GatewaySession {
       options.captureAuthenticationGeneration;
     this.#registerAuthenticatedSession = options.registerAuthenticatedSession;
     this.#issueResumeTicket = options.issueResumeTicket;
+    this.#releaseResumeTickets = options.releaseResumeTickets;
     this.#runCredentialMutation = options.runCredentialMutation;
     this.#onCredentialsRecovered = options.onCredentialsRecovered;
     this.#assertAuthenticatedSessionCurrent =
@@ -422,6 +445,13 @@ export class AuthenticatedGatewaySession implements GatewaySession {
           authenticated: this.#authenticated,
           registrationRequired: !hasPasskey && this.#newlyPaired,
           passwordEnabled: await this.#passwords?.hasPassword(),
+        };
+      }
+      case "auth/session/release": {
+        if (!this.#authenticated)
+          throw new Error("Passkey authentication required");
+        return {
+          released: this.#releaseResumeTickets?.(this.#continuity) ?? 0,
         };
       }
       case "auth/register/options": {
@@ -642,6 +672,8 @@ export class AuthenticatedGatewaySession implements GatewaySession {
   ): Promise<void> {
     if (this.#revoked || !this.#authenticated)
       throw new Error("Passkey authentication required");
+    const payload = asRecord(request.payload);
+    if (request.method !== "thread/fork" || payload.ephemeral !== true) return;
     await (await this.#ensureInner()).validateDurableResult?.(request, result);
   }
 

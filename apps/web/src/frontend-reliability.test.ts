@@ -301,6 +301,8 @@ describe("frontend reliability contracts", () => {
     expect(abandon).toContain("clearThreadStartSafetyMarker()");
     expect(mainSource).toContain('"beforeunload"');
     expect(mainSource).toContain("warnBeforeUnresolvedMutationUnload");
+    expect(mainSource).toContain('"pagehide"');
+    expect(mainSource).toContain("client?.releasePageSession()");
     const beforeUnload = mainSource.slice(
       mainSource.indexOf("function warnBeforeUnresolvedMutationUnload"),
       mainSource.indexOf("function renderIndeterminateThreadStart"),
