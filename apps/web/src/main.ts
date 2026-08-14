@@ -46,6 +46,7 @@ import {
   type ComposerOperationKind,
 } from "./composer-outcome.js";
 import { createCoalescedTask } from "./coalesced-task.js";
+import { prepareClientForBinding } from "./client-activation.js";
 import {
   CONNECTION_KEEPALIVE_INTERVAL_MS,
   CONNECTION_KEEPALIVE_TIMEOUT_MS,
@@ -1807,7 +1808,7 @@ async function runLoginButtonAction(
 }
 
 async function activate(nextClient: GatewayClient): Promise<void> {
-  await nextClient.enableSideContinuityAcknowledgements();
+  await prepareClientForBinding(nextClient);
   const reauthenticatedClient =
     temporaryReauthenticationClient?.host.deviceId === nextClient.host.deviceId
       ? temporaryReauthenticationClient
@@ -1973,6 +1974,11 @@ async function recoverConnection(previous: GatewayClient): Promise<void> {
         },
       });
       if (!nextClient) return;
+      if (client !== previous) {
+        nextClient.close();
+        return;
+      }
+      await prepareClientForBinding(nextClient);
       if (client !== previous) {
         nextClient.close();
         return;

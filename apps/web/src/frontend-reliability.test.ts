@@ -511,6 +511,10 @@ describe("frontend reliability contracts", () => {
       mainSource.indexOf("async function recoverConnection"),
       mainSource.indexOf("function activeThreadSnapshot"),
     );
+    expect(recovery).toContain("await prepareClientForBinding(nextClient)");
+    expect(
+      recovery.indexOf("await prepareClientForBinding(nextClient)"),
+    ).toBeLessThan(recovery.indexOf("bindActiveClient(nextClient)"));
     expect(recovery).toContain("bindActiveClient(nextClient)");
     expect(recovery).toContain("const thread = activeThreadSnapshot()");
     expect(recovery).not.toContain("await activate(nextClient)");
