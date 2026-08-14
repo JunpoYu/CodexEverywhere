@@ -412,6 +412,7 @@ describe("ambiguous gateway request outcomes", () => {
   });
 
   it("enables acknowledged continuity only when the Host advertises it", async () => {
+    vi.useFakeTimers();
     const device = generateStaticKeyPair();
     const hostIdentity = generateStaticKeyPair();
     const simulation = simulatedHostWebSocket(hostIdentity, {
@@ -440,6 +441,59 @@ describe("ambiguous gateway request outcomes", () => {
       method: "auth/session/events/enable",
       payload: { version: 1 },
     });
+    client.onEvent(() => undefined);
+    simulation.socket().deliverServerEnvelope({
+      version: 1,
+      eventId: "side-event-1",
+      cursor: "1",
+      type: "turn/started",
+      payload: { threadId: "side-1" },
+    });
+    await vi.advanceTimersByTimeAsync(50);
+    expect(simulation.socket().lastRequest).toMatchObject({
+      method: "auth/session/events/ack",
+      payload: { version: 1, eventId: "side-event-1" },
+    });
+    client.close();
+  });
+
+  it("does not send continuity acknowledgements to an older Agent", async () => {
+    vi.useFakeTimers();
+    const device = generateStaticKeyPair();
+    const hostIdentity = generateStaticKeyPair();
+    const simulation = simulatedHostWebSocket(hostIdentity, {
+      capabilities: [GATEWAY_CAPABILITIES.sideForkV1],
+    });
+    vi.stubGlobal("WebSocket", simulation.WebSocketClass);
+    const client = await GatewayClient.connect({
+      id: "node-1",
+      name: "alice",
+      endpoint: "wss://hpc.example/gateway",
+      transport: "direct",
+      nodeId: "node-1",
+      userId: "unix:1000",
+      hostPublicKey: bytesToBase64Url(hostIdentity.publicKey),
+      hostFingerprint: `sha256:${"B".repeat(43)}`,
+      deviceId: "device-1",
+      deviceName: "Browser",
+      devicePublicKey: bytesToBase64Url(device.publicKey),
+      deviceSecretKey: bytesToBase64Url(device.secretKey),
+    });
+    await expect(client.enableSideContinuityAcknowledgements()).resolves.toBe(
+      false,
+    );
+    const requestBeforeEvent = simulation.socket().lastRequest;
+    client.onEvent(() => undefined);
+    simulation.socket().deliverServerEnvelope({
+      version: 1,
+      eventId: "legacy-event",
+      cursor: "1",
+      type: "turn/started",
+      payload: { threadId: "side-1" },
+    });
+    await vi.advanceTimersByTimeAsync(100);
+
+    expect(simulation.socket().lastRequest).toBe(requestBeforeEvent);
     client.close();
   });
 

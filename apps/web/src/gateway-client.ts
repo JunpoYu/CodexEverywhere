@@ -189,6 +189,7 @@ export class GatewayClient {
   } = { delivered: new Set(), order: [] };
   #pendingAckEventId: string | undefined;
   #eventAckTimer: ReturnType<typeof setTimeout> | undefined;
+  #continuityAcknowledgementsEnabled = false;
   #reconnectMode: GatewayReconnectMode = "trusted-device";
   #resumeToken: string | undefined;
   #reauthenticationRequired = false;
@@ -661,6 +662,7 @@ export class GatewayClient {
     );
     if (result.version !== 1 || result.enabled !== true)
       throw new Error("Host returned an invalid continuity negotiation result");
+    this.#continuityAcknowledgementsEnabled = true;
     return true;
   }
 
@@ -1130,6 +1132,7 @@ export class GatewayClient {
   }
 
   #scheduleEventAcknowledgement(eventId: string): void {
+    if (!this.#continuityAcknowledgementsEnabled) return;
     this.#pendingAckEventId = eventId;
     if (this.#eventAckTimer) return;
     this.#eventAckTimer = setTimeout(() => {
