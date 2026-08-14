@@ -46,7 +46,10 @@ import {
   type ComposerOperationKind,
 } from "./composer-outcome.js";
 import { createCoalescedTask } from "./coalesced-task.js";
-import { prepareClientForBinding } from "./client-activation.js";
+import {
+  RetryableClientPreparationError,
+  prepareClientForBinding,
+} from "./client-activation.js";
 import {
   CONNECTION_KEEPALIVE_INTERVAL_MS,
   CONNECTION_KEEPALIVE_TIMEOUT_MS,
@@ -1956,9 +1959,19 @@ async function recoverConnection(previous: GatewayClient): Promise<void> {
       const nextClient = await reconnectWithUnlimitedAttempts({
         isCurrent: () => client === previous,
         canAttempt: () => !document.hidden || previous.canReconnectSilently,
-        reconnect: () =>
-          previous.reconnect({ canInteract: () => !document.hidden }),
+        reconnect: async () => {
+          const nextClient = await previous.reconnect({
+            canInteract: () => !document.hidden,
+          });
+          return prepareClientForBinding(nextClient, {
+            // A successful silent resume leaves the reusable ticket on the
+            // previous client. Transient ACK negotiation failures can safely
+            // close this transport and retry without reopening WebAuthn.
+            retryOnFailure: previous.canReconnectSilently,
+          });
+        },
         isRetryable: (error) =>
+          error instanceof RetryableClientPreparationError ||
           (document.hidden &&
             error instanceof GatewayReauthenticationRequired) ||
           isRetryableConnectionFailure(error),
@@ -1974,11 +1987,6 @@ async function recoverConnection(previous: GatewayClient): Promise<void> {
         },
       });
       if (!nextClient) return;
-      if (client !== previous) {
-        nextClient.close();
-        return;
-      }
-      await prepareClientForBinding(nextClient);
       if (client !== previous) {
         nextClient.close();
         return;

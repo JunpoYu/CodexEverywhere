@@ -1,6 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { prepareClientForBinding } from "./client-activation.js";
+import {
+  RetryableClientPreparationError,
+  prepareClientForBinding,
+} from "./client-activation.js";
 
 describe("prepareClientForBinding", () => {
   it("negotiates continuity acknowledgements before returning the client", async () => {
@@ -22,6 +25,21 @@ describe("prepareClientForBinding", () => {
     };
 
     await expect(prepareClientForBinding(client)).rejects.toBe(error);
+    expect(client.close).toHaveBeenCalledOnce();
+  });
+
+  it("classifies silent-resume negotiation failures for another attempt", async () => {
+    const cause = new Error("transient state-store failure");
+    const client = {
+      enableSideContinuityAcknowledgements: vi.fn().mockRejectedValue(cause),
+      close: vi.fn(),
+    };
+
+    const failure = await prepareClientForBinding(client, {
+      retryOnFailure: true,
+    }).catch((error: unknown) => error);
+    expect(failure).toBeInstanceOf(RetryableClientPreparationError);
+    expect((failure as Error).cause).toBe(cause);
     expect(client.close).toHaveBeenCalledOnce();
   });
 });

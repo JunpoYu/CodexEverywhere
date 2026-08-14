@@ -511,10 +511,13 @@ describe("frontend reliability contracts", () => {
       mainSource.indexOf("async function recoverConnection"),
       mainSource.indexOf("function activeThreadSnapshot"),
     );
-    expect(recovery).toContain("await prepareClientForBinding(nextClient)");
+    expect(recovery).toContain("return prepareClientForBinding(nextClient");
     expect(
-      recovery.indexOf("await prepareClientForBinding(nextClient)"),
-    ).toBeLessThan(recovery.indexOf("bindActiveClient(nextClient)"));
+      recovery.indexOf("return prepareClientForBinding(nextClient"),
+    ).toBeLessThan(recovery.indexOf("isRetryable:"));
+    expect(recovery).toContain(
+      "error instanceof RetryableClientPreparationError",
+    );
     expect(recovery).toContain("bindActiveClient(nextClient)");
     expect(recovery).toContain("const thread = activeThreadSnapshot()");
     expect(recovery).not.toContain("await activate(nextClient)");
@@ -530,9 +533,8 @@ describe("frontend reliability contracts", () => {
       adminSource.indexOf("function wakeAdminConnectionRecovery"),
     );
     for (const recovery of [userRecovery, adminRecovery]) {
-      expect(recovery).toContain(
-        "previous.reconnect({ canInteract: () => !document.hidden })",
-      );
+      expect(recovery).toContain("previous.reconnect(");
+      expect(recovery).toContain("canInteract: () => !document.hidden");
       expect(recovery).toContain(
         "document.hidden &&\n            error instanceof GatewayReauthenticationRequired",
       );
