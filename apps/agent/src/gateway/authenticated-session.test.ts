@@ -81,6 +81,7 @@ describe("AuthenticatedGatewaySession", () => {
       shouldRetainAcrossReconnect: () => true,
     }));
     continuity.retainTicket();
+    continuity.enableAcknowledgedDelivery();
     const first = continuity.open();
     const firstEvents: string[] = [];
     first.onEvent?.((event) => firstEvents.push(event.eventId));
@@ -121,6 +122,7 @@ describe("AuthenticatedGatewaySession", () => {
       shouldRetainAcrossReconnect: () => true,
     }));
     continuity.retainTicket();
+    continuity.enableAcknowledgedDelivery();
     const transport = continuity.open();
     const events: EventEnvelope[] = [];
     transport.onEvent?.((event) => events.push(event));
@@ -172,6 +174,71 @@ describe("AuthenticatedGatewaySession", () => {
     await resumed.close?.();
     await vi.advanceTimersByTimeAsync(100);
     expect(close).toHaveBeenCalledOnce();
+  });
+
+  it("expires a classified disconnected Side after its inner closes", async () => {
+    vi.useFakeTimers();
+    let notifyInnerClosed: (() => void) | undefined;
+    const expired = vi.fn();
+    const continuity = new AuthenticatedGatewaySessionContinuity(
+      async () => ({ request: async () => "unused" }),
+      {
+        request: async () => "side",
+        shouldRetainAcrossReconnect: () => true,
+        onClose: (listener) => {
+          notifyInnerClosed = listener;
+          return () => undefined;
+        },
+      },
+    );
+    continuity.retainTicket();
+    continuity.configureDisconnectedExpiry(() => {
+      expired();
+      continuity.releaseTicket();
+    }, 100);
+    const transport = continuity.open();
+    await transport.close?.();
+    notifyInnerClosed?.();
+
+    await vi.advanceTimersByTimeAsync(100);
+    expect(expired).toHaveBeenCalledOnce();
+  });
+
+  it("keeps legacy cached clients on consume-on-replay delivery", async () => {
+    let emit: ((event: EventEnvelope) => void) | undefined;
+    const continuity = new AuthenticatedGatewaySessionContinuity(async () => ({
+      request: async () => "ok",
+      onEvent: (listener: (event: EventEnvelope) => void) => {
+        emit = listener;
+        return () => undefined;
+      },
+      shouldRetainAcrossReconnect: () => true,
+    }));
+    continuity.retainTicket();
+    const first = continuity.open();
+    first.onEvent?.(() => undefined);
+    await first.request(envelope("workspace/list", {}));
+    const resumed = continuity.open();
+    emit?.({
+      version: 1,
+      eventId: "legacy-gap",
+      cursor: "1",
+      type: "turn/completed",
+      payload: { threadId: "side-1" },
+    });
+    const replayed: string[] = [];
+    resumed.onEvent?.((event) => replayed.push(event.eventId));
+    expect(replayed).toEqual(["legacy-gap"]);
+    expect(continuity.acknowledgeEvent("legacy-gap")).toBe(false);
+
+    const third = continuity.open();
+    const replayedAgain: string[] = [];
+    third.onEvent?.((event) => replayedAgain.push(event.eventId));
+    expect(replayedAgain).toEqual([]);
+    await first.close?.();
+    await resumed.close?.();
+    await third.close?.();
+    continuity.releaseTicket();
   });
 
   it("opens app-server live validation only for an ephemeral fork replay", async () => {
@@ -975,6 +1042,9 @@ describe("AuthenticatedGatewaySession", () => {
     const authenticated = (await first.request(
       envelope("auth/login/verify", { response: { id: "passkey" } }),
     )) as { resumeToken: string };
+    await expect(
+      first.request(envelope("auth/session/events/enable", { version: 1 })),
+    ).resolves.toEqual({ version: 1, enabled: true });
     await expect(first.request(envelope("workspace/list", {}))).resolves.toBe(
       "shared",
     );
@@ -1014,6 +1084,14 @@ describe("AuthenticatedGatewaySession", () => {
     );
     expect(connectInner).toHaveBeenCalledOnce();
     expect(events).toEqual(["item/agentMessage/delta", "turn/completed"]);
+    await expect(
+      resumed.request(
+        envelope("auth/session/events/ack", {
+          version: 1,
+          eventId: "side-completed",
+        }),
+      ),
+    ).resolves.toEqual({ version: 1, acknowledged: true });
     await expect(first.request(envelope("workspace/list", {}))).rejects.toThrow(
       "superseded",
     );

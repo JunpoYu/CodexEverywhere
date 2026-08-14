@@ -5,6 +5,7 @@ import type {
 import { randomUUID } from "node:crypto";
 import {
   GATEWAY_CONTINUITY_ACK_METHOD,
+  GATEWAY_CONTINUITY_ENABLE_METHOD,
   GATEWAY_CONTINUITY_OVERFLOW_EVENT,
   GATEWAY_SESSION_RELEASE_METHOD,
 } from "@codex-everywhere/protocol";
@@ -74,6 +75,8 @@ export class AuthenticatedGatewaySessionContinuity {
   #ticketReferences = 0;
   #bufferedEventBytes = 0;
   #overflowed = false;
+  #acknowledgedDeliveryEnabled = false;
+  #requiresDisconnectedExpiry = false;
   #activeHandleId = 0;
   #disconnectedExpiryTimer: ReturnType<typeof setTimeout> | undefined;
   #expireDisconnectedTickets: (() => void) | undefined;
@@ -87,9 +90,11 @@ export class AuthenticatedGatewaySessionContinuity {
     this.#createInner = createInner;
     if (initialInner) {
       this.#inner = initialInner;
-      this.#unsubscribeInnerClose = initialInner.onClose?.(() =>
-        this.#discardInner(initialInner),
-      );
+      this.#unsubscribeInnerClose = initialInner.onClose?.(() => {
+        if (initialInner.shouldRetainAcrossReconnect?.() === true)
+          this.#requiresDisconnectedExpiry = true;
+        this.#discardInner(initialInner);
+      });
     }
   }
 
@@ -126,7 +131,11 @@ export class AuthenticatedGatewaySessionContinuity {
         this.#listeners.add(listener);
         this.#subscribeInner();
         if (this.#bufferedEvents.length > 0) {
-          for (const { event } of this.#bufferedEvents) listener(event);
+          const buffered = this.#acknowledgedDeliveryEnabled
+            ? this.#bufferedEvents
+            : this.#bufferedEvents.splice(0);
+          if (!this.#acknowledgedDeliveryEnabled) this.#bufferedEventBytes = 0;
+          for (const { event } of buffered) listener(event);
         }
         return () => this.#listeners.delete(listener);
       },
@@ -164,6 +173,10 @@ export class AuthenticatedGatewaySessionContinuity {
     this.#scheduleDisconnectedExpiryIfRequired();
   }
 
+  enableAcknowledgedDelivery(): void {
+    this.#acknowledgedDeliveryEnabled = true;
+  }
+
   async #ensureInner(): Promise<GatewaySession> {
     if (this.#disposed)
       throw new Error("Authenticated page session continuity was released");
@@ -178,9 +191,11 @@ export class AuthenticatedGatewaySessionContinuity {
             );
           }
           this.#inner = inner;
-          this.#unsubscribeInnerClose = inner.onClose?.(() =>
-            this.#discardInner(inner),
-          );
+          this.#unsubscribeInnerClose = inner.onClose?.(() => {
+            if (inner.shouldRetainAcrossReconnect?.() === true)
+              this.#requiresDisconnectedExpiry = true;
+            this.#discardInner(inner);
+          });
           this.#subscribeInner();
           // The transport may have closed while createInner() was pending.
           // Re-run the lifetime decision after installation so an ordinary
@@ -204,6 +219,25 @@ export class AuthenticatedGatewaySessionContinuity {
       if (this.#overflowed) return;
       if (this.#inner?.shouldRetainAcrossReconnect?.() !== true) {
         for (const listener of this.#listeners) listener(event);
+        return;
+      }
+      this.#requiresDisconnectedExpiry = true;
+      if (!this.#acknowledgedDeliveryEnabled) {
+        if (this.#listeners.size > 0) {
+          for (const listener of this.#listeners) listener(event);
+          return;
+        }
+        const bytes = Buffer.byteLength(JSON.stringify(event), "utf8");
+        this.#bufferedEvents.push({ event, bytes });
+        this.#bufferedEventBytes += bytes;
+        while (
+          this.#bufferedEvents.length > MAX_CONTINUITY_BUFFERED_EVENTS ||
+          this.#bufferedEventBytes > MAX_CONTINUITY_BUFFERED_EVENT_BYTES
+        ) {
+          const removed = this.#bufferedEvents.shift();
+          if (!removed) break;
+          this.#bufferedEventBytes -= removed.bytes;
+        }
         return;
       }
       const bytes = Buffer.byteLength(JSON.stringify(event), "utf8");
@@ -243,6 +277,7 @@ export class AuthenticatedGatewaySessionContinuity {
   }
 
   acknowledgeEvent(eventId: string): boolean {
+    if (!this.#acknowledgedDeliveryEnabled) return false;
     const index = this.#bufferedEvents.findIndex(
       ({ event }) => event.eventId === eventId,
     );
@@ -329,13 +364,15 @@ export class AuthenticatedGatewaySessionContinuity {
   }
 
   #scheduleDisconnectedExpiryIfRequired(): void {
+    if (this.#inner?.shouldRetainAcrossReconnect?.() === true)
+      this.#requiresDisconnectedExpiry = true;
     if (
       this.#disposed ||
       this.#disconnectedExpiryTimer ||
       this.#sessionReferences !== 0 ||
       this.#ticketReferences === 0 ||
       !this.#expireDisconnectedTickets ||
-      this.#inner?.shouldRetainAcrossReconnect?.() !== true
+      !this.#requiresDisconnectedExpiry
     ) {
       return;
     }
@@ -344,8 +381,7 @@ export class AuthenticatedGatewaySessionContinuity {
       if (
         this.#disposed ||
         this.#sessionReferences !== 0 ||
-        this.#ticketReferences === 0 ||
-        this.#inner?.shouldRetainAcrossReconnect?.() !== true
+        this.#ticketReferences === 0
       ) {
         return;
       }
@@ -574,8 +610,17 @@ export class AuthenticatedGatewaySession implements GatewaySession {
           throw new Error("Invalid continuity event acknowledgement");
         }
         return {
+          version: 1,
           acknowledged: this.#continuity.acknowledgeEvent(payload.eventId),
         };
+      }
+      case GATEWAY_CONTINUITY_ENABLE_METHOD: {
+        if (!this.#authenticated)
+          throw new Error("Passkey authentication required");
+        if (payload.version !== 1)
+          throw new Error("Unsupported continuity acknowledgement version");
+        this.#continuity.enableAcknowledgedDelivery();
+        return { version: 1, enabled: true };
       }
       case "auth/register/options": {
         const recoveryAuthorization = !this.#authenticated

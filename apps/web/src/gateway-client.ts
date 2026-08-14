@@ -9,6 +9,7 @@ import {
 import {
   GATEWAY_CAPABILITIES,
   GATEWAY_CONTINUITY_ACK_METHOD,
+  GATEWAY_CONTINUITY_ENABLE_METHOD,
   GATEWAY_SESSION_RELEASE_METHOD,
   PROTOCOL_VERSION,
   RELAY_MESSAGE_TYPES,
@@ -649,6 +650,18 @@ export class GatewayClient {
     capability: (typeof GATEWAY_CAPABILITIES)[keyof typeof GATEWAY_CAPABILITIES],
   ): boolean {
     return this.capabilities.has(capability);
+  }
+
+  async enableSideContinuityAcknowledgements(): Promise<boolean> {
+    if (!this.supportsCapability(GATEWAY_CAPABILITIES.sideContinuityAckV1))
+      return false;
+    const result = await this.request<{ version: unknown; enabled: unknown }>(
+      GATEWAY_CONTINUITY_ENABLE_METHOD,
+      { version: 1 },
+    );
+    if (result.version !== 1 || result.enabled !== true)
+      throw new Error("Host returned an invalid continuity negotiation result");
+    return true;
   }
 
   async #authenticate(

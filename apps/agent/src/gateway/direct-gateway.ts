@@ -374,7 +374,10 @@ class GatewayConnection {
           ok: true,
           version: PROTOCOL_VERSION,
           principal: this.#options.principal ?? "user",
-          capabilities: [GATEWAY_CAPABILITIES.sideForkV1],
+          capabilities: [
+            GATEWAY_CAPABILITIES.sideForkV1,
+            GATEWAY_CAPABILITIES.sideContinuityAckV1,
+          ],
           ...(this.#options.loginName
             ? { loginName: this.#options.loginName }
             : {}),

@@ -1807,6 +1807,7 @@ async function runLoginButtonAction(
 }
 
 async function activate(nextClient: GatewayClient): Promise<void> {
+  await nextClient.enableSideContinuityAcknowledgements();
   const reauthenticatedClient =
     temporaryReauthenticationClient?.host.deviceId === nextClient.host.deviceId
       ? temporaryReauthenticationClient

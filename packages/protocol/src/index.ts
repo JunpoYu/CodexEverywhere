@@ -39,6 +39,8 @@ export type EventEnvelope<T = unknown> = {
 };
 
 export const GATEWAY_CONTINUITY_ACK_METHOD = "auth/session/events/ack" as const;
+export const GATEWAY_CONTINUITY_ENABLE_METHOD =
+  "auth/session/events/enable" as const;
 export const GATEWAY_SESSION_RELEASE_METHOD = "auth/session/release" as const;
 export const GATEWAY_CONTINUITY_OVERFLOW_EVENT =
   "gateway/session/continuity-overflow" as const;
@@ -46,6 +48,20 @@ export const GATEWAY_CONTINUITY_OVERFLOW_EVENT =
 export type GatewayContinuityAckRequest = {
   version: 1;
   eventId: string;
+};
+
+export type GatewayContinuityAckResponse = {
+  version: 1;
+  acknowledged: boolean;
+};
+
+export type GatewayContinuityEnableRequest = {
+  version: 1;
+};
+
+export type GatewayContinuityEnableResponse = {
+  version: 1;
+  enabled: true;
 };
 
 export type GatewayContinuityOverflowPayload = {
@@ -208,6 +224,7 @@ export type GatewayHandshakeAccepted = {
 
 export const GATEWAY_CAPABILITIES = {
   sideForkV1: "side-fork-v1",
+  sideContinuityAckV1: "side-continuity-ack-v1",
 } as const;
 
 export type GatewayHandshakeRejected = {
