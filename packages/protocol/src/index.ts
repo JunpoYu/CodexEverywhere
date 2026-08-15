@@ -42,6 +42,7 @@ export const GATEWAY_CONTINUITY_ACK_METHOD = "auth/session/events/ack" as const;
 export const GATEWAY_CONTINUITY_ENABLE_METHOD =
   "auth/session/events/enable" as const;
 export const GATEWAY_SESSION_RELEASE_METHOD = "auth/session/release" as const;
+export const SIDE_SESSION_RELEASE_METHOD = "side/session/release" as const;
 export const GATEWAY_CONTINUITY_OVERFLOW_EVENT =
   "gateway/session/continuity-overflow" as const;
 
@@ -77,6 +78,16 @@ export type GatewaySessionReleaseRequest = {
 export type GatewaySessionReleaseResponse = {
   version: 1;
   released: number;
+};
+
+export type SideSessionReleaseRequest = {
+  version: 1;
+  threadId: string;
+};
+
+export type SideSessionReleaseResponse = {
+  version: 1;
+  released: true;
 };
 
 export const CODEX_INSTALL_PROGRESS_EVENT =
@@ -225,6 +236,7 @@ export type GatewayHandshakeAccepted = {
 export const GATEWAY_CAPABILITIES = {
   sideForkV1: "side-fork-v1",
   sideContinuityAckV1: "side-continuity-ack-v1",
+  sideSessionControlV1: "side-session-control-v1",
 } as const;
 
 export type GatewayHandshakeRejected = {

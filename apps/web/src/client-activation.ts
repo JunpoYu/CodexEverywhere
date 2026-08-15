@@ -3,6 +3,15 @@ export interface ContinuityNegotiatingClient {
   close(): void;
 }
 
+export class ClientActivationEpoch {
+  #generation = 0;
+
+  begin(): { isCurrent: () => boolean } {
+    const generation = ++this.#generation;
+    return { isCurrent: () => generation === this.#generation };
+  }
+}
+
 export class RetryableClientPreparationError extends Error {
   constructor(cause: unknown) {
     super(

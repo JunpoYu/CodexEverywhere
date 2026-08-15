@@ -21,6 +21,7 @@ import {
   GATEWAY_CAPABILITIES,
   GATEWAY_CONTINUITY_OVERFLOW_EVENT,
   IDEMPOTENCY_OUTCOME_INDETERMINATE,
+  SIDE_SESSION_RELEASE_METHOD,
   type CodexAuthImportResult,
   type CodexVersionStatus,
   type EventEnvelope,
@@ -47,6 +48,7 @@ import {
 } from "./composer-outcome.js";
 import { createCoalescedTask } from "./coalesced-task.js";
 import {
+  ClientActivationEpoch,
   RetryableClientPreparationError,
   prepareClientForBinding,
 } from "./client-activation.js";
@@ -89,10 +91,14 @@ import {
 } from "./session-controls.js";
 import { savedHostDisplayName, savedHostLoginName } from "./saved-host-view.js";
 import {
+  canAbandonSideOutcome,
   offersSideCommandCompletion,
   parseWebComposerCommand,
+  sideMayStillBeRunning,
   sideRecoveryDisposition,
+  sideSnapshotUpdateMode,
   sideVisibleTurns,
+  supportsSafeSide,
 } from "./side-command.js";
 import { deleteHost, listHosts, saveHost, type SavedHost } from "./storage.js";
 import {
@@ -241,6 +247,7 @@ type ThreadRuntimeSettings = {
 };
 
 type ActiveSideSession = {
+  lifecycle: "live" | "control-only";
   threadId: string;
   parent: ThreadSummary;
   inheritedThroughTurnId: string;
@@ -327,6 +334,7 @@ let lastRealtimeEventAt = 0;
 let activeThreadSettings: ThreadRuntimeSettings | undefined;
 let activeThreadTokenUsage: ThreadTokenUsage | undefined;
 let activeSideSession: ActiveSideSession | undefined;
+const clientActivationEpoch = new ClientActivationEpoch();
 let threadSettingsPendingNextTurn = false;
 let directoryPickerTarget: "session" | "workspace" = "session";
 let directoryBrowseState: WorkspaceBrowseResponse | undefined;
@@ -1053,7 +1061,7 @@ requiredElement("retry-side-fork-outcome").addEventListener(
 );
 requiredElement("abandon-side-fork-outcome").addEventListener(
   "click",
-  abandonPendingSideForkOperation,
+  () => void abandonPendingSideForkOperation(),
 );
 requiredElement("complete-side-command").addEventListener("click", () => {
   completeSideCommand();
@@ -1812,11 +1820,12 @@ async function runLoginButtonAction(
 
 async function prepareAuthenticatedClientForActivation(
   initialClient: GatewayClient,
-): Promise<GatewayClient> {
+  isCurrent: () => boolean,
+): Promise<GatewayClient | undefined> {
   let candidate = initialClient;
   let firstAttempt = true;
   const prepared = await reconnectWithUnlimitedAttempts({
-    isCurrent: () => true,
+    isCurrent,
     canAttempt: () => true,
     reconnect: async () => {
       if (firstAttempt) firstAttempt = false;
@@ -1838,12 +1847,22 @@ async function prepareAuthenticatedClientForActivation(
       );
     },
   });
-  if (!prepared) throw new Error("Client activation was superseded");
+  if (!prepared) candidate.close();
   return prepared;
 }
 
 async function activate(nextClient: GatewayClient): Promise<void> {
-  nextClient = await prepareAuthenticatedClientForActivation(nextClient);
+  const activation = clientActivationEpoch.begin();
+  const prepared = await prepareAuthenticatedClientForActivation(
+    nextClient,
+    activation.isCurrent,
+  );
+  if (!prepared) return;
+  if (!activation.isCurrent()) {
+    prepared.close();
+    return;
+  }
+  nextClient = prepared;
   const reauthenticatedClient =
     temporaryReauthenticationClient?.host.deviceId === nextClient.host.deviceId
       ? temporaryReauthenticationClient
@@ -1900,7 +1919,8 @@ async function activate(nextClient: GatewayClient): Promise<void> {
   requiredElement("add-passkey-button").hidden = false;
   requiredElement("set-password-button").hidden = false;
   requiredElement("settings-button").hidden = false;
-  await continueAfterHostAuthentication();
+  await continueAfterHostAuthentication(nextClient, activation.isCurrent);
+  if (!activation.isCurrent() || client !== nextClient) return;
   if (client === nextClient && sideToRestore?.session && sideToRestore.thread) {
     const restored = await openThread(sideToRestore.thread, {
       preserveTimeline: true,
@@ -2105,15 +2125,28 @@ async function returnFromUnavailableSide(
     activeThreadId !== expectedSide.threadId
   )
     return;
-  if (
-    options.reason === "side-continuity-overflow" &&
-    (activeThreadStatus?.type === "active" || activeTurnId)
-  ) {
+  if (options.reason === "side-continuity-overflow") {
+    expectedSide.lifecycle = "control-only";
+    markUnavailableSideOperationsForReview(
+      expectedSide.threadId,
+      "side-continuity-overflow",
+    );
+    renderSideSessionChrome();
+    updateComposerSubmitAvailability();
+  }
+  const possiblyActive = sideMayStillBeRunning({
+    statusActive: activeThreadStatus?.type === "active",
+    ...(activeTurnId ? { turnId: activeTurnId } : {}),
+    pendingMutation: hasPendingComposerOperationForThread(
+      expectedSide.threadId,
+    ),
+  });
+  if (options.reason === "side-continuity-overflow" && possiblyActive) {
     const currentClient = client;
     const turnId = activeTurnId;
     if (!currentClient || !turnId) {
       showToast(
-        "Side 事件已不完整，但无法确认活动任务已停止；已保留 Side 控制界面",
+        "Side 事件已不完整，且原发送可能仍在运行；已进入仅控制模式，不会丢弃 Side",
         "error",
       );
       return;
@@ -2137,10 +2170,25 @@ async function returnFromUnavailableSide(
     )
       return;
   }
-  markUnavailableSideOperationsForReview(
-    expectedSide.threadId,
-    options.reason ?? "side-unavailable",
-  );
+  if (options.reason !== "side-continuity-overflow") {
+    markUnavailableSideOperationsForReview(
+      expectedSide.threadId,
+      options.reason ?? "side-unavailable",
+    );
+  }
+  if (options.reason === "side-continuity-overflow") {
+    const currentClient = client;
+    if (
+      !currentClient ||
+      !(await releaseSideSubscription(expectedSide, currentClient))
+    ) {
+      showToast(
+        "Side 已进入仅控制模式，但尚未确认释放；已保留控制入口并等待重试",
+        "error",
+      );
+      return;
+    }
+  }
   stopThreadSync();
   activeSideSession = undefined;
   renderSideSessionChrome();
@@ -2237,11 +2285,15 @@ function showHostReauthentication(
   window.setTimeout(() => loginPasswordInput.focus(), 0);
 }
 
-async function continueAfterHostAuthentication(): Promise<void> {
-  if (!client) return;
+async function continueAfterHostAuthentication(
+  targetClient: GatewayClient | undefined = client,
+  isCurrent: () => boolean = () => client === targetClient,
+): Promise<void> {
+  if (!targetClient || !isCurrent()) return;
   try {
     provisioning.hidden = true;
-    const status = await client.request<SetupStatus>("setup/status", {});
+    const status = await targetClient.request<SetupStatus>("setup/status", {});
+    if (!isCurrent() || client !== targetClient) return;
     provisionStatus = status;
     networkMode.value = status.networkMode;
     renderNetworkFields();
@@ -2256,8 +2308,9 @@ async function continueAfterHostAuthentication(): Promise<void> {
       showProvisionStep("install");
       return;
     }
-    await continueToCodexAccount();
+    await continueToCodexAccount(targetClient, isCurrent);
   } catch (error) {
+    if (!isCurrent() || client !== targetClient) return;
     provisioning.hidden = false;
     requiredElement("provision-error").textContent = errorMessage(error);
   }
@@ -2839,9 +2892,16 @@ async function continueAfterCodexCheck(): Promise<void> {
   }
 }
 
-async function continueToCodexAccount(): Promise<void> {
-  if (!client) return;
-  const account = await client.request<AccountStatus>("codex/account/read", {});
+async function continueToCodexAccount(
+  targetClient: GatewayClient | undefined = client,
+  isCurrent: () => boolean = () => client === targetClient,
+): Promise<void> {
+  if (!targetClient || !isCurrent()) return;
+  const account = await targetClient.request<AccountStatus>(
+    "codex/account/read",
+    {},
+  );
+  if (!isCurrent() || client !== targetClient) return;
   if (!account.account && account.requiresOpenaiAuth) {
     provisioning.hidden = false;
     loginCodexButton.hidden = false;
@@ -2852,7 +2912,7 @@ async function continueToCodexAccount(): Promise<void> {
     showProvisionStep("login");
     return;
   }
-  await enterWorkspace(account.account);
+  await enterWorkspace(account.account, targetClient, isCurrent);
 }
 
 async function loginCodex(): Promise<void> {
@@ -3133,7 +3193,10 @@ function failCodexLogin(message: string): void {
 
 async function enterWorkspace(
   account: AccountStatus["account"],
+  targetClient: GatewayClient | undefined = client,
+  isCurrent: () => boolean = () => client === targetClient,
 ): Promise<void> {
+  if (!targetClient || !isCurrent() || client !== targetClient) return;
   provisioning.hidden = true;
   workspace.hidden = false;
   workspace.classList.remove("thread-open");
@@ -3141,8 +3204,6 @@ async function enterWorkspace(
   if (account?.email) {
     appendTimeline("system", "Codex 已登录", account.email);
   }
-  const targetClient = client;
-  if (!targetClient) return;
   await Promise.all([
     refresh(),
     loadSessionPermissionDefaults(targetClient).catch(() => {
@@ -3150,6 +3211,7 @@ async function enterWorkspace(
       // fallback remains visible until the Agent is upgraded.
     }),
   ]);
+  if (!isCurrent() || client !== targetClient) return;
   if (pendingThreadStartOperation) void resumePendingThreadStartOperation();
   if (pendingSideForkOperation) void resumePendingSideForkOperation();
   if (pendingComposerOperations.size > 0)
@@ -3830,9 +3892,43 @@ async function returnToSideParent(): Promise<void> {
     showToast("请先结束 Side 回复并确认待处理消息，再返回主会话", "error");
     return;
   }
+  const currentClient = client;
+  if (!currentClient || !(await releaseSideSubscription(side, currentClient))) {
+    showToast("无法确认 Side 已释放；已保留当前支线，请重试", "error");
+    return;
+  }
   activeSideSession = undefined;
   renderSideSessionChrome();
   await openThread(side.parent);
+}
+
+async function releaseSideSubscription(
+  side: ActiveSideSession,
+  targetClient: GatewayClient,
+): Promise<boolean> {
+  try {
+    const result = await targetClient.request<{
+      version: unknown;
+      released: unknown;
+    }>(SIDE_SESSION_RELEASE_METHOD, {
+      version: 1,
+      threadId: side.threadId,
+    });
+    if (result.version !== 1 || result.released !== true)
+      throw new Error("Host returned an invalid Side release result");
+    return client === targetClient && activeSideSession === side;
+  } catch {
+    return false;
+  }
+}
+
+function clientSupportsSafeSide(targetClient: GatewayClient): boolean {
+  return supportsSafeSide({
+    fork: targetClient.supportsCapability(GATEWAY_CAPABILITIES.sideForkV1),
+    sessionControl: targetClient.supportsCapability(
+      GATEWAY_CAPABILITIES.sideSessionControlV1,
+    ),
+  });
 }
 
 function renderSideSessionChrome(): void {
@@ -3840,20 +3936,42 @@ function renderSideSessionChrome(): void {
   const banner = requiredElement("side-session-banner");
   banner.hidden = !side;
   conversationContent.classList.toggle("side-session-active", Boolean(side));
+  conversationContent.classList.toggle(
+    "side-session-control-only",
+    side?.lifecycle === "control-only",
+  );
   requiredElement("thread-kind-label").textContent = side
-    ? "Side conversation · 临时"
+    ? side.lifecycle === "control-only"
+      ? "Side control only · 需核对"
+      : "Side conversation · 临时"
     : "Codex session";
   if (side) {
     const parentTitle =
       (side.parent.name ?? side.parent.preview) || side.parent.id;
     requiredElement("side-session-parent").textContent =
-      `继承自「${parentTitle}」`;
+      side.lifecycle === "control-only"
+        ? `继承自「${parentTitle}」· 事件不完整，仅保留停止与返回控制`
+        : `继承自「${parentTitle}」`;
   }
   messageInput.placeholder = side
-    ? "在 Side 临时支线中继续提问…"
-    : client?.supportsCapability(GATEWAY_CAPABILITIES.sideForkV1)
+    ? side.lifecycle === "control-only"
+      ? "Side 事件不完整，已停止继续发送"
+      : "在 Side 临时支线中继续提问…"
+    : client && clientSupportsSafeSide(client)
       ? "给 Codex 发送消息，或输入 /side 开启临时支线…"
       : "给 Codex 发送消息…";
+  messageInput.readOnly = side?.lifecycle === "control-only";
+  messageInput.setAttribute(
+    "aria-readonly",
+    String(side?.lifecycle === "control-only"),
+  );
+  const returnButton = requiredElement<HTMLButtonElement>("return-from-side");
+  const unresolvedSide =
+    side?.lifecycle === "control-only" &&
+    (activeThreadStatus?.type === "active" ||
+      hasPendingComposerOperationForThread(side.threadId));
+  returnButton.disabled = Boolean(unresolvedSide);
+  returnButton.textContent = unresolvedSide ? "先停止并核对" : "返回主会话";
   renderSideCommandCompletion();
 }
 
@@ -3862,7 +3980,8 @@ function renderSideCommandCompletion(): void {
     Boolean(activeThreadId) &&
     !activeSideSession &&
     !messageInput.disabled &&
-    client?.supportsCapability(GATEWAY_CAPABILITIES.sideForkV1) === true &&
+    client !== undefined &&
+    clientSupportsSafeSide(client) &&
     offersSideCommandCompletion(messageInput.value);
   sideCommandCompletion.hidden = !visible;
   messageInput.setAttribute("aria-expanded", String(visible));
@@ -3955,6 +4074,17 @@ async function openThread(
   }
   const currentClient = client;
   if (!currentClient) return false;
+  const sideBeingLeft =
+    activeSideSession && activeSideSession.threadId !== thread.id
+      ? activeSideSession
+      : undefined;
+  if (
+    sideBeingLeft &&
+    !(await releaseSideSubscription(sideBeingLeft, currentClient))
+  ) {
+    showToast("无法确认 Side 已释放；已保留当前支线，请重试", "error");
+    return false;
+  }
   if (activeSideSession?.threadId !== thread.id) activeSideSession = undefined;
   const openingSide = activeSideSession;
   const previousThreadId = activeThreadId;
@@ -3996,7 +4126,11 @@ async function openThread(
   conversationOutlineView.setThreadActive(true);
   jumpToLatestButton.hidden = true;
   try {
-    if (previousThreadId && previousThreadId !== thread.id) {
+    if (
+      previousThreadId &&
+      previousThreadId !== thread.id &&
+      previousThreadId !== sideBeingLeft?.threadId
+    ) {
       await unsubscribeThread(previousThreadId, currentClient);
     }
     await waitForThreadUnsubscribe(thread.id);
@@ -4040,13 +4174,26 @@ async function openThread(
       : undefined;
     activeHistoryMode = history.paged ? "paged" : "legacy";
     setThreadStatus(detail.thread.status);
-    timelineView.renderSnapshot(
-      {
-        ...detail,
-        thread: { ...detail.thread, turns: visibleTurns },
-      },
-      { hasOlderHistory: Boolean(activeHistoryNextCursor) },
-    );
+    const visibleDetail = {
+      ...detail,
+      thread: { ...detail.thread, turns: visibleTurns },
+    };
+    if (
+      sideSnapshotUpdateMode({
+        preserveTimeline: options.preserveTimeline === true,
+        openingSide: Boolean(openingSide),
+      }) === "merge"
+    ) {
+      // ACKed Side deltas live only in this page's DOM. Replacing the timeline
+      // with an ephemeral status snapshot would erase the already-confirmed
+      // prefix of an in-progress response during a transport swap.
+      timelineView.mergeRecentTurns(visibleTurns);
+      timelineView.setHasOlderHistory(false);
+    } else {
+      timelineView.renderSnapshot(visibleDetail, {
+        hasOlderHistory: Boolean(activeHistoryNextCursor),
+      });
+    }
     activeThreadSettings = {
       model: detail.model,
       effort: detail.reasoningEffort,
@@ -4693,10 +4840,14 @@ function updateComposerSubmitAvailability(): void {
     Boolean(pendingSideForkOperation) ||
     outcomePending ||
     inFlightComposerOperations.size > 0 ||
+    activeSideSession?.lifecycle === "control-only" ||
     (Boolean(activeSideSession) && activeThreadStatus?.type === "active") ||
     messageInput.disabled;
   sendMessage.disabled = unavailable;
   queueMessage.disabled = unavailable;
+  if (activeSideSession?.lifecycle === "control-only") {
+    renderSideSessionChrome();
+  }
 }
 
 function updateMutationOutcomePendingState(): void {
@@ -4724,6 +4875,10 @@ async function submitComposerMessage(forceQueue: boolean): Promise<void> {
   const targetClient = client;
   const threadId = activeThreadId;
   if (!targetClient || !threadId || composerSubmitting || !text) return;
+  if (activeSideSession?.lifecycle === "control-only") {
+    showToast("Side 事件已经不完整，仅可停止任务或返回主会话", "error");
+    return;
+  }
   const command = parseWebComposerCommand(rawText);
   if (command.kind === "invalid-side") {
     showToast("用法：/side <你想在临时支线中询问的问题>", "error");
@@ -4823,7 +4978,7 @@ async function startSideConversation(prompt: string): Promise<void> {
   const targetClient = client;
   const parent = activeThreadSnapshot();
   if (!targetClient || !parent) return;
-  if (!targetClient.supportsCapability(GATEWAY_CAPABILITIES.sideForkV1)) {
+  if (!clientSupportsSafeSide(targetClient)) {
     showToast("当前 Agent 版本不支持 Side；请先完成 Agent 升级", "error");
     return;
   }
@@ -4905,7 +5060,7 @@ async function resumePendingSideForkOperation(): Promise<void> {
             await recoverConnection(failedClient);
             if (!client || client === failedClient)
               throw new Error("Host connection has not recovered yet");
-            if (!client.supportsCapability(GATEWAY_CAPABILITIES.sideForkV1)) {
+            if (!clientSupportsSafeSide(client)) {
               throw new SideCapabilityUnavailableAfterRecovery(
                 "The recovered Agent does not advertise bounded Side support",
               );
@@ -4969,6 +5124,7 @@ async function completeSideForkOperation(
   try {
     assertSideForkResponse(fork, operation);
     activeSideSession = {
+      lifecycle: "live",
       threadId: fork.thread.id,
       parent: operation.parent,
       inheritedThroughTurnId: operation.inheritedThroughTurnId,
@@ -5066,28 +5222,48 @@ function renderPendingSideForkOperation(): void {
       : "Side 创建结果尚未确认。系统会保留原操作编号继续确认，不会用新编号重复分叉。";
   requiredElement<HTMLButtonElement>("retry-side-fork-outcome").disabled =
     operation.manualReviewRequired || Boolean(sideForkReconciliation);
-  requiredElement<HTMLButtonElement>("abandon-side-fork-outcome").disabled =
+  const abandon = requiredElement<HTMLButtonElement>(
+    "abandon-side-fork-outcome",
+  );
+  abandon.textContent = "安全放弃并重新登录";
+  abandon.disabled =
     !operation.outcomeUnknown || Boolean(sideForkReconciliation);
 }
 
-function abandonPendingSideForkOperation(): void {
+async function abandonPendingSideForkOperation(): Promise<void> {
   const operation = pendingSideForkOperation;
-  if (!operation) return;
+  const targetClient = client;
+  if (!operation || !targetClient) return;
   if (!operation.outcomeUnknown || sideForkReconciliation) {
     showToast("Side 创建请求仍在执行，暂时不能放弃", "error");
     return;
   }
   if (
     !window.confirm(
-      "只有在确认可以承担重复 Side 风险后才应放弃。确定清除这条待确认记录吗？",
+      "无法证明临时支线是否已经创建。为确保没有不可见的 Side 继续占用会话，放弃将释放当前页面会话并要求重新登录。确定继续？",
     )
   )
     return;
+  const abandon = requiredElement<HTMLButtonElement>(
+    "abandon-side-fork-outcome",
+  );
+  abandon.disabled = true;
+  try {
+    if (!(await targetClient.releasePageSessionConfirmed())) {
+      throw new Error("当前页面没有可确认释放的认证会话");
+    }
+  } catch (error) {
+    abandon.disabled = false;
+    showToast(`无法安全放弃 Side：${errorMessage(error)}`, "error");
+    return;
+  }
+  if (pendingSideForkOperation !== operation || client !== targetClient) return;
   pendingSideForkOperation = undefined;
   updateMutationOutcomePendingState();
   renderPendingSideForkOperation();
   if (!messageInput.value) messageInput.value = `/side ${operation.prompt}`;
   autoResize(messageInput);
+  showHostReauthentication(targetClient, false);
 }
 
 async function sendTurn(
@@ -5395,11 +5571,15 @@ function renderComposerOutcomeReview(): void {
     operation.manualReviewReason === "side-continuity-overflow";
   const sideOverflow =
     operation.manualReviewReason === "side-continuity-overflow";
+  const retainedOverflow =
+    sideOverflow && activeSideSession?.threadId === operation.threadId;
   const hostIndeterminate =
     operation.manualReviewReason === "host-indeterminate";
   requiredElement("composer-outcome-review-copy").textContent = sideUnavailable
     ? sideOverflow
-      ? "Side 重连期间的事件超过安全缓冲，临时支线的事件完整性无法保证。系统已停止自动核对和重放。请根据主会话或其他运行记录人工核对，只有确认可以承担重复消息风险后，才能放弃待确认记录。"
+      ? retainedOverflow
+        ? "Side 的事件完整性无法保证，系统已停止自动核对和重放。支线仍可能在运行，因此不能单独清除消息记录；请先停止任务并确认释放 Side。"
+        : "Side 重连期间出现不可恢复的事件缺口。系统已停止自动核对和重放；请根据其他运行记录人工核对，只有确认可以承担重复消息风险后，才能放弃待确认记录。"
       : "Side 所属 app-server 已重启，临时支线无法恢复；原消息仍可能在重启前提交。系统已停止自动核对和重放。请根据主会话或其他运行记录人工核对，只有确认可以承担重复消息风险后，才能放弃待确认记录。"
     : hostIndeterminate
       ? operation.kind === "queue"
@@ -5413,6 +5593,16 @@ function renderComposerOutcomeReview(): void {
   );
   inspect.hidden = sideUnavailable;
   inspect.disabled = sideUnavailable;
+  const abandon = requiredElement<HTMLButtonElement>(
+    "abandon-composer-outcome",
+  );
+  const sideStillRetained = activeSideSession?.threadId === operation.threadId;
+  const abandonAllowed = canAbandonSideOutcome({
+    continuityOverflow: sideOverflow,
+    sideStillRetained,
+  });
+  abandon.hidden = !abandonAllowed;
+  abandon.disabled = !abandonAllowed;
 }
 
 function markComposerOperationManualReview(
@@ -5491,6 +5681,19 @@ async function inspectManualComposerOutcome(): Promise<void> {
 function abandonManualComposerOutcome(): void {
   const operation = manualComposerOperationForActiveThread();
   if (!operation) return;
+  if (
+    !canAbandonSideOutcome({
+      continuityOverflow:
+        operation.manualReviewReason === "side-continuity-overflow",
+      sideStillRetained: activeSideSession?.threadId === operation.threadId,
+    })
+  ) {
+    showToast(
+      "Side 仍可能在运行；必须先停止并确认释放支线，不能只清除待核对记录",
+      "error",
+    );
+    return;
+  }
   if (
     !window.confirm(
       "原消息可能已经提交。确认已核对当前会话，并放弃这条待确认记录？之后再次发送可能产生重复消息。",
@@ -7127,13 +7330,19 @@ function isThreadTokenUsage(value: unknown): value is ThreadTokenUsage {
 function updateComposerMode(): void {
   const active = activeThreadStatus?.type === "active";
   const side = Boolean(activeSideSession);
+  const sideControlOnly = activeSideSession?.lifecycle === "control-only";
   const label = sendMessage.querySelector("span");
   if (label)
-    label.textContent =
-      side && active ? "Side 处理中" : active ? "加入队列" : "发送";
+    label.textContent = sideControlOnly
+      ? "Side 需核对"
+      : side && active
+        ? "Side 处理中"
+        : active
+          ? "加入队列"
+          : "发送";
   queueMessage.hidden = true;
   const interrupt = requiredElement<HTMLButtonElement>("interrupt-turn");
-  interrupt.hidden = !active || !activeTurnId;
+  interrupt.hidden = !(active || sideControlOnly) || !activeTurnId;
   const waitingForApproval =
     activeThreadStatus?.type === "active" &&
     activeThreadStatus.activeFlags.includes("waitingOnApproval");

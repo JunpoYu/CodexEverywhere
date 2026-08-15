@@ -8,6 +8,7 @@ import {
   GATEWAY_CONTINUITY_ENABLE_METHOD,
   GATEWAY_CONTINUITY_OVERFLOW_EVENT,
   GATEWAY_SESSION_RELEASE_METHOD,
+  SIDE_SESSION_RELEASE_METHOD,
 } from "@codex-everywhere/protocol";
 import type {
   EventEnvelope,
@@ -118,9 +119,22 @@ export class AuthenticatedGatewaySessionContinuity {
         throw new Error("Authenticated Gateway transport was superseded");
     };
     return {
-      request: (request) => {
+      request: async (request) => {
         assertCurrent();
-        return this.#ensureInner().then((inner) => inner.request(request));
+        if (this.#overflowed && !isContinuityControlRequest(request.method)) {
+          throw new Error(
+            "Side continuity is incomplete; only interruption or release is allowed",
+          );
+        }
+        const inner = await this.#ensureInner();
+        try {
+          return await inner.request(request);
+        } finally {
+          // A successful unsubscribe, or an app-server operation that removes
+          // the final ephemeral thread before returning an error, must return
+          // this page continuity to ordinary-session semantics.
+          this.#refreshRetentionState();
+        }
       },
       validateDurableResult: (request, result) => {
         assertCurrent();
@@ -227,6 +241,10 @@ export class AuthenticatedGatewaySessionContinuity {
         return;
       }
       this.#requiresDisconnectedExpiry = true;
+      if (this.#inner.shouldBufferAcrossReconnect?.(event) === false) {
+        for (const listener of this.#listeners) listener(event);
+        return;
+      }
       if (!this.#acknowledgedDeliveryEnabled) {
         if (this.#listeners.size > 0) {
           for (const listener of this.#listeners) listener(event);
@@ -235,13 +253,15 @@ export class AuthenticatedGatewaySessionContinuity {
         const bytes = Buffer.byteLength(JSON.stringify(event), "utf8");
         this.#bufferedEvents.push({ event, bytes });
         this.#bufferedEventBytes += bytes;
-        while (
+        if (
           this.#bufferedEvents.length > MAX_CONTINUITY_BUFFERED_EVENTS ||
           this.#bufferedEventBytes > MAX_CONTINUITY_BUFFERED_EVENT_BYTES
         ) {
-          const removed = this.#bufferedEvents.shift();
-          if (!removed) break;
-          this.#bufferedEventBytes -= removed.bytes;
+          this.#signalContinuityGap(
+            "buffer-limit",
+            event.cursor,
+            continuityEventThreadId(event),
+          );
         }
         return;
       }
@@ -250,11 +270,10 @@ export class AuthenticatedGatewaySessionContinuity {
         this.#bufferedEvents.length + 1 > MAX_CONTINUITY_BUFFERED_EVENTS ||
         this.#bufferedEventBytes + bytes > MAX_CONTINUITY_BUFFERED_EVENT_BYTES
       ) {
-        const payload = asRecord(event.payload);
         this.#signalContinuityGap(
           "buffer-limit",
           event.cursor,
-          typeof payload.threadId === "string" ? payload.threadId : undefined,
+          continuityEventThreadId(event),
         );
         return;
       }
@@ -286,7 +305,10 @@ export class AuthenticatedGatewaySessionContinuity {
     this.#bufferedEvents.length = 0;
     this.#bufferedEvents.push({ event: gap, bytes });
     this.#bufferedEventBytes = bytes;
-    this.#overflowed = this.#acknowledgedDeliveryEnabled;
+    // A gap is terminal for the current Side, including cached clients which
+    // never negotiated acknowledgements. Delivery acknowledgement only removes
+    // the marker from the replay buffer; it cannot make missing events whole.
+    this.#overflowed = true;
     for (const listener of this.#listeners) listener(gap);
   }
 
@@ -298,13 +320,6 @@ export class AuthenticatedGatewaySessionContinuity {
     if (index < 0) return false;
     const acknowledged = this.#bufferedEvents.splice(0, index + 1);
     for (const entry of acknowledged) this.#bufferedEventBytes -= entry.bytes;
-    if (
-      acknowledged.some(
-        ({ event }) => event.type === GATEWAY_CONTINUITY_OVERFLOW_EVENT,
-      )
-    ) {
-      this.#overflowed = false;
-    }
     return true;
   }
 
@@ -356,6 +371,7 @@ export class AuthenticatedGatewaySessionContinuity {
   }
 
   async #releaseInnerUnlessContinuityIsRequired(): Promise<void> {
+    this.#refreshRetentionState();
     if (
       this.#disposed ||
       this.#sessionReferences !== 0 ||
@@ -375,6 +391,16 @@ export class AuthenticatedGatewaySessionContinuity {
     this.#bufferedEvents.length = 0;
     this.#bufferedEventBytes = 0;
     await inner.close?.();
+  }
+
+  #refreshRetentionState(): void {
+    if (!this.#inner || this.#inner.shouldRetainAcrossReconnect?.() === true)
+      return;
+    this.#requiresDisconnectedExpiry = false;
+    if (!this.#overflowed) return;
+    this.#overflowed = false;
+    this.#bufferedEvents.length = 0;
+    this.#bufferedEventBytes = 0;
   }
 
   #scheduleDisconnectedExpiryIfRequired(): void {
@@ -1235,6 +1261,21 @@ function continuityThreadId(
     if (typeof threadId === "string") return threadId;
   }
   return undefined;
+}
+
+function continuityEventThreadId(event: EventEnvelope): string | undefined {
+  const value = event.payload;
+  if (!value || typeof value !== "object") return undefined;
+  const threadId = (value as Record<string, unknown>).threadId;
+  return typeof threadId === "string" ? threadId : undefined;
+}
+
+function isContinuityControlRequest(method: string): boolean {
+  return (
+    method === "turn/interrupt" ||
+    method === "thread/unsubscribe" ||
+    method === SIDE_SESSION_RELEASE_METHOD
+  );
 }
 
 function asRecord(value: unknown): Record<string, unknown> {

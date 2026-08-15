@@ -1,11 +1,22 @@
 import { describe, expect, it, vi } from "vitest";
 
 import {
+  ClientActivationEpoch,
   RetryableClientPreparationError,
   prepareClientForBinding,
 } from "./client-activation.js";
 
 describe("prepareClientForBinding", () => {
+  it("invalidates an older activation when a newer login begins", () => {
+    const epochs = new ClientActivationEpoch();
+    const first = epochs.begin();
+    expect(first.isCurrent()).toBe(true);
+
+    const second = epochs.begin();
+    expect(first.isCurrent()).toBe(false);
+    expect(second.isCurrent()).toBe(true);
+  });
+
   it("negotiates continuity acknowledgements before returning the client", async () => {
     const client = {
       enableSideContinuityAcknowledgements: vi.fn().mockResolvedValue(true),

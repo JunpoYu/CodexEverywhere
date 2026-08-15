@@ -1048,6 +1048,23 @@ export class GatewayClient {
     ).catch(() => undefined);
   }
 
+  async releasePageSessionConfirmed(): Promise<boolean> {
+    if (!this.#resumeToken) return false;
+    const result = await this.request<{ version: unknown; released: unknown }>(
+      GATEWAY_SESSION_RELEASE_METHOD,
+      { version: 1 },
+    );
+    if (
+      result.version !== 1 ||
+      !Number.isSafeInteger(result.released) ||
+      Number(result.released) < 1
+    ) {
+      throw new Error("Host did not confirm page-session release");
+    }
+    this.#resumeToken = undefined;
+    return true;
+  }
+
   #invalidate(error: Error, closeSocket = true): void {
     if (!this.#usable) return;
     this.#usable = false;

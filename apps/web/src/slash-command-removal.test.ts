@@ -28,19 +28,14 @@ describe("minimal Web command surface", () => {
       mainSource.indexOf("async function sendTurn"),
     );
     expect(side).toContain('"thread/fork"');
-    expect(side).toContain(
-      "targetClient.supportsCapability(GATEWAY_CAPABILITIES.sideForkV1)",
-    );
-    expect(side).toContain(
-      "client.supportsCapability(GATEWAY_CAPABILITIES.sideForkV1)",
-    );
+    expect(side).toContain("clientSupportsSafeSide(targetClient)");
+    expect(side).toContain("clientSupportsSafeSide(client)");
+    expect(mainSource).toContain("GATEWAY_CAPABILITIES.sideSessionControlV1");
     const threadStartRecovery = mainSource.slice(
       mainSource.indexOf("async function resumePendingThreadStartOperation"),
       mainSource.indexOf("async function startSideConversation"),
     );
-    expect(threadStartRecovery).not.toContain(
-      "supportsCapability(GATEWAY_CAPABILITIES.sideForkV1)",
-    );
+    expect(threadStartRecovery).not.toContain("clientSupportsSafeSide");
     expect(side).toContain("SideCapabilityUnavailableAfterRecovery");
     expect(side).toContain("ephemeral: true");
     expect(side).toContain("requestRecoverableGatewayMutation");

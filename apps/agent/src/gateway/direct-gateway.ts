@@ -62,6 +62,7 @@ export type GatewaySession = {
   onEvent?(listener: (event: EventEnvelope) => void): () => void;
   onClose?(listener: () => void): () => void;
   shouldRetainAcrossReconnect?(): boolean;
+  shouldBufferAcrossReconnect?(event: EventEnvelope): boolean;
   close?(): Promise<void> | void;
 };
 
@@ -377,6 +378,7 @@ class GatewayConnection {
           capabilities: [
             GATEWAY_CAPABILITIES.sideForkV1,
             GATEWAY_CAPABILITIES.sideContinuityAckV1,
+            GATEWAY_CAPABILITIES.sideSessionControlV1,
           ],
           ...(this.#options.loginName
             ? { loginName: this.#options.loginName }

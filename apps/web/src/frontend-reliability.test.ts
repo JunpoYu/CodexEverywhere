@@ -549,8 +549,9 @@ describe("frontend reliability contracts", () => {
     );
     expect(fallback).toContain('currentClient.request("turn/interrupt"');
     expect(
-      fallback.indexOf('currentClient.request("turn/interrupt"'),
-    ).toBeLessThan(fallback.indexOf("markUnavailableSideOperationsForReview"));
+      fallback.indexOf("markUnavailableSideOperationsForReview"),
+    ).toBeLessThan(fallback.indexOf('currentClient.request("turn/interrupt"'));
+    expect(fallback).toContain('"side-continuity-overflow"');
     expect(fallback).toContain("已保留 Side 控制界面");
   });
 
@@ -603,6 +604,24 @@ describe("frontend reliability contracts", () => {
     expect(adminFallback).toContain("client = undefined");
     expect(adminFallback).toContain(
       "rememberInput.checked = !temporaryPassword",
+    );
+  });
+
+  it("prevents an older login activation from mutating the newly selected client", () => {
+    const activation = mainSource.slice(
+      mainSource.indexOf("async function activate"),
+      mainSource.indexOf("function bindActiveClient"),
+    );
+    const continuation = mainSource.slice(
+      mainSource.indexOf("async function continueAfterHostAuthentication"),
+      mainSource.indexOf("function showProvisionStep"),
+    );
+    expect(activation).toContain("clientActivationEpoch.begin()");
+    expect(activation).toContain(
+      "continueAfterHostAuthentication(nextClient, activation.isCurrent)",
+    );
+    expect(continuation).toContain(
+      "if (!isCurrent() || client !== targetClient) return",
     );
   });
 });

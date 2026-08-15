@@ -52,3 +52,36 @@ export function sideRecoveryDisposition(
     ? "vanished"
     : "retain";
 }
+
+export function sideMayStillBeRunning(options: {
+  statusActive: boolean;
+  turnId?: string;
+  pendingMutation: boolean;
+}): boolean {
+  return (
+    options.statusActive ||
+    options.turnId !== undefined ||
+    options.pendingMutation
+  );
+}
+
+export function sideSnapshotUpdateMode(options: {
+  preserveTimeline: boolean;
+  openingSide: boolean;
+}): "merge" | "replace" {
+  return options.preserveTimeline && options.openingSide ? "merge" : "replace";
+}
+
+export function supportsSafeSide(options: {
+  fork: boolean;
+  sessionControl: boolean;
+}): boolean {
+  return options.fork && options.sessionControl;
+}
+
+export function canAbandonSideOutcome(options: {
+  continuityOverflow: boolean;
+  sideStillRetained: boolean;
+}): boolean {
+  return !options.continuityOverflow || !options.sideStillRetained;
+}
