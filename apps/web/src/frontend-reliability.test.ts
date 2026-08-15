@@ -654,16 +654,52 @@ describe("frontend reliability contracts", () => {
       mainSource.indexOf("async function activate"),
       mainSource.indexOf("function bindActiveClient"),
     );
+    const passkeyLogin = mainSource.slice(
+      mainSource.indexOf("async function loginWithPasskey"),
+      mainSource.indexOf("async function loginWithPassword"),
+    );
+    const savedLogin = mainSource.slice(
+      mainSource.indexOf("async function connectSaved"),
+      mainSource.indexOf("async function runLoginButtonAction"),
+    );
     const continuation = mainSource.slice(
       mainSource.indexOf("async function continueAfterHostAuthentication"),
       mainSource.indexOf("function showProvisionStep"),
     );
-    expect(activation).toContain("clientActivationEpoch.begin()");
+    expect(activation).not.toContain("clientActivationEpoch.begin()");
+    expect(passkeyLogin.indexOf("clientActivationEpoch.begin()")).toBeLessThan(
+      passkeyLogin.indexOf("GatewayClient.loginWithPasskey"),
+    );
+    expect(savedLogin.indexOf("clientActivationEpoch.begin()")).toBeLessThan(
+      savedLogin.indexOf("GatewayClient.connect"),
+    );
+    expect(activation).toContain(
+      'activation: ReturnType<ClientActivationEpoch["begin"]>',
+    );
     expect(activation).toContain(
       "continueAfterHostAuthentication(nextClient, activation.isCurrent)",
     );
     expect(continuation).toContain(
       "if (!isCurrent() || client !== targetClient) return",
     );
+  });
+
+  it("reuses one idempotency key for every Side release attempt", () => {
+    const sideType = mainSource.slice(
+      mainSource.indexOf("type ActiveSideSession"),
+      mainSource.indexOf("type SideThreadForkResponse"),
+    );
+    const completion = mainSource.slice(
+      mainSource.indexOf("async function completeSideForkOperation"),
+      mainSource.indexOf("function assertSideForkResponse"),
+    );
+    const release = mainSource.slice(
+      mainSource.indexOf("async function releaseSideSubscription"),
+      mainSource.indexOf("function clientSupportsSafeSide"),
+    );
+
+    expect(sideType).toContain("releaseIdempotencyKey: string");
+    expect(completion).toContain("releaseIdempotencyKey: crypto.randomUUID()");
+    expect(release).toContain("{ idempotencyKey: side.releaseIdempotencyKey }");
   });
 });

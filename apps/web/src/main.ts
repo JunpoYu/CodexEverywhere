@@ -249,6 +249,7 @@ type ThreadRuntimeSettings = {
 type ActiveSideSession = {
   lifecycle: "live" | "control-only";
   interruptConfirmed?: true;
+  releaseIdempotencyKey: string;
   threadId: string;
   parent: ThreadSummary;
   inheritedThroughTurnId: string;
@@ -1409,17 +1410,29 @@ if (import.meta.env.DEV) {
 }
 async function pair(): Promise<void> {
   setupError.textContent = "";
+  let document: PairingDocument;
   try {
-    const document = JSON.parse(pairingJson.value) as PairingDocument;
+    document = JSON.parse(pairingJson.value) as PairingDocument;
+  } catch (error) {
+    setupError.textContent = errorMessage(error);
+    return;
+  }
+  const activation = clientActivationEpoch.begin();
+  try {
     const result = await GatewayClient.pair(
       document,
       pairingDeviceName.value.trim() || "我的浏览器",
     );
+    if (!activation.isCurrent()) {
+      result.client.close();
+      return;
+    }
     if (result.recoveryCodes.length > 0) {
       showRecoveryCodes(result.recoveryCodes);
     }
-    await activate(result.client);
+    await activate(result.client, activation);
   } catch (error) {
+    if (!activation.isCurrent()) return;
     setupError.textContent = errorMessage(error);
   }
 }
@@ -1444,6 +1457,7 @@ async function loginWithPasskey(): Promise<void> {
     setupError.textContent = "请输入登录名";
     return;
   }
+  const activation = clientActivationEpoch.begin();
   setStatus("connecting", "正在查找 HPC Agent…");
   try {
     const remember = shouldRememberDevice("passkey");
@@ -1451,6 +1465,7 @@ async function loginWithPasskey(): Promise<void> {
     if (reauthentication) {
       await activate(
         await reauthentication.reauthenticateWithPasskey(remember),
+        activation,
       );
     } else {
       const host = await lookupHost(name);
@@ -1460,9 +1475,11 @@ async function loginWithPasskey(): Promise<void> {
           deviceName: loginDeviceName(host, remember, "临时浏览器"),
           rememberDevice: remember,
         }),
+        activation,
       );
     }
   } catch (error) {
+    if (!activation.isCurrent()) return;
     setStatus("offline", "登录失败");
     setupError.textContent = errorMessage(error);
   }
@@ -1476,6 +1493,7 @@ async function loginWithPassword(): Promise<void> {
     setupError.textContent = "请输入登录名和 CodexEverywhere 密码";
     return;
   }
+  const activation = clientActivationEpoch.begin();
   setStatus("connecting", "正在查找 HPC Agent…");
   try {
     const remember = shouldRememberDevice("password");
@@ -1483,6 +1501,7 @@ async function loginWithPassword(): Promise<void> {
     if (reauthentication) {
       await activate(
         await reauthentication.reauthenticateWithPassword(password, remember),
+        activation,
       );
     } else {
       const host = await lookupHost(name);
@@ -1493,13 +1512,15 @@ async function loginWithPassword(): Promise<void> {
           deviceName: loginDeviceName(host, remember, "临时浏览器"),
           rememberDevice: remember,
         }),
+        activation,
       );
     }
   } catch (error) {
+    if (!activation.isCurrent()) return;
     setStatus("offline", "登录失败");
     setupError.textContent = errorMessage(error);
   } finally {
-    loginPasswordInput.value = "";
+    if (activation.isCurrent()) loginPasswordInput.value = "";
   }
 }
 
@@ -1520,6 +1541,7 @@ async function recoverWebCredentials(): Promise<void> {
     setupError.textContent = "请输入登录名和恢复码或管理员交接码";
     return;
   }
+  const activation = clientActivationEpoch.begin();
   setStatus("connecting", "正在恢复 Web 身份…");
   try {
     const host = await lookupHost(name);
@@ -1530,10 +1552,15 @@ async function recoverWebCredentials(): Promise<void> {
       deviceName: loginDeviceName(host, remember, "恢复设备"),
       rememberDevice: remember,
     });
+    if (!activation.isCurrent()) {
+      result.client.close();
+      return;
+    }
     loginRecoveryInput.value = "";
     showRecoveryCodes(result.recoveryCodes);
-    await activate(result.client);
+    await activate(result.client, activation);
   } catch (error) {
+    if (!activation.isCurrent()) return;
     setStatus("offline", "恢复失败");
     setupError.textContent = errorMessage(error);
   }
@@ -1778,9 +1805,14 @@ async function copyCommand(
 
 async function connectSaved(host: SavedHost): Promise<void> {
   setupError.textContent = "";
+  const activation = clientActivationEpoch.begin();
   setStatus("connecting", "正在建立加密连接…");
   try {
     const nextClient = await GatewayClient.connect(host);
+    if (!activation.isCurrent()) {
+      nextClient.close();
+      return;
+    }
     if (
       nextClient.host.loginName !== host.loginName ||
       nextClient.host.name !== host.name
@@ -1791,8 +1823,9 @@ async function connectSaved(host: SavedHost): Promise<void> {
         // A storage migration must not prevent an otherwise valid login.
       }
     }
-    await activate(nextClient);
+    await activate(nextClient, activation);
   } catch (error) {
+    if (!activation.isCurrent()) return;
     setStatus("offline", "连接失败");
     setupError.textContent = errorMessage(error);
   }
@@ -1852,8 +1885,10 @@ async function prepareAuthenticatedClientForActivation(
   return prepared;
 }
 
-async function activate(nextClient: GatewayClient): Promise<void> {
-  const activation = clientActivationEpoch.begin();
+async function activate(
+  nextClient: GatewayClient,
+  activation: ReturnType<ClientActivationEpoch["begin"]>,
+): Promise<void> {
   const prepared = await prepareAuthenticatedClientForActivation(
     nextClient,
     activation.isCurrent,
@@ -3920,10 +3955,14 @@ async function releaseSideSubscription(
     const result = await targetClient.request<{
       version: unknown;
       released: unknown;
-    }>(SIDE_SESSION_RELEASE_METHOD, {
-      version: 1,
-      threadId: side.threadId,
-    });
+    }>(
+      SIDE_SESSION_RELEASE_METHOD,
+      {
+        version: 1,
+        threadId: side.threadId,
+      },
+      { idempotencyKey: side.releaseIdempotencyKey },
+    );
     if (result.version !== 1 || result.released !== true)
       throw new Error("Host returned an invalid Side release result");
     return client === targetClient && activeSideSession === side;
@@ -5144,6 +5183,7 @@ async function completeSideForkOperation(
     assertSideForkResponse(fork, operation);
     activeSideSession = {
       lifecycle: "live",
+      releaseIdempotencyKey: crypto.randomUUID(),
       threadId: fork.thread.id,
       parent: operation.parent,
       inheritedThroughTurnId: operation.inheritedThroughTurnId,
@@ -7029,6 +7069,7 @@ async function renderSavedHosts(): Promise<void> {
     recover.addEventListener("click", async () => {
       const code = window.prompt("输入一个未使用的宿主机恢复码");
       if (!code) return;
+      const activation = clientActivationEpoch.begin();
       try {
         const result = await GatewayClient.recover(savedHostDocument(host), {
           loginName: host.name,
@@ -7036,9 +7077,14 @@ async function renderSavedHosts(): Promise<void> {
           deviceName: host.deviceName,
           rememberDevice: true,
         });
+        if (!activation.isCurrent()) {
+          result.client.close();
+          return;
+        }
         showRecoveryCodes(result.recoveryCodes);
-        await activate(result.client);
+        await activate(result.client, activation);
       } catch (error) {
+        if (!activation.isCurrent()) return;
         setupError.textContent = errorMessage(error);
       }
     });
