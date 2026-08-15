@@ -4,6 +4,7 @@ import { isAbsolute } from "node:path";
 
 import {
   PROTOCOL_VERSION,
+  SIDE_SESSION_RELEASE_METHOD,
   type EventEnvelope,
   type RequestEnvelope,
 } from "@codex-everywhere/protocol";
@@ -78,6 +79,7 @@ export class CodexGatewaySession implements GatewaySession {
   readonly #serverRequests = new Map<string, CodexServerRequest>();
   readonly #authorizedThreads = new Map<string, number>();
   readonly #ephemeralThreads = new Set<string>();
+  readonly #releasedEphemeralThreads = new Set<string>();
   readonly #unsubscribeQueue: (() => void) | undefined;
   readonly #unsubscribeConsumptionRepair: (() => void) | undefined;
   readonly #unsubscribeConsumptionPauseRepair: (() => void) | undefined;
@@ -177,6 +179,17 @@ export class CodexGatewaySession implements GatewaySession {
   onEvent(listener: (event: EventEnvelope) => void): () => void {
     this.#events.on("event", listener);
     return () => this.#events.off("event", listener);
+  }
+
+  shouldRetainAcrossReconnect(): boolean {
+    return this.#ephemeralThreads.size > 0;
+  }
+
+  shouldBufferAcrossReconnect(event: EventEnvelope): boolean {
+    const payload = isRecord(event.payload) ? event.payload : undefined;
+    const threadId =
+      extractThreadId(payload) ?? extractThreadId(payload?.params);
+    return threadId !== undefined && this.#ephemeralThreads.has(threadId);
   }
 
   onClose(listener: () => void): () => void {
@@ -308,6 +321,28 @@ export class CodexGatewaySession implements GatewaySession {
           await this.#threadPermissions.remove(threadId);
         }
         return result;
+      }
+      case SIDE_SESSION_RELEASE_METHOD: {
+        if (payload.version !== 1)
+          throw new Error("Unsupported Side release version");
+        const threadId = requiredString(payload, "threadId");
+        if (this.#releasedEphemeralThreads.has(threadId)) {
+          await this.#threadPermissions.remove(threadId);
+          this.#ephemeralThreads.delete(threadId);
+          this.#authorizedThreads.delete(threadId);
+          return { version: 1, released: true };
+        }
+        if (!this.#ephemeralThreads.has(threadId)) {
+          const current = await this.#authorizeThread(threadId);
+          if (current.thread.ephemeral !== true)
+            throw new Error("Side release requires an ephemeral thread");
+        }
+        await this.#client.request("thread/unsubscribe", { threadId });
+        this.#releasedEphemeralThreads.add(threadId);
+        await this.#threadPermissions.remove(threadId);
+        this.#ephemeralThreads.delete(threadId);
+        this.#authorizedThreads.delete(threadId);
+        return { version: 1, released: true };
       }
       case "thread/settings/update": {
         const threadId = requiredString(payload, "threadId");

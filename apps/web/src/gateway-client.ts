@@ -8,6 +8,9 @@ import {
 } from "@codex-everywhere/crypto";
 import {
   GATEWAY_CAPABILITIES,
+  GATEWAY_CONTINUITY_ACK_METHOD,
+  GATEWAY_CONTINUITY_ENABLE_METHOD,
+  GATEWAY_SESSION_RELEASE_METHOD,
   PROTOCOL_VERSION,
   RELAY_MESSAGE_TYPES,
   RELAY_PROTOCOL_VERSION,
@@ -17,6 +20,7 @@ import {
   parseGatewayServerEnvelope,
   parseRelayWireMessage,
   type EventEnvelope,
+  type GatewayContinuityAckResponse,
   type ProtocolError,
 } from "@codex-everywhere/protocol";
 import {
@@ -34,6 +38,9 @@ import {
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
+const CONTINUITY_ACK_INITIAL_DELAY_MS = 50;
+const CONTINUITY_ACK_MAX_RETRY_DELAY_MS = 5_000;
+const MAX_PENDING_CONTINUITY_ACK_EVENTS = 8_192;
 
 export type PairingDocument = {
   version: 1;
@@ -178,7 +185,18 @@ export class GatewayClient {
     }
   >();
   readonly #eventListeners = new Set<(event: EventEnvelope) => void>();
+  readonly #pendingEvents: EventEnvelope[] = [];
   readonly #connectionListeners = new Set<(error: Error) => void>();
+  #eventDeliveryState: {
+    delivered: Set<string>;
+    order: string[];
+  } = { delivered: new Set(), order: [] };
+  readonly #pendingAckEventIds: string[] = [];
+  readonly #pendingAckEventIdSet = new Set<string>();
+  #eventAckTimer: ReturnType<typeof setTimeout> | undefined;
+  #eventAckInFlight = false;
+  #eventAckRetryAttempt = 0;
+  #continuityAcknowledgementsEnabled = false;
   #reconnectMode: GatewayReconnectMode = "trusted-device";
   #resumeToken: string | undefined;
   #reauthenticationRequired = false;
@@ -642,6 +660,19 @@ export class GatewayClient {
     return this.capabilities.has(capability);
   }
 
+  async enableSideContinuityAcknowledgements(): Promise<boolean> {
+    if (!this.supportsCapability(GATEWAY_CAPABILITIES.sideContinuityAckV1))
+      return false;
+    const result = await this.request<{ version: unknown; enabled: unknown }>(
+      GATEWAY_CONTINUITY_ENABLE_METHOD,
+      { version: 1 },
+    );
+    if (result.version !== 1 || result.enabled !== true)
+      throw new Error("Host returned an invalid continuity negotiation result");
+    this.#continuityAcknowledgementsEnabled = true;
+    return true;
+  }
+
   async #authenticate(
     newlyPaired: boolean,
     discoverable: boolean,
@@ -834,6 +865,10 @@ export class GatewayClient {
 
   onEvent(listener: (event: EventEnvelope) => void): () => void {
     this.#eventListeners.add(listener);
+    if (this.#pendingEvents.length > 0) {
+      const pending = this.#pendingEvents.splice(0);
+      for (const event of pending) this.#deliverEvent(event);
+    }
     return () => this.#eventListeners.delete(listener);
   }
 
@@ -880,6 +915,7 @@ export class GatewayClient {
         });
         client.#resumeToken = resumeToken;
         client.#reconnectMode = this.#reconnectMode;
+        client.#eventDeliveryState = this.#eventDeliveryState;
         return client;
       } catch (error) {
         if (!isGatewayReauthenticationRequired(error)) throw error;
@@ -961,6 +997,7 @@ export class GatewayClient {
       throw error;
     }
     client.#reconnectMode = gatewayReconnectMode("passkey", rememberDevice);
+    client.#eventDeliveryState = this.#eventDeliveryState;
     if (rememberDevice) await saveHost(client.host);
     return client;
   }
@@ -981,6 +1018,7 @@ export class GatewayClient {
       throw error;
     }
     client.#reconnectMode = gatewayReconnectMode("password", rememberDevice);
+    client.#eventDeliveryState = this.#eventDeliveryState;
     if (rememberDevice) await saveHost(client.host);
     return client;
   }
@@ -998,9 +1036,59 @@ export class GatewayClient {
     this.#invalidate(new Error("Host connection closed"));
   }
 
+  releasePageSession(): void {
+    if (!this.#resumeToken) return;
+    this.#resumeToken = undefined;
+    // request() encrypts and queues every frame synchronously before it
+    // returns. pagehide cannot await the response, but a normally closing or
+    // refreshing page still gives the Agent an explicit chance to release its
+    // retained Side subscription; transport loss keeps the ticket intact.
+    void this.request(
+      GATEWAY_SESSION_RELEASE_METHOD,
+      { version: 1 },
+      { timeoutMs: 1_000 },
+    ).catch(() => undefined);
+  }
+
+  interruptTurnBeforePageRelease(threadId: string, turnId: string): void {
+    // Keep the resume ticket unless the Host first confirms that the Side
+    // turn was interrupted. If page teardown prevents the response from
+    // arriving, the retained continuity is safer than orphaning a running
+    // ephemeral turn with no client able to answer approvals.
+    void this.request(
+      "turn/interrupt",
+      { threadId, turnId },
+      { timeoutMs: 1_000 },
+    )
+      .then(() => this.releasePageSession())
+      .catch(() => undefined);
+  }
+
+  async releasePageSessionConfirmed(): Promise<boolean> {
+    if (!this.#resumeToken) return false;
+    const result = await this.request<{ version: unknown; released: unknown }>(
+      GATEWAY_SESSION_RELEASE_METHOD,
+      { version: 1 },
+    );
+    if (
+      result.version !== 1 ||
+      !Number.isSafeInteger(result.released) ||
+      Number(result.released) < 1
+    ) {
+      throw new Error("Host did not confirm page-session release");
+    }
+    this.#resumeToken = undefined;
+    return true;
+  }
+
   #invalidate(error: Error, closeSocket = true): void {
     if (!this.#usable) return;
     this.#usable = false;
+    if (this.#eventAckTimer) clearTimeout(this.#eventAckTimer);
+    this.#eventAckTimer = undefined;
+    this.#pendingAckEventIds.length = 0;
+    this.#pendingAckEventIdSet.clear();
+    this.#eventAckRetryAttempt = 0;
     this.#session.dispose();
     for (const pending of this.#pending.values()) {
       clearTimeout(pending.timeout);
@@ -1058,7 +1146,8 @@ export class GatewayClient {
           pending.reject(new Error("Host request failed"));
         }
       } else {
-        for (const listener of this.#eventListeners) listener(envelope);
+        if (this.#eventListeners.size === 0) this.#pendingEvents.push(envelope);
+        else this.#deliverEvent(envelope);
       }
     } catch (error) {
       this.#invalidate(
@@ -1066,6 +1155,92 @@ export class GatewayClient {
           cause: error,
         }),
       );
+    }
+  }
+
+  #deliverEvent(event: EventEnvelope): void {
+    if (!this.#eventDeliveryState.delivered.has(event.eventId)) {
+      for (const listener of this.#eventListeners) listener(event);
+      this.#eventDeliveryState.delivered.add(event.eventId);
+      this.#eventDeliveryState.order.push(event.eventId);
+      while (this.#eventDeliveryState.order.length > 8_192) {
+        const oldest = this.#eventDeliveryState.order.shift();
+        if (oldest) this.#eventDeliveryState.delivered.delete(oldest);
+      }
+    }
+    this.#scheduleEventAcknowledgement(event.eventId);
+  }
+
+  #scheduleEventAcknowledgement(eventId: string): void {
+    if (!this.#continuityAcknowledgementsEnabled) return;
+    if (!this.#pendingAckEventIdSet.has(eventId)) {
+      if (
+        this.#pendingAckEventIds.length >= MAX_PENDING_CONTINUITY_ACK_EVENTS
+      ) {
+        this.#invalidate(
+          new Error("Side continuity acknowledgement backlog exceeded"),
+        );
+        return;
+      }
+      this.#pendingAckEventIds.push(eventId);
+      this.#pendingAckEventIdSet.add(eventId);
+    }
+    if (this.#eventAckTimer || this.#eventAckInFlight) return;
+    this.#schedulePendingEventAcknowledgement(CONTINUITY_ACK_INITIAL_DELAY_MS);
+  }
+
+  #schedulePendingEventAcknowledgement(delayMs: number): void {
+    if (
+      this.#eventAckTimer ||
+      this.#pendingAckEventIds.length === 0 ||
+      !this.#usable
+    )
+      return;
+    this.#eventAckTimer = setTimeout(() => {
+      this.#eventAckTimer = undefined;
+      void this.#acknowledgePendingEvent();
+    }, delayMs);
+  }
+
+  async #acknowledgePendingEvent(): Promise<void> {
+    const acknowledgedEventId = this.#pendingAckEventIds.at(-1);
+    if (!acknowledgedEventId || !this.#usable || this.#eventAckInFlight) return;
+    this.#eventAckInFlight = true;
+    let retry = false;
+    try {
+      const result = await this.request<GatewayContinuityAckResponse>(
+        GATEWAY_CONTINUITY_ACK_METHOD,
+        { version: 1, eventId: acknowledgedEventId },
+        { timeoutMs: 4_000 },
+      );
+      if (result.version !== 1 || typeof result.acknowledged !== "boolean") {
+        throw new Error("Host returned an invalid continuity ACK result");
+      }
+      const acknowledgedIndex =
+        this.#pendingAckEventIds.indexOf(acknowledgedEventId);
+      if (acknowledgedIndex >= 0) {
+        const removed = result.acknowledged
+          ? this.#pendingAckEventIds.splice(0, acknowledgedIndex + 1)
+          : this.#pendingAckEventIds.splice(acknowledgedIndex, 1);
+        for (const eventId of removed)
+          this.#pendingAckEventIdSet.delete(eventId);
+      }
+      this.#eventAckRetryAttempt = 0;
+    } catch {
+      if (!this.#usable) return;
+      retry = true;
+      this.#eventAckRetryAttempt += 1;
+    } finally {
+      this.#eventAckInFlight = false;
+      if (this.#pendingAckEventIds.length > 0 && this.#usable) {
+        const delayMs = retry
+          ? Math.min(
+              CONTINUITY_ACK_INITIAL_DELAY_MS * 2 ** this.#eventAckRetryAttempt,
+              CONTINUITY_ACK_MAX_RETRY_DELAY_MS,
+            )
+          : CONTINUITY_ACK_INITIAL_DELAY_MS;
+        this.#schedulePendingEventAcknowledgement(delayMs);
+      }
     }
   }
 }

@@ -167,7 +167,11 @@ describe("DirectGateway", () => {
     });
     expect(paired.accepted).toMatchObject({
       loginName: "alice",
-      capabilities: ["side-fork-v1"],
+      capabilities: [
+        "side-fork-v1",
+        "side-continuity-ack-v1",
+        "side-session-control-v1",
+      ],
     });
     await expect(
       roundTrip(paired.socket, paired.session, { answer: 42 }),

@@ -4,15 +4,524 @@ import type {
   EventEnvelope,
   RequestEnvelope,
 } from "@codex-everywhere/protocol";
+import { SIDE_SESSION_RELEASE_METHOD } from "@codex-everywhere/protocol";
 
 import type { PasskeyRegistry } from "../host/passkeys.js";
 import type { PasswordRegistry } from "../host/passwords.js";
 import { AuthenticatedSessionRegistry } from "../host/auth-security.js";
-import { AuthenticatedGatewaySession } from "./authenticated-session.js";
+import {
+  AuthenticatedGatewaySession,
+  AuthenticatedGatewaySessionContinuity,
+} from "./authenticated-session.js";
 
 afterEach(() => vi.useRealTimers());
 
 describe("AuthenticatedGatewaySession", () => {
+  it("does not retain an ordinary app-server client for the lifetime of a page ticket", async () => {
+    const close = vi.fn(async () => undefined);
+    const continuity = new AuthenticatedGatewaySessionContinuity(
+      async () => ({ request: async () => "unused" }),
+      {
+        request: async () => "ordinary",
+        shouldRetainAcrossReconnect: () => false,
+        close,
+      },
+    );
+    continuity.retainTicket();
+    const transport = continuity.open();
+
+    await transport.close?.();
+    expect(close).toHaveBeenCalledOnce();
+
+    continuity.releaseTicket();
+    expect(close).toHaveBeenCalledOnce();
+  });
+
+  it("releases an ordinary inner that resolves after its transport closed", async () => {
+    let resolveInner:
+      | ((inner: {
+          request: () => Promise<string>;
+          shouldRetainAcrossReconnect: () => boolean;
+          close: () => Promise<void>;
+        }) => void)
+      | undefined;
+    const close = vi.fn(async () => undefined);
+    const innerPending = new Promise<{
+      request: () => Promise<string>;
+      shouldRetainAcrossReconnect: () => boolean;
+      close: () => Promise<void>;
+    }>((resolve) => {
+      resolveInner = resolve;
+    });
+    const continuity = new AuthenticatedGatewaySessionContinuity(
+      () => innerPending,
+    );
+    continuity.retainTicket();
+    const transport = continuity.open();
+    const request = transport.request(envelope("workspace/list", {}));
+    await transport.close?.();
+
+    resolveInner?.({
+      request: async () => "late",
+      shouldRetainAcrossReconnect: () => false,
+      close,
+    });
+    await expect(request).resolves.toBe("late");
+    expect(close).toHaveBeenCalledOnce();
+    continuity.releaseTicket();
+  });
+
+  it("replays continuity events until the browser acknowledges them", async () => {
+    let emit: ((event: EventEnvelope) => void) | undefined;
+    const continuity = new AuthenticatedGatewaySessionContinuity(async () => ({
+      request: async () => "ok",
+      onEvent: (listener: (event: EventEnvelope) => void) => {
+        emit = listener;
+        return () => undefined;
+      },
+      shouldRetainAcrossReconnect: () => true,
+    }));
+    continuity.retainTicket();
+    continuity.enableAcknowledgedDelivery();
+    const first = continuity.open();
+    const firstEvents: string[] = [];
+    first.onEvent?.((event) => firstEvents.push(event.eventId));
+    await first.request(envelope("workspace/list", {}));
+    emit?.({
+      version: 1,
+      eventId: "event-1",
+      cursor: "1",
+      type: "turn/started",
+      payload: { threadId: "side-1" },
+    });
+    expect(firstEvents).toEqual(["event-1"]);
+
+    const second = continuity.open();
+    const replayed: string[] = [];
+    second.onEvent?.((event) => replayed.push(event.eventId));
+    expect(replayed).toEqual(["event-1"]);
+    expect(continuity.acknowledgeEvent("event-1")).toBe(true);
+
+    const third = continuity.open();
+    const afterAck: string[] = [];
+    third.onEvent?.((event) => afterAck.push(event.eventId));
+    expect(afterAck).toEqual([]);
+    await first.close?.();
+    await second.close?.();
+    await third.close?.();
+    continuity.releaseTicket();
+  });
+
+  it("buffers only events owned by the retained Side", async () => {
+    let emit: ((event: EventEnvelope) => void) | undefined;
+    const continuity = new AuthenticatedGatewaySessionContinuity(async () => ({
+      request: async () => "ok",
+      onEvent: (listener: (event: EventEnvelope) => void) => {
+        emit = listener;
+        return () => undefined;
+      },
+      shouldRetainAcrossReconnect: () => true,
+      shouldBufferAcrossReconnect: (event: EventEnvelope) =>
+        (event.payload as { threadId?: string }).threadId === "side-1",
+    }));
+    continuity.retainTicket();
+    continuity.enableAcknowledgedDelivery();
+    const first = continuity.open();
+    first.onEvent?.(() => undefined);
+    await first.request(envelope("workspace/list", {}));
+
+    const resumed = continuity.open();
+    emit?.({
+      version: 1,
+      eventId: "parent-event",
+      cursor: "1",
+      type: "turn/completed",
+      payload: { threadId: "parent-1" },
+    });
+    emit?.({
+      version: 1,
+      eventId: "side-event",
+      cursor: "2",
+      type: "turn/completed",
+      payload: { threadId: "side-1" },
+    });
+    const replayed: string[] = [];
+    resumed.onEvent?.((event) => replayed.push(event.eventId));
+    expect(replayed).toEqual(["side-event"]);
+
+    await first.close?.();
+    await resumed.close?.();
+    continuity.releaseTicket();
+  });
+
+  it("emits a versioned gap instead of silently dropping buffered events", async () => {
+    let emit: ((event: EventEnvelope) => void) | undefined;
+    const continuity = new AuthenticatedGatewaySessionContinuity(async () => ({
+      request: async () => "ok",
+      onEvent: (listener: (event: EventEnvelope) => void) => {
+        emit = listener;
+        return () => undefined;
+      },
+      shouldRetainAcrossReconnect: () => true,
+    }));
+    continuity.retainTicket();
+    continuity.enableAcknowledgedDelivery();
+    const transport = continuity.open();
+    const events: EventEnvelope[] = [];
+    transport.onEvent?.((event) => events.push(event));
+    await transport.request(envelope("workspace/list", {}));
+    for (let index = 0; index <= 4_096; index += 1) {
+      emit?.({
+        version: 1,
+        eventId: `event-${index}`,
+        cursor: String(index),
+        type: "item/agentMessage/delta",
+        payload: { threadId: "side-1", delta: "x" },
+      });
+    }
+    expect(events.at(-1)).toMatchObject({
+      type: "gateway/session/continuity-overflow",
+      payload: { version: 1, reason: "buffer-limit", threadId: "side-1" },
+    });
+    await transport.close?.();
+    continuity.releaseTicket();
+  });
+
+  it("expires only a disconnected Side continuity after its grace period", async () => {
+    vi.useFakeTimers();
+    const close = vi.fn(async () => undefined);
+    const continuity = new AuthenticatedGatewaySessionContinuity(
+      async () => ({ request: async () => "unused" }),
+      {
+        request: async () => "side",
+        shouldRetainAcrossReconnect: () => true,
+        close,
+      },
+    );
+    continuity.retainTicket();
+    continuity.configureDisconnectedExpiry(
+      () => continuity.releaseTicket(),
+      100,
+    );
+    const first = continuity.open();
+
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(close).not.toHaveBeenCalled();
+    await first.close?.();
+    await vi.advanceTimersByTimeAsync(99);
+    expect(close).not.toHaveBeenCalled();
+
+    const resumed = continuity.open();
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(close).not.toHaveBeenCalled();
+    await resumed.close?.();
+    await vi.advanceTimersByTimeAsync(100);
+    expect(close).toHaveBeenCalledOnce();
+  });
+
+  it("expires a classified disconnected Side after its inner closes", async () => {
+    vi.useFakeTimers();
+    let notifyInnerClosed: (() => void) | undefined;
+    const expired = vi.fn();
+    const continuity = new AuthenticatedGatewaySessionContinuity(
+      async () => ({ request: async () => "unused" }),
+      {
+        request: async () => "side",
+        shouldRetainAcrossReconnect: () => true,
+        onClose: (listener) => {
+          notifyInnerClosed = listener;
+          return () => undefined;
+        },
+      },
+    );
+    continuity.retainTicket();
+    continuity.configureDisconnectedExpiry(() => {
+      expired();
+      continuity.releaseTicket();
+    }, 100);
+    const transport = continuity.open();
+    await transport.close?.();
+    notifyInnerClosed?.();
+
+    await vi.advanceTimersByTimeAsync(100);
+    expect(expired).toHaveBeenCalledOnce();
+  });
+
+  it("emits and replays a continuity gap when a retained inner closes", async () => {
+    let notifyInnerClosed: (() => void) | undefined;
+    const continuity = new AuthenticatedGatewaySessionContinuity(
+      async () => ({ request: async () => "unused" }),
+      {
+        request: async () => "side",
+        shouldRetainAcrossReconnect: () => true,
+        onClose: (listener) => {
+          notifyInnerClosed = listener;
+          return () => undefined;
+        },
+      },
+    );
+    continuity.retainTicket();
+    continuity.enableAcknowledgedDelivery();
+    const first = continuity.open();
+    const firstEvents: EventEnvelope[] = [];
+    first.onEvent?.((event) => firstEvents.push(event));
+
+    notifyInnerClosed?.();
+    expect(firstEvents).toHaveLength(1);
+    expect(firstEvents[0]).toMatchObject({
+      type: "gateway/session/continuity-overflow",
+      payload: { version: 1, reason: "inner-closed" },
+    });
+
+    const resumed = continuity.open();
+    const replayed: EventEnvelope[] = [];
+    resumed.onEvent?.((event) => replayed.push(event));
+    expect(replayed).toEqual(firstEvents);
+    expect(continuity.acknowledgeEvent(firstEvents[0]!.eventId)).toBe(true);
+
+    await first.close?.();
+    await resumed.close?.();
+    continuity.releaseTicket();
+  });
+
+  it("fails a legacy Side closed after its retained inner closes", async () => {
+    let notifyInnerClosed: (() => void) | undefined;
+    const continuity = new AuthenticatedGatewaySessionContinuity(
+      async () => ({ request: async () => "replacement" }),
+      {
+        request: async () => "side",
+        shouldRetainAcrossReconnect: () => true,
+        onClose: (listener) => {
+          notifyInnerClosed = listener;
+          return () => undefined;
+        },
+      },
+    );
+    continuity.retainTicket();
+    const transport = continuity.open();
+    const events: EventEnvelope[] = [];
+    transport.onEvent?.((event) => events.push(event));
+
+    notifyInnerClosed?.();
+    expect(events.at(-1)?.type).toBe("gateway/session/continuity-overflow");
+    await expect(
+      transport.request(envelope("workspace/list", {})),
+    ).rejects.toThrow("Side continuity is incomplete");
+
+    await transport.close?.();
+    continuity.releaseTicket();
+  });
+
+  it("keeps a gap terminal after acknowledgement until Side release", async () => {
+    let retain = true;
+    let emit: ((event: EventEnvelope) => void) | undefined;
+    const request = vi.fn(async (value: RequestEnvelope) => {
+      if (value.method === SIDE_SESSION_RELEASE_METHOD) retain = false;
+      return "ok";
+    });
+    const continuity = new AuthenticatedGatewaySessionContinuity(async () => ({
+      request,
+      onEvent: (listener: (event: EventEnvelope) => void) => {
+        emit = listener;
+        return () => undefined;
+      },
+      shouldRetainAcrossReconnect: () => retain,
+    }));
+    continuity.retainTicket();
+    continuity.enableAcknowledgedDelivery();
+    const transport = continuity.open();
+    const events: EventEnvelope[] = [];
+    transport.onEvent?.((event) => events.push(event));
+    await transport.request(envelope("workspace/list", {}));
+    for (let index = 0; index <= 4_096; index += 1) {
+      emit?.({
+        version: 1,
+        eventId: `terminal-${index}`,
+        cursor: String(index),
+        type: "item/agentMessage/delta",
+        payload: { threadId: "side-1", delta: "x" },
+      });
+    }
+    const gap = events.at(-1)!;
+    expect(gap.type).toBe("gateway/session/continuity-overflow");
+    expect(continuity.acknowledgeEvent(gap.eventId)).toBe(true);
+    await expect(
+      transport.request(envelope("workspace/list", {})),
+    ).rejects.toThrow("Side continuity is incomplete");
+
+    await expect(
+      transport.request(
+        envelope(SIDE_SESSION_RELEASE_METHOD, {
+          version: 1,
+          threadId: "side-1",
+        }),
+      ),
+    ).resolves.toBe("ok");
+    await expect(
+      transport.request(envelope("workspace/list", {})),
+    ).resolves.toBe("ok");
+    await transport.close?.();
+    continuity.releaseTicket();
+  });
+
+  it("clears disconnected Side expiry classification after release", async () => {
+    vi.useFakeTimers();
+    let retain = true;
+    let emit: ((event: EventEnvelope) => void) | undefined;
+    const expired = vi.fn();
+    const close = vi.fn(async () => undefined);
+    const continuity = new AuthenticatedGatewaySessionContinuity(async () => ({
+      request: async (request) => {
+        if (request.method === "thread/unsubscribe") retain = false;
+        return "ok";
+      },
+      onEvent: (listener: (event: EventEnvelope) => void) => {
+        emit = listener;
+        return () => undefined;
+      },
+      shouldRetainAcrossReconnect: () => retain,
+      close,
+    }));
+    continuity.retainTicket();
+    continuity.configureDisconnectedExpiry(expired, 100);
+    const transport = continuity.open();
+    transport.onEvent?.(() => undefined);
+    await transport.request(envelope("workspace/list", {}));
+    emit?.({
+      version: 1,
+      eventId: "side-event",
+      cursor: "1",
+      type: "turn/completed",
+      payload: { threadId: "side-1" },
+    });
+    await transport.request(
+      envelope("thread/unsubscribe", { threadId: "side-1" }),
+    );
+    await transport.close?.();
+    await vi.advanceTimersByTimeAsync(1_000);
+
+    expect(close).toHaveBeenCalledOnce();
+    expect(expired).not.toHaveBeenCalled();
+    continuity.releaseTicket();
+  });
+
+  it("keeps legacy cached clients on consume-on-replay delivery", async () => {
+    let emit: ((event: EventEnvelope) => void) | undefined;
+    const continuity = new AuthenticatedGatewaySessionContinuity(async () => ({
+      request: async () => "ok",
+      onEvent: (listener: (event: EventEnvelope) => void) => {
+        emit = listener;
+        return () => undefined;
+      },
+      shouldRetainAcrossReconnect: () => true,
+    }));
+    continuity.retainTicket();
+    const first = continuity.open();
+    first.onEvent?.(() => undefined);
+    await first.request(envelope("workspace/list", {}));
+    const resumed = continuity.open();
+    emit?.({
+      version: 1,
+      eventId: "legacy-gap",
+      cursor: "1",
+      type: "turn/completed",
+      payload: { threadId: "side-1" },
+    });
+    const replayed: string[] = [];
+    resumed.onEvent?.((event) => replayed.push(event.eventId));
+    expect(replayed).toEqual(["legacy-gap"]);
+    expect(continuity.acknowledgeEvent("legacy-gap")).toBe(false);
+
+    const third = continuity.open();
+    const replayedAgain: string[] = [];
+    third.onEvent?.((event) => replayedAgain.push(event.eventId));
+    expect(replayedAgain).toEqual([]);
+    await first.close?.();
+    await resumed.close?.();
+    await third.close?.();
+    continuity.releaseTicket();
+  });
+
+  it("fails a legacy cached client closed instead of dropping an overflow", async () => {
+    let emit: ((event: EventEnvelope) => void) | undefined;
+    const continuity = new AuthenticatedGatewaySessionContinuity(async () => ({
+      request: async () => "ok",
+      onEvent: (listener: (event: EventEnvelope) => void) => {
+        emit = listener;
+        return () => undefined;
+      },
+      shouldRetainAcrossReconnect: () => true,
+    }));
+    continuity.retainTicket();
+    const first = continuity.open();
+    first.onEvent?.(() => undefined);
+    await first.request(envelope("workspace/list", {}));
+    const disconnected = continuity.open();
+
+    for (let index = 0; index <= 4_096; index += 1) {
+      emit?.({
+        version: 1,
+        eventId: `legacy-overflow-${index}`,
+        cursor: String(index),
+        type: "item/agentMessage/delta",
+        payload: { threadId: "side-1", delta: "x" },
+      });
+    }
+    const resumed = continuity.open();
+    const replayed: EventEnvelope[] = [];
+    resumed.onEvent?.((event) => replayed.push(event));
+    expect(replayed).toHaveLength(1);
+    expect(replayed[0]).toMatchObject({
+      type: "gateway/session/continuity-overflow",
+      payload: { version: 1, reason: "buffer-limit", threadId: "side-1" },
+    });
+    await expect(
+      resumed.request(envelope("workspace/list", {})),
+    ).rejects.toThrow("Side continuity is incomplete");
+
+    await first.close?.();
+    await disconnected.close?.();
+    await resumed.close?.();
+    continuity.releaseTicket();
+  });
+
+  it("opens app-server live validation only for an ephemeral fork replay", async () => {
+    const registry = new AuthenticatedSessionRegistry();
+    const binding = sessionBinding();
+    const ticket = registry.issueResumeTicket(
+      registry.captureGeneration(),
+      binding,
+    )!;
+    const validateDurableResult = vi.fn(async () => undefined);
+    const createInner = vi.fn(async () => ({
+      request: async () => "unused",
+      validateDurableResult,
+    }));
+    const session = new AuthenticatedGatewaySession({
+      createInner,
+      passkeys: { count: vi.fn(async () => 1) } as unknown as PasskeyRegistry,
+      newlyPaired: false,
+      resumeToken: ticket,
+      resumeAuthenticatedSession: (token, revoke) =>
+        registry.resume(token, binding, revoke),
+    });
+
+    await session.validateDurableResult(
+      envelope("turn/start", { threadId: "thread-1" }),
+      { turn: { id: "turn-1" } },
+    );
+    expect(createInner).not.toHaveBeenCalled();
+
+    const forkRequest = envelope("thread/fork", {
+      threadId: "thread-1",
+      ephemeral: true,
+    });
+    const forkResult = { thread: { id: "side-1", ephemeral: true } };
+    await session.validateDurableResult(forkRequest, forkResult);
+    expect(createInner).toHaveBeenCalledOnce();
+    expect(validateDurableResult).toHaveBeenCalledWith(forkRequest, forkResult);
+  });
+
   it("gates Codex requests until a newly paired device registers a Passkey", async () => {
     const request = vi.fn(async () => "codex-result");
     const createInner = vi.fn(async () => ({ request }));
@@ -714,6 +1223,139 @@ describe("AuthenticatedGatewaySession", () => {
     await expect(
       resumed.request(envelope("workspace/list", {})),
     ).rejects.toThrow("session was revoked");
+  });
+
+  it("hands the live app-server subscription to a silently resumed transport", async () => {
+    let innerListener: ((event: EventEnvelope) => void) | undefined;
+    const closeInner = vi.fn(async () => undefined);
+    const connectInner = vi.fn(async () => ({
+      request: async () => "shared",
+      onEvent: (listener: (event: EventEnvelope) => void) => {
+        innerListener = listener;
+        return () => {
+          innerListener = undefined;
+        };
+      },
+      shouldRetainAcrossReconnect: () => true,
+      close: closeInner,
+    }));
+    const registry =
+      new AuthenticatedSessionRegistry<AuthenticatedGatewaySessionContinuity>({
+        onResumeTicketDeleted: (continuity) => continuity.releaseTicket(),
+      });
+    const binding = sessionBinding();
+    const passkeys = {
+      count: vi.fn(async () => 1),
+      authenticationOptions: vi.fn(async () => ({ challenge: "login" })),
+      verifyAuthentication: vi.fn(async () => undefined),
+    } as unknown as PasskeyRegistry;
+    const sessionOptions = {
+      passkeys,
+      newlyPaired: false,
+      captureAuthenticationGeneration: () => registry.captureGeneration(),
+      registerAuthenticatedSession: (generation: number, revoke: () => void) =>
+        registry.register(generation, binding, revoke),
+      resumeAuthenticatedSession: (token: string, revoke: () => void) => {
+        const resumed = registry.resume(token, binding, revoke);
+        return resumed
+          ? { ...resumed, continuity: resumed.metadata }
+          : undefined;
+      },
+      issueResumeTicket: (
+        generation: number,
+        continuity: AuthenticatedGatewaySessionContinuity,
+      ) => {
+        continuity.retainTicket();
+        const token = registry.issueResumeTicket(
+          generation,
+          binding,
+          continuity,
+        );
+        if (!token) continuity.releaseTicket();
+        return token;
+      },
+      releaseResumeTickets: (
+        continuity: AuthenticatedGatewaySessionContinuity,
+      ) => registry.releaseResumeTickets(continuity),
+    };
+    const first = new AuthenticatedGatewaySession({
+      ...sessionOptions,
+      createInner: connectInner,
+    });
+    await first.request(envelope("auth/login/options", {}));
+    const authenticated = (await first.request(
+      envelope("auth/login/verify", { response: { id: "passkey" } }),
+    )) as { resumeToken: string };
+    await expect(
+      first.request(envelope("auth/session/events/enable", { version: 1 })),
+    ).resolves.toEqual({ version: 1, enabled: true });
+    await expect(first.request(envelope("workspace/list", {}))).resolves.toBe(
+      "shared",
+    );
+    const staleTransportEvents: string[] = [];
+    first.onEvent((event) => staleTransportEvents.push(event.type));
+
+    expect(closeInner).not.toHaveBeenCalled();
+    const resumed = new AuthenticatedGatewaySession({
+      ...sessionOptions,
+      resumeToken: authenticated.resumeToken,
+      createInner: async () => {
+        throw new Error("resumed transport must reuse the original client");
+      },
+    });
+    // The valid resume has already displaced the old half-open transport, but
+    // the new encrypted handshake has not installed its listener yet.
+    innerListener?.({
+      version: 1,
+      eventId: "side-gap-delta",
+      cursor: "1",
+      type: "item/agentMessage/delta",
+      payload: { threadId: "side-thread", delta: "during reconnect" },
+    });
+    expect(staleTransportEvents).toEqual([]);
+    const events: string[] = [];
+    resumed.onEvent((event) => events.push(event.type));
+    innerListener?.({
+      version: 1,
+      eventId: "side-completed",
+      cursor: "2",
+      type: "turn/completed",
+      payload: { threadId: "side-thread" },
+    });
+
+    await expect(resumed.request(envelope("workspace/list", {}))).resolves.toBe(
+      "shared",
+    );
+    expect(connectInner).toHaveBeenCalledOnce();
+    expect(events).toEqual(["item/agentMessage/delta", "turn/completed"]);
+    await expect(
+      resumed.request(
+        envelope("auth/session/events/ack", {
+          version: 1,
+          eventId: "side-completed",
+        }),
+      ),
+    ).resolves.toEqual({ version: 1, acknowledged: true });
+    await expect(first.request(envelope("workspace/list", {}))).rejects.toThrow(
+      "superseded",
+    );
+    await first.close();
+
+    await expect(
+      resumed.request(envelope("auth/session/release", {})),
+    ).rejects.toThrow("Unsupported page-session release version");
+    await expect(
+      resumed.request(envelope("auth/session/release", { version: 1 })),
+    ).resolves.toEqual({ version: 1, released: 1 });
+    await expect(
+      resumed.request(envelope("auth/session/release", { version: 1 })),
+    ).resolves.toEqual({ version: 1, released: 1 });
+    expect(closeInner).not.toHaveBeenCalled();
+    await resumed.close();
+    expect(closeInner).toHaveBeenCalledOnce();
+    expect(
+      registry.resume(authenticated.resumeToken, binding, vi.fn()),
+    ).toBeUndefined();
   });
 
   it("rejects an invalid resume ticket before invoking WebAuthn", () => {

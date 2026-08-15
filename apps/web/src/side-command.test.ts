@@ -1,10 +1,14 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  canAbandonSideOutcome,
   offersSideCommandCompletion,
   parseWebComposerCommand,
+  sideMayStillBeRunning,
   sideRecoveryDisposition,
+  sideSnapshotUpdateMode,
   sideVisibleTurns,
+  supportsSafeSide,
 } from "./side-command.js";
 
 describe("Web /side command", () => {
@@ -72,5 +76,53 @@ describe("Web /side command", () => {
     expect(sideRecoveryDisposition("generation-1", "generation-2")).toBe(
       "vanished",
     );
+  });
+
+  it("treats an indeterminate Side mutation as possibly still running", () => {
+    expect(
+      sideMayStillBeRunning({
+        statusActive: false,
+        pendingMutation: true,
+      }),
+    ).toBe(true);
+    expect(
+      sideMayStillBeRunning({
+        statusActive: false,
+        pendingMutation: false,
+      }),
+    ).toBe(false);
+  });
+
+  it("merges a reconnect snapshot without replacing the live Side timeline", () => {
+    expect(
+      sideSnapshotUpdateMode({ preserveTimeline: true, openingSide: true }),
+    ).toBe("merge");
+    expect(
+      sideSnapshotUpdateMode({ preserveTimeline: false, openingSide: true }),
+    ).toBe("replace");
+    expect(
+      sideSnapshotUpdateMode({ preserveTimeline: true, openingSide: false }),
+    ).toBe("replace");
+  });
+
+  it("requires both bounded fork and explicit Side control support", () => {
+    expect(supportsSafeSide({ fork: true, sessionControl: true })).toBe(true);
+    expect(supportsSafeSide({ fork: true, sessionControl: false })).toBe(false);
+    expect(supportsSafeSide({ fork: false, sessionControl: true })).toBe(false);
+  });
+
+  it("does not abandon an indeterminate outcome while its Side is retained", () => {
+    expect(
+      canAbandonSideOutcome({
+        continuityOverflow: true,
+        sideStillRetained: true,
+      }),
+    ).toBe(false);
+    expect(
+      canAbandonSideOutcome({
+        continuityOverflow: true,
+        sideStillRetained: false,
+      }),
+    ).toBe(true);
   });
 });

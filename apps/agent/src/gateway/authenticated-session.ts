@@ -2,8 +2,17 @@ import type {
   AuthenticationResponseJSON,
   RegistrationResponseJSON,
 } from "@simplewebauthn/server";
+import { randomUUID } from "node:crypto";
+import {
+  GATEWAY_CONTINUITY_ACK_METHOD,
+  GATEWAY_CONTINUITY_ENABLE_METHOD,
+  GATEWAY_CONTINUITY_OVERFLOW_EVENT,
+  GATEWAY_SESSION_RELEASE_METHOD,
+  SIDE_SESSION_RELEASE_METHOD,
+} from "@codex-everywhere/protocol";
 import type {
   EventEnvelope,
+  GatewayContinuityOverflowPayload,
   RequestEnvelope,
 } from "@codex-everywhere/protocol";
 
@@ -45,6 +54,388 @@ type PendingAuthenticationState =
 
 const AUTHENTICATION_STATE_TTL_MS = 5 * 60_000;
 const AUTHENTICATED_SESSION_RECHECK_MS = 10_000;
+const MAX_CONTINUITY_BUFFERED_EVENTS = 4_096;
+const MAX_CONTINUITY_BUFFERED_EVENT_BYTES = 16 * 1024 * 1024;
+const DEFAULT_DISCONNECTED_SIDE_GRACE_MS = 24 * 60 * 60_000;
+
+/**
+ * Keeps one app-server client alive while a browser page moves between
+ * physical Gateway transports. Resume tickets hold one reference and each
+ * live transport holds another. Ordinary inner clients are released when the
+ * last transport leaves; an inner with ephemeral state remains subscribed
+ * until a resumed transport adopts it or every reference is gone.
+ */
+export class AuthenticatedGatewaySessionContinuity {
+  readonly #createInner: () => Promise<GatewaySession>;
+  readonly #listeners = new Set<(event: EventEnvelope) => void>();
+  readonly #bufferedEvents: Array<{ event: EventEnvelope; bytes: number }> = [];
+  #inner: GatewaySession | undefined;
+  #innerPromise: Promise<GatewaySession> | undefined;
+  #unsubscribeInner: (() => void) | undefined;
+  #unsubscribeInnerClose: (() => void) | undefined;
+  #sessionReferences = 0;
+  #ticketReferences = 0;
+  #bufferedEventBytes = 0;
+  #overflowed = false;
+  #acknowledgedDeliveryEnabled = false;
+  #requiresDisconnectedExpiry = false;
+  #activeHandleId = 0;
+  #disconnectedExpiryTimer: ReturnType<typeof setTimeout> | undefined;
+  #expireDisconnectedTickets: (() => void) | undefined;
+  #disconnectedGraceMs = DEFAULT_DISCONNECTED_SIDE_GRACE_MS;
+  #disposed = false;
+
+  constructor(
+    createInner: () => Promise<GatewaySession>,
+    initialInner?: GatewaySession,
+  ) {
+    this.#createInner = createInner;
+    if (initialInner) {
+      this.#inner = initialInner;
+      this.#unsubscribeInnerClose = initialInner.onClose?.(() => {
+        if (initialInner.shouldRetainAcrossReconnect?.() === true) {
+          this.#requiresDisconnectedExpiry = true;
+          this.#signalContinuityGap("inner-closed");
+        }
+        this.#discardInner(initialInner);
+      });
+    }
+  }
+
+  open(): GatewaySession {
+    if (this.#disposed)
+      throw new Error("Authenticated page session continuity was released");
+    this.#sessionReferences += 1;
+    this.#cancelDisconnectedExpiry();
+    const handleId = ++this.#activeHandleId;
+    // A valid silent resume is an ownership transfer. Stop forwarding to the
+    // previous physical transport immediately, even if its half-open socket
+    // has not emitted close yet; events now enter the continuity buffer until
+    // the new transport installs its listener after the handshake reply.
+    this.#listeners.clear();
+    let released = false;
+    const assertCurrent = (): void => {
+      if (released || handleId !== this.#activeHandleId)
+        throw new Error("Authenticated Gateway transport was superseded");
+    };
+    return {
+      request: async (request) => {
+        assertCurrent();
+        if (this.#overflowed && !isContinuityControlRequest(request.method)) {
+          throw new Error(
+            "Side continuity is incomplete; only interruption or release is allowed",
+          );
+        }
+        const inner = await this.#ensureInner();
+        try {
+          return await inner.request(request);
+        } finally {
+          // A successful unsubscribe, or an app-server operation that removes
+          // the final ephemeral thread before returning an error, must return
+          // this page continuity to ordinary-session semantics.
+          this.#refreshRetentionState();
+        }
+      },
+      validateDurableResult: (request, result) => {
+        assertCurrent();
+        return this.#ensureInner().then((inner) =>
+          inner.validateDurableResult?.(request, result),
+        );
+      },
+      onEvent: (listener) => {
+        if (released || handleId !== this.#activeHandleId)
+          return () => undefined;
+        this.#listeners.add(listener);
+        this.#subscribeInner();
+        if (this.#bufferedEvents.length > 0) {
+          const buffered = this.#acknowledgedDeliveryEnabled
+            ? this.#bufferedEvents
+            : this.#bufferedEvents.splice(0);
+          if (!this.#acknowledgedDeliveryEnabled) this.#bufferedEventBytes = 0;
+          for (const { event } of buffered) listener(event);
+        }
+        return () => this.#listeners.delete(listener);
+      },
+      close: async () => {
+        if (released) return;
+        released = true;
+        this.#sessionReferences -= 1;
+        await this.#releaseInnerUnlessContinuityIsRequired();
+        this.#scheduleDisconnectedExpiryIfRequired();
+        await this.#disposeIfUnreferenced();
+      },
+    };
+  }
+
+  retainTicket(): void {
+    if (this.#disposed)
+      throw new Error("Authenticated page session continuity was released");
+    this.#ticketReferences += 1;
+  }
+
+  releaseTicket(): void {
+    if (this.#ticketReferences === 0) return;
+    this.#ticketReferences -= 1;
+    void this.#disposeIfUnreferenced();
+  }
+
+  configureDisconnectedExpiry(
+    expireTickets: () => void,
+    graceMs = DEFAULT_DISCONNECTED_SIDE_GRACE_MS,
+  ): void {
+    if (!Number.isSafeInteger(graceMs) || graceMs <= 0)
+      throw new Error("Disconnected Side grace period must be positive");
+    this.#expireDisconnectedTickets = expireTickets;
+    this.#disconnectedGraceMs = graceMs;
+    this.#scheduleDisconnectedExpiryIfRequired();
+  }
+
+  enableAcknowledgedDelivery(): void {
+    this.#acknowledgedDeliveryEnabled = true;
+  }
+
+  async #ensureInner(): Promise<GatewaySession> {
+    if (this.#disposed)
+      throw new Error("Authenticated page session continuity was released");
+    if (this.#inner) return this.#inner;
+    if (!this.#innerPromise) {
+      const pending = this.#createInner()
+        .then(async (inner) => {
+          if (this.#disposed) {
+            await inner.close?.();
+            throw new Error(
+              "Authenticated page session continuity was released",
+            );
+          }
+          this.#inner = inner;
+          this.#unsubscribeInnerClose = inner.onClose?.(() => {
+            if (inner.shouldRetainAcrossReconnect?.() === true) {
+              this.#requiresDisconnectedExpiry = true;
+              this.#signalContinuityGap("inner-closed");
+            }
+            this.#discardInner(inner);
+          });
+          this.#subscribeInner();
+          // The transport may have closed while createInner() was pending.
+          // Re-run the lifetime decision after installation so an ordinary
+          // app-server client cannot be retained by a ticket alone.
+          await this.#releaseInnerUnlessContinuityIsRequired();
+          return inner;
+        })
+        .catch((error: unknown) => {
+          if (this.#innerPromise === pending) this.#innerPromise = undefined;
+          throw error;
+        });
+      this.#innerPromise = pending;
+    }
+    return this.#innerPromise;
+  }
+
+  #subscribeInner(): void {
+    if (!this.#inner || this.#unsubscribeInner || this.#listeners.size === 0)
+      return;
+    this.#unsubscribeInner = this.#inner.onEvent?.((event) => {
+      if (this.#overflowed) return;
+      if (this.#inner?.shouldRetainAcrossReconnect?.() !== true) {
+        for (const listener of this.#listeners) listener(event);
+        return;
+      }
+      this.#requiresDisconnectedExpiry = true;
+      if (this.#inner.shouldBufferAcrossReconnect?.(event) === false) {
+        for (const listener of this.#listeners) listener(event);
+        return;
+      }
+      if (!this.#acknowledgedDeliveryEnabled) {
+        if (this.#listeners.size > 0) {
+          for (const listener of this.#listeners) listener(event);
+          return;
+        }
+        const bytes = Buffer.byteLength(JSON.stringify(event), "utf8");
+        this.#bufferedEvents.push({ event, bytes });
+        this.#bufferedEventBytes += bytes;
+        if (
+          this.#bufferedEvents.length > MAX_CONTINUITY_BUFFERED_EVENTS ||
+          this.#bufferedEventBytes > MAX_CONTINUITY_BUFFERED_EVENT_BYTES
+        ) {
+          this.#signalContinuityGap(
+            "buffer-limit",
+            event.cursor,
+            continuityEventThreadId(event),
+          );
+        }
+        return;
+      }
+      const bytes = Buffer.byteLength(JSON.stringify(event), "utf8");
+      if (
+        this.#bufferedEvents.length + 1 > MAX_CONTINUITY_BUFFERED_EVENTS ||
+        this.#bufferedEventBytes + bytes > MAX_CONTINUITY_BUFFERED_EVENT_BYTES
+      ) {
+        this.#signalContinuityGap(
+          "buffer-limit",
+          event.cursor,
+          continuityEventThreadId(event),
+        );
+        return;
+      }
+      this.#bufferedEvents.push({ event, bytes });
+      this.#bufferedEventBytes += bytes;
+      for (const listener of this.#listeners) listener(event);
+    });
+  }
+
+  #signalContinuityGap(
+    reason: GatewayContinuityOverflowPayload["reason"],
+    cursor = this.#bufferedEvents.at(-1)?.event.cursor ?? "0",
+    threadId = continuityThreadId(this.#bufferedEvents),
+  ): void {
+    if (this.#overflowed) return;
+    const payload: GatewayContinuityOverflowPayload = {
+      version: 1,
+      reason,
+      ...(threadId ? { threadId } : {}),
+    };
+    const gap: EventEnvelope = {
+      version: 1,
+      eventId: randomUUID(),
+      cursor,
+      type: GATEWAY_CONTINUITY_OVERFLOW_EVENT,
+      payload,
+    };
+    const bytes = Buffer.byteLength(JSON.stringify(gap), "utf8");
+    this.#bufferedEvents.length = 0;
+    this.#bufferedEvents.push({ event: gap, bytes });
+    this.#bufferedEventBytes = bytes;
+    // A gap is terminal for the current Side, including cached clients which
+    // never negotiated acknowledgements. Delivery acknowledgement only removes
+    // the marker from the replay buffer; it cannot make missing events whole.
+    this.#overflowed = true;
+    for (const listener of this.#listeners) listener(gap);
+  }
+
+  acknowledgeEvent(eventId: string): boolean {
+    if (!this.#acknowledgedDeliveryEnabled) return false;
+    const index = this.#bufferedEvents.findIndex(
+      ({ event }) => event.eventId === eventId,
+    );
+    if (index < 0) return false;
+    const acknowledged = this.#bufferedEvents.splice(0, index + 1);
+    for (const entry of acknowledged) this.#bufferedEventBytes -= entry.bytes;
+    return true;
+  }
+
+  #discardInner(inner: GatewaySession): void {
+    if (this.#inner !== inner) return;
+    this.#unsubscribeInner?.();
+    this.#unsubscribeInner = undefined;
+    this.#unsubscribeInnerClose?.();
+    this.#unsubscribeInnerClose = undefined;
+    this.#inner = undefined;
+    this.#innerPromise = undefined;
+    try {
+      void Promise.resolve(inner.close?.()).catch(() => undefined);
+    } catch {
+      // The transport is already closed. Cleanup is best effort.
+    }
+  }
+
+  async #disposeIfUnreferenced(): Promise<void> {
+    if (
+      this.#disposed ||
+      this.#sessionReferences !== 0 ||
+      this.#ticketReferences !== 0
+    ) {
+      return;
+    }
+    this.#disposed = true;
+    this.#cancelDisconnectedExpiry();
+    this.#listeners.clear();
+    this.#bufferedEvents.length = 0;
+    this.#bufferedEventBytes = 0;
+    this.#unsubscribeInner?.();
+    this.#unsubscribeInner = undefined;
+    this.#unsubscribeInnerClose?.();
+    this.#unsubscribeInnerClose = undefined;
+    const inner = this.#inner;
+    this.#inner = undefined;
+    const pending = this.#innerPromise;
+    this.#innerPromise = undefined;
+    if (inner) await inner.close?.();
+    else if (pending) {
+      try {
+        await (await pending).close?.();
+      } catch {
+        // A failed or concurrently closed app-server connection is already
+        // released; continuity disposal must remain idempotent.
+      }
+    }
+  }
+
+  async #releaseInnerUnlessContinuityIsRequired(): Promise<void> {
+    this.#refreshRetentionState();
+    if (
+      this.#disposed ||
+      this.#sessionReferences !== 0 ||
+      this.#ticketReferences === 0 ||
+      !this.#inner ||
+      this.#inner.shouldRetainAcrossReconnect?.() === true
+    ) {
+      return;
+    }
+    const inner = this.#inner;
+    this.#unsubscribeInner?.();
+    this.#unsubscribeInner = undefined;
+    this.#unsubscribeInnerClose?.();
+    this.#unsubscribeInnerClose = undefined;
+    this.#inner = undefined;
+    this.#innerPromise = undefined;
+    this.#bufferedEvents.length = 0;
+    this.#bufferedEventBytes = 0;
+    await inner.close?.();
+  }
+
+  #refreshRetentionState(): void {
+    if (!this.#inner || this.#inner.shouldRetainAcrossReconnect?.() === true)
+      return;
+    this.#requiresDisconnectedExpiry = false;
+    if (!this.#overflowed) return;
+    this.#overflowed = false;
+    this.#bufferedEvents.length = 0;
+    this.#bufferedEventBytes = 0;
+  }
+
+  #scheduleDisconnectedExpiryIfRequired(): void {
+    if (this.#inner?.shouldRetainAcrossReconnect?.() === true)
+      this.#requiresDisconnectedExpiry = true;
+    if (
+      this.#disposed ||
+      this.#disconnectedExpiryTimer ||
+      this.#sessionReferences !== 0 ||
+      this.#ticketReferences === 0 ||
+      !this.#expireDisconnectedTickets ||
+      !this.#requiresDisconnectedExpiry
+    ) {
+      return;
+    }
+    this.#disconnectedExpiryTimer = setTimeout(() => {
+      this.#disconnectedExpiryTimer = undefined;
+      if (
+        this.#disposed ||
+        this.#sessionReferences !== 0 ||
+        this.#ticketReferences === 0
+      ) {
+        return;
+      }
+      this.#expireDisconnectedTickets?.();
+    }, this.#disconnectedGraceMs);
+    this.#disconnectedExpiryTimer.unref?.();
+  }
+
+  #cancelDisconnectedExpiry(): void {
+    if (!this.#disconnectedExpiryTimer) return;
+    clearTimeout(this.#disconnectedExpiryTimer);
+    this.#disconnectedExpiryTimer = undefined;
+  }
+}
 
 export class AuthenticatedGatewaySession implements GatewaySession {
   readonly #createInner: () => Promise<GatewaySession>;
@@ -64,7 +455,13 @@ export class AuthenticatedGatewaySession implements GatewaySession {
       ) => (() => void) | undefined)
     | undefined;
   readonly #issueResumeTicket:
-    ((expectedGeneration: number) => string | undefined) | undefined;
+    | ((
+        expectedGeneration: number,
+        continuity: AuthenticatedGatewaySessionContinuity,
+      ) => string | undefined)
+    | undefined;
+  readonly #releaseResumeTickets:
+    ((continuity: AuthenticatedGatewaySessionContinuity) => number) | undefined;
   readonly #runCredentialMutation: CredentialMutationRunner | undefined;
   readonly #onCredentialsRecovered: (() => Promise<void> | void) | undefined;
   readonly #assertAuthenticatedSessionCurrent:
@@ -76,6 +473,7 @@ export class AuthenticatedGatewaySession implements GatewaySession {
         emitEvent: (event: EventEnvelope) => void,
       ) => Promise<AuthenticatedRequestResult>)
     | undefined;
+  readonly #continuity: AuthenticatedGatewaySessionContinuity;
   readonly #listeners = new Set<
     Parameters<NonNullable<GatewaySession["onEvent"]>>[0]
   >();
@@ -97,6 +495,7 @@ export class AuthenticatedGatewaySession implements GatewaySession {
   #revoked = false;
   #authenticationRecheckTimer: ReturnType<typeof setInterval> | undefined;
   #authenticationRecheckInFlight = false;
+  #pageSessionReleaseResult: number | undefined;
 
   constructor(options: {
     inner?: GatewaySession;
@@ -116,8 +515,21 @@ export class AuthenticatedGatewaySession implements GatewaySession {
     resumeAuthenticatedSession?: (
       token: string,
       revoke: () => void,
-    ) => { unregister: () => void; generation: number } | undefined;
-    issueResumeTicket?: (expectedGeneration: number) => string | undefined;
+    ) =>
+      | {
+          unregister: () => void;
+          generation: number;
+          continuity?: AuthenticatedGatewaySessionContinuity;
+        }
+      | undefined;
+    issueResumeTicket?: (
+      expectedGeneration: number,
+      continuity: AuthenticatedGatewaySessionContinuity,
+    ) => string | undefined;
+    releaseResumeTickets?: (
+      continuity: AuthenticatedGatewaySessionContinuity,
+    ) => number;
+    disconnectedSideGraceMs?: number;
     runCredentialMutation?: CredentialMutationRunner;
     onCredentialsRecovered?: () => Promise<void> | void;
     assertAuthenticatedSessionCurrent?: () => Promise<void>;
@@ -131,7 +543,6 @@ export class AuthenticatedGatewaySession implements GatewaySession {
       throw new Error(
         "Authenticated session requires an inner session factory",
       );
-    this.#inner = options.inner;
     this.#createInner = options.createInner ?? (async () => options.inner!);
     this.#passkeys = options.passkeys;
     this.#passwords = options.passwords;
@@ -143,6 +554,7 @@ export class AuthenticatedGatewaySession implements GatewaySession {
       options.captureAuthenticationGeneration;
     this.#registerAuthenticatedSession = options.registerAuthenticatedSession;
     this.#issueResumeTicket = options.issueResumeTicket;
+    this.#releaseResumeTickets = options.releaseResumeTickets;
     this.#runCredentialMutation = options.runCredentialMutation;
     this.#onCredentialsRecovered = options.onCredentialsRecovered;
     this.#assertAuthenticatedSessionCurrent =
@@ -158,10 +570,16 @@ export class AuthenticatedGatewaySession implements GatewaySession {
       );
     }
     this.#handleAuthenticatedRequest = options.handleAuthenticatedRequest;
+    let resumed:
+      | {
+          unregister: () => void;
+          generation: number;
+          continuity?: AuthenticatedGatewaySessionContinuity;
+        }
+      | undefined;
     if (options.resumeToken !== undefined) {
-      const resumed = options.resumeAuthenticatedSession?.(
-        options.resumeToken,
-        () => this.#revoke(),
+      resumed = options.resumeAuthenticatedSession?.(options.resumeToken, () =>
+        this.#revoke(),
       );
       if (!resumed) {
         throw new Error("REAUTH_REQUIRED: session resume ticket is invalid");
@@ -172,6 +590,19 @@ export class AuthenticatedGatewaySession implements GatewaySession {
       this.#authenticatedGeneration = resumed.generation;
       this.#startAuthenticationRecheck();
     }
+    this.#continuity =
+      resumed?.continuity ??
+      new AuthenticatedGatewaySessionContinuity(
+        this.#createInner,
+        options.inner,
+      );
+    if (options.releaseResumeTickets) {
+      this.#continuity.configureDisconnectedExpiry(
+        () => options.releaseResumeTickets?.(this.#continuity),
+        options.disconnectedSideGraceMs,
+      );
+    }
+    this.#inner = this.#continuity.open();
   }
 
   onEvent(
@@ -197,6 +628,42 @@ export class AuthenticatedGatewaySession implements GatewaySession {
           registrationRequired: !hasPasskey && this.#newlyPaired,
           passwordEnabled: await this.#passwords?.hasPassword(),
         };
+      }
+      case GATEWAY_SESSION_RELEASE_METHOD: {
+        if (!this.#authenticated)
+          throw new Error("Passkey authentication required");
+        if (payload.version !== 1)
+          throw new Error("Unsupported page-session release version");
+        this.#pageSessionReleaseResult ??=
+          this.#releaseResumeTickets?.(this.#continuity) ?? 0;
+        return {
+          version: 1,
+          released: this.#pageSessionReleaseResult,
+        };
+      }
+      case GATEWAY_CONTINUITY_ACK_METHOD: {
+        if (!this.#authenticated)
+          throw new Error("Passkey authentication required");
+        if (
+          payload.version !== 1 ||
+          typeof payload.eventId !== "string" ||
+          payload.eventId.length === 0 ||
+          payload.eventId.length > 256
+        ) {
+          throw new Error("Invalid continuity event acknowledgement");
+        }
+        return {
+          version: 1,
+          acknowledged: this.#continuity.acknowledgeEvent(payload.eventId),
+        };
+      }
+      case GATEWAY_CONTINUITY_ENABLE_METHOD: {
+        if (!this.#authenticated)
+          throw new Error("Passkey authentication required");
+        if (payload.version !== 1)
+          throw new Error("Unsupported continuity acknowledgement version");
+        this.#continuity.enableAcknowledgedDelivery();
+        return { version: 1, enabled: true };
       }
       case "auth/register/options": {
         const recoveryAuthorization = !this.#authenticated
@@ -410,6 +877,17 @@ export class AuthenticatedGatewaySession implements GatewaySession {
     }
   }
 
+  async validateDurableResult(
+    request: RequestEnvelope,
+    result: unknown,
+  ): Promise<void> {
+    if (this.#revoked || !this.#authenticated)
+      throw new Error("Passkey authentication required");
+    const payload = asRecord(request.payload);
+    if (request.method !== "thread/fork" || payload.ephemeral !== true) return;
+    await (await this.#ensureInner()).validateDurableResult?.(request, result);
+  }
+
   async close(): Promise<void> {
     this.#unregisterAuthenticatedSession?.();
     this.#unregisterAuthenticatedSession = undefined;
@@ -457,7 +935,10 @@ export class AuthenticatedGatewaySession implements GatewaySession {
       if (this.#issueResumeTicket) {
         if (expectedGeneration === undefined)
           throw new Error("Authentication generation is missing");
-        resumeToken = this.#issueResumeTicket(expectedGeneration);
+        resumeToken = this.#issueResumeTicket(
+          expectedGeneration,
+          this.#continuity,
+        );
         if (!resumeToken)
           throw new Error("Authentication was invalidated; reconnect");
       }
@@ -771,6 +1252,33 @@ export class AuthenticatedGatewaySession implements GatewaySession {
       throw new Error("Password login identifiers are not configured");
     return this.#opaqueIdentifiers;
   }
+}
+
+function continuityThreadId(
+  entries: ReadonlyArray<{ event: EventEnvelope }>,
+): string | undefined {
+  for (let index = entries.length - 1; index >= 0; index -= 1) {
+    const value = entries[index]?.event.payload;
+    if (!value || typeof value !== "object") continue;
+    const threadId = (value as Record<string, unknown>).threadId;
+    if (typeof threadId === "string") return threadId;
+  }
+  return undefined;
+}
+
+function continuityEventThreadId(event: EventEnvelope): string | undefined {
+  const value = event.payload;
+  if (!value || typeof value !== "object") return undefined;
+  const threadId = (value as Record<string, unknown>).threadId;
+  return typeof threadId === "string" ? threadId : undefined;
+}
+
+function isContinuityControlRequest(method: string): boolean {
+  return (
+    method === "turn/interrupt" ||
+    method === "thread/unsubscribe" ||
+    method === SIDE_SESSION_RELEASE_METHOD
+  );
 }
 
 function asRecord(value: unknown): Record<string, unknown> {

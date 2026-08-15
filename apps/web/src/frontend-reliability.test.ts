@@ -301,6 +301,9 @@ describe("frontend reliability contracts", () => {
     expect(abandon).toContain("clearThreadStartSafetyMarker()");
     expect(mainSource).toContain('"beforeunload"');
     expect(mainSource).toContain("warnBeforeUnresolvedMutationUnload");
+    expect(mainSource).toContain('"pagehide"');
+    expect(mainSource).toContain("interruptTurnBeforePageRelease");
+    expect(mainSource).toContain("if (pendingSideForkOperation) return");
     const beforeUnload = mainSource.slice(
       mainSource.indexOf("function warnBeforeUnresolvedMutationUnload"),
       mainSource.indexOf("function renderIndeterminateThreadStart"),
@@ -509,9 +512,90 @@ describe("frontend reliability contracts", () => {
       mainSource.indexOf("async function recoverConnection"),
       mainSource.indexOf("function activeThreadSnapshot"),
     );
+    expect(recovery).toContain("return prepareClientForBinding(nextClient");
+    expect(
+      recovery.indexOf("return prepareClientForBinding(nextClient"),
+    ).toBeLessThan(recovery.indexOf("isRetryable:"));
+    expect(recovery).toContain(
+      "error instanceof RetryableClientPreparationError",
+    );
     expect(recovery).toContain("bindActiveClient(nextClient)");
     expect(recovery).toContain("const thread = activeThreadSnapshot()");
     expect(recovery).not.toContain("await activate(nextClient)");
+  });
+
+  it("retries initial ACK negotiation through the newly authenticated ticket", () => {
+    const preparation = mainSource.slice(
+      mainSource.indexOf(
+        "async function prepareAuthenticatedClientForActivation",
+      ),
+      mainSource.indexOf("async function activate"),
+    );
+    expect(preparation).toContain("reconnectWithUnlimitedAttempts");
+    expect(preparation).toContain(
+      "candidate.reconnect({ allowInteractive: false })",
+    );
+    expect(preparation).toContain(
+      "retryOnFailure: candidate.canReconnectSilently",
+    );
+    expect(preparation).toContain(
+      "error instanceof RetryableClientPreparationError",
+    );
+  });
+
+  it("stops an active Side turn before abandoning an overflowed view", () => {
+    const fallback = mainSource.slice(
+      mainSource.indexOf("async function returnFromUnavailableSide"),
+      mainSource.indexOf("function markUnavailableSideOperationsForReview"),
+    );
+    expect(fallback).toContain('currentClient.request("turn/interrupt"');
+    expect(
+      fallback.indexOf("markUnavailableSideOperationsForReview"),
+    ).toBeLessThan(fallback.indexOf('currentClient.request("turn/interrupt"'));
+    expect(fallback).toContain('"side-continuity-overflow"');
+    expect(fallback).toContain("已保留 Side 控制界面");
+  });
+
+  it("keeps every terminal Side gap on a retryable explicit-control path", () => {
+    const forkRecovery = mainSource.slice(
+      mainSource.indexOf("async function resumePendingSideForkOperation"),
+      mainSource.indexOf("async function completeSideForkOperation"),
+    );
+    const abandon = mainSource.slice(
+      mainSource.indexOf("async function abandonPendingSideForkOperation"),
+      mainSource.indexOf("async function sendTurn"),
+    );
+    const interrupt = mainSource.slice(
+      mainSource.indexOf("async function interruptActiveTurn"),
+      mainSource.indexOf("async function steerQueuedMessage"),
+    );
+    const events = mainSource.slice(
+      mainSource.indexOf("function renderEvent"),
+      mainSource.indexOf('if (event.type === "codex/serverRequest")'),
+    );
+
+    expect(forkRecovery).toContain("if (operation.manualReviewRequired)");
+    expect(events).toContain("else if (pendingSideForkOperation)");
+    expect(events).toContain(
+      "pendingSideForkOperation.manualReviewRequired = true",
+    );
+    expect(abandon.indexOf("showHostReauthentication")).toBeLessThan(
+      abandon.indexOf("targetClient.close()"),
+    );
+    expect(interrupt).toContain('lifecycle === "control-only"');
+    expect(interrupt).toContain("interruptedSide.interruptConfirmed = true");
+    expect(interrupt).toContain("interruptConfirmed: true");
+    expect(interrupt).toContain("returnFromUnavailableSide");
+    const sideChrome = mainSource.slice(
+      mainSource.indexOf("function renderSideSessionChrome"),
+      mainSource.indexOf("function renderSideCommandCompletion"),
+    );
+    const returnToParent = mainSource.slice(
+      mainSource.indexOf("async function returnToSideParent"),
+      mainSource.indexOf("async function releaseSideSubscription"),
+    );
+    expect(sideChrome).toContain("side.interruptConfirmed !== true");
+    expect(returnToParent).toContain("controlOnlyReleaseReady");
   });
 
   it("waits while hidden but leaves the retry loop for visible reauthentication", () => {
@@ -524,9 +608,8 @@ describe("frontend reliability contracts", () => {
       adminSource.indexOf("function wakeAdminConnectionRecovery"),
     );
     for (const recovery of [userRecovery, adminRecovery]) {
-      expect(recovery).toContain(
-        "previous.reconnect({ canInteract: () => !document.hidden })",
-      );
+      expect(recovery).toContain("previous.reconnect(");
+      expect(recovery).toContain("canInteract: () => !document.hidden");
       expect(recovery).toContain(
         "document.hidden &&\n            error instanceof GatewayReauthenticationRequired",
       );
@@ -565,5 +648,83 @@ describe("frontend reliability contracts", () => {
     expect(adminFallback).toContain(
       "rememberInput.checked = !temporaryPassword",
     );
+  });
+
+  it("prevents an older login activation from mutating the newly selected client", () => {
+    const activation = mainSource.slice(
+      mainSource.indexOf("async function activate"),
+      mainSource.indexOf("function bindActiveClient"),
+    );
+    const passkeyLogin = mainSource.slice(
+      mainSource.indexOf("async function loginWithPasskey"),
+      mainSource.indexOf("async function loginWithPassword"),
+    );
+    const savedLogin = mainSource.slice(
+      mainSource.indexOf("async function connectSaved"),
+      mainSource.indexOf("async function runLoginButtonAction"),
+    );
+    const continuation = mainSource.slice(
+      mainSource.indexOf("async function continueAfterHostAuthentication"),
+      mainSource.indexOf("function showProvisionStep"),
+    );
+    expect(activation).not.toContain("clientActivationEpoch.begin()");
+    expect(passkeyLogin.indexOf("clientActivationEpoch.begin()")).toBeLessThan(
+      passkeyLogin.indexOf("GatewayClient.loginWithPasskey"),
+    );
+    expect(savedLogin.indexOf("clientActivationEpoch.begin()")).toBeLessThan(
+      savedLogin.indexOf("GatewayClient.connect"),
+    );
+    expect(activation).toContain(
+      'activation: ReturnType<ClientActivationEpoch["begin"]>',
+    );
+    expect(activation).toContain(
+      "continueAfterHostAuthentication(nextClient, activation.isCurrent)",
+    );
+    expect(continuation).toContain(
+      "if (!isCurrent() || client !== targetClient) return",
+    );
+    expect(savedLogin).toContain("discardAuthenticatedClient(nextClient)");
+    expect(activation).toContain(
+      "bindActiveClient(nextClient, { deferPreviousClose: true })",
+    );
+    expect(activation).toContain(
+      "if (previousClient) discardAuthenticatedClient(previousClient)",
+    );
+  });
+
+  it("shows one-time recovery codes before discarding stale credential flows", () => {
+    for (const [start, end] of [
+      ["async function pair", "function showFirstUse"],
+      ["async function recoverWebCredentials", "function shouldRememberDevice"],
+    ] as const) {
+      const flow = mainSource.slice(
+        mainSource.indexOf(start),
+        mainSource.indexOf(end),
+      );
+      expect(flow.indexOf("showRecoveryCodes")).toBeGreaterThanOrEqual(0);
+      expect(flow.indexOf("showRecoveryCodes")).toBeLessThan(
+        flow.indexOf("if (!activation.isCurrent())"),
+      );
+      expect(flow).toContain("discardAuthenticatedClient(result.client)");
+    }
+  });
+
+  it("reuses one idempotency key for every Side release attempt", () => {
+    const sideType = mainSource.slice(
+      mainSource.indexOf("type ActiveSideSession"),
+      mainSource.indexOf("type SideThreadForkResponse"),
+    );
+    const completion = mainSource.slice(
+      mainSource.indexOf("async function completeSideForkOperation"),
+      mainSource.indexOf("function assertSideForkResponse"),
+    );
+    const release = mainSource.slice(
+      mainSource.indexOf("async function releaseSideSubscription"),
+      mainSource.indexOf("function clientSupportsSafeSide"),
+    );
+
+    expect(sideType).toContain("releaseIdempotencyKey: string");
+    expect(completion).toContain("releaseIdempotencyKey: crypto.randomUUID()");
+    expect(release).toContain("{ idempotencyKey: side.releaseIdempotencyKey }");
   });
 });

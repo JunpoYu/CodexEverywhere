@@ -5,6 +5,7 @@ import { join } from "node:path";
 
 import {
   PROTOCOL_VERSION,
+  SIDE_SESSION_RELEASE_METHOD,
   type EventEnvelope,
 } from "@codex-everywhere/protocol";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -74,6 +75,7 @@ describe("CodexGatewaySession notifications", () => {
     let steerPayload: Record<string, unknown> | undefined;
     const turnStartPayloads: Record<string, unknown>[] = [];
     let unsubscribePayload: Record<string, unknown> | undefined;
+    let unsubscribeRequests = 0;
     let initializePayload: Record<string, unknown> | undefined;
     let threadListPayload: Record<string, unknown> | undefined;
     let threadResumePayload: Record<string, unknown> | undefined;
@@ -177,6 +179,7 @@ describe("CodexGatewaySession notifications", () => {
             result: { turn: { id: "turn-2" } },
           });
         } else if (message.method === "thread/unsubscribe") {
+          unsubscribeRequests += 1;
           unsubscribePayload = message.params as Record<string, unknown>;
           sendToClient?.({
             id: message.id,
@@ -687,6 +690,15 @@ describe("CodexGatewaySession notifications", () => {
       }),
     ).resolves.toEqual({ status: "unsubscribed" });
     expect(unsubscribePayload).toEqual({ threadId: "thread-1" });
+    await expect(
+      session.request({
+        version: PROTOCOL_VERSION,
+        requestId: "release-persistent-thread",
+        idempotencyKey: "release-persistent-thread",
+        method: SIDE_SESSION_RELEASE_METHOD,
+        payload: { version: 1, threadId: "thread-1" },
+      }),
+    ).rejects.toThrow("requires an ephemeral thread");
 
     for (const [index, method] of [
       "thread/compact/start",
@@ -709,6 +721,7 @@ describe("CodexGatewaySession notifications", () => {
       });
     }
 
+    expect(session.shouldRetainAcrossReconnect()).toBe(false);
     const sideFork = await session.request({
       version: PROTOCOL_VERSION,
       requestId: "slash-fork",
@@ -729,6 +742,7 @@ describe("CodexGatewaySession notifications", () => {
       },
     });
     expect(JSON.stringify(sideFork)).not.toContain("PRIVATE HISTORY");
+    expect(session.shouldRetainAcrossReconnect()).toBe(true);
     await expect(
       session.validateDurableResult(
         {
@@ -783,15 +797,44 @@ describe("CodexGatewaySession notifications", () => {
     await expect(queue.list()).resolves.not.toContainEqual(
       expect.objectContaining({ threadId: "thread-fork" }),
     );
+    const removeSidePermissions =
+      threadPermissions.remove.bind(threadPermissions);
+    vi.spyOn(threadPermissions, "remove").mockImplementationOnce(
+      async (threadId) => {
+        await removeSidePermissions(threadId);
+        throw new Error("injected Side permission cleanup failure");
+      },
+    );
     await expect(
       session.request({
         version: PROTOCOL_VERSION,
-        requestId: "side-unsubscribe",
-        idempotencyKey: "side-unsubscribe",
-        method: "thread/unsubscribe",
-        payload: { threadId: "thread-fork" },
+        requestId: "side-release",
+        idempotencyKey: "side-release",
+        method: SIDE_SESSION_RELEASE_METHOD,
+        payload: { version: 1, threadId: "thread-fork" },
       }),
-    ).resolves.toEqual({ status: "unsubscribed" });
+    ).rejects.toThrow("Side permission cleanup failure");
+    expect(session.shouldRetainAcrossReconnect()).toBe(true);
+    await expect(
+      session.request({
+        version: PROTOCOL_VERSION,
+        requestId: "side-release-retry",
+        idempotencyKey: "side-release-retry",
+        method: SIDE_SESSION_RELEASE_METHOD,
+        payload: { version: 1, threadId: "thread-fork" },
+      }),
+    ).resolves.toEqual({ version: 1, released: true });
+    await expect(
+      session.request({
+        version: PROTOCOL_VERSION,
+        requestId: "side-release-exact-retry",
+        idempotencyKey: "side-release-exact-retry",
+        method: SIDE_SESSION_RELEASE_METHOD,
+        payload: { version: 1, threadId: "thread-fork" },
+      }),
+    ).resolves.toEqual({ version: 1, released: true });
+    expect(unsubscribeRequests).toBe(2);
+    expect(session.shouldRetainAcrossReconnect()).toBe(false);
     await expect(
       threadPermissions.read("thread-fork"),
     ).resolves.toBeUndefined();

@@ -2901,6 +2901,26 @@ dialog::backdrop {
   display: none;
 }
 
+.content.side-session-control-only .side-session-banner {
+  color: #6f321f;
+  background: linear-gradient(90deg, #fff0e8, #fff8f4);
+  border-bottom-color: #efb29b;
+}
+
+.content.side-session-control-only .side-session-mark {
+  background: #c74f2d;
+}
+
+.content.side-session-control-only .side-session-banner-copy strong,
+.content.side-session-control-only .side-session-banner-copy small {
+  color: #71301e;
+}
+
+.content.side-session-control-only .side-session-return {
+  color: #7a321f;
+  border-color: #dc9b83;
+}
+
 .side-session-banner-copy {
   display: flex;
   min-width: 0;
@@ -5129,6 +5149,33 @@ button.session-meta-item:focus-visible,
   color: #d4c5f2;
   background: linear-gradient(90deg, #211a31, #191820);
   border-bottom-color: #3f315d;
+}
+
+:root[data-theme="dark"]
+  .content.side-session-control-only
+  .side-session-banner {
+  color: #ffd2c1;
+  background: linear-gradient(90deg, #3d211b, #281b1a);
+  border-bottom-color: #714130;
+}
+
+:root[data-theme="dark"]
+  .content.side-session-control-only
+  .side-session-banner-copy
+  strong,
+:root[data-theme="dark"]
+  .content.side-session-control-only
+  .side-session-banner-copy
+  small {
+  color: #ffd2c1;
+}
+
+:root[data-theme="dark"]
+  .content.side-session-control-only
+  .side-session-return {
+  color: #ffd2c1;
+  background: #3c2722;
+  border-color: #7a4d3d;
 }
 
 :root[data-theme="dark"] .side-session-banner-copy strong {

@@ -24,7 +24,10 @@ import { WorkspaceRegistry } from "../host/workspaces.js";
 import { CodexGatewaySession } from "../gateway/codex-gateway-session.js";
 import { DirectGateway } from "../gateway/direct-gateway.js";
 import { RelayConnector } from "../gateway/relay-connector.js";
-import { AuthenticatedGatewaySession } from "../gateway/authenticated-session.js";
+import {
+  AuthenticatedGatewaySession,
+  AuthenticatedGatewaySessionContinuity,
+} from "../gateway/authenticated-session.js";
 import { PasskeyRegistry } from "../host/passkeys.js";
 import {
   PasswordRegistry,
@@ -112,7 +115,10 @@ export async function runAgentService(paths: HostPaths): Promise<void> {
     const preferences = new UserPreferencesRegistry(state);
     const threadPermissions = new ThreadPermissionRegistry(state);
     const setup = new HostSetupService(paths, { preferences });
-    const authenticatedSessions = new AuthenticatedSessionRegistry();
+    const authenticatedSessions =
+      new AuthenticatedSessionRegistry<AuthenticatedGatewaySessionContinuity>({
+        onResumeTicketDeleted: (continuity) => continuity.releaseTicket(),
+      });
     const authenticationRateLimiter = new AuthenticationRateLimiter();
     const deviceTrust = new CachedDeviceTrustVerifier(
       new DeviceRegistry(state),
@@ -209,13 +215,33 @@ export async function runAgentService(paths: HostPaths): Promise<void> {
               sessionBinding,
               revoke,
             ),
-          resumeAuthenticatedSession: (token, revoke) =>
-            authenticatedSessions.resume(token, sessionBinding, revoke),
-          issueResumeTicket: (expectedGeneration) =>
-            authenticatedSessions.issueResumeTicket(
-              expectedGeneration,
+          resumeAuthenticatedSession: (token, revoke) => {
+            const resumed = authenticatedSessions.resume(
+              token,
               sessionBinding,
-            ),
+              revoke,
+            );
+            return resumed
+              ? { ...resumed, continuity: resumed.metadata }
+              : undefined;
+          },
+          issueResumeTicket: (expectedGeneration, continuity) => {
+            continuity.retainTicket();
+            try {
+              const token = authenticatedSessions.issueResumeTicket(
+                expectedGeneration,
+                sessionBinding,
+                continuity,
+              );
+              if (!token) continuity.releaseTicket();
+              return token;
+            } catch (error) {
+              continuity.releaseTicket();
+              throw error;
+            }
+          },
+          releaseResumeTickets: (continuity) =>
+            authenticatedSessions.releaseResumeTickets(continuity),
           runCredentialMutation: (expectedGeneration, operation, options) =>
             authenticatedSessions.runCredentialMutation(
               expectedGeneration,
