@@ -555,6 +555,48 @@ describe("frontend reliability contracts", () => {
     expect(fallback).toContain("已保留 Side 控制界面");
   });
 
+  it("keeps every terminal Side gap on a retryable explicit-control path", () => {
+    const forkRecovery = mainSource.slice(
+      mainSource.indexOf("async function resumePendingSideForkOperation"),
+      mainSource.indexOf("async function completeSideForkOperation"),
+    );
+    const abandon = mainSource.slice(
+      mainSource.indexOf("async function abandonPendingSideForkOperation"),
+      mainSource.indexOf("async function sendTurn"),
+    );
+    const interrupt = mainSource.slice(
+      mainSource.indexOf("async function interruptActiveTurn"),
+      mainSource.indexOf("async function steerQueuedMessage"),
+    );
+    const events = mainSource.slice(
+      mainSource.indexOf("function renderEvent"),
+      mainSource.indexOf('if (event.type === "codex/serverRequest")'),
+    );
+
+    expect(forkRecovery).toContain("if (operation.manualReviewRequired)");
+    expect(events).toContain("else if (pendingSideForkOperation)");
+    expect(events).toContain(
+      "pendingSideForkOperation.manualReviewRequired = true",
+    );
+    expect(abandon.indexOf("showHostReauthentication")).toBeLessThan(
+      abandon.indexOf("targetClient.close()"),
+    );
+    expect(interrupt).toContain('lifecycle === "control-only"');
+    expect(interrupt).toContain("interruptedSide.interruptConfirmed = true");
+    expect(interrupt).toContain("interruptConfirmed: true");
+    expect(interrupt).toContain("returnFromUnavailableSide");
+    const sideChrome = mainSource.slice(
+      mainSource.indexOf("function renderSideSessionChrome"),
+      mainSource.indexOf("function renderSideCommandCompletion"),
+    );
+    const returnToParent = mainSource.slice(
+      mainSource.indexOf("async function returnToSideParent"),
+      mainSource.indexOf("async function releaseSideSubscription"),
+    );
+    expect(sideChrome).toContain("side.interruptConfirmed !== true");
+    expect(returnToParent).toContain("controlOnlyReleaseReady");
+  });
+
   it("waits while hidden but leaves the retry loop for visible reauthentication", () => {
     const userRecovery = mainSource.slice(
       mainSource.indexOf("async function recoverConnection"),

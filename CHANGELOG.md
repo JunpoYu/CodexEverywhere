@@ -6,8 +6,8 @@
 
 ### Fixed
 
-- Web 在首次认证和每次 silent resume 后都会先重新协商 Side continuity ACK，再接管新 transport；协商失败时关闭未绑定连接并复用内存恢复票据无限退避，不要求用户重复认证。多次并发登录或恢复使用 activation epoch，旧流程在任何异步状态读取返回后都不得覆盖后来选中的 client、页面或 Side。transport swap 的 Side 状态快照改为合并已完成 turn，不再替换 DOM 中已经 ACK 的流式前缀。
-- Side continuity gap 现在是不可逆的生命周期状态：ACK 只删除已处理的重放前缀，不能清除 overflow；新版和缓存旧 PWA 在 gap 后都只能请求停止、unsubscribe 或版本化 Side release，其他请求失败关闭。Web 立即显示独立的仅控制视觉状态，禁止继续发送，也禁止在 Side 仍被保留时单独放弃 unknown/indeterminate 消息。活动 turn 必须先确认 interrupt；随后只有 `side/session/release` 返回 version 1 成功才可返回父会话，释放失败则保留控制入口。若分叉本身结果不可判定，显式放弃会先等待 `auth/session/release` 的 version 1 确认，再关闭 transport 并要求重新认证，避免未知 fork 成为不可见后台状态。若 app-server 实例代次已经变化，Side 已确定不存在，才无需旧实例确认即可清理本地入口。
+- Web 在首次认证和每次 silent resume 后都会先重新协商 Side continuity ACK，再接管新 transport；协商失败时关闭未绑定连接并复用内存恢复票据无限退避，不要求用户重复认证。多次并发登录或恢复使用 activation epoch，旧流程在任何异步状态读取返回后都不得覆盖后来选中的 client、页面或 Side。transport swap 的 Side 状态快照改为合并已完成 turn，不再替换 DOM 中已经 ACK 的流式前缀。ACK 批处理会保留所有候选事件；若最新的普通实时事件不在 Agent 的 Side buffer 中，会退回确认较早的可重放 Side 前缀，不会把负确认误当成功并使缓冲持续增长。
+- Side continuity gap 现在是不可逆的生命周期状态：ACK 只删除已处理的重放前缀，不能清除 overflow；新版和缓存旧 PWA 在 gap 后都只能请求停止、unsubscribe 或版本化 Side release，其他请求失败关闭。Web 立即显示独立的仅控制视觉状态，禁止继续发送，也禁止在 Side 仍被保留时单独放弃 unknown/indeterminate 消息。gap 若发生在 fork 返回前，原 fork 操作会直接转为人工核对，迟到的成功或失败都不能清除唯一控制记录。活动 turn 必须先确认 interrupt；自动停止失败后，用户手动停止成功也会记录确认并继续 release，释放暂时失败时“返回主会话”仍可重试。只有 `side/session/release` 返回 version 1 成功才可返回父会话。若分叉本身结果不可判定，显式放弃会先等待可重试的 `auth/session/release` 确认，再关闭 transport 并要求重新认证，避免未知 fork 或 app-server inner 成为不可见后台状态。若 app-server 实例代次已经变化，Side 已确定不存在，才无需旧实例确认即可清理本地入口。
 - Agent 仅把当前 ephemeral thread 的事件放入 Side continuity buffer；其他 thread、Queue 与宿主机事件不再消耗 4096 条或 16 MiB 配额。新增独立 `side-session-control-v1` capability，新 Web 只有同时协商到它和 `side-fork-v1` 才开放 `/side`。显式 release 只接受 ephemeral thread，并在同一 app-server session 中对响应丢失重试保持幂等；释放后同时清理权限缓存、终态 gap 和断连到期分类。普通页面仍在断线后立即释放 app-server 客户端，Side 异常断连仍受 24 小时回收宽限。
 
 ## [0.3.0-alpha.11] - 2026-08-14

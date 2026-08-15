@@ -248,6 +248,7 @@ type ThreadRuntimeSettings = {
 
 type ActiveSideSession = {
   lifecycle: "live" | "control-only";
+  interruptConfirmed?: true;
   threadId: string;
   parent: ThreadSummary;
   inheritedThroughTurnId: string;
@@ -2118,6 +2119,7 @@ async function returnFromUnavailableSide(
   options: {
     reason?: "side-unavailable" | "side-continuity-overflow";
     message?: string;
+    interruptConfirmed?: boolean;
   } = {},
 ): Promise<void> {
   if (
@@ -2134,13 +2136,16 @@ async function returnFromUnavailableSide(
     renderSideSessionChrome();
     updateComposerSubmitAvailability();
   }
-  const possiblyActive = sideMayStillBeRunning({
-    statusActive: activeThreadStatus?.type === "active",
-    ...(activeTurnId ? { turnId: activeTurnId } : {}),
-    pendingMutation: hasPendingComposerOperationForThread(
-      expectedSide.threadId,
-    ),
-  });
+  const possiblyActive =
+    !options.interruptConfirmed &&
+    !expectedSide.interruptConfirmed &&
+    sideMayStillBeRunning({
+      statusActive: activeThreadStatus?.type === "active",
+      ...(activeTurnId ? { turnId: activeTurnId } : {}),
+      pendingMutation: hasPendingComposerOperationForThread(
+        expectedSide.threadId,
+      ),
+    });
   if (options.reason === "side-continuity-overflow" && possiblyActive) {
     const currentClient = client;
     const turnId = activeTurnId;
@@ -2169,6 +2174,8 @@ async function returnFromUnavailableSide(
       activeThreadId !== expectedSide.threadId
     )
       return;
+    expectedSide.interruptConfirmed = true;
+    renderSideSessionChrome();
   }
   if (options.reason !== "side-continuity-overflow") {
     markUnavailableSideOperationsForReview(
@@ -3884,10 +3891,13 @@ async function leaveActiveThreadView(): Promise<void> {
 async function returnToSideParent(): Promise<void> {
   const side = activeSideSession;
   if (!side) return;
+  const controlOnlyReleaseReady =
+    side.lifecycle === "control-only" && side.interruptConfirmed === true;
   if (
     composerSubmitting ||
-    activeThreadStatus?.type === "active" ||
-    hasPendingComposerOperationForThread(side.threadId)
+    (!controlOnlyReleaseReady &&
+      (activeThreadStatus?.type === "active" ||
+        hasPendingComposerOperationForThread(side.threadId)))
   ) {
     showToast("请先结束 Side 回复并确认待处理消息，再返回主会话", "error");
     return;
@@ -3968,6 +3978,7 @@ function renderSideSessionChrome(): void {
   const returnButton = requiredElement<HTMLButtonElement>("return-from-side");
   const unresolvedSide =
     side?.lifecycle === "control-only" &&
+    side.interruptConfirmed !== true &&
     (activeThreadStatus?.type === "active" ||
       hasPendingComposerOperationForThread(side.threadId));
   returnButton.disabled = Boolean(unresolvedSide);
@@ -5069,6 +5080,11 @@ async function resumePendingSideForkOperation(): Promise<void> {
           },
         });
       if (pendingSideForkOperation !== operation) return;
+      if (operation.manualReviewRequired) {
+        operation.outcomeUnknown = true;
+        renderPendingSideForkOperation();
+        return;
+      }
       assertSideForkResponse(recovered.value, operation);
       pendingSideForkOperation = undefined;
       updateMutationOutcomePendingState();
@@ -5080,7 +5096,10 @@ async function resumePendingSideForkOperation(): Promise<void> {
       );
     } catch (error) {
       if (pendingSideForkOperation !== operation) return;
-      if (isGatewayMutationOutcomeIndeterminate(error)) {
+      if (operation.manualReviewRequired) {
+        operation.outcomeUnknown = true;
+        showToast("Side 创建结果无法证明；已保留安全放弃入口", "error");
+      } else if (isGatewayMutationOutcomeIndeterminate(error)) {
         operation.outcomeUnknown = true;
         operation.manualReviewRequired = true;
         showToast("Side 创建结果无法证明；已停止自动重放", "error");
@@ -5264,6 +5283,7 @@ async function abandonPendingSideForkOperation(): Promise<void> {
   if (!messageInput.value) messageInput.value = `/side ${operation.prompt}`;
   autoResize(messageInput);
   showHostReauthentication(targetClient, false);
+  targetClient.close();
 }
 
 async function sendTurn(
@@ -6257,13 +6277,32 @@ function renderComposerQueue(): void {
 
 async function interruptActiveTurn(): Promise<void> {
   if (!client || !activeThreadId || !activeTurnId) return;
+  const interruptedClient = client;
+  const interruptedThreadId = activeThreadId;
+  const interruptedTurnId = activeTurnId;
+  const interruptedSide = activeSideSession;
   const button = requiredElement<HTMLButtonElement>("interrupt-turn");
   button.disabled = true;
   try {
-    await client.request("turn/interrupt", {
-      threadId: activeThreadId,
-      turnId: activeTurnId,
+    await interruptedClient.request("turn/interrupt", {
+      threadId: interruptedThreadId,
+      turnId: interruptedTurnId,
     });
+    if (
+      interruptedSide?.lifecycle === "control-only" &&
+      client === interruptedClient &&
+      activeSideSession === interruptedSide &&
+      activeThreadId === interruptedThreadId
+    ) {
+      interruptedSide.interruptConfirmed = true;
+      renderSideSessionChrome();
+      await returnFromUnavailableSide(interruptedSide, {
+        reason: "side-continuity-overflow",
+        interruptConfirmed: true,
+        message: "Side 已停止并释放，已返回主会话",
+      });
+      return;
+    }
     showToast("正在停止当前任务", "success");
   } catch (error) {
     showToast(`停止失败：${errorMessage(error)}`, "error");
@@ -6365,6 +6404,15 @@ function renderEvent(event: EventEnvelope): void {
             ? "Side 与 Codex 的本地连接意外中断，无法补回缺失事件，已返回主会话"
             : "Side 重连事件超过安全缓冲，无法保证完整性，已返回主会话",
       });
+    } else if (pendingSideForkOperation) {
+      pendingSideForkOperation.outcomeUnknown = true;
+      pendingSideForkOperation.manualReviewRequired = true;
+      updateMutationOutcomePendingState();
+      renderPendingSideForkOperation();
+      showToast(
+        "Side 创建期间事件连续性中断；已停止自动重放，请核对后安全放弃",
+        "error",
+      );
     } else {
       showToast("重连事件超过安全缓冲，请重新打开当前会话", "error");
     }

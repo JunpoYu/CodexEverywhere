@@ -495,6 +495,7 @@ export class AuthenticatedGatewaySession implements GatewaySession {
   #revoked = false;
   #authenticationRecheckTimer: ReturnType<typeof setInterval> | undefined;
   #authenticationRecheckInFlight = false;
+  #pageSessionReleaseResult: number | undefined;
 
   constructor(options: {
     inner?: GatewaySession;
@@ -633,9 +634,11 @@ export class AuthenticatedGatewaySession implements GatewaySession {
           throw new Error("Passkey authentication required");
         if (payload.version !== 1)
           throw new Error("Unsupported page-session release version");
+        this.#pageSessionReleaseResult ??=
+          this.#releaseResumeTickets?.(this.#continuity) ?? 0;
         return {
           version: 1,
-          released: this.#releaseResumeTickets?.(this.#continuity) ?? 0,
+          released: this.#pageSessionReleaseResult,
         };
       }
       case GATEWAY_CONTINUITY_ACK_METHOD: {

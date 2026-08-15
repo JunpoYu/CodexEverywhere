@@ -1347,6 +1347,9 @@ describe("AuthenticatedGatewaySession", () => {
     await expect(
       resumed.request(envelope("auth/session/release", { version: 1 })),
     ).resolves.toEqual({ version: 1, released: 1 });
+    await expect(
+      resumed.request(envelope("auth/session/release", { version: 1 })),
+    ).resolves.toEqual({ version: 1, released: 1 });
     expect(closeInner).not.toHaveBeenCalled();
     await resumed.close();
     expect(closeInner).toHaveBeenCalledOnce();

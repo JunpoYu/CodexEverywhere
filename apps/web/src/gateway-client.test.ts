@@ -571,6 +571,58 @@ describe("ambiguous gateway request outcomes", () => {
     client.close();
   });
 
+  it("falls back to the buffered Side event when a newer live-only event is not acknowledged", async () => {
+    vi.useFakeTimers();
+    const device = generateStaticKeyPair();
+    const hostIdentity = generateStaticKeyPair();
+    const simulation = simulatedHostWebSocket(hostIdentity, {
+      capabilities: [GATEWAY_CAPABILITIES.sideContinuityAckV1],
+      acknowledgeContinuityEvent: (eventId) => eventId === "side-buffered",
+    });
+    vi.stubGlobal("WebSocket", simulation.WebSocketClass);
+    const client = await GatewayClient.connect({
+      id: "node-1",
+      name: "alice",
+      endpoint: "wss://hpc.example/gateway",
+      transport: "direct",
+      nodeId: "node-1",
+      userId: "unix:1000",
+      hostPublicKey: bytesToBase64Url(hostIdentity.publicKey),
+      hostFingerprint: `sha256:${"B".repeat(43)}`,
+      deviceId: "device-1",
+      deviceName: "Browser",
+      devicePublicKey: bytesToBase64Url(device.publicKey),
+      deviceSecretKey: bytesToBase64Url(device.secretKey),
+    });
+    await client.enableSideContinuityAcknowledgements();
+    client.onEvent(() => undefined);
+    simulation.socket().deliverServerEnvelope({
+      version: 1,
+      eventId: "side-buffered",
+      cursor: "1",
+      type: "turn/completed",
+      payload: { threadId: "side-1" },
+    });
+    simulation.socket().deliverServerEnvelope({
+      version: 1,
+      eventId: "live-only",
+      cursor: "2",
+      type: "queue/updated",
+      payload: { threadId: "other-thread" },
+    });
+
+    await vi.advanceTimersByTimeAsync(50);
+    expect(simulation.continuityAckEventIds()).toEqual(["live-only"]);
+    await vi.advanceTimersByTimeAsync(50);
+    expect(simulation.continuityAckEventIds()).toEqual([
+      "live-only",
+      "side-buffered",
+    ]);
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(simulation.continuityAckEventIds()).toHaveLength(2);
+    client.close();
+  });
+
   it("cancels continuity acknowledgement retries when the transport closes", async () => {
     vi.useFakeTimers();
     const device = generateStaticKeyPair();
@@ -944,6 +996,7 @@ function simulatedHostWebSocket(
     onResumeHello?: () => void;
     capabilities?: string[];
     dropContinuityAckResponses?: number;
+    acknowledgeContinuityEvent?: (eventId: string) => boolean;
   } = {},
 ): {
   WebSocketClass: typeof WebSocket;
@@ -952,6 +1005,7 @@ function simulatedHostWebSocket(
   handshakeAuthentications(): Record<string, unknown>[];
   loginOptionDiscoverability(): unknown[];
   continuityAckRequests(): number;
+  continuityAckEventIds(): string[];
   failNextLoginOptions(): void;
 } {
   let current: SimulatedHostSocket | undefined;
@@ -960,6 +1014,7 @@ function simulatedHostWebSocket(
   const loginOptionDiscoverability: unknown[] = [];
   let failNextLoginOptions = false;
   let continuityAckRequests = 0;
+  const continuityAckEventIds: string[] = [];
   let remainingDroppedContinuityAckResponses =
     options.dropContinuityAckResponses ?? 0;
 
@@ -1058,6 +1113,8 @@ function simulatedHostWebSocket(
       this.lastRequest = request;
       if (request.method === "auth/session/events/ack") {
         continuityAckRequests += 1;
+        const eventId = String(request.payload?.eventId ?? "");
+        continuityAckEventIds.push(eventId);
         if (remainingDroppedContinuityAckResponses > 0) {
           remainingDroppedContinuityAckResponses -= 1;
           return;
@@ -1066,7 +1123,10 @@ function simulatedHostWebSocket(
           version: PROTOCOL_VERSION,
           requestId: request.requestId,
           ok: true,
-          result: { version: 1, acknowledged: true },
+          result: {
+            version: 1,
+            acknowledged: options.acknowledgeContinuityEvent?.(eventId) ?? true,
+          },
         });
         return;
       }
@@ -1165,6 +1225,7 @@ function simulatedHostWebSocket(
       })),
     loginOptionDiscoverability: () => [...loginOptionDiscoverability],
     continuityAckRequests: () => continuityAckRequests,
+    continuityAckEventIds: () => [...continuityAckEventIds],
     failNextLoginOptions: () => {
       failNextLoginOptions = true;
     },
