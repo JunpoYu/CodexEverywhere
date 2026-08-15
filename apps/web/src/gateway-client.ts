@@ -1050,6 +1050,20 @@ export class GatewayClient {
     ).catch(() => undefined);
   }
 
+  interruptTurnBeforePageRelease(threadId: string, turnId: string): void {
+    // Keep the resume ticket unless the Host first confirms that the Side
+    // turn was interrupted. If page teardown prevents the response from
+    // arriving, the retained continuity is safer than orphaning a running
+    // ephemeral turn with no client able to answer approvals.
+    void this.request(
+      "turn/interrupt",
+      { threadId, turnId },
+      { timeoutMs: 1_000 },
+    )
+      .then(() => this.releasePageSession())
+      .catch(() => undefined);
+  }
+
   async releasePageSessionConfirmed(): Promise<boolean> {
     if (!this.#resumeToken) return false;
     const result = await this.request<{ version: unknown; released: unknown }>(

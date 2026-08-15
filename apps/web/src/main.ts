@@ -1179,7 +1179,27 @@ requiredElement("abandon-thread-start-outcome").addEventListener(
 );
 window.addEventListener("beforeunload", warnBeforeUnresolvedMutationUnload);
 window.addEventListener("pagehide", (event) => {
-  if (!event.persisted) client?.releasePageSession();
+  if (event.persisted) return;
+  const currentClient = client;
+  const side = activeSideSession;
+  if (!currentClient) return;
+  if (
+    side &&
+    sideMayStillBeRunning({
+      statusActive: activeThreadStatus?.type === "active",
+      ...(activeTurnId ? { turnId: activeTurnId } : {}),
+      pendingMutation: hasPendingComposerOperationForThread(side.threadId),
+    })
+  ) {
+    if (activeTurnId) {
+      currentClient.interruptTurnBeforePageRelease(side.threadId, activeTurnId);
+    }
+    return;
+  }
+  // A fork response may still be in flight, so releasing its only page
+  // continuity here could make a newly created ephemeral thread unreachable.
+  if (pendingSideForkOperation) return;
+  currentClient.releasePageSession();
 });
 sendMessage.addEventListener("click", () => void continueThread());
 queueMessage.addEventListener("click", () => void queueForThread());
@@ -1423,12 +1443,12 @@ async function pair(): Promise<void> {
       document,
       pairingDeviceName.value.trim() || "我的浏览器",
     );
-    if (!activation.isCurrent()) {
-      result.client.close();
-      return;
-    }
     if (result.recoveryCodes.length > 0) {
       showRecoveryCodes(result.recoveryCodes);
+    }
+    if (!activation.isCurrent()) {
+      discardAuthenticatedClient(result.client);
+      return;
     }
     await activate(result.client, activation);
   } catch (error) {
@@ -1552,12 +1572,12 @@ async function recoverWebCredentials(): Promise<void> {
       deviceName: loginDeviceName(host, remember, "恢复设备"),
       rememberDevice: remember,
     });
-    if (!activation.isCurrent()) {
-      result.client.close();
-      return;
-    }
     loginRecoveryInput.value = "";
     showRecoveryCodes(result.recoveryCodes);
+    if (!activation.isCurrent()) {
+      discardAuthenticatedClient(result.client);
+      return;
+    }
     await activate(result.client, activation);
   } catch (error) {
     if (!activation.isCurrent()) return;
@@ -1810,7 +1830,7 @@ async function connectSaved(host: SavedHost): Promise<void> {
   try {
     const nextClient = await GatewayClient.connect(host);
     if (!activation.isCurrent()) {
-      nextClient.close();
+      discardAuthenticatedClient(nextClient);
       return;
     }
     if (
@@ -1881,7 +1901,7 @@ async function prepareAuthenticatedClientForActivation(
       );
     },
   });
-  if (!prepared) candidate.close();
+  if (!prepared) discardAuthenticatedClient(candidate);
   return prepared;
 }
 
@@ -1895,7 +1915,7 @@ async function activate(
   );
   if (!prepared) return;
   if (!activation.isCurrent()) {
-    prepared.close();
+    discardAuthenticatedClient(prepared);
     return;
   }
   nextClient = prepared;
@@ -1945,39 +1965,64 @@ async function activate(
   renderComposerSessionMeta();
   const previousClient = client;
   if (reauthenticatedClient) temporaryReauthenticationClient = undefined;
-  bindActiveClient(nextClient);
-  if (reauthenticatedClient !== previousClient) reauthenticatedClient?.close();
-  appServerRestartRequired = false;
-  setup.hidden = true;
-  provisioning.hidden = true;
-  workspace.hidden = true;
-  requiredElement("recovery-codes-button").hidden = false;
-  requiredElement("add-passkey-button").hidden = false;
-  requiredElement("set-password-button").hidden = false;
-  requiredElement("settings-button").hidden = false;
-  await continueAfterHostAuthentication(nextClient, activation.isCurrent);
-  if (!activation.isCurrent() || client !== nextClient) return;
-  if (client === nextClient && sideToRestore?.session && sideToRestore.thread) {
-    const restored = await openThread(sideToRestore.thread, {
-      preserveTimeline: true,
-    });
-    await fallbackFromUnavailableSide(
-      nextClient,
-      sideToRestore.thread,
-      sideToRestore.session,
-      restored,
-    );
+  // Keep the previous continuity alive until a Side (if any) has been adopted
+  // by the newly authenticated client. Releasing it earlier can destroy the
+  // only ephemeral app-server inner before restoration finishes.
+  bindActiveClient(nextClient, { deferPreviousClose: true });
+  try {
+    appServerRestartRequired = false;
+    setup.hidden = true;
+    provisioning.hidden = true;
+    workspace.hidden = true;
+    requiredElement("recovery-codes-button").hidden = false;
+    requiredElement("add-passkey-button").hidden = false;
+    requiredElement("set-password-button").hidden = false;
+    requiredElement("settings-button").hidden = false;
+    await continueAfterHostAuthentication(nextClient, activation.isCurrent);
+    if (!activation.isCurrent() || client !== nextClient) return;
+    if (
+      client === nextClient &&
+      sideToRestore?.session &&
+      sideToRestore.thread
+    ) {
+      const restored = await openThread(sideToRestore.thread, {
+        preserveTimeline: true,
+      });
+      await fallbackFromUnavailableSide(
+        nextClient,
+        sideToRestore.thread,
+        sideToRestore.session,
+        restored,
+      );
+    }
+  } finally {
+    if (previousClient) discardAuthenticatedClient(previousClient);
+    if (reauthenticatedClient !== previousClient && reauthenticatedClient) {
+      discardAuthenticatedClient(reauthenticatedClient);
+    }
   }
 }
 
-function bindActiveClient(nextClient: GatewayClient): void {
+function discardAuthenticatedClient(targetClient: GatewayClient): void {
+  void targetClient
+    .releasePageSessionConfirmed()
+    .catch(() => {
+      targetClient.releasePageSession();
+    })
+    .finally(() => targetClient.close());
+}
+
+function bindActiveClient(
+  nextClient: GatewayClient,
+  options: { deferPreviousClose?: boolean } = {},
+): void {
   wakeConnectionRecovery();
   clearConnectionKeepalive();
   unsubscribeClientConnection?.();
   unsubscribeClientConnection = undefined;
   const previousClient = client;
   client = nextClient;
-  previousClient?.close();
+  if (previousClient && !options.deferPreviousClose) previousClient.close();
   unsubscribeClientConnection = nextClient.onConnectionLost(() => {
     if (
       client !== nextClient ||
@@ -2076,7 +2121,7 @@ async function recoverConnection(previous: GatewayClient): Promise<void> {
       });
       if (!nextClient) return;
       if (client !== previous) {
-        nextClient.close();
+        discardAuthenticatedClient(nextClient);
         return;
       }
       stopThreadSync();
@@ -7077,11 +7122,11 @@ async function renderSavedHosts(): Promise<void> {
           deviceName: host.deviceName,
           rememberDevice: true,
         });
+        showRecoveryCodes(result.recoveryCodes);
         if (!activation.isCurrent()) {
-          result.client.close();
+          discardAuthenticatedClient(result.client);
           return;
         }
-        showRecoveryCodes(result.recoveryCodes);
         await activate(result.client, activation);
       } catch (error) {
         if (!activation.isCurrent()) return;

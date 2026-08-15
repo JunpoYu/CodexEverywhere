@@ -302,7 +302,8 @@ describe("frontend reliability contracts", () => {
     expect(mainSource).toContain('"beforeunload"');
     expect(mainSource).toContain("warnBeforeUnresolvedMutationUnload");
     expect(mainSource).toContain('"pagehide"');
-    expect(mainSource).toContain("client?.releasePageSession()");
+    expect(mainSource).toContain("interruptTurnBeforePageRelease");
+    expect(mainSource).toContain("if (pendingSideForkOperation) return");
     const beforeUnload = mainSource.slice(
       mainSource.indexOf("function warnBeforeUnresolvedMutationUnload"),
       mainSource.indexOf("function renderIndeterminateThreadStart"),
@@ -682,6 +683,30 @@ describe("frontend reliability contracts", () => {
     expect(continuation).toContain(
       "if (!isCurrent() || client !== targetClient) return",
     );
+    expect(savedLogin).toContain("discardAuthenticatedClient(nextClient)");
+    expect(activation).toContain(
+      "bindActiveClient(nextClient, { deferPreviousClose: true })",
+    );
+    expect(activation).toContain(
+      "if (previousClient) discardAuthenticatedClient(previousClient)",
+    );
+  });
+
+  it("shows one-time recovery codes before discarding stale credential flows", () => {
+    for (const [start, end] of [
+      ["async function pair", "function showFirstUse"],
+      ["async function recoverWebCredentials", "function shouldRememberDevice"],
+    ] as const) {
+      const flow = mainSource.slice(
+        mainSource.indexOf(start),
+        mainSource.indexOf(end),
+      );
+      expect(flow.indexOf("showRecoveryCodes")).toBeGreaterThanOrEqual(0);
+      expect(flow.indexOf("showRecoveryCodes")).toBeLessThan(
+        flow.indexOf("if (!activation.isCurrent())"),
+      );
+      expect(flow).toContain("discardAuthenticatedClient(result.client)");
+    }
   });
 
   it("reuses one idempotency key for every Side release attempt", () => {

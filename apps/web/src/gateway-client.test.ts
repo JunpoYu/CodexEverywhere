@@ -439,6 +439,66 @@ describe("ambiguous gateway request outcomes", () => {
     });
   });
 
+  it("interrupts an active Side before releasing its page session", async () => {
+    const device = generateStaticKeyPair();
+    const hostIdentity = generateStaticKeyPair();
+    const simulation = simulatedHostWebSocket(hostIdentity);
+    vi.stubGlobal("WebSocket", simulation.WebSocketClass);
+    const client = await GatewayClient.connect({
+      id: "node-1",
+      name: "alice",
+      endpoint: "wss://hpc.example/gateway",
+      transport: "direct",
+      nodeId: "node-1",
+      userId: "unix:1000",
+      hostPublicKey: bytesToBase64Url(hostIdentity.publicKey),
+      hostFingerprint: `sha256:${"B".repeat(43)}`,
+      deviceId: "device-1",
+      deviceName: "Browser",
+      devicePublicKey: bytesToBase64Url(device.publicKey),
+      deviceSecretKey: bytesToBase64Url(device.secretKey),
+    });
+
+    client.interruptTurnBeforePageRelease("side-thread", "turn-1");
+    await vi.waitFor(() => {
+      expect(simulation.requestMethods().slice(-2)).toEqual([
+        "turn/interrupt",
+        "auth/session/release",
+      ]);
+    });
+    expect(client.canReconnectSilently).toBe(false);
+  });
+
+  it("retains Side continuity when page-close interruption is not confirmed", async () => {
+    vi.useFakeTimers();
+    const device = generateStaticKeyPair();
+    const hostIdentity = generateStaticKeyPair();
+    const simulation = simulatedHostWebSocket(hostIdentity, {
+      dropTurnInterruptResponse: true,
+    });
+    vi.stubGlobal("WebSocket", simulation.WebSocketClass);
+    const client = await GatewayClient.connect({
+      id: "node-1",
+      name: "alice",
+      endpoint: "wss://hpc.example/gateway",
+      transport: "direct",
+      nodeId: "node-1",
+      userId: "unix:1000",
+      hostPublicKey: bytesToBase64Url(hostIdentity.publicKey),
+      hostFingerprint: `sha256:${"B".repeat(43)}`,
+      deviceId: "device-1",
+      deviceName: "Browser",
+      devicePublicKey: bytesToBase64Url(device.publicKey),
+      deviceSecretKey: bytesToBase64Url(device.secretKey),
+    });
+
+    client.interruptTurnBeforePageRelease("side-thread", "turn-1");
+    await vi.advanceTimersByTimeAsync(1_000);
+
+    expect(simulation.requestMethods().slice(-1)).toEqual(["turn/interrupt"]);
+    expect(client.canReconnectSilently).toBe(true);
+  });
+
   it("enables acknowledged continuity only when the Host advertises it", async () => {
     vi.useFakeTimers();
     const device = generateStaticKeyPair();
@@ -997,6 +1057,7 @@ function simulatedHostWebSocket(
     capabilities?: string[];
     dropContinuityAckResponses?: number;
     acknowledgeContinuityEvent?: (eventId: string) => boolean;
+    dropTurnInterruptResponse?: boolean;
   } = {},
 ): {
   WebSocketClass: typeof WebSocket;
@@ -1006,6 +1067,7 @@ function simulatedHostWebSocket(
   loginOptionDiscoverability(): unknown[];
   continuityAckRequests(): number;
   continuityAckEventIds(): string[];
+  requestMethods(): string[];
   failNextLoginOptions(): void;
 } {
   let current: SimulatedHostSocket | undefined;
@@ -1015,6 +1077,7 @@ function simulatedHostWebSocket(
   let failNextLoginOptions = false;
   let continuityAckRequests = 0;
   const continuityAckEventIds: string[] = [];
+  const requestMethods: string[] = [];
   let remainingDroppedContinuityAckResponses =
     options.dropContinuityAckResponses ?? 0;
 
@@ -1111,6 +1174,7 @@ function simulatedHostWebSocket(
         payload?: Record<string, unknown>;
       };
       this.lastRequest = request;
+      requestMethods.push(request.method);
       if (request.method === "auth/session/events/ack") {
         continuityAckRequests += 1;
         const eventId = String(request.payload?.eventId ?? "");
@@ -1139,11 +1203,18 @@ function simulatedHostWebSocket(
         return;
       }
       if (
+        request.method === "turn/interrupt" &&
+        options.dropTurnInterruptResponse
+      ) {
+        return;
+      }
+      if (
         request.method === "auth/status" ||
         request.method === "auth/login/options" ||
         request.method === "auth/login/verify" ||
         request.method === "auth/session/release" ||
         request.method === "auth/session/events/enable" ||
+        request.method === "turn/interrupt" ||
         request.method === "host/ping"
       ) {
         this.deliverServerEnvelope({
@@ -1226,6 +1297,7 @@ function simulatedHostWebSocket(
     loginOptionDiscoverability: () => [...loginOptionDiscoverability],
     continuityAckRequests: () => continuityAckRequests,
     continuityAckEventIds: () => [...continuityAckEventIds],
+    requestMethods: () => [...requestMethods],
     failNextLoginOptions: () => {
       failNextLoginOptions = true;
     },
