@@ -10,6 +10,7 @@ import type { PasskeyRegistry } from "../host/passkeys.js";
 import type { PasswordRegistry } from "../host/passwords.js";
 import { AuthenticatedSessionRegistry } from "../host/auth-security.js";
 import {
+  AuthenticatedGatewayContinuityBudget,
   AuthenticatedGatewaySession,
   AuthenticatedGatewaySessionContinuity,
 } from "./authenticated-session.js";
@@ -152,6 +153,151 @@ describe("AuthenticatedGatewaySession", () => {
     await first.close?.();
     await resumed.close?.();
     continuity.releaseTicket();
+  });
+
+  it("enforces one aggregate byte budget across Side continuities", async () => {
+    const event = (owner: string): EventEnvelope => ({
+      version: 1,
+      eventId: `${owner}-event`,
+      cursor: "1",
+      type: "codex/future/event",
+      payload: { delta: "shared-budget" },
+    });
+    const firstEvent = event("first");
+    const budget = new AuthenticatedGatewayContinuityBudget({
+      maxBufferedEventBytes: Buffer.byteLength(
+        JSON.stringify(firstEvent),
+        "utf8",
+      ),
+      maxRetainedSideContinuities: 2,
+    });
+    const createContinuity = async (owner: string) => {
+      let emit: ((value: EventEnvelope) => void) | undefined;
+      const continuity = new AuthenticatedGatewaySessionContinuity(
+        async () => ({
+          request: async () => "ok",
+          onEvent: (listener: (value: EventEnvelope) => void) => {
+            emit = listener;
+            return () => undefined;
+          },
+          shouldRetainAcrossReconnect: () => true,
+        }),
+        undefined,
+        budget,
+      );
+      continuity.retainTicket();
+      continuity.enableAcknowledgedDelivery();
+      const transport = continuity.open();
+      const received: EventEnvelope[] = [];
+      transport.onEvent?.((value) => received.push(value));
+      await transport.request(envelope("workspace/list", {}));
+      return {
+        continuity,
+        emit: () => emit?.(event(owner)),
+        received,
+        transport,
+      };
+    };
+    const first = await createContinuity("first");
+    const second = await createContinuity("other");
+
+    first.emit();
+    second.emit();
+
+    expect(first.received.at(-1)?.type).toBe("codex/future/event");
+    expect(second.received.at(-1)).toMatchObject({
+      type: "gateway/session/continuity-overflow",
+      payload: { version: 1, reason: "buffer-limit" },
+    });
+    await first.transport.close?.();
+    await second.transport.close?.();
+    first.continuity.releaseTicket();
+    second.continuity.releaseTicket();
+  });
+
+  it("rejects a new Side before the app-server mutation when the shared client budget is full", async () => {
+    const budget = new AuthenticatedGatewayContinuityBudget({
+      maxBufferedEventBytes: 1_024,
+      maxRetainedSideContinuities: 1,
+    });
+    const firstRequest = vi.fn(async () => ({ thread: { id: "side-1" } }));
+    const secondRequest = vi.fn(async () => ({ thread: { id: "side-2" } }));
+    const first = new AuthenticatedGatewaySessionContinuity(
+      async () => ({ request: firstRequest }),
+      {
+        request: firstRequest,
+        shouldRetainAcrossReconnect: () => true,
+      },
+      budget,
+    );
+    const second = new AuthenticatedGatewaySessionContinuity(
+      async () => ({ request: secondRequest }),
+      {
+        request: secondRequest,
+        shouldRetainAcrossReconnect: () => true,
+      },
+      budget,
+    );
+    first.retainTicket();
+    second.retainTicket();
+    const firstTransport = first.open();
+    const secondTransport = second.open();
+
+    await expect(
+      firstTransport.request(envelope("thread/fork", {})),
+    ).resolves.toEqual({ thread: { id: "side-1" } });
+    await expect(
+      secondTransport.request(envelope("thread/fork", {})),
+    ).rejects.toThrow("Too many retained Side sessions");
+    expect(secondRequest).not.toHaveBeenCalled();
+
+    await firstTransport.close?.();
+    first.releaseTicket();
+    await expect(
+      secondTransport.request(envelope("thread/fork", {})),
+    ).resolves.toEqual({ thread: { id: "side-2" } });
+    await secondTransport.close?.();
+    second.releaseTicket();
+  });
+
+  it("releases a reserved Side slot when app-server creation fails", async () => {
+    const budget = new AuthenticatedGatewayContinuityBudget({
+      maxBufferedEventBytes: 1_024,
+      maxRetainedSideContinuities: 1,
+    });
+    const failed = new AuthenticatedGatewaySessionContinuity(
+      async () => {
+        throw new Error("app-server unavailable");
+      },
+      undefined,
+      budget,
+    );
+    failed.retainTicket();
+    const failedTransport = failed.open();
+
+    await expect(
+      failedTransport.request(envelope("thread/fork", {})),
+    ).rejects.toThrow("app-server unavailable");
+
+    const request = vi.fn(async () => ({ thread: { id: "side-2" } }));
+    const next = new AuthenticatedGatewaySessionContinuity(
+      async () => ({ request }),
+      {
+        request,
+        shouldRetainAcrossReconnect: () => true,
+      },
+      budget,
+    );
+    next.retainTicket();
+    const nextTransport = next.open();
+    await expect(
+      nextTransport.request(envelope("thread/fork", {})),
+    ).resolves.toEqual({ thread: { id: "side-2" } });
+
+    await failedTransport.close?.();
+    failed.releaseTicket();
+    await nextTransport.close?.();
+    next.releaseTicket();
   });
 
   it("emits a versioned gap instead of silently dropping buffered events", async () => {

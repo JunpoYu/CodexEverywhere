@@ -743,6 +743,33 @@ describe("CodexGatewaySession notifications", () => {
     });
     expect(JSON.stringify(sideFork)).not.toContain("PRIVATE HISTORY");
     expect(session.shouldRetainAcrossReconnect()).toBe(true);
+    expect(
+      session.shouldBufferAcrossReconnect({
+        version: PROTOCOL_VERSION,
+        eventId: "future-side-event",
+        cursor: "future",
+        type: "codex/future/event",
+        payload: { futureShape: true },
+      }),
+    ).toBe(true);
+    expect(
+      session.shouldBufferAcrossReconnect({
+        version: PROTOCOL_VERSION,
+        eventId: "parent-event",
+        cursor: "parent",
+        type: "codex/turn/completed",
+        payload: { threadId: "thread-1" },
+      }),
+    ).toBe(false);
+    expect(
+      session.shouldBufferAcrossReconnect({
+        version: PROTOCOL_VERSION,
+        eventId: "queue-event",
+        cursor: "queue",
+        type: "queue/started",
+        payload: { itemId: "queue-1" },
+      }),
+    ).toBe(false);
     await expect(
       session.validateDurableResult(
         {

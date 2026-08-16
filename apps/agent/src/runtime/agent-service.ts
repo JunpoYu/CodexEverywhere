@@ -25,6 +25,7 @@ import { CodexGatewaySession } from "../gateway/codex-gateway-session.js";
 import { DirectGateway } from "../gateway/direct-gateway.js";
 import { RelayConnector } from "../gateway/relay-connector.js";
 import {
+  AuthenticatedGatewayContinuityBudget,
   AuthenticatedGatewaySession,
   AuthenticatedGatewaySessionContinuity,
 } from "../gateway/authenticated-session.js";
@@ -119,6 +120,7 @@ export async function runAgentService(paths: HostPaths): Promise<void> {
       new AuthenticatedSessionRegistry<AuthenticatedGatewaySessionContinuity>({
         onResumeTicketDeleted: (continuity) => continuity.releaseTicket(),
       });
+    const continuityBudget = new AuthenticatedGatewayContinuityBudget();
     const authenticationRateLimiter = new AuthenticationRateLimiter();
     const deviceTrust = new CachedDeviceTrustVerifier(
       new DeviceRegistry(state),
@@ -242,6 +244,7 @@ export async function runAgentService(paths: HostPaths): Promise<void> {
           },
           releaseResumeTickets: (continuity) =>
             authenticatedSessions.releaseResumeTickets(continuity),
+          continuityBudget,
           runCredentialMutation: (expectedGeneration, operation, options) =>
             authenticatedSessions.runCredentialMutation(
               expectedGeneration,

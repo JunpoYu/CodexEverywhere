@@ -189,7 +189,12 @@ export class CodexGatewaySession implements GatewaySession {
     const payload = isRecord(event.payload) ? event.payload : undefined;
     const threadId =
       extractThreadId(payload) ?? extractThreadId(payload?.params);
-    return threadId !== undefined && this.#ephemeralThreads.has(threadId);
+    if (threadId !== undefined) return this.#ephemeralThreads.has(threadId);
+    // Codex is forward-compatible and the Web renders unknown current events
+    // generically. Without a thread identity, a future codex/* shape cannot be
+    // proven unrelated to the retained ephemeral Side, so keep it across the
+    // reconnect gap instead of silently discarding it.
+    return event.type.startsWith("codex/");
   }
 
   onClose(listener: () => void): () => void {

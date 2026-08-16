@@ -56,7 +56,83 @@ const AUTHENTICATION_STATE_TTL_MS = 5 * 60_000;
 const AUTHENTICATED_SESSION_RECHECK_MS = 10_000;
 const MAX_CONTINUITY_BUFFERED_EVENTS = 4_096;
 const MAX_CONTINUITY_BUFFERED_EVENT_BYTES = 16 * 1024 * 1024;
+const MAX_AGENT_CONTINUITY_BUFFERED_EVENT_BYTES = 32 * 1024 * 1024;
+const MAX_AGENT_RETAINED_SIDE_CONTINUITIES = 32;
 const DEFAULT_DISCONNECTED_SIDE_GRACE_MS = 24 * 60 * 60_000;
+
+export class AuthenticatedGatewayContinuityBudget {
+  readonly #maxBufferedEventBytes: number;
+  readonly #maxRetainedSideContinuities: number;
+  readonly #bufferedEventBytes = new Map<object, number>();
+  readonly #retainedSideContinuities = new Set<object>();
+  #totalBufferedEventBytes = 0;
+
+  constructor(
+    options: {
+      maxBufferedEventBytes?: number;
+      maxRetainedSideContinuities?: number;
+    } = {},
+  ) {
+    this.#maxBufferedEventBytes =
+      options.maxBufferedEventBytes ??
+      MAX_AGENT_CONTINUITY_BUFFERED_EVENT_BYTES;
+    this.#maxRetainedSideContinuities =
+      options.maxRetainedSideContinuities ??
+      MAX_AGENT_RETAINED_SIDE_CONTINUITIES;
+    if (
+      !Number.isSafeInteger(this.#maxBufferedEventBytes) ||
+      this.#maxBufferedEventBytes <= 0 ||
+      !Number.isSafeInteger(this.#maxRetainedSideContinuities) ||
+      this.#maxRetainedSideContinuities <= 0
+    ) {
+      throw new Error("Gateway continuity budget limits must be positive");
+    }
+  }
+
+  retainSide(owner: object): boolean {
+    if (this.#retainedSideContinuities.has(owner)) return true;
+    if (
+      this.#retainedSideContinuities.size >= this.#maxRetainedSideContinuities
+    ) {
+      return false;
+    }
+    this.#retainedSideContinuities.add(owner);
+    return true;
+  }
+
+  releaseSide(owner: object): void {
+    this.#retainedSideContinuities.delete(owner);
+  }
+
+  reserveBufferedEventBytes(owner: object, bytes: number): boolean {
+    if (!Number.isSafeInteger(bytes) || bytes < 0)
+      throw new Error("Buffered event byte reservation must be non-negative");
+    if (this.#totalBufferedEventBytes + bytes > this.#maxBufferedEventBytes)
+      return false;
+    this.#totalBufferedEventBytes += bytes;
+    this.#bufferedEventBytes.set(
+      owner,
+      (this.#bufferedEventBytes.get(owner) ?? 0) + bytes,
+    );
+    return true;
+  }
+
+  releaseBufferedEventBytes(owner: object, bytes: number): void {
+    const retained = this.#bufferedEventBytes.get(owner) ?? 0;
+    const released = Math.min(Math.max(0, bytes), retained);
+    if (released === 0) return;
+    const remaining = retained - released;
+    this.#totalBufferedEventBytes -= released;
+    if (remaining === 0) this.#bufferedEventBytes.delete(owner);
+    else this.#bufferedEventBytes.set(owner, remaining);
+  }
+
+  releaseAllBufferedEventBytes(owner: object): void {
+    const retained = this.#bufferedEventBytes.get(owner) ?? 0;
+    this.#bufferedEventBytes.delete(owner);
+    this.#totalBufferedEventBytes -= retained;
+  }
+}
 
 /**
  * Keeps one app-server client alive while a browser page moves between
@@ -67,6 +143,7 @@ const DEFAULT_DISCONNECTED_SIDE_GRACE_MS = 24 * 60 * 60_000;
  */
 export class AuthenticatedGatewaySessionContinuity {
   readonly #createInner: () => Promise<GatewaySession>;
+  readonly #budget: AuthenticatedGatewayContinuityBudget;
   readonly #listeners = new Set<(event: EventEnvelope) => void>();
   readonly #bufferedEvents: Array<{ event: EventEnvelope; bytes: number }> = [];
   #inner: GatewaySession | undefined;
@@ -79,6 +156,7 @@ export class AuthenticatedGatewaySessionContinuity {
   #overflowed = false;
   #acknowledgedDeliveryEnabled = false;
   #requiresDisconnectedExpiry = false;
+  #retainedSideBudget = false;
   #activeHandleId = 0;
   #disconnectedExpiryTimer: ReturnType<typeof setTimeout> | undefined;
   #expireDisconnectedTickets: (() => void) | undefined;
@@ -88,8 +166,10 @@ export class AuthenticatedGatewaySessionContinuity {
   constructor(
     createInner: () => Promise<GatewaySession>,
     initialInner?: GatewaySession,
+    budget = new AuthenticatedGatewayContinuityBudget(),
   ) {
     this.#createInner = createInner;
+    this.#budget = budget;
     if (initialInner) {
       this.#inner = initialInner;
       this.#unsubscribeInnerClose = initialInner.onClose?.(() => {
@@ -126,8 +206,16 @@ export class AuthenticatedGatewaySessionContinuity {
             "Side continuity is incomplete; only interruption or release is allowed",
           );
         }
-        const inner = await this.#ensureInner();
+        if (
+          request.method === "thread/fork" &&
+          !this.#reserveRetainedSideBudget()
+        ) {
+          throw new Error(
+            "Too many retained Side sessions; release an existing Side before creating another",
+          );
+        }
         try {
+          const inner = await this.#ensureInner();
           return await inner.request(request);
         } finally {
           // A successful unsubscribe, or an app-server operation that removes
@@ -136,11 +224,22 @@ export class AuthenticatedGatewaySessionContinuity {
           this.#refreshRetentionState();
         }
       },
-      validateDurableResult: (request, result) => {
+      validateDurableResult: async (request, result) => {
         assertCurrent();
-        return this.#ensureInner().then((inner) =>
-          inner.validateDurableResult?.(request, result),
-        );
+        if (
+          request.method === "thread/fork" &&
+          !this.#reserveRetainedSideBudget()
+        ) {
+          throw new Error(
+            "Too many retained Side sessions; release an existing Side before restoring another",
+          );
+        }
+        try {
+          const inner = await this.#ensureInner();
+          await inner.validateDurableResult?.(request, result);
+        } finally {
+          this.#refreshRetentionState();
+        }
       },
       onEvent: (listener) => {
         if (released || handleId !== this.#activeHandleId)
@@ -152,6 +251,8 @@ export class AuthenticatedGatewaySessionContinuity {
             ? this.#bufferedEvents
             : this.#bufferedEvents.splice(0);
           if (!this.#acknowledgedDeliveryEnabled) this.#bufferedEventBytes = 0;
+          if (!this.#acknowledgedDeliveryEnabled)
+            this.#budget.releaseAllBufferedEventBytes(this);
           for (const { event } of buffered) listener(event);
         }
         return () => this.#listeners.delete(listener);
@@ -251,24 +352,29 @@ export class AuthenticatedGatewaySessionContinuity {
           return;
         }
         const bytes = Buffer.byteLength(JSON.stringify(event), "utf8");
-        this.#bufferedEvents.push({ event, bytes });
-        this.#bufferedEventBytes += bytes;
         if (
-          this.#bufferedEvents.length > MAX_CONTINUITY_BUFFERED_EVENTS ||
-          this.#bufferedEventBytes > MAX_CONTINUITY_BUFFERED_EVENT_BYTES
+          this.#bufferedEvents.length + 1 > MAX_CONTINUITY_BUFFERED_EVENTS ||
+          this.#bufferedEventBytes + bytes >
+            MAX_CONTINUITY_BUFFERED_EVENT_BYTES ||
+          !this.#budget.reserveBufferedEventBytes(this, bytes)
         ) {
           this.#signalContinuityGap(
             "buffer-limit",
             event.cursor,
             continuityEventThreadId(event),
           );
+          return;
         }
+        this.#bufferedEvents.push({ event, bytes });
+        this.#bufferedEventBytes += bytes;
         return;
       }
       const bytes = Buffer.byteLength(JSON.stringify(event), "utf8");
       if (
         this.#bufferedEvents.length + 1 > MAX_CONTINUITY_BUFFERED_EVENTS ||
-        this.#bufferedEventBytes + bytes > MAX_CONTINUITY_BUFFERED_EVENT_BYTES
+        this.#bufferedEventBytes + bytes >
+          MAX_CONTINUITY_BUFFERED_EVENT_BYTES ||
+        !this.#budget.reserveBufferedEventBytes(this, bytes)
       ) {
         this.#signalContinuityGap(
           "buffer-limit",
@@ -302,7 +408,7 @@ export class AuthenticatedGatewaySessionContinuity {
       payload,
     };
     const bytes = Buffer.byteLength(JSON.stringify(gap), "utf8");
-    this.#bufferedEvents.length = 0;
+    this.#clearBufferedEvents();
     this.#bufferedEvents.push({ event: gap, bytes });
     this.#bufferedEventBytes = bytes;
     // A gap is terminal for the current Side, including cached clients which
@@ -319,7 +425,9 @@ export class AuthenticatedGatewaySessionContinuity {
     );
     if (index < 0) return false;
     const acknowledged = this.#bufferedEvents.splice(0, index + 1);
-    for (const entry of acknowledged) this.#bufferedEventBytes -= entry.bytes;
+    const bytes = acknowledged.reduce((total, entry) => total + entry.bytes, 0);
+    this.#bufferedEventBytes -= bytes;
+    this.#budget.releaseBufferedEventBytes(this, bytes);
     return true;
   }
 
@@ -349,8 +457,8 @@ export class AuthenticatedGatewaySessionContinuity {
     this.#disposed = true;
     this.#cancelDisconnectedExpiry();
     this.#listeners.clear();
-    this.#bufferedEvents.length = 0;
-    this.#bufferedEventBytes = 0;
+    this.#clearBufferedEvents();
+    this.#releaseRetainedSideBudget();
     this.#unsubscribeInner?.();
     this.#unsubscribeInner = undefined;
     this.#unsubscribeInnerClose?.();
@@ -388,19 +496,47 @@ export class AuthenticatedGatewaySessionContinuity {
     this.#unsubscribeInnerClose = undefined;
     this.#inner = undefined;
     this.#innerPromise = undefined;
-    this.#bufferedEvents.length = 0;
-    this.#bufferedEventBytes = 0;
+    this.#clearBufferedEvents();
+    this.#releaseRetainedSideBudget();
     await inner.close?.();
   }
 
   #refreshRetentionState(): void {
-    if (!this.#inner || this.#inner.shouldRetainAcrossReconnect?.() === true)
+    if (!this.#inner) {
+      this.#releaseRetainedSideBudget();
       return;
+    }
+    if (this.#inner.shouldRetainAcrossReconnect?.() === true) {
+      if (!this.#reserveRetainedSideBudget()) {
+        this.#requiresDisconnectedExpiry = true;
+        this.#signalContinuityGap("buffer-limit");
+      }
+      return;
+    }
+    this.#releaseRetainedSideBudget();
     this.#requiresDisconnectedExpiry = false;
     if (!this.#overflowed) return;
     this.#overflowed = false;
+    this.#clearBufferedEvents();
+  }
+
+  #reserveRetainedSideBudget(): boolean {
+    if (this.#retainedSideBudget) return true;
+    if (!this.#budget.retainSide(this)) return false;
+    this.#retainedSideBudget = true;
+    return true;
+  }
+
+  #releaseRetainedSideBudget(): void {
+    if (!this.#retainedSideBudget) return;
+    this.#retainedSideBudget = false;
+    this.#budget.releaseSide(this);
+  }
+
+  #clearBufferedEvents(): void {
     this.#bufferedEvents.length = 0;
     this.#bufferedEventBytes = 0;
+    this.#budget.releaseAllBufferedEventBytes(this);
   }
 
   #scheduleDisconnectedExpiryIfRequired(): void {
@@ -529,6 +665,7 @@ export class AuthenticatedGatewaySession implements GatewaySession {
     releaseResumeTickets?: (
       continuity: AuthenticatedGatewaySessionContinuity,
     ) => number;
+    continuityBudget?: AuthenticatedGatewayContinuityBudget;
     disconnectedSideGraceMs?: number;
     runCredentialMutation?: CredentialMutationRunner;
     onCredentialsRecovered?: () => Promise<void> | void;
@@ -595,6 +732,7 @@ export class AuthenticatedGatewaySession implements GatewaySession {
       new AuthenticatedGatewaySessionContinuity(
         this.#createInner,
         options.inner,
+        options.continuityBudget,
       );
     if (options.releaseResumeTickets) {
       this.#continuity.configureDisconnectedExpiry(
