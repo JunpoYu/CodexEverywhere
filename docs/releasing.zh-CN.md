@@ -1,6 +1,6 @@
 # 发布流程
 
-本文档定义 CodexEverywhere 的公开发布流程。当前公开版本为 `v0.3.0-alpha.11`。GitHub Release 从 tag 的干净 checkout 构建 Web、Agent、Relay 和 HPC 部署工具，不发布 npm 包；生产环境只消费这些不可变制品，不从开发工作区重新构建。
+本文档定义 CodexEverywhere 的公开发布流程。当前准备发布的版本为 `v0.4.0-alpha.1`。GitHub Release 从 tag 的干净 checkout 构建 Web、Agent、Relay 和 HPC 部署工具，不发布 npm 包；生产环境只消费这些不可变制品，不从开发工作区重新构建。
 
 发布与部署是两个阶段：公开仓库负责把源码变成可验证制品，生产运维环境负责选择版本、保存部署秘密并消费制品。真实域名、主机、SSH 参数、credential 和环境 inventory 不进入公开仓库。
 
@@ -18,7 +18,7 @@
 
 - 不稳定版本使用 `vMAJOR.MINOR.PATCH-alpha.N`；
 - 稳定版本使用 `vMAJOR.MINOR.PATCH`；
-- 根目录、Agent、Relay、Web、Crypto、Protocol 和 Testing package 保持相同项目版本；
+- 根目录、Agent、Relay、Web、Kernel、Crypto、Protocol 和 Testing package 保持相同项目版本；
 - `codex-app-server-schema` 独立使用生成该编译基线的 Codex CLI 版本号，不跟随项目版本，也不构成运行时白名单。
 
 每次发布必须同步更新：
@@ -36,8 +36,10 @@
 corepack enable
 pnpm install --frozen-lockfile
 pnpm format:check
+pnpm check:architecture
 pnpm typecheck
 pnpm test
+pnpm test:e2e
 pnpm build
 pnpm test:app-server
 git diff --check
@@ -53,6 +55,11 @@ git diff --check
 - 依赖许可证仍与 Apache-2.0 兼容；
 - 新提交使用 noreply author，当前变更不新增私人邮箱、部署域名或秘密；已有公开提交即使改写也不能视为完成秘密撤回，发现凭据时必须先轮换；
 - GitHub CI 在目标 commit 上通过。
+- v0.3 → v0.4 → v0.3 migration round-trip、损坏库、备份自动恢复和 finalize 测试通过；
+- Direct 与 Relay 使用同一 Gateway v2 合同测试，未知方法、错误身份、缺失 operation key 和版本不匹配均失败关闭；
+- 390px 手机与桌面 Playwright 核心流程通过，PWA 更新不会刷新 outcome-unknown mutation；
+- Web 首始用户路由 JS gzip 不超过 250 KiB、CSS gzip 不超过 40 KiB；Markdown、KaTeX 与代码高亮保持独立懒加载；
+- 多用户 staging 已完成一次正向升级、v0.4 业务写入、反向迁移和制品回滚，源库备份尚未 finalize。
 
 ## 首次公开
 
@@ -75,12 +82,12 @@ git push -u public codex/public-release:main
 确认公开页面、README、许可证识别和安全报告入口正常后再创建 tag：
 
 ```bash
-git tag -a v0.3.0-alpha.1 codex/public-release \
-  -m "CodexEverywhere v0.3.0-alpha.1"
-git push public v0.3.0-alpha.1
+git tag -a v0.4.0-alpha.1 codex/public-release \
+  -m "CodexEverywhere v0.4.0-alpha.1"
+git push public v0.4.0-alpha.1
 ```
 
-Tag 推送后，[Release workflow](../.github/workflows/release.yml) 会重新执行格式、类型、单元测试和构建检查，安装并记录当时 npm 最新稳定版 Codex CLI，再运行真实 app-server contract 集成测试。任何一项失败都不会生成制品。带连字符的版本会自动标记为 prerelease。
+Tag 推送后，[Release workflow](../.github/workflows/release.yml) 会重新执行格式、架构、类型、单元测试、Playwright 和构建检查，安装并记录当时 npm 最新稳定版 Codex CLI，再运行真实 app-server contract 集成测试。任何一项失败都不会生成制品。带连字符的版本会自动标记为 prerelease。
 
 Release workflow 还会验证 tag commit 属于公开 `main`，并生成：
 

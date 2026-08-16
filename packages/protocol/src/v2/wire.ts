@@ -10,6 +10,12 @@ import {
 } from "./common.js";
 import { GatewayV2Error } from "./errors.js";
 import {
+  parseGatewayEventPayload,
+  parseKnownGatewayEventPayload,
+  type GatewayEventName,
+  type GatewayEventPayload,
+} from "./events.js";
+import {
   gatewayMethodDefinitions,
   isGatewayMethodName,
   type GatewayMethodName,
@@ -222,7 +228,10 @@ export function parseGatewayEventEnvelopeV2(
     version: GATEWAY_API_VERSION,
     eventId: result.data.eventId,
     type: result.data.type,
-    payload: result.data.payload,
+    payload: parseKnownGatewayEventPayload(
+      result.data.type,
+      result.data.payload,
+    ),
     ...(result.data.cursor === undefined ? {} : { cursor: result.data.cursor }),
   };
 }
@@ -239,6 +248,20 @@ export function gatewayErrorResponse(
   error: GatewayErrorPayload,
 ): GatewayResponseEnvelopeV2<never> {
   return { version: GATEWAY_API_VERSION, requestId, ok: false, error };
+}
+
+export function gatewayEventEnvelopeV2<Name extends GatewayEventName>(
+  type: Name,
+  payload: GatewayEventPayload<Name>,
+  options: { readonly cursor?: string; readonly eventId?: string } = {},
+): GatewayEventEnvelopeV2 {
+  return {
+    version: GATEWAY_API_VERSION,
+    eventId: options.eventId ?? globalThis.crypto.randomUUID(),
+    type,
+    payload: parseGatewayEventPayload(type, payload) as unknown as JsonValue,
+    ...(options.cursor === undefined ? {} : { cursor: options.cursor }),
+  };
 }
 
 function parseJsonIfNeeded(input: unknown, description: string): unknown {

@@ -19,7 +19,11 @@ export type CodexInstallation = {
 export type CommandRunner = (
   file: string,
   args: readonly string[],
-  options: { env: NodeJS.ProcessEnv; timeoutMs: number },
+  options: {
+    env: NodeJS.ProcessEnv;
+    timeoutMs: number;
+    signal?: AbortSignal;
+  },
 ) => Promise<{ stdout: string }>;
 
 export async function probeCodexInstallation(
@@ -60,8 +64,10 @@ export async function installCodexForCurrentUser(
     userHome?: string;
     env?: NodeJS.ProcessEnv;
     npmBinary?: string;
+    versionConstraint?: string;
     run?: CommandRunner;
     onProgress?: (phase: CodexInstallProgressPhase) => void;
+    signal?: AbortSignal;
   } = {},
 ): Promise<CodexInstallation> {
   const userHome = options.userHome ?? homedir();
@@ -74,8 +80,18 @@ export async function installCodexForCurrentUser(
   options.onProgress?.("installing");
   await run(
     options.npmBinary ?? "npm",
-    ["install", "--global", "--prefix", prefix, CODEX_NPM_SPEC],
-    { env, timeoutMs: 10 * 60_000 },
+    [
+      "install",
+      "--global",
+      "--prefix",
+      prefix,
+      codexNpmSpec(options.versionConstraint),
+    ],
+    {
+      env,
+      timeoutMs: 10 * 60_000,
+      ...(options.signal === undefined ? {} : { signal: options.signal }),
+    },
   );
 
   options.onProgress?.("verifying");
@@ -83,7 +99,11 @@ export async function installCodexForCurrentUser(
   let version: string | undefined;
   try {
     version = (
-      await run(binary, ["--version"], { env, timeoutMs: 10_000 })
+      await run(binary, ["--version"], {
+        env,
+        timeoutMs: 10_000,
+        ...(options.signal === undefined ? {} : { signal: options.signal }),
+      })
     ).stdout.trim();
   } catch {
     // The generic PATH fallback must not make a failed managed update succeed.
@@ -182,14 +202,29 @@ function semanticVersion(version: string):
 async function runCommand(
   file: string,
   args: readonly string[],
-  options: { env: NodeJS.ProcessEnv; timeoutMs: number },
+  options: {
+    env: NodeJS.ProcessEnv;
+    timeoutMs: number;
+    signal?: AbortSignal;
+  },
 ): Promise<{ stdout: string }> {
   const result = await execFileAsync(file, [...args], {
     env: options.env,
     timeout: options.timeoutMs,
     maxBuffer: 1024 * 1024,
+    ...(options.signal === undefined ? {} : { signal: options.signal }),
   });
   return { stdout: result.stdout };
+}
+
+function codexNpmSpec(versionConstraint: string | undefined): string {
+  if (versionConstraint === undefined || versionConstraint === "latest") {
+    return CODEX_NPM_SPEC;
+  }
+  if (!/^[0-9A-Za-z][0-9A-Za-z._+-]{0,127}$/u.test(versionConstraint)) {
+    throw new Error("Codex version constraint must be a version or dist-tag");
+  }
+  return `@openai/codex@${versionConstraint}`;
 }
 
 async function isExecutable(path: string): Promise<boolean> {

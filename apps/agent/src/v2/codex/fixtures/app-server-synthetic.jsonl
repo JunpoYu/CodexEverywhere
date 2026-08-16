@@ -1,0 +1,6 @@
+{"version":1,"kind":"notification","known":true,"message":{"method":"thread/status/changed","params":{"threadId":"thread-synthetic-1","status":{"type":"idle"}}}}
+{"version":1,"kind":"notification","known":true,"message":{"method":"item/agentMessage/delta","params":{"threadId":"thread-synthetic-1","turnId":"turn-synthetic-1","itemId":"item-synthetic-1","delta":"synthetic delta"}}}
+{"version":1,"kind":"notification","known":false,"message":{"method":"future/synthetic/progress","params":{"threadId":"thread-synthetic-1","sequence":1}}}
+{"version":1,"kind":"server-request","message":{"id":"request-synthetic-approval","method":"item/commandExecution/requestApproval","params":{"threadId":"thread-synthetic-1","turnId":"turn-synthetic-1","itemId":"item-synthetic-command","command":"synthetic command"}}}
+{"version":1,"kind":"server-request","message":{"id":"request-synthetic-question","method":"item/tool/requestUserInput","params":{"threadId":"thread-synthetic-1","turnId":"turn-synthetic-1","itemId":"item-synthetic-question","questions":[]}}}
+{"version":1,"kind":"error-response","message":{"id":"response-synthetic-error","error":{"code":-32000,"message":"synthetic app-server failure"}}}

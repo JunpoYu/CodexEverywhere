@@ -94,6 +94,29 @@ describe("Scope", () => {
     }
   });
 
+  it("detaches manually released resources from later shutdown", async () => {
+    const scope = new Scope("root");
+    const dispose = vi.fn();
+    const release = scope.defer(dispose);
+
+    await release();
+    await scope.close();
+
+    expect(dispose).toHaveBeenCalledOnce();
+  });
+
+  it("detaches child ownership after an independent child close", async () => {
+    const parent = new Scope("parent");
+    const child = parent.fork("child");
+    const dispose = vi.fn();
+    child.defer(dispose);
+
+    await child.close();
+    await parent.close();
+
+    expect(dispose).toHaveBeenCalledOnce();
+  });
+
   it("rejects resources registered after shutdown begins", async () => {
     const scope = new Scope("root");
     const closing = scope.close();

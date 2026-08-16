@@ -68,6 +68,23 @@ export const gatewayErrorSchema = z
 
 export type GatewayErrorPayload = z.output<typeof gatewayErrorSchema>;
 
+export const mutationOutcomeSchema = z.discriminatedUnion("kind", [
+  z
+    .object({
+      version: z.literal(1),
+      kind: z.literal("success"),
+      result: jsonValueSchema,
+    })
+    .strict(),
+  z
+    .object({
+      version: z.literal(1),
+      kind: z.literal("error"),
+      error: gatewayErrorSchema,
+    })
+    .strict(),
+]);
+
 export const mutationStatusSchema = z.discriminatedUnion("status", [
   z.object({ version: z.literal(1), status: z.literal("missing") }).strict(),
   z
@@ -84,7 +101,7 @@ export const mutationStatusSchema = z.discriminatedUnion("status", [
       status: z.literal("completed"),
       method: identifierSchema,
       completedAt: timestampSchema,
-      result: jsonValueSchema.optional(),
+      outcome: mutationOutcomeSchema,
     })
     .strict(),
   z

@@ -1,5 +1,10 @@
 import type { Database } from "sql.js";
 
+import { IdentityRepository } from "./identity-repository.js";
+import { MutationReceiptRepository } from "./mutation-receipt-repository.js";
+import { PreferencesRepository } from "./preferences-repository.js";
+import { QueueRepository } from "./queue-repository.js";
+import { WorkspaceRepository } from "./workspace-repository.js";
 import {
   blob,
   clearIdentity,
@@ -13,12 +18,8 @@ import {
   text,
 } from "./snapshot-sql.js";
 import { SqliteStateFile } from "./sqlite-state-file.js";
-import {
-  USER_STATE_APPLICATION_ID,
-  USER_STATE_SCHEMA,
-  USER_STATE_TABLES,
-  V4_STATE_SCHEMA_VERSION,
-} from "./state-schema.js";
+import { USER_STATE_SPEC } from "./state-schema.js";
+import { ThreadSettingsRepository } from "./thread-settings-repository.js";
 import type {
   QueueDeliveryClaimStateRecord,
   QueueItemStateRecord,
@@ -31,26 +32,30 @@ import type {
   WorkspaceStateRecord,
 } from "./state-snapshot.js";
 
-const USER_SPEC = {
-  kind: "user",
-  applicationId: USER_STATE_APPLICATION_ID,
-  schemaVersion: V4_STATE_SCHEMA_VERSION,
-  schema: USER_STATE_SCHEMA,
-  requiredTables: USER_STATE_TABLES,
-} as const;
-
 export class UserStateDatabase {
   readonly #file: SqliteStateFile;
+  readonly mutationReceipts: MutationReceiptRepository;
+  readonly identity: IdentityRepository;
+  readonly preferences: PreferencesRepository;
+  readonly queue: QueueRepository;
+  readonly threadSettings: ThreadSettingsRepository;
+  readonly workspaces: WorkspaceRepository;
 
   private constructor(file: SqliteStateFile) {
     this.#file = file;
+    this.mutationReceipts = new MutationReceiptRepository(file);
+    this.identity = new IdentityRepository(file);
+    this.preferences = new PreferencesRepository(file);
+    this.queue = new QueueRepository(file);
+    this.threadSettings = new ThreadSettingsRepository(file);
+    this.workspaces = new WorkspaceRepository(file);
   }
 
   static async open(
     path: string,
     options: { readonly create?: boolean } = {},
   ): Promise<UserStateDatabase> {
-    const file = await SqliteStateFile.open(path, USER_SPEC, options);
+    const file = await SqliteStateFile.open(path, USER_STATE_SPEC, options);
     const state = new UserStateDatabase(file);
     const hasMetadata = await file.read(
       (database) =>
@@ -71,7 +76,9 @@ export class UserStateDatabase {
     path: string,
     snapshot: Extract<StateSnapshotV1, { kind: "user" }>,
   ): Promise<UserStateDatabase> {
-    const file = await SqliteStateFile.open(path, USER_SPEC, { create: true });
+    const file = await SqliteStateFile.open(path, USER_STATE_SPEC, {
+      create: true,
+    });
     const state = new UserStateDatabase(file);
     await state.replaceSnapshot(snapshot);
     await state.verify();
@@ -99,6 +106,13 @@ export class UserStateDatabase {
   async verify(): Promise<void> {
     await this.#file.verify();
     await this.#file.read(validateUserInvariants);
+  }
+
+  acquireCoordinationLock(
+    name: string,
+    options: { readonly signal?: AbortSignal } = {},
+  ): Promise<{ release(): Promise<void> }> {
+    return this.#file.acquireCoordinationLock(name, options);
   }
 
   close(): Promise<void> {

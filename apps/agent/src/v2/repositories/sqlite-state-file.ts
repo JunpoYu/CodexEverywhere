@@ -6,7 +6,10 @@ import { dirname } from "node:path";
 import type { Database } from "sql.js";
 
 import { syncDirectoryForDurability } from "../../host/durable-file.js";
-import { acquireStateLock } from "../../host/state-lock.js";
+import {
+  acquireStateLock,
+  assertAbortSignalsActive,
+} from "../../host/state-lock.js";
 import { loadSqliteRuntime } from "./sqlite-runtime.js";
 
 export interface SqliteStateSpec {
@@ -17,35 +20,54 @@ export interface SqliteStateSpec {
   readonly requiredTables: readonly string[];
 }
 
+export interface SqliteStateOwner {
+  readonly uid: number;
+  readonly gid: number;
+}
+
 /** Internal persistence primitive. Raw Database access cannot leave repositories. */
 export class SqliteStateFile {
   readonly #path: string;
   readonly #spec: SqliteStateSpec;
+  readonly #owner: SqliteStateOwner | undefined;
+  readonly #coordinationAcquisitionAbort = new AbortController();
   #database: Database;
   #tail: Promise<void> = Promise.resolve();
   #closed = false;
 
-  private constructor(path: string, spec: SqliteStateSpec, database: Database) {
+  private constructor(
+    path: string,
+    spec: SqliteStateSpec,
+    database: Database,
+    owner?: SqliteStateOwner,
+  ) {
     this.#path = path;
     this.#spec = spec;
     this.#database = database;
+    this.#owner = owner;
   }
 
   static async open(
     path: string,
     spec: SqliteStateSpec,
-    options: { readonly create?: boolean } = {},
+    options: {
+      readonly create?: boolean;
+      readonly owner?: SqliteStateOwner;
+    } = {},
   ): Promise<SqliteStateFile> {
+    validateOwner(options.owner);
     await mkdir(dirname(path), { recursive: true, mode: 0o700 });
-    const lock = await acquireStateLock(`${path}.lock`);
+    const lock = await acquireStateLock(`${path}.lock`, {
+      ...(options.owner === undefined ? {} : { fileOwner: options.owner }),
+    });
     try {
-      const bytes = await readSecureFile(path);
+      const bytes = await readSecureFile(path, options.owner?.uid);
       const SQL = await loadSqliteRuntime();
       if (bytes === undefined) {
         if (options.create !== true)
           throw new Error("State database is missing");
         const database = new SQL.Database();
-        const state = new SqliteStateFile(path, spec, database);
+        const state = new SqliteStateFile(path, spec, database, options.owner);
         try {
           database.run(spec.schema);
           state.#validate();
@@ -57,7 +79,7 @@ export class SqliteStateFile {
         }
       }
       const database = new SQL.Database(bytes);
-      const state = new SqliteStateFile(path, spec, database);
+      const state = new SqliteStateFile(path, spec, database, options.owner);
       try {
         state.#validate();
         return state;
@@ -73,7 +95,7 @@ export class SqliteStateFile {
   read<Result>(operation: (database: Database) => Result): Promise<Result> {
     return this.#serialize(async () => {
       this.#assertOpen();
-      const lock = await acquireStateLock(`${this.#path}.lock`);
+      const lock = await this.#acquireStateLock();
       try {
         await this.#reload();
         return operation(this.#database);
@@ -88,7 +110,7 @@ export class SqliteStateFile {
   ): Promise<Result> {
     return this.#serialize(async () => {
       this.#assertOpen();
-      const lock = await acquireStateLock(`${this.#path}.lock`);
+      const lock = await this.#acquireStateLock();
       try {
         await this.#reload();
         this.#database.run("BEGIN IMMEDIATE");
@@ -123,7 +145,51 @@ export class SqliteStateFile {
     });
   }
 
+  async acquireCoordinationLock(
+    name: string,
+    options: { readonly signal?: AbortSignal } = {},
+  ): Promise<{ release(): Promise<void> }> {
+    this.#assertOpen();
+    if (!/^[a-z0-9-]{1,128}$/u.test(name)) {
+      throw new Error("State coordination lock name is invalid");
+    }
+    const signals = [
+      this.#coordinationAcquisitionAbort.signal,
+      ...(options.signal === undefined ? [] : [options.signal]),
+    ];
+    const lock = await acquireStateLock(`${this.#path}.${name}.lock`, {
+      waitIndefinitely: true,
+      signals,
+      ...(this.#owner === undefined ? {} : { fileOwner: this.#owner }),
+    });
+    try {
+      assertAbortSignalsActive(signals);
+      const fence = await lock.beginCommit();
+      try {
+        assertAbortSignalsActive(signals);
+        let released = false;
+        return {
+          release: async () => {
+            if (released) return;
+            await fence.release();
+            await lock.release();
+            released = true;
+          },
+        };
+      } catch (error) {
+        await fence.release();
+        throw error;
+      }
+    } catch (error) {
+      await lock.release();
+      throw error;
+    }
+  }
+
   close(): Promise<void> {
+    this.#coordinationAcquisitionAbort.abort(
+      new Error("State database is closed"),
+    );
     return this.#serialize(() => {
       if (this.#closed) return;
       this.#closed = true;
@@ -132,7 +198,7 @@ export class SqliteStateFile {
   }
 
   async #reload(): Promise<void> {
-    const bytes = await readSecureFile(this.#path);
+    const bytes = await readSecureFile(this.#path, this.#owner?.uid);
     if (bytes === undefined) throw new Error("State database disappeared");
     const SQL = await loadSqliteRuntime();
     const replacement = new SQL.Database(bytes);
@@ -185,6 +251,9 @@ export class SqliteStateFile {
     try {
       const handle = await open(temporary, "wx", 0o600);
       try {
+        if (this.#owner !== undefined) {
+          await handle.chown(this.#owner.uid, this.#owner.gid);
+        }
         await handle.writeFile(this.#database.export());
         await handle.sync();
       } finally {
@@ -212,12 +281,21 @@ export class SqliteStateFile {
     return result;
   }
 
+  #acquireStateLock() {
+    return acquireStateLock(`${this.#path}.lock`, {
+      ...(this.#owner === undefined ? {} : { fileOwner: this.#owner }),
+    });
+  }
+
   #assertOpen(): void {
     if (this.#closed) throw new Error("State database is closed");
   }
 }
 
-async function readSecureFile(path: string): Promise<Uint8Array | undefined> {
+async function readSecureFile(
+  path: string,
+  expectedOwnerUid = process.getuid?.(),
+): Promise<Uint8Array | undefined> {
   let handle: Awaited<ReturnType<typeof open>>;
   try {
     handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
@@ -229,8 +307,7 @@ async function readSecureFile(path: string): Promise<Uint8Array | undefined> {
     const metadata = await handle.stat();
     if (!metadata.isFile())
       throw new Error("State database is not a regular file");
-    const currentUid = process.getuid?.();
-    if (currentUid !== undefined && metadata.uid !== currentUid) {
+    if (expectedOwnerUid !== undefined && metadata.uid !== expectedOwnerUid) {
       throw new Error("State database is not owned by the current user");
     }
     if ((metadata.mode & 0o077) !== 0) {
@@ -239,6 +316,19 @@ async function readSecureFile(path: string): Promise<Uint8Array | undefined> {
     return handle.readFile();
   } finally {
     await handle.close();
+  }
+}
+
+function validateOwner(owner: SqliteStateOwner | undefined): void {
+  if (owner === undefined) return;
+  if (
+    process.getuid?.() !== 0 ||
+    !Number.isSafeInteger(owner.uid) ||
+    owner.uid <= 0 ||
+    !Number.isSafeInteger(owner.gid) ||
+    owner.gid < 0
+  ) {
+    throw new Error("State owner override requires root and a valid UID/GID");
   }
 }
 

@@ -16,229 +16,214 @@
   <img src="https://img.shields.io/badge/Node.js-%3E%3D20.20-339933?logo=node.js&amp;logoColor=white" alt="Node.js 20.20 or newer" />
 </p>
 
-<p align="center">
-  <a href="#为什么选择-codexeverywhere">为什么</a> ·
-  <a href="#核心体验">功能</a> ·
-  <a href="#快速开始">快速开始</a> ·
-  <a href="#工作方式">架构</a> ·
-  <a href="docs/deployment.zh-CN.md">部署</a> ·
-  <a href="CONTRIBUTING.md">贡献</a>
-</p>
+CodexEverywhere（CE）是面向 Linux/HPC 的自托管 Codex Web/PWA 控制平台。它让用户离开 SSH 后，仍能查看任务、发送消息、处理审批、管理 Queue，并在 Web 与官方 Codex TUI 之间继续同一个任务。
 
-CodexEverywhere 是一个面向 Linux/HPC 的自托管 Codex Web/PWA 控制平台。它让你离开 SSH 后，仍可从浏览器查看活动会话、发送消息、处理审批、管理工作区，并在 Web 与官方 Codex TUI 之间继续同一个任务。
-
-它不重新实现 Codex Agent。thread、turn、工具调用和执行状态仍以官方 [Codex app-server](https://developers.openai.com/codex/app-server) 为唯一事实源；CodexEverywhere 只补上安全连接、移动端体验、持久 Queue 和 HPC 运行层。
+CE 不重新实现 AgentLoop。thread、turn、工具活动、审批请求和执行状态始终以官方 [Codex app-server](https://developers.openai.com/codex/app-server) 为唯一事实源；CE 只负责安全连接、Web 身份、移动端产品体验、持久 Queue 和 HPC 生命周期。
 
 > [!WARNING]
-> CodexEverywhere 目前处于 Alpha 阶段，最新预发布版本为 `v0.3.0-alpha.11`。协议、配置和存储结构仍可能变化，现阶段建议用于个人环境或可信团队试用。生产部署请只使用经过 CI 验证的 [GitHub Release](https://github.com/JunpoYu/CodexEverywhere/releases) 制品。
+> 当前代码线为 `v0.4.0-alpha.1` 架构重建版。Gateway API v2 和新状态库不兼容 v0.3 二进制；升级前必须执行预检和正式迁移。Alpha 版本建议先在多用户 staging 完成正向迁移、业务写入、反向迁移和制品回滚演练。
 
 > [!NOTE]
-> 这是一个独立的非官方开源项目，与 OpenAI 没有关联或背书。Codex 是 OpenAI 的产品。
+> 这是独立的非官方开源项目，与 OpenAI 没有关联或背书。Codex 是 OpenAI 的产品。
 
-## 为什么选择 CodexEverywhere
+## v0.4 的核心边界
 
-Codex CLI 很适合终端，但远程 Linux 与 HPC 用户经常还需要一个随时可访问的控制面：
-
-| 使用场景                | CodexEverywhere 提供                                       |
-| ----------------------- | ---------------------------------------------------------- |
-| 离开 SSH 后任务仍在运行 | 从手机或桌面浏览器继续查看同一个 thread，不中断活动 turn   |
-| 需要在移动端处理阻塞    | 固定在输入区附近的审批、用户问答、停止与 Queue 操作        |
-| HPC 无法开放入站端口    | Direct 优先；不可达时通过可选 Relay 转发 Noise 端到端密文  |
-| 多位成员共用一台宿主机  | 每人使用自己的 Unix UID、`~/.codex` 和 ChatGPT/Codex 账号  |
-| Web 与终端来回切换      | `ce tui` 与 Web 接入同一个 app-server，会话和权限保持一致  |
-| 老旧集群缺少 systemd    | 兼容 CentOS 7、Node.js 20、tmux、crontab、PID 文件和文件锁 |
-
-CodexEverywhere **不是 Web Terminal**，也不替代 SSH、Slurm、Codex CLI 或集群已有的权限与调度体系。
+- 每位 Unix 用户运行一个长期 CE Agent 和一个长期 Codex app-server；不同用户的 UID、home、`~/.codex`、状态库和业务数据相互隔离。
+- Passkey 与 CE 专用密码由 Codex 宿主机验证，不收集或验证 SSH/Linux 密码；每位用户使用自己的 ChatGPT/Codex 账号完成官方设备码登录。
+- Direct 优先；无法开放入站连接时，可选 Relay 只转发 Noise 端到端密文，不保存或解密 Gateway payload。
+- 管理端只管理一次性宿主机安装、现有 NSS 用户的启停、移除计划和 Web 凭据恢复，不能读取用户任务、文件、Queue 或 Codex 身份。
+- 不提供 Web Terminal、第二套 HPC 调度器、第三方插件加载器、Side 临时支线或浏览器 `auth.json` 上传。
+- Schedule、Push 和完整文件管理不属于 v0.4 首版。
 
 ## 核心体验
 
-### 随时继续真实 Codex 会话
+### 任务与实时交互
 
-- 每条首次认证或静默恢复产生的新物理连接，都会在接管页面状态前重新协商 Side 事件 ACK；协商失败会关闭尚未绑定的连接，不会让恢复后的页面停止确认事件或泄漏会话。静默恢复票据仍有效时会继续自动重试，只有 Host 明确要求重新认证才切换到 Passkey 登录。事件 ACK 的临时失败同样持续退避重试；ACK 只确认已经处理的前缀，不能把发生过的 continuity gap 重新解释为完整事件流。
-- 认证已经成功但首次 ACK enable 暂时失败时，Web 会复用刚签发的页面恢复票据继续重连，不让用户重复 Passkey。若 Side 发生 buffer overflow 或 retained app-server inner 意外关闭，Agent 会把缺口设为终态并拒绝后续普通请求；Web 立即进入醒目的仅控制模式，禁止继续发送和清除待核对消息。只有已知活动 turn 被成功停止、且版本化 `side/session/release` 得到确认后，页面才返回主会话；停止或释放无法确认时保留 Side 控制入口。
-- 创建、恢复和实时查看 app-server thread；支持 Markdown、KaTeX、代码、计划、命令、文件修改、MCP、subagent 和错误卡片。
-- 长会话默认只渲染最近 20 个 turn；更早历史按需分页，流式内容与后台 snapshot 按稳定身份合并，旧协议的完整响应也不会绕过默认窗口。
-- 只在用户停留于底部时自动跟随；桌面大纲和移动端抽屉帮助快速定位历史消息。
-- 在输入框首部键入 `/` 可补全 `/side <问题>`，并基于当前上下文开启真正的 Codex ephemeral fork；只有位于输入首部且带 `/` 的完整命令才会触发 Side。Web 必须同时看到 `side-fork-v1` 与 `side-session-control-v1`，才允许发送 mutation；这避免新页面在只会创建、却不能可靠释放 Side 的旧 Agent 上误开放入口。Agent 只返回版本化的继承边界与不透明 app-server 实例代次，不把完整父历史再次传给浏览器，并在协议入口拒绝向 Side 写入持久 Queue。创建连接中断时 Web 保留原幂等键继续确认，并在返回缓存结果前验证临时 thread 仍存在；同宿主机重新认证或静默重连会恢复 Side 视图，暂时读取失败不会丢弃 Side，只有实例代次明确变化才判定它已随 app-server 重启消失并安全返回主会话。Side 内仍有待确认消息时禁止主动离开；continuity gap 后在 Side 仍被保留期间也不能单独放弃该消息。分叉本身结果不可判定时，“安全放弃”会先确认释放整个页面认证连续体，再要求重新登录，确保未知 ephemeral fork 不会成为不可见的后台 Side。它不进入会话列表，刷新、app-server 重启或确认主动离开后不可恢复，回复也不会自动合并回主会话。
-- Codex app-server 当前不允许对 ephemeral thread 使用 `includeTurns`、`thread/turns/list`，并可能因为没有磁盘 rollout 拒绝 `thread/resume`。因此 Agent 会让持有 Side 的页面认证票据继续持有原 app-server 客户端：有效 silent resume 会在旧 WebSocket 报告 close 之前先夺取事件所有权，Side 的实时订阅不断开。`side-continuity-ack-v1` 由每条物理连接显式启用；明确属于其他 thread 或 Queue 的事件断线时不占用 Side 缓冲，无法提取 thread 身份的新 `codex/*` 事件则保守重放，避免未来 app-server 事件被静默丢弃。每条 continuity 最多缓存 4096 个事件、16 MiB；同一用户 Agent 的所有 continuity 还共享 32 MiB 总预算，并最多保留 32 个 Side app-server 客户端。新 Side 会在调用 app-server 前取得共享名额；任一事件或总预算触顶、或 inner 关闭都会生成终态 gap，确认该 gap 只清除重放标记，不会恢复普通请求。缓存旧 PWA 没有 ACK 能力时仍采用 listener 注册即消费，但同样受 Agent 的终态 gap 保护，不能在丢事件后继续 mutation。切换回父会话使用独立 `side/session/release`，Agent 只接受 ephemeral thread；Web 为每条 Side 持有固定 release 幂等键，即使成功响应随 transport 丢失，重连后也能从 durable result 确认，而不是重新猜测已消失的临时 thread。普通 `thread/unsubscribe` 不再被 Web 当作已释放证明。纯网络断线或页面进入后台不会释放，任一活动 transport 也永不因空闲超时；异常终止后的 continuity 最多保留 24 小时。Web 只用 `thread/read(includeTurns:false)` 核对状态；transport swap 的状态快照只合并已完成 turn，不替换当前 DOM 中已经 ACK 的流式前缀。若页面票据、Agent 或 app-server 本身已经失效，则无法补回此前未收到的 ephemeral 历史。
+- 在 UI 中把 app-server `thread` 称为“任务”，协议和代码继续使用 `thread`。
+- 创建、打开、分页、重命名、归档、恢复和删除任务；按稳定 item/turn ID 合并权威历史与实时状态。
+- 结构化呈现消息、计划、命令、文件修改、MCP、subagent、错误和未知的 generic event。
+- 审批、用户问题和 MCP elicitation 固定显示在 composer 上方；多个设备同时回答时只接受第一个合法响应。
+- 可中断 turn，也可复制 `ce tui` 接力命令；关闭浏览器不会停止活动 turn。
 
-### 移动端优先的审批与 Queue
+### 断线恢复与副作用安全
 
-- 命令、文件、权限审批和 `requestUserInput` 固定显示在输入框上方，不会被回复刷走。
-- thread 忙碌时，消息进入宿主机持久 Queue；队首消息可转为 Steer，结果未知时失败关闭并要求人工核对。
-- 发送、审批和设置 mutation 使用稳定幂等键或 durable claim，连接中断后不会盲目重复副作用。
+- 断线后重新认证或使用仅驻当前页面内存的恢复票据，然后重新 `thread/open` 获取权威快照和未解决 interaction。
+- mutation 使用 UUID operation key。durable mutation 在宿主机记录 claim/result；Web 通过 `mutation/status` 对账 `missing | pending | completed | indeterminate`，不靠历史猜测自动重发。
+- 一次性恢复码、恢复交接码和 resume token 永不进入 durable receipt；只在 Agent 的有界内存窗口中允许同 operation key 重放。
+- Queue 使用持久 claim 和 at-most-once 边界；跨越 app-server 副作用窗口后无法证明结果时显式进入 `indeterminate`，必须由用户确认重试或放弃。
 
-### Web / TUI 无缝接力
+### 身份、初始化和临时模式
 
-- Web、后台 Queue 和 `ce tui` 连接同一个长期 app-server；关闭任一客户端不会停止活动 turn。
-- 会话 sandbox 与审批策略按 thread 保存，Agent 或 app-server 重启后不会回落为启动默认值。
-- 直接使用原始 `codex --remote` socket 会绕过 CodexEverywhere 的权限协调；需要一致性保证时请使用 `ce tui`。
+- 首次配对后可注册 Passkey；也可设置与 SSH 完全独立的 OPAQUE CE 密码。
+- 新设备可使用 Passkey、CE 密码或恢复码登录，不依赖 HPC CLI、旧设备批准或设备白名单。
+- PWA 内可配置直连/代理、安装或更新用户自己的 Codex、执行官方设备码登录、退出 Codex 账号和安全重启 app-server。
+- 临时模式不把 Host Profile、设备私钥、会话票据或业务缓存写入 IndexedDB/localStorage。
+- 恢复码只展示一次，宿主机只保存哈希；轮换会使旧码全部失效。
 
-### 自托管身份与 Unix 隔离
+## 架构
 
-- Passkey 与独立 CodexEverywhere 密码均在宿主机验证；项目不收集、复用或验证 SSH/Linux 密码。
-- 每位用户拥有独立 Agent、app-server、Codex 凭据、workspace、thread 和 Queue。
-- 管理员控制面只能管理安装、Web 生命周期和凭据恢复，不能读取用户会话、文件或 Codex 身份。
+```mermaid
+flowchart LR
+  Web["React PWA"] --> Port["Typed Gateway Port"]
+  Port --> Direct["Direct Noise"]
+  Port --> Relay["Relay 中的 Noise 密文"]
+  Direct --> Router["Gateway API v2 Router"]
+  Relay --> Router
+  Router --> Services["CE Services"]
+  Services --> Codex["Codex app-server"]
+  Services --> Repositories["Domain Repositories"]
+  Repositories --> SQLite["v0.4 SQLite"]
+```
 
-## 工作方式
+v0.4 借鉴通用 Harness 的 service seam、scope、registry 和事件驱动思想，但保持轻量且静态装配：
 
-![CodexEverywhere Direct、Relay 与 TUI 连接架构](docs/assets/connection-overview.svg)
+- `ServiceRegistry`：类型化 token，重复注册和缺失依赖立即失败；
+- `Scope`：统一拥有子作用域、AbortSignal、timer、listener 和异步 disposer；
+- `TypedEventBus<EventMap>`：只传递 CE 控制面的瞬时事件；
+- `Actor<State, Event, Effect>`：纯 reducer 产生 effect，旧 generation 的异步结果不能覆盖新状态；
+- Agent 使用单一 composition root；Web 在身份边界只装配互斥的 User 或 Admin composition root，管理端不会实例化任务、Workspace 或 Queue actor。所有模块均为静态装配，不扫描目录、不动态执行第三方代码。
 
-1. 浏览器优先通过 HTTPS/WSS Direct Gateway 连接用户自己的 Agent。
-2. Direct 不可达时，可选 Relay 仅转发 Noise 端到端密文；业务数据仍留在 Codex 宿主机。
-3. Agent 通过私有 Unix socket 连接该用户唯一的长期 Codex app-server；`ce tui` 接入同一个事实源。
+Noise handshake 与 Relay wire protocol 保持 version 1；加密后的 Gateway API 为 version 2；自定义 payload 内部为 `version: 1`。Host Profile、设备密钥和 pairing document 格式不变，因此升级不要求重新配对。新旧 Web/Agent 不匹配时明确返回升级错误，不静默降级。
 
-Relay 会看到连接所需的控制面元数据，但不会持久化用户数据库、Passkey、workspace、thread、文件或解密后的业务内容。完整的身份域、协议、恢复、重放保护和威胁边界见[架构与产品规格](docs/architecture.zh-CN.md)。
+完整服务边界、方法表、Actor、数据库和安全约束见 [v0.4 架构](docs/architecture.zh-CN.md)。
+冻结的 P0/P1、探索性场景和合成协议样本见 [v0.4 回归基线](docs/v0.4-bug-baseline.zh-CN.md)。
 
 ## 快速开始
 
-### 开发者本地体验
+### 开发环境
 
-要求：macOS 或 Linux、Node.js `>= 20.20.0`、Corepack，以及 pnpm `10.34.5`。
+要求：macOS 或 Linux、Node.js `>=20.20.0`、Corepack 和 pnpm `10.34.5`。
 
 ```bash
 git clone https://github.com/JunpoYu/CodexEverywhere.git
 cd CodexEverywhere
 corepack enable
 pnpm install --frozen-lockfile
+pnpm check:architecture
 pnpm typecheck
 pnpm test
 pnpm build
 ```
 
-初始化一个源码开发用的单用户 Agent：
+初始化一个新用户 Agent：
 
 ```bash
 node apps/agent/dist/cli.js agent init
 node apps/agent/dist/cli.js workspace add /absolute/path/to/project
 node apps/agent/dist/cli.js auth configure https://codex.example.com
-node apps/agent/dist/cli.js doctor
+node apps/agent/dist/cli.js transport direct wss://codex.example.com/gateway
 node apps/agent/dist/cli.js agent start
 node apps/agent/dist/cli.js device pair
 ```
 
-将 `apps/web/dist` 部署到前面配置的 HTTPS Origin，打开 PWA，把 `device pair` 输出的配对 JSON 粘贴到“首次初始化”页面，注册第一个 Passkey，并保存只显示一次的恢复码。
+将 `apps/web/dist` 部署到配置的 HTTPS Origin，打开 PWA，粘贴 `ce device pair` 输出的一次性资料并注册首个 Passkey。恢复码必须立即离线保存。
 
-> 源码 checkout 只用于开发、测试和生成 Release。生产环境不要在服务器上 `git pull` 或临时重建，请使用经过校验的版本化制品。
+生产环境不要在服务器上 `git pull` 或临时构建；只部署经过校验的不可变 Release 制品。多用户 HPC、Relay、rootless provisioner 和管理员控制面的安装见[部署与升级](docs/deployment.zh-CN.md)。
 
-### 生产部署
+## 从 v0.3 迁移
 
-CodexEverywhere 支持两种规模：
-
-- **个人或单用户宿主机**：部署 Web，配置 Direct 或 Relay，然后安装用户级 tmux/crontab watchdog。
-- **多用户 HPC**：由无特权 `codexeverywhere` 账号持有共享 runtime、版本化 Agent 和 rootless provisioner；普通 SSH/NSS 用户运行 `ce device pair` 自助初始化。
-
-生产部署涉及 TLS Origin、Relay installation、制品 attestation、rootless provisioner、原子升级/回滚与可选管理员控制面。请按[部署与升级指南](docs/deployment.zh-CN.md)执行，不要从 README 中拼接生产命令。
-
-## SSH TUI 接力
+v0.4 不允许旧二进制直接打开新库，也不会静默删除 Schedule、Push 或无法表达的数据。
 
 ```bash
-# 打开当前工作区的官方会话恢复选择器
+# 1. 先确认没有运行中 turn、未解决 interaction、delivering Queue 或 pending mutation
+#    v0.3 无法从进程外证明 Side 已释放，因此必须停止旧 Agent；健康 app-server 保持运行
+ce agent stop
+
+# 2. 只读预检
+ce upgrade preflight --to v0.4
+
+# 3. 创建 0600 备份、导入新库、验证并原子替换
+ce state migrate --to v0.4
+
+# 4. 启动 v0.4 Agent 并完成 smoke test
+ce agent start
+```
+
+回滚前同样要求所有 lease idle，随后执行：
+
+```bash
+ce agent stop
+ce state migrate --to v0.3 --dry-run
+ce state migrate --to v0.3
+```
+
+正反迁移都保留源库备份；只有接受迁移或回滚结果后，才可按 receipt 中的路径显式执行 `ce state migration-finalize <receipt-path>`。管理员库迁移使用相同命令并添加 `--admin`。详见 [v0.4 迁移手册](docs/migration-v0.4.zh-CN.md)。
+
+## Web / TUI 接力
+
+```bash
+# 打开当前工作区的官方恢复选择器
 ce tui /absolute/path/to/project
 
-# 直接进入 Web 中的同一会话
+# 直接进入 Web 中的同一任务
 ce tui /absolute/path/to/project --thread <thread-id>
 
-# 显式创建新会话
+# 显式创建新任务
 ce tui /absolute/path/to/project --new
 ```
 
-在 TUI 中输入 `/quit` 或 `/exit` 只关闭当前客户端，活动 turn 会继续运行。`Esc` 会中断当前任务，不是退出操作。
+`ce tui` 与 Web 连接同一个 app-server。直接使用原始 `codex --remote` 会绕过 CE 的权限协调；需要一致性保证时使用 `ce tui`。
 
 ## 安全模型
 
-CodexEverywhere 把四种身份明确分开：Web 身份、Linux/SSH 身份、每位用户自己的 ChatGPT/Codex 身份，以及隔离的宿主机管理员 Web 身份。
-
 关键边界包括：
 
-- Direct 与 Relay 都使用应用层 Noise E2EE，而不只依赖 TLS；
-- 专用密码使用 OPAQUE PAKE，Agent 不保存可直接验证的明文密码；
-- workspace 路径在执行前经过 `realpath`、root 包含关系和符号链接逃逸检查；
-- 日志禁止记录提示词、文件内容、凭据、恢复码、配对秘密和解密后的 Relay payload；
-- `auth.json` 等同于登录凭据，只能由用户本人经已认证 E2EE 通道导入自己的账号；
-- PWA 静态分发仍属于信任边界：被攻陷的 Web 服务器可以向新访问者发送恶意 JavaScript，E2EE 无法消除这一风险。
+- Direct 与 Relay 都使用应用层 Noise E2EE；
+- OPAQUE 密码、Passkey、恢复哈希和设备信任保存在对应 Unix 用户的 0600 状态库；
+- workspace 路径先 `realpath`，再校验授权 root，拒绝路径穿越和符号链接逃逸；
+- repository 之外禁止直接访问 SQLite；用户库和管理员库使用不同 `application_id`；
+- 日志禁止记录提示词、Queue 文本、文件内容、路径内容、凭据、恢复码和已解密 Relay payload；
+- PWA 静态分发仍是信任边界：被攻陷的 Web 服务器可以向新访问者发送恶意 JavaScript，E2EE 不能消除这一风险。
 
-请通过 GitHub Private Vulnerability Reporting 报告安全问题，不要在公开 Issue 中粘贴敏感日志或可用攻击细节。支持范围见[安全策略](SECURITY.md)。
+请通过 GitHub Private Vulnerability Reporting 报告安全问题，不要在公开 Issue 中粘贴敏感日志。
 
-## 当前状态
+## 当前范围
 
-| 能力                                            | 状态             |
-| ----------------------------------------------- | ---------------- |
-| Codex 安装、更新、设备码登录与 `auth.json` 导入 | 可用             |
-| thread 创建/恢复、流式事件、审批和 Interrupt    | 可用             |
-| 持久 Queue、Queue → Steer 与结果未知保护        | 可用             |
-| Workspace 管理、会话分页、归档与恢复            | 可用             |
-| Direct Gateway 与可选 E2EE Relay                | 可用             |
-| Passkey、OPAQUE 专用密码、恢复码和管理员控制面  | 可用，仍属 Alpha |
-| Web / `ce tui` 官方 TUI 接力                    | 可用             |
-| 多用户公共安装与 SSH 用户自助初始化             | 可用，仍属 Alpha |
-| 文件上传、下载与完整文件浏览                    | 计划中           |
-| Schedule、Web Push 与加密离线会话               | 计划中           |
-
-Agent 不锁定单一 Codex CLI 版本：任何能够正常执行并返回语义版本号的 Codex 都可以运行。仓库保留一个已验证版本生成的 app-server TypeScript schema 作为编译基线，并将未知事件作为 generic event 处理。
+| 能力                                          | v0.4 状态  |
+| --------------------------------------------- | ---------- |
+| React PWA、移动/桌面响应式 Shell              | 已实现     |
+| Passkey、CE 密码、恢复码与临时登录            | 已实现     |
+| Codex 安装、更新和设备码登录                  | 已实现     |
+| 任务、历史分页、流式事件、审批和中断          | 已实现     |
+| Queue、Steer、结果未知保护                    | 已实现     |
+| Workspace、任务设置和 TUI 接力                | 已实现     |
+| Direct、无状态 E2EE Relay、多用户管理员控制面 | 已实现     |
+| v0.3 ↔ v0.4 正反迁移、备份和 receipt          | 已实现     |
+| Schedule、Push、完整文件管理、通用插件        | 不进入首版 |
+| Side、`thread/fork`、浏览器 `auth.json` 导入  | 已移除     |
 
 ## Monorepo
 
 ```text
 apps/
-├── agent/   # Linux/HPC Agent、CLI、app-server 生命周期和持久 Queue
-├── relay/   # 可选的无状态 WebSocket 密文 Relay
-└── web/     # TypeScript + Vite Web/PWA
+├── agent/   # Linux/HPC Agent、CLI、app-server 生命周期和 Queue
+├── relay/   # 可选无状态 WebSocket 密文 Relay
+└── web/     # React + React Router + CSS Modules PWA
 
 packages/
+├── kernel/                   # Registry、Scope、EventBus、Actor
+├── protocol/                 # Gateway API v2 与 transport/Relay v1
 ├── codex-app-server-schema/  # app-server 编译基线
 ├── crypto/                   # Noise、配对、加密帧和重放保护
-├── protocol/                 # 版本化跨组件协议
 └── testing/                  # 测试工具
-
-deploy/
-├── hpc/      # 共享 runtime 与 Agent 原子安装脚本
-├── nginx/    # PWA、Relay 和 Direct Gateway 示例
-└── systemd/  # Relay 服务示例
 ```
 
-技术栈：严格 TypeScript、pnpm workspace、Vite、Vitest、WebAuthn、OPAQUE、Noise 和纯 WASM SQLite。HPC Agent 避免依赖需要新 glibc 的原生 Node 模块。
+技术栈：严格 TypeScript、Zod、React、Vite、Vitest、WebAuthn、OPAQUE、Noise 和纯 WASM SQLite。首个兼容目标为 CentOS 7、Node.js 20 和 glibc 2.17；Agent 不新增依赖新 glibc 的原生运行库。
 
-## 开发与贡献
+## 开发门禁
 
 ```bash
-# Agent + Web 开发模式
-pnpm dev
-
-# 提交前门禁
 pnpm format:check
+pnpm check:architecture
 pnpm typecheck
 pnpm test
 pnpm build
 
-# 需要本机已有可用 Codex
+# 需要本机已有可用 Codex；模型调用仍由显式环境开关控制
 pnpm test:app-server
 ```
 
-欢迎提交 Issue 和 Pull Request。协议、安全、路径、生命周期或 Queue 变更应同步测试与文档；具体流程见[贡献指南](CONTRIBUTING.md)。
-
-## 文档
-
-| 文档                                         | 内容                                        |
-| -------------------------------------------- | ------------------------------------------- |
-| [架构与产品规格](docs/architecture.zh-CN.md) | 身份、协议、生命周期、数据边界和测试验收    |
-| [部署与升级](docs/deployment.zh-CN.md)       | Release 信任链、HPC、Web、Relay、备份与回滚 |
-| [参与贡献](CONTRIBUTING.md)                  | 开发环境、工程原则、检查项和 PR 流程        |
-| [安全策略](SECURITY.md)                      | 支持范围与漏洞报告方式                      |
-| [发布流程](docs/releasing.zh-CN.md)          | 版本规则、制品生成、发布与撤回              |
-| [版本记录](CHANGELOG.md)                     | 已发布与待发布变更                          |
-
-官方参考：[Codex CLI](https://developers.openai.com/codex/cli) · [Codex app-server](https://developers.openai.com/codex/app-server) · [openai/codex](https://github.com/openai/codex)
-
-## 路线图
-
-- 文件树、受限预览、上传、下载与完整 diff 浏览；
-- Queue 编辑、排序和更完整的暂停恢复管理；
-- Schedule、运行历史与 missed-run 策略；
-- 端到端加密 Web Push 和设备级离线缓存；
-- 更多 Linux/HPC 发行版与 Codex 版本的兼容矩阵。
-
-路线图不代表承诺的发布日期。讨论新能力前，请先确认它不会把项目变成 Web Terminal、第二套调度器或通用组织治理平台。
+协议、安全、路径、生命周期、数据库或 Queue 变更必须同步测试和中文文档。贡献流程见 [CONTRIBUTING.md](CONTRIBUTING.md)，发布流程见[发布文档](docs/releasing.zh-CN.md)，版本变化见 [CHANGELOG.md](CHANGELOG.md)。
 
 ## 许可证
 

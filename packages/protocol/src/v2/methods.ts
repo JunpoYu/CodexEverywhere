@@ -19,6 +19,7 @@ import {
   authenticationResultSchema,
   directoryEntrySchema,
   interactionSchema,
+  interactionResponseSchema,
   preferencesSchema,
   queueItemSchema,
   threadSettingsSchema,
@@ -172,7 +173,7 @@ export const gatewayMethodDefinitions = {
   ),
   "auth/register/verify": mutation(
     "pre-auth",
-    "durable",
+    "ephemeral",
     versionedResult({
       challengeId: identifierSchema,
       deviceName: shortTextSchema,
@@ -206,7 +207,7 @@ export const gatewayMethodDefinitions = {
   ),
   "auth/password/register/finish": mutation(
     "pre-auth",
-    "durable",
+    "ephemeral",
     versionedResult({
       challengeId: identifierSchema,
       registrationRecord: z.string().min(1).max(65_536),
@@ -234,7 +235,7 @@ export const gatewayMethodDefinitions = {
   ),
   "auth/recover": mutation(
     "pre-auth",
-    "durable",
+    "ephemeral",
     versionedResult({
       recoveryCode: z.string().min(1).max(256),
       deviceName: shortTextSchema,
@@ -243,8 +244,8 @@ export const gatewayMethodDefinitions = {
     authenticationResultSchema,
   ),
   "auth/recovery/rotate": mutation(
-    "user",
-    "durable",
+    "pre-auth",
+    "ephemeral",
     versionedEmptySchema,
     versionedResult({
       recoveryCodes: z.array(z.string().min(1).max(256)).min(1).max(32),
@@ -486,7 +487,7 @@ export const gatewayMethodDefinitions = {
     versionedResult({
       threadId: identifierSchema,
       interactionId: identifierSchema,
-      response: jsonValueSchema,
+      response: interactionResponseSchema,
     }),
     versionedResult({
       interactionId: identifierSchema,
@@ -606,7 +607,7 @@ export const gatewayMethodDefinitions = {
   ),
   "admin/user/recovery/start": mutation(
     "admin",
-    "durable",
+    "ephemeral",
     versionedResult(adminMutationBase),
     versionedResult({
       username: identifierSchema,

@@ -4,6 +4,7 @@ import { createRequire } from "node:module";
 import { describe, expect, it } from "vitest";
 
 import {
+  highlightCode,
   markdownToHtml,
   messageSanitizerConfig,
   parseUnifiedDiff,
@@ -11,7 +12,7 @@ import {
 } from "./code-renderer.js";
 
 const rendererStyles = readFileSync(
-  new URL("./style.css", import.meta.url),
+  new URL("./v4/styles/global.css", import.meta.url),
   "utf8",
 );
 
@@ -153,6 +154,12 @@ describe("message Markdown rendering", () => {
 });
 
 describe("message code styling", () => {
+  it("highlights known languages in the task-page lazy renderer", () => {
+    expect(highlightCode("const value: number = 1;", "ts")).toContain(
+      'class="hljs-keyword"',
+    );
+  });
+
   it("does not inherit the light inline-code background in fenced blocks", () => {
     expect(rendererStyles).toMatch(
       /\.message-code-block pre code\s*\{[^}]*background:\s*transparent;/su,

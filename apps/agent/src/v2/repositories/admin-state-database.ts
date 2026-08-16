@@ -1,5 +1,8 @@
 import type { Database } from "sql.js";
 
+import { AdminRepository } from "./admin-repository.js";
+import { IdentityRepository } from "./identity-repository.js";
+import { MutationReceiptRepository } from "./mutation-receipt-repository.js";
 import {
   clearIdentity,
   insertIdentity,
@@ -12,12 +15,7 @@ import {
   text,
 } from "./snapshot-sql.js";
 import { SqliteStateFile } from "./sqlite-state-file.js";
-import {
-  ADMIN_STATE_APPLICATION_ID,
-  ADMIN_STATE_SCHEMA,
-  ADMIN_STATE_TABLES,
-  V4_STATE_SCHEMA_VERSION,
-} from "./state-schema.js";
+import { ADMIN_STATE_SPEC } from "./state-schema.js";
 import type {
   AdminAuditStateRecord,
   AdminStateRecords,
@@ -25,26 +23,30 @@ import type {
   StateSnapshotV1,
 } from "./state-snapshot.js";
 
-const ADMIN_SPEC = {
-  kind: "admin",
-  applicationId: ADMIN_STATE_APPLICATION_ID,
-  schemaVersion: V4_STATE_SCHEMA_VERSION,
-  schema: ADMIN_STATE_SCHEMA,
-  requiredTables: ADMIN_STATE_TABLES,
-} as const;
-
 export class AdminStateDatabase {
   readonly #file: SqliteStateFile;
+  readonly admin: AdminRepository;
+  readonly identity: IdentityRepository;
+  readonly mutationReceipts: MutationReceiptRepository;
 
   private constructor(file: SqliteStateFile) {
     this.#file = file;
+    this.admin = new AdminRepository(file);
+    this.identity = new IdentityRepository(file, {
+      recoveryHandoffs: false,
+      securityAudit: false,
+    });
+    this.mutationReceipts = new MutationReceiptRepository(file);
   }
 
   static async open(
     path: string,
-    options: { readonly create?: boolean } = {},
+    options: {
+      readonly create?: boolean;
+      readonly owner?: { readonly uid: number; readonly gid: number };
+    } = {},
   ): Promise<AdminStateDatabase> {
-    const file = await SqliteStateFile.open(path, ADMIN_SPEC, options);
+    const file = await SqliteStateFile.open(path, ADMIN_STATE_SPEC, options);
     const state = new AdminStateDatabase(file);
     const hasMetadata = await file.read(
       (database) =>
@@ -64,8 +66,14 @@ export class AdminStateDatabase {
   static async createFromSnapshot(
     path: string,
     snapshot: Extract<StateSnapshotV1, { kind: "admin" }>,
+    options: {
+      readonly owner?: { readonly uid: number; readonly gid: number };
+    } = {},
   ): Promise<AdminStateDatabase> {
-    const file = await SqliteStateFile.open(path, ADMIN_SPEC, { create: true });
+    const file = await SqliteStateFile.open(path, ADMIN_STATE_SPEC, {
+      create: true,
+      ...(options.owner === undefined ? {} : { owner: options.owner }),
+    });
     const state = new AdminStateDatabase(file);
     await state.replaceSnapshot(snapshot);
     await state.verify();
@@ -93,6 +101,13 @@ export class AdminStateDatabase {
   async verify(): Promise<void> {
     await this.#file.verify();
     await this.#file.read(validateAdminInvariants);
+  }
+
+  acquireCoordinationLock(
+    name: string,
+    options: { readonly signal?: AbortSignal } = {},
+  ): Promise<{ release(): Promise<void> }> {
+    return this.#file.acquireCoordinationLock(name, options);
   }
 
   close(): Promise<void> {

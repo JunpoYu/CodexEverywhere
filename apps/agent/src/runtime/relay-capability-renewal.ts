@@ -10,6 +10,7 @@ import {
   readHostConfig,
   relayTransport,
   type HostConfig,
+  type HostConfigCoordination,
 } from "../host/config.js";
 import type { HostPaths } from "../host/paths.js";
 import {
@@ -95,6 +96,7 @@ export async function renewRelayCapabilityIfNeeded(
     now?: () => number;
     requestGrant?: RenewalGrantRequester;
     currentUser?: { username: string; uid: number };
+    coordination?: HostConfigCoordination;
     shouldContinue?: () => boolean;
   } = {},
 ): Promise<RelayCapabilityRenewalResult> {
@@ -152,6 +154,7 @@ export async function renewRelayCapabilityIfNeeded(
     grant,
     relay.routeCapability,
     options.currentUser,
+    options.coordination,
   );
   return {
     state: "renewed",
@@ -218,6 +221,7 @@ export function startRelayCapabilityRenewalLoop(
     now?: () => number;
     requestGrant?: RenewalGrantRequester;
     currentUser?: { username: string; uid: number };
+    coordination?: HostConfigCoordination;
     initialCapability?: string;
     onError?: (error: unknown) => void;
   },
@@ -260,6 +264,9 @@ export function startRelayCapabilityRenewalLoop(
             ? { requestGrant: options.requestGrant }
             : {}),
           ...(options.currentUser ? { currentUser: options.currentUser } : {}),
+          ...(options.coordination
+            ? { coordination: options.coordination }
+            : {}),
           shouldContinue: () => !stopped,
         });
         if (stopped) return;

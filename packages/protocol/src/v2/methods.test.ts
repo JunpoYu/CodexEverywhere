@@ -36,6 +36,20 @@ describe("Gateway API v2 method registry", () => {
     }
   });
 
+  it("never persists one-time Web identity secrets in durable receipts", () => {
+    for (const method of [
+      "auth/register/verify",
+      "auth/password/register/finish",
+      "auth/recover",
+      "auth/recovery/rotate",
+      "admin/user/recovery/start",
+    ] as const) {
+      expect(gatewayMethodDefinitions[method].idempotency, method).toBe(
+        "ephemeral",
+      );
+    }
+  });
+
   it("derives precise inputs, outputs, and request options", () => {
     expectTypeOf<InputOf<"turn/start">>().toEqualTypeOf<{
       version: 1;

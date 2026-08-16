@@ -1,5 +1,13 @@
 import { randomUUID } from "node:crypto";
-import { link, readdir, rename, rm, stat, utimes } from "node:fs/promises";
+import {
+  chown,
+  link,
+  readdir,
+  rename,
+  rm,
+  stat,
+  utimes,
+} from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 
 import {
@@ -45,6 +53,8 @@ export async function acquireStateLock(
   options: {
     readonly waitIndefinitely?: boolean;
     readonly signals?: readonly AbortSignal[];
+    /** Root helpers use the state owner's UID/GID for hard-link-safe lock files. */
+    readonly fileOwner?: { readonly uid: number; readonly gid: number };
   } = {},
 ): Promise<StateLock> {
   const wait: StateLockWait = {
@@ -65,7 +75,7 @@ export async function acquireStateLock(
       continue;
     }
 
-    const ownerPath = await createStateLockOwner(path);
+    const ownerPath = await createStateLockOwner(path, options.fileOwner);
     let acquired = false;
     let published = false;
     try {
@@ -125,10 +135,20 @@ export async function acquireStateLock(
   }
 }
 
-async function createStateLockOwner(path: string): Promise<string> {
+async function createStateLockOwner(
+  path: string,
+  fileOwner?: { readonly uid: number; readonly gid: number },
+): Promise<string> {
   const token = randomUUID();
   const ownerPath = `${path}.owner.${token}`;
   await writeProcessRecord(ownerPath);
+  if (fileOwner !== undefined) {
+    if (process.getuid?.() !== 0) {
+      await rm(ownerPath, { force: true });
+      throw new Error("Only root can assign state lock ownership");
+    }
+    await chown(ownerPath, fileOwner.uid, fileOwner.gid);
+  }
   return ownerPath;
 }
 

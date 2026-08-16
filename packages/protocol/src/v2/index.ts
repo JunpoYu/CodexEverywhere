@@ -22,6 +22,7 @@ export {
   authenticationResultSchema,
   directoryEntrySchema,
   interactionSchema,
+  interactionResponseSchema,
   preferencesSchema,
   queueItemSchema,
   threadSettingsSchema,
@@ -30,11 +31,18 @@ export {
   threadSummarySchema,
   timelineItemSchema,
   workspaceSchema,
+  type InteractionResponse,
 } from "./domain-schemas.js";
 export {
   codexGenericEvent,
   codexGenericEventPayloadSchema,
+  gatewayEventDefinitions,
+  isGatewayEventName,
+  parseGatewayEventPayload,
+  parseKnownGatewayEventPayload,
   type CodexGenericEventPayload,
+  type GatewayEventName,
+  type GatewayEventPayload,
 } from "./events.js";
 export {
   GatewayRemoteError,
@@ -70,6 +78,7 @@ export {
 } from "./router.js";
 export {
   gatewayErrorResponse,
+  gatewayEventEnvelopeV2,
   gatewaySuccessResponse,
   parseGatewayEventEnvelopeV2,
   parseGatewayRequestEnvelopeV2,

@@ -192,3 +192,19 @@ export const ADMIN_STATE_TABLES = [
   "managed_users",
   "admin_audit",
 ] as const;
+
+export const USER_STATE_SPEC = {
+  kind: "user",
+  applicationId: USER_STATE_APPLICATION_ID,
+  schemaVersion: V4_STATE_SCHEMA_VERSION,
+  schema: USER_STATE_SCHEMA,
+  requiredTables: USER_STATE_TABLES,
+} as const;
+
+export const ADMIN_STATE_SPEC = {
+  kind: "admin",
+  applicationId: ADMIN_STATE_APPLICATION_ID,
+  schemaVersion: V4_STATE_SCHEMA_VERSION,
+  schema: ADMIN_STATE_SCHEMA,
+  requiredTables: ADMIN_STATE_TABLES,
+} as const;

@@ -3,7 +3,7 @@ import { dirname } from "node:path";
 import { randomUUID } from "node:crypto";
 
 import { syncDirectoryForDurability } from "./durable-file.js";
-import { HostStateStore } from "./state-store.js";
+import { acquireStateLock, assertAbortSignalsActive } from "./state-lock.js";
 
 import type { HostPaths } from "./paths.js";
 import {
@@ -46,6 +46,13 @@ export type HostConfig = {
 export type HostConfigUpdater = (
   current: HostConfig,
 ) => HostConfig | Promise<HostConfig>;
+
+export interface HostConfigCoordination {
+  acquireCoordinationLock(
+    name: string,
+    options?: { readonly signal?: AbortSignal },
+  ): Promise<{ release(): Promise<void> }>;
+}
 
 export function createHostConfig(): HostConfig {
   return {
@@ -102,6 +109,13 @@ export function withRelayTransport(
 }
 
 export async function initializeHost(paths: HostPaths): Promise<HostConfig> {
+  await initializeHostFilesystem(paths);
+  return updateHostConfig(paths, (config) => config);
+}
+
+export async function initializeHostFilesystem(
+  paths: HostPaths,
+): Promise<void> {
   await Promise.all([
     mkdir(paths.home, { recursive: true, mode: 0o700 }),
     mkdir(paths.keysDir, { recursive: true, mode: 0o700 }),
@@ -114,8 +128,6 @@ export async function initializeHost(paths: HostPaths): Promise<HostConfig> {
     chmod(paths.logsDir, 0o700),
     chmod(paths.runtimeDir, 0o700),
   ]);
-
-  return updateHostConfig(paths, (config) => config);
 }
 
 export async function readHostConfig(paths: HostPaths): Promise<HostConfig> {
@@ -130,7 +142,57 @@ export async function updateHostConfig(
   paths: HostPaths,
   update: HostConfigUpdater,
 ): Promise<HostConfig> {
-  return withHostConfigMutation(paths, async () => {
+  return updateHostConfigWithCoordination(
+    paths,
+    standaloneConfigCoordination(paths.stateFile),
+    update,
+  );
+}
+
+function standaloneConfigCoordination(
+  stateFile: string,
+): HostConfigCoordination {
+  return {
+    async acquireCoordinationLock(name, options = {}) {
+      if (!/^[a-z0-9-]{1,128}$/u.test(name)) {
+        throw new Error("Host config coordination lock name is invalid");
+      }
+      const signals = options.signal === undefined ? [] : [options.signal];
+      await mkdir(dirname(stateFile), { recursive: true, mode: 0o700 });
+      const lock = await acquireStateLock(`${stateFile}.${name}.lock`, {
+        waitIndefinitely: true,
+        ...(signals.length === 0 ? {} : { signals }),
+      });
+      try {
+        assertAbortSignalsActive(signals);
+        const fence = await lock.beginCommit();
+        let released = false;
+        return {
+          release: async () => {
+            if (released) return;
+            await fence.release();
+            await lock.release();
+            released = true;
+          },
+        };
+      } catch (error) {
+        await lock.release();
+        throw error;
+      }
+    },
+  };
+}
+
+export async function updateHostConfigWithCoordination(
+  paths: HostPaths,
+  coordination: HostConfigCoordination,
+  update: HostConfigUpdater,
+  options: { readonly signal?: AbortSignal } = {},
+): Promise<HostConfig> {
+  const lease = await coordination.acquireCoordinationLock("host-config", {
+    ...(options.signal === undefined ? {} : { signal: options.signal }),
+  });
+  try {
     let current: HostConfig;
     let exists = true;
     try {
@@ -148,23 +210,8 @@ export async function updateHostConfig(
       await writeHostConfigUnlocked(paths, updated);
     }
     return updated;
-  });
-}
-
-async function withHostConfigMutation<T>(
-  paths: HostPaths,
-  operation: () => Promise<T>,
-): Promise<T> {
-  const state = await HostStateStore.open(paths.stateFile);
-  try {
-    const lease = await state.acquireCoordinationLock("host-config");
-    try {
-      return await operation();
-    } finally {
-      await lease.release();
-    }
   } finally {
-    await state.close();
+    await lease.release();
   }
 }
 

@@ -1,27 +1,19 @@
-import { mkdtemp, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-
 import { generateStaticKeyPair } from "@codex-everywhere/crypto";
 import { afterEach, describe, expect, it } from "vitest";
 import WebSocket, { WebSocketServer } from "ws";
 
-import { HostStateStore } from "../host/state-store.js";
 import {
   RelayConnector,
   type RelayConnectorOptions,
 } from "./relay-connector.js";
 
-const temporaryDirectories: string[] = [];
 const openServers: WebSocketServer[] = [];
 const openConnectors: RelayConnector[] = [];
-const openStates: HostStateStore[] = [];
 
 afterEach(async () => {
   await Promise.all(
     openConnectors.splice(0).map((connector) => connector.close()),
   );
-  await Promise.all(openStates.splice(0).map((state) => state.close()));
   await Promise.all(
     openServers.splice(0).map(
       (server) =>
@@ -30,11 +22,6 @@ afterEach(async () => {
           server.close(() => resolve());
         }),
     ),
-  );
-  await Promise.all(
-    temporaryDirectories
-      .splice(0)
-      .map((path) => rm(path, { recursive: true, force: true })),
   );
 });
 
@@ -312,13 +299,7 @@ async function connectorOptions(
 ): Promise<RelayConnectorOptions> {
   const address = server.address();
   if (!address || typeof address === "string") throw new Error("not listening");
-  const directory = await mkdtemp(join(tmpdir(), "ce-relay-connector-test-"));
-  temporaryDirectories.push(directory);
-  const state = await HostStateStore.open(join(directory, "state.sqlite"));
-  openStates.push(state);
   return {
-    host: "127.0.0.1",
-    port: 0,
     endpoint: `ws://127.0.0.1:${address.port}`,
     routeId: "route-1",
     routeCapability: "capability-1",
@@ -326,8 +307,7 @@ async function connectorOptions(
     userId: "unix:1000",
     identity: generateStaticKeyPair(),
     hostFingerprint: `sha256:${"A".repeat(43)}`,
-    state,
-    createSession: () => ({ request: async () => undefined }),
+    acceptGatewaySocket: () => undefined,
   };
 }
 

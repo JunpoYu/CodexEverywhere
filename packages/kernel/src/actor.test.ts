@@ -9,7 +9,8 @@ interface State {
 type Event =
   | { readonly type: "load"; readonly value: string }
   | { readonly type: "loaded"; readonly value: string }
-  | { readonly type: "replace"; readonly value: string };
+  | { readonly type: "replace"; readonly value: string }
+  | { readonly type: "observe"; readonly value: string };
 
 interface Effect {
   readonly value: string;
@@ -27,6 +28,11 @@ function reduce(state: State, event: Event): ActorTransition<State, Effect> {
       return { state: { value: event.value, loading: false } };
     case "replace":
       return { state: { value: event.value, loading: false } };
+    case "observe":
+      return {
+        state: { ...state, value: event.value },
+        preserveEffects: true,
+      };
   }
 }
 
@@ -85,6 +91,32 @@ describe("Actor", () => {
 
     expect(effectSignal?.aborted).toBe(true);
     release?.();
+    await actor.close();
+  });
+
+  it("keeps an active effect for an explicitly preserved state event", async () => {
+    let release: (() => void) | undefined;
+    barriers.set(
+      "remote",
+      new Promise<void>((resolve) => {
+        release = resolve;
+      }),
+    );
+    let effectSignal: AbortSignal | undefined;
+    const actor = createActor((signal) => {
+      effectSignal = signal;
+    });
+
+    actor.dispatch({ type: "load", value: "remote" });
+    actor.dispatch({ type: "observe", value: "notification" });
+    expect(effectSignal?.aborted).toBe(false);
+    release?.();
+    await vi.waitFor(() =>
+      expect(actor.getSnapshot()).toEqual({
+        value: "remote",
+        loading: false,
+      }),
+    );
     await actor.close();
   });
 

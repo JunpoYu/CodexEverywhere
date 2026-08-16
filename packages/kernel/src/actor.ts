@@ -3,6 +3,8 @@ import { Scope, ScopeClosedError } from "./scope.js";
 export interface ActorTransition<State, Effect> {
   readonly state: State;
   readonly effects?: readonly Effect[];
+  /** Apply this state-only event without invalidating the active generation. */
+  readonly preserveEffects?: boolean;
 }
 
 export type ActorReducer<State, Event, Effect> = (
@@ -33,7 +35,8 @@ export interface ActorOptions<State, Event, Effect> {
 
 /**
  * A small external store with generation-bound asynchronous effects.
- * Any new event invalidates prior effects before the reducer runs.
+ * Events invalidate prior effects by default. Reducers may explicitly preserve
+ * the active generation for state-only events such as typing or notifications.
  */
 export class Actor<State, Event, Effect> {
   readonly #scope: Scope;
@@ -64,12 +67,20 @@ export class Actor<State, Event, Effect> {
 
   dispatch(event: Event): void {
     this.#assertOpen();
-    this.#generation += 1;
-    const generation = this.#generation;
-    void this.#effectScope?.close("Superseded by a newer actor event");
-    this.#effectScope = undefined;
-
     const transition = this.#reducer(this.#state, event);
+    if (
+      transition.preserveEffects === true &&
+      transition.effects !== undefined &&
+      transition.effects.length > 0
+    ) {
+      throw new Error("A preserved actor transition cannot start effects");
+    }
+    if (transition.preserveEffects !== true) {
+      this.#generation += 1;
+      void this.#effectScope?.close("Superseded by a newer actor event");
+      this.#effectScope = undefined;
+    }
+    const generation = this.#generation;
     if (!Object.is(transition.state, this.#state)) {
       this.#state = transition.state;
       for (const listener of [...this.#listeners]) listener();

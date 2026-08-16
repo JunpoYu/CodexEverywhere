@@ -22,6 +22,8 @@ export interface GatewayRequestContext {
   readonly principalId: string;
   readonly capabilities: ReadonlySet<string>;
   readonly signal: AbortSignal;
+  /** Revalidates revocable transport/session credentials before dispatch. */
+  readonly assertCurrent?: () => void | Promise<void>;
 }
 
 export type GatewayHandler<
@@ -38,6 +40,8 @@ export interface MutationInvocation {
   readonly idempotency: Exclude<GatewayIdempotency, "none">;
   readonly principalId: string;
   readonly requestId: string;
+  /** Already schema-validated input. Middleware must never log this value. */
+  readonly input: unknown;
 }
 
 export interface GatewayMutationMiddleware {
@@ -61,6 +65,7 @@ type AnyGatewayHandler<Context extends GatewayRequestContext> = (
 export class GatewayV2Router<Context extends GatewayRequestContext> {
   readonly #handlers = new Map<GatewayMethodName, AnyGatewayHandler<Context>>();
   readonly #mutationMiddleware: GatewayMutationMiddleware;
+  #supportedAccess = new Set<GatewayAccess>(["pre-auth", "user", "admin"]);
   #sealed = false;
 
   constructor(mutationMiddleware: GatewayMutationMiddleware) {
@@ -79,9 +84,18 @@ export class GatewayV2Router<Context extends GatewayRequestContext> {
     return this;
   }
 
-  seal(): this {
+  seal(
+    options: {
+      readonly access?: ReadonlySet<GatewayAccess>;
+    } = {},
+  ): this {
+    this.#supportedAccess = new Set(
+      options.access ?? (["pre-auth", "user", "admin"] as const),
+    );
     const missing = gatewayMethodNames.filter(
-      (method) => !this.#handlers.has(method),
+      (method) =>
+        this.#supportedAccess.has(gatewayMethodDefinitions[method].access) &&
+        !this.#handlers.has(method),
     );
     if (missing.length > 0) {
       throw new Error(`Missing Gateway handlers: ${missing.join(", ")}`);
@@ -96,7 +110,15 @@ export class GatewayV2Router<Context extends GatewayRequestContext> {
       if (!this.#sealed) throw new Error("Gateway router is not sealed");
       const request = parseGatewayRequestEnvelopeV2(input);
       requestId = request.requestId;
+      await context.assertCurrent?.();
       const definition = gatewayMethodDefinitions[request.method];
+      if (!this.#supportedAccess.has(definition.access)) {
+        throw new GatewayV2Error(
+          "ACCESS_DENIED",
+          "This Gateway endpoint does not serve the requested access domain",
+          { closeConnection: true },
+        );
+      }
       authorize(definition.access, definition.capability, context);
       const handler = this.#handlers.get(request.method);
       if (handler === undefined)
@@ -123,6 +145,7 @@ export class GatewayV2Router<Context extends GatewayRequestContext> {
                 idempotency: requireMutationIdempotency(definition.idempotency),
                 principalId: context.principalId,
                 requestId,
+                input: request.input,
               },
               execute,
             )

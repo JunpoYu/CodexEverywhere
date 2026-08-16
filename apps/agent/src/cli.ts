@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 import { execFileSync, spawn } from "node:child_process";
 import { readFileSync } from "node:fs";
-import { readFile, stat } from "node:fs/promises";
-import { homedir, hostname, userInfo } from "node:os";
-import { join } from "node:path";
+import { readFile, realpath } from "node:fs/promises";
+import { homedir, userInfo } from "node:os";
+import { basename, join, resolve } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { Command } from "commander";
 import { routeIdFromCapability } from "@codex-everywhere/protocol/relay-capability";
@@ -17,17 +17,12 @@ import {
   withDirectTransport,
   withRelayTransport,
 } from "./host/config.js";
-import { DeviceRegistry } from "./host/devices.js";
-import { PasskeyRegistry } from "./host/passkeys.js";
 import { resolveHostPaths } from "./host/paths.js";
 import { loadOrCreateHostIdentity } from "./host/identity.js";
 import {
   HostProvisioningRequiredError,
   readPairingHostConfig,
 } from "./host/pairing-config.js";
-import { HostStateStore } from "./host/state-store.js";
-import { WorkspaceRegistry } from "./host/workspaces.js";
-import { ThreadPermissionRegistry } from "./host/thread-permissions.js";
 import { isProcessAlive, readProcessRecord } from "./host/process-files.js";
 import { installWatchdog } from "./host/watchdog.js";
 import { runDoctor } from "./host/doctor.js";
@@ -36,10 +31,10 @@ import {
   createProxyNetworkConfig,
 } from "./host/network.js";
 import {
-  runAgentService,
   startAgentService,
   stopAgentService,
-} from "./runtime/agent-service.js";
+} from "./runtime/agent-process-service.js";
+import { runAgentServiceV2 as runAgentService } from "./runtime/agent-service-v2.js";
 import {
   ensureAppServer,
   inspectAppServer,
@@ -50,13 +45,9 @@ import { probeCodexInstallation } from "./runtime/codex-install.js";
 import { tuiArguments, tuiExitGuidance } from "./runtime/tui-launch.js";
 import {
   startTuiPermissionProxy,
-  tuiThreadPermissionOptions,
+  tuiV4ThreadPermissionOptions,
 } from "./runtime/tui-permission-proxy.js";
 import { inspectSshUnixAccount } from "./admin/unix-accounts.js";
-import {
-  bootstrapUnixUser,
-  validateExistingUserState,
-} from "./admin/user-bootstrap.js";
 import {
   installHostProvisioner,
   inspectInstalledProvisionerCredential,
@@ -89,17 +80,12 @@ import {
   resolveAdminControllerPaths,
 } from "./admin/controller-config.js";
 import { installAdminSystemIntegration } from "./admin/controller-install.js";
-import {
-  AdminControlService,
-  type AdminHelperRequest,
-} from "./admin/control-service.js";
 import { ADMIN_STATE_FILE } from "./admin/access-policy.js";
-import { AdminUserRegistry } from "./admin/registry.js";
 import {
-  runAdminControllerService,
   startAdminControllerService,
   stopAdminControllerService,
-} from "./runtime/admin-controller-service.js";
+} from "./runtime/admin-controller-process-service.js";
+import { runAdminControllerServiceV2 as runAdminControllerService } from "./runtime/admin-controller-service-v2.js";
 import { inspectAdminControllerAuthorizationStatus } from "./runtime/admin-controller-status.js";
 import {
   finalizeStateMigration,
@@ -108,6 +94,17 @@ import {
   migrateState,
   type StateMigrationDirection,
 } from "./v2/migration/index.js";
+import {
+  executeAdminHelperV2,
+  runAdminMaintenanceV2,
+} from "./v2/admin/helper-executor.js";
+import { AdminStateDatabase } from "./v2/repositories/admin-state-database.js";
+import { UserStateDatabase } from "./v2/repositories/user-state-database.js";
+import { WorkspaceService } from "./v2/services/workspace-service.js";
+import {
+  createRecoveryCodes,
+  hashRecoveryCode,
+} from "./v2/services/identity-service.js";
 
 const program = new Command();
 const paths = resolveHostPaths();
@@ -131,8 +128,7 @@ upgrade
     const direction = parseMigrationDirection(options.to);
     const runtime = await inspectMigrationRuntime(target);
     const result = await migrateState({
-      statePath: target.statePath,
-      kind: target.kind,
+      ...stateMigrationStorage(target),
       direction,
       runtime,
       dryRun: true,
@@ -158,8 +154,7 @@ stateCommand
       const direction = parseMigrationDirection(options.to);
       const runtime = await inspectMigrationRuntime(target);
       const result = await migrateState({
-        statePath: target.statePath,
-        kind: target.kind,
+        ...stateMigrationStorage(target),
         direction,
         runtime,
         dryRun: options.dryRun === true,
@@ -178,6 +173,13 @@ stateCommand
     await finalizeStateMigration({
       statePath: target.statePath,
       receiptPath,
+      ...(target.kind === "admin"
+        ? {
+            owner: target.owner,
+            auxiliaryAdminStatePath: target.auxiliaryAdminStatePath,
+            auxiliaryAdminOwner: target.auxiliaryAdminOwner,
+          }
+        : {}),
     });
     process.stdout.write("Migration backup finalized.\n");
   });
@@ -219,7 +221,7 @@ agent
   .description("Initialize local host state")
   .action(async () => {
     const config = await initializeHost(paths);
-    await withWorkspaceRegistry(async () => undefined);
+    await withUserState(async () => undefined, { create: true });
     const identity = await loadOrCreateHostIdentity(paths.keysDir);
     process.stdout.write(
       `Initialized CodexEverywhere host ${config.nodeId}\nFingerprint: ${identity.fingerprint}\nState: ${paths.home}\nRuntime: ${paths.runtimeDir}\n`,
@@ -244,8 +246,8 @@ agent
       throw error;
     }
 
-    const workspaceCount = await withWorkspaceRegistry(
-      async (registry) => (await registry.list()).length,
+    const workspaceCount = await withWorkspaceService(
+      async (service) => (await service.list()).length,
     );
     const identity = await loadOrCreateHostIdentity(paths.keysDir);
     const agentRecord = await readProcessRecord(paths.agentPidFile);
@@ -270,7 +272,7 @@ agent
   .description("Idempotently ensure the Agent and app-server")
   .action(async () => {
     const config = await initializeHost(paths);
-    await withWorkspaceRegistry(async () => undefined);
+    await withUserState(async () => undefined, { create: true });
     await loadOrCreateHostIdentity(paths.keysDir);
     if (config.transport.mode !== "unconfigured") {
       const result = await startAgentService(paths, cliEntryPoint());
@@ -483,8 +485,18 @@ workspace
   .description("Register an allowed workspace root")
   .action(async (directory: string) => {
     await initializeHost(paths);
-    const result = await withWorkspaceRegistry((registry) =>
-      registry.add(directory),
+    const result = await withWorkspaceService(
+      async (service) => {
+        const canonical = await realpath(resolve(directory));
+        const existing = (await service.list()).find(
+          (workspace) => workspace.path === canonical,
+        );
+        const workspace =
+          existing ??
+          (await service.add(canonical, basename(canonical) || canonical));
+        return { added: existing === undefined, root: workspace.path };
+      },
+      { create: true },
     );
     process.stdout.write(
       `${result.added ? "Added" : "Already registered"}: ${result.root}\n`,
@@ -501,21 +513,20 @@ program
   .action(
     async (directory: string, options: { thread?: string; new?: boolean }) => {
       await readHostConfig(paths);
-      const workspacePath = await withWorkspaceRegistry((registry) =>
-        registry.resolve(directory),
+      const workspacePath = await withWorkspaceService((service) =>
+        service.resolve(directory),
       );
       const runtime = await currentCodexRuntime();
       await ensureAppServer(paths, runtime);
       process.stderr.write(`\n${tuiExitGuidance()}\n\n`);
-      const tuiState = await HostStateStore.open(paths.stateFile);
+      const tuiState = await UserStateDatabase.open(paths.stateFile);
       let permissionProxy:
         Awaited<ReturnType<typeof startTuiPermissionProxy>> | undefined;
       try {
-        const threadPermissions = new ThreadPermissionRegistry(tuiState);
         permissionProxy = await startTuiPermissionProxy({
           upstreamSocketPath: paths.appServerSocket,
           runtimeDir: paths.runtimeDir,
-          ...tuiThreadPermissionOptions(threadPermissions),
+          ...tuiV4ThreadPermissionOptions(tuiState.threadSettings),
         });
         process.exitCode = await runInteractive(
           runtime.codexBinary,
@@ -540,9 +551,17 @@ workspace
   .description("Remove an allowed workspace root")
   .action(async (directory: string) => {
     await readHostConfig(paths);
-    const result = await withWorkspaceRegistry((registry) =>
-      registry.remove(directory),
-    );
+    const result = await withWorkspaceService(async (service) => {
+      const canonical = await realpath(resolve(directory));
+      const workspace = (await service.list()).find(
+        (candidate) => candidate.path === canonical,
+      );
+      if (workspace === undefined) return { removed: false, root: canonical };
+      return {
+        removed: await service.remove(workspace.id, workspace.revision),
+        root: canonical,
+      };
+    });
     process.stdout.write(
       `${result.removed ? "Removed" : "Not registered"}: ${result.root}\n`,
     );
@@ -553,7 +572,9 @@ workspace
   .description("List allowed workspace roots")
   .action(async () => {
     await readHostConfig(paths);
-    const roots = await withWorkspaceRegistry((registry) => registry.list());
+    const roots = (await withWorkspaceService((service) => service.list())).map(
+      (workspace) => workspace.path,
+    );
     process.stdout.write(
       roots.length === 0
         ? "No workspace roots registered.\n"
@@ -644,72 +665,6 @@ admin
       `Eligible: ${result.account.username} (UID ${result.account.uid}, home ${result.account.home})\n`,
     );
   });
-
-admin
-  .command("bootstrap-user")
-  .argument("<username>", "Existing SSH/Unix username")
-  .requiredOption("--origin <origin>", "Shared HTTPS PWA origin")
-  .requiredOption("--relay-endpoint <endpoint>", "Shared Relay WSS endpoint")
-  .option(
-    "--capability-stdin",
-    "Read this user's route capability from standard input",
-  )
-  .description("Initialize and start one isolated user Agent")
-  .action(
-    async (
-      username: string,
-      options: {
-        origin: string;
-        relayEndpoint: string;
-        capabilityStdin?: boolean;
-      },
-    ) => {
-      if (process.getuid?.() !== 0) {
-        throw new Error("admin bootstrap-user must run as root");
-      }
-      if (!options.capabilityStdin) {
-        throw new Error("bootstrap-user requires --capability-stdin");
-      }
-      const eligibility = await inspectSshUnixAccount(username);
-      if (!eligibility.eligible) {
-        throw new Error(`Unix account is not eligible: ${eligibility.reason}`);
-      }
-      const account = eligibility.account;
-      const home = await stat(account.home);
-      if (!home.isDirectory() || home.uid !== account.uid) {
-        throw new Error("Unix account home is not owned by the target user");
-      }
-      const resumed = await validateExistingUserState(account);
-      assertWebSocketEndpoint(options.relayEndpoint);
-      const origin = new URL(options.origin);
-      if (
-        origin.protocol !== "https:" ||
-        origin.pathname !== "/" ||
-        origin.search ||
-        origin.hash
-      ) {
-        throw new Error("PWA origin must be an HTTPS origin without a path");
-      }
-      const routeCapability = await readSecretFromStdin("Relay capability");
-      await bootstrapUnixUser({
-        account,
-        nodePath: process.execPath,
-        cliPath: cliEntryPoint(),
-        origin: origin.origin,
-        relayEndpoint: options.relayEndpoint,
-        routeCapability,
-      });
-      const adminState = await HostStateStore.open(ADMIN_STATE_FILE);
-      try {
-        await new AdminUserRegistry(adminState).register(account);
-      } finally {
-        await adminState.close();
-      }
-      process.stdout.write(
-        `${resumed ? "Repaired provisioning for" : "Bootstrapped"} ${account.username}. The user can now run: ce device pair\n`,
-      );
-    },
-  );
 
 admin
   .command("install-provisioner")
@@ -884,9 +839,9 @@ adminWeb
       config.runAsUid,
     );
     const identity = await loadOrCreateHostIdentity(adminPaths.keysDir);
-    const state = await HostStateStore.open(adminPaths.stateFile);
+    const state = await AdminStateDatabase.open(adminPaths.stateFile);
     try {
-      const grant = await new DeviceRegistry(state).issuePairing();
+      const grant = await state.identity.issuePairing();
       process.stdout.write(
         `${JSON.stringify(
           {
@@ -926,22 +881,23 @@ admin
       process.env.SUDO_UID !== String(installation.runAsUid)
     )
       throw new Error("Administrator helper caller is not authorized");
-    const raw = await readSecretFromStdin("Administrator helper request");
-    const request = JSON.parse(raw) as AdminHelperRequest;
-    const state = await HostStateStore.open(ADMIN_STATE_FILE);
-    try {
-      const service = new AdminControlService(state, {
-        installationId: installation.installationId,
-        serverName: installation.serverName,
-        nodePath: process.execPath,
-        cliPath: cliEntryPoint(),
-      });
-      process.stdout.write(
-        `${JSON.stringify(await service.execute(request))}\n`,
+    if (installation.version !== 2) {
+      throw new Error(
+        "Administrator installation metadata must be upgraded before v0.4",
       );
-    } finally {
-      await state.close();
     }
+    const raw = await readSecretFromStdin("Administrator helper request");
+    const request = JSON.parse(raw) as unknown;
+    process.stdout.write(
+      `${JSON.stringify(
+        await executeAdminHelperV2({
+          request,
+          installation,
+          nodePath: process.execPath,
+          cliPath: cliEntryPoint(),
+        }),
+      )}\n`,
+    );
   });
 
 admin
@@ -951,18 +907,16 @@ admin
     if (process.getuid?.() !== 0)
       throw new Error("Administrator maintenance must run as root");
     const installation = await loadAdminInstallation();
-    const state = await HostStateStore.open(ADMIN_STATE_FILE);
-    try {
-      const service = new AdminControlService(state, {
-        installationId: installation.installationId,
-        serverName: installation.serverName,
-        nodePath: process.execPath,
-        cliPath: cliEntryPoint(),
-      });
-      await service.maintenance();
-    } finally {
-      await state.close();
+    if (installation.version !== 2) {
+      throw new Error(
+        "Administrator installation metadata must be upgraded before v0.4",
+      );
     }
+    await runAdminMaintenanceV2({
+      installation,
+      nodePath: process.execPath,
+      cliPath: cliEntryPoint(),
+    });
   });
 
 transport
@@ -1027,21 +981,12 @@ auth
     "Administratively invalidate the old recovery code and issue a new one",
   )
   .action(async () => {
-    const config = await readHostConfig(paths);
-    if (!config.webAuthn)
-      throw new Error(
-        "Configure Passkey origin before resetting recovery codes",
-      );
-    const recoveryCodes = await withState((state) =>
-      new PasskeyRegistry(state, {
-        ...config.webAuthn!,
-        nodeId: config.nodeId,
-        userName: userInfo().username,
-        userDisplayName: `${userInfo().username} · ${hostname()}`,
-      }).rotateRecoveryCodes("local-admin"),
+    const recoveryCodes = createRecoveryCodes();
+    await withUserState((state) =>
+      state.identity.replaceRecoveryCodes(recoveryCodes.map(hashRecoveryCode)),
     );
     process.stdout.write(
-      `The previous recovery code is now invalid. Deliver this code securely; it will not be shown again:\n\n${recoveryCodes[0]}\n`,
+      `Previous recovery codes are invalid. Store these codes securely; they will not be shown again:\n\n${recoveryCodes.join("\n")}\n`,
     );
   });
 
@@ -1051,17 +996,13 @@ auth
   .description("Issue a short-lived administrator recovery handoff")
   .action(async (options: { json?: boolean }) => {
     await assertRootManagedRecoveryInvocation();
-    const config = await readHostConfig(paths);
-    if (!config.webAuthn)
-      throw new Error("Configure Passkey origin before recovering Web access");
-    const result = await withState((state) =>
-      new PasskeyRegistry(state, {
-        ...config.webAuthn!,
-        nodeId: config.nodeId,
-        userName: userInfo().username,
-        userDisplayName: `${userInfo().username} · ${hostname()}`,
-      }).issueAdminRecoveryTicket("host-admin"),
-    );
+    const handoffCode = createRecoveryCodes()[0]!;
+    const result = await withUserState(async (state) => ({
+      handoffCode,
+      ...(await state.identity.issueRecoveryHandoff(
+        hashRecoveryCode(handoffCode),
+      )),
+    }));
     process.stdout.write(
       options.json
         ? `${JSON.stringify(result)}\n`
@@ -1096,8 +1037,11 @@ device
     const identity = await loadOrCreateHostIdentity(paths.keysDir);
     const direct = directTransport(config.transport);
     const relay = relayTransport(config.transport);
-    const grant = await withState((state) =>
-      new DeviceRegistry(state).issuePairing(),
+    const grant = await withUserState(
+      (state) => state.identity.issuePairing(),
+      {
+        create: true,
+      },
     );
     process.stdout.write(
       `${JSON.stringify(
@@ -1128,8 +1072,8 @@ program
   .description("Check CodexEverywhere and HPC runtime prerequisites")
   .action(async () => {
     const config = await initializeHost(paths);
-    const workspaceCount = await withWorkspaceRegistry(
-      async (registry) => (await registry.list()).length,
+    const workspaceCount = await withWorkspaceService(
+      async (service) => (await service.list()).length,
     );
     const checks = await runDoctor(paths, config, workspaceCount);
     for (const check of checks) {
@@ -1145,9 +1089,7 @@ device
   .command("list")
   .description("List trusted devices")
   .action(async () => {
-    const devices = await withState((state) =>
-      new DeviceRegistry(state).list(),
-    );
+    const devices = await withUserState((state) => state.identity.devices());
     process.stdout.write(
       devices.length === 0
         ? "No trusted devices.\n"
@@ -1165,8 +1107,8 @@ device
   .argument("<device-id>")
   .description("Revoke a trusted device")
   .action(async (deviceId: string) => {
-    const revoked = await withState((state) =>
-      new DeviceRegistry(state).revoke(deviceId),
+    const revoked = await withUserState((state) =>
+      state.identity.revokeDevice(deviceId),
     );
     process.stdout.write(
       `${revoked ? "Revoked" : "Not active"}: ${deviceId}\n`,
@@ -1181,16 +1123,21 @@ try {
   process.exitCode = 1;
 }
 
-async function withWorkspaceRegistry<T>(
-  operation: (registry: WorkspaceRegistry) => Promise<T>,
+async function withWorkspaceService<T>(
+  operation: (service: WorkspaceService) => Promise<T>,
+  options: { readonly create?: boolean } = {},
 ): Promise<T> {
-  return withState((state) => operation(new WorkspaceRegistry(state)));
+  return withUserState(
+    (state) => operation(new WorkspaceService(state.workspaces)),
+    options,
+  );
 }
 
-async function withState<T>(
-  operation: (state: HostStateStore) => Promise<T>,
+async function withUserState<T>(
+  operation: (state: UserStateDatabase) => Promise<T>,
+  options: { readonly create?: boolean } = {},
 ): Promise<T> {
-  const state = await HostStateStore.open(paths.stateFile);
+  const state = await UserStateDatabase.open(paths.stateFile, options);
   try {
     return await operation(state);
   } finally {
@@ -1208,6 +1155,9 @@ type StateMigrationTarget =
       readonly kind: "admin";
       readonly statePath: string;
       readonly controllerPidFile: string;
+      readonly owner: { readonly uid: number; readonly gid: number };
+      readonly auxiliaryAdminStatePath: string;
+      readonly auxiliaryAdminOwner: { readonly uid: 0; readonly gid: 0 };
     };
 
 async function resolveStateMigrationTarget(
@@ -1216,18 +1166,48 @@ async function resolveStateMigrationTarget(
   if (!admin) {
     return { kind: "user", statePath: paths.stateFile, userPaths: paths };
   }
-  const config = await loadAdminControllerConfig();
-  if (process.getuid?.() !== config.runAsUid) {
+  if (process.getuid?.() !== 0) {
+    throw new Error("Run the Administrator state migration as root");
+  }
+  const installation = await loadAdminInstallation();
+  if (installation.version !== 2) {
     throw new Error(
-      `Run the Administrator state migration as ${config.runAsUser}`,
+      "Administrator installation metadata must be upgraded before migration",
     );
   }
-  const adminPaths = resolveAdminControllerPaths(config.home, config.runAsUid);
+  const adminPaths = resolveAdminControllerPaths(
+    installation.home,
+    installation.runAsUid,
+  );
   return {
     kind: "admin",
     statePath: adminPaths.stateFile,
     controllerPidFile: adminPaths.pidFile,
+    owner: { uid: installation.runAsUid, gid: installation.runAsGid },
+    auxiliaryAdminStatePath: ADMIN_STATE_FILE,
+    auxiliaryAdminOwner: { uid: 0, gid: 0 },
   };
+}
+
+function stateMigrationStorage(
+  target: StateMigrationTarget,
+): Pick<
+  import("./v2/migration/index.js").StateMigrationOptions,
+  | "statePath"
+  | "kind"
+  | "owner"
+  | "auxiliaryAdminStatePath"
+  | "auxiliaryAdminOwner"
+> {
+  return target.kind === "user"
+    ? { kind: "user", statePath: target.statePath }
+    : {
+        kind: "admin",
+        statePath: target.statePath,
+        owner: target.owner,
+        auxiliaryAdminStatePath: target.auxiliaryAdminStatePath,
+        auxiliaryAdminOwner: target.auxiliaryAdminOwner,
+      };
 }
 
 function inspectMigrationRuntime(

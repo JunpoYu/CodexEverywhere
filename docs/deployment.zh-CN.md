@@ -10,7 +10,7 @@
          → staging → 人工批准 → production
 ```
 
-生产部署只接受语义版本 tag，例如 `v0.3.0-alpha.11`。禁止从功能分支、PR head、本地路径、未提交工作区或服务器上的 Git checkout 构建生产文件。生产服务器不需要 clone 本项目，也不得通过 `git pull`、`pnpm install` 或 `pnpm build` 完成升级。
+生产部署只接受语义版本 tag，例如 `v0.4.0-alpha.1`。禁止从功能分支、PR head、本地路径、未提交工作区或服务器上的 Git checkout 构建生产文件。生产服务器不需要 clone 本项目，也不得通过 `git pull`、`pnpm install` 或 `pnpm build` 完成升级。
 
 公开仓库保存通用代码、模板和安装器。个人与单集群部署默认把真实配置保存在对应服务器的本地受限目录；只有多环境、多人运维或需要配置审阅时，才需要额外建立私有 ops 仓库。两种方式都不得把生产配置复制回公开开发仓库。
 
@@ -40,7 +40,25 @@
 
 Release 制品由 GitHub Actions 从 tag 的干净 checkout 构建一次。制品脚本自身也会拒绝脏工作区、未跟踪文件、`HEAD`/传入 commit 不一致或 tag 未指向该 commit，避免本地误用时把一份源码标成另一份 commit。部署时不得执行 `pnpm build`，也不得重新打包制品。
 
-## 3. HPC
+## 3. v0.3 到 v0.4 的协调升级
+
+v0.4 是一次有状态、协议不兼容升级，不能使用普通的滚动兼容假设。Noise handshake、Relay wire、Host Profile、设备密钥和 pairing document 保持 version 1，但加密后的 Gateway API 从 version 1 升到 version 2，用户与管理员 SQLite 也必须正式迁移。
+
+对每个用户采用以下顺序：
+
+1. 确认无运行中 turn、未解决 interaction、投递中的 Queue、pending mutation 或登录流程，并退出所有 v0.3 Side；
+2. 停止 v0.3 Agent，但保持健康的 Codex app-server 运行；
+3. 使用 v0.4 CLI 执行 `ce upgrade preflight --to v0.4`、`ce state migrate --to v0.4 --dry-run` 和正式迁移；
+4. 切换并启动 v0.4 Agent，再验证 Direct/Relay、任务恢复、Queue 和身份状态；
+5. 最后切换 PWA 静态文件。旧 PWA 与 v0.4 Agent、v0.4 PWA 与旧 Agent 都会显示明确升级错误，不允许静默降级。
+
+Administrator Controller 必须单独停止，并对预检与迁移命令添加 `--admin`。生产升级应按测试用户分批执行；在多用户 staging 完成正向迁移、v0.4 业务写入、反向迁移和制品回滚之前，不得整体替换 v0.3。
+
+Service Worker 更新期间，如果页面存在 outcome-unknown mutation、未保存秘密或草稿，只提示新版本，不自动刷新。最后一个 v0.3 维护版应先部署兼容错误页面与强制刷新能力，避免缓存旧 Web 只显示通用网络失败。
+
+完整迁移、回滚和备份 finalize 步骤见 [v0.4 迁移手册](migration-v0.4.zh-CN.md)。
+
+## 4. HPC
 
 首次宿主机 bootstrap 仍按 README 创建无 sudo 权限的 `codexeverywhere` 账号、共享 Node.js/tmux runtime、rootless provisioner，以及 root 所有的固定 `/usr/local/bin/ce`。这是宿主机安装，不属于普通版本发布。
 
@@ -89,7 +107,7 @@ hpc-tools/activate-rootless-release.sh \
 
 切换 `current` 后重启 provisioner 和用户 Agent 才会加载新代码；健康 app-server 和活动 turn 不应停止。普通补丁升级可让既有官方 TUI 继续连接，但若 Release 说明包含跨进程状态代次、锁或 app-server 权限协调迁移，所有升级前启动的 `ce tui` 也必须在对应用户 Agent 重启后退出并用新 Release 重连；退出 TUI 不会中断 app-server 中仍在运行的 turn。已加载旧 JavaScript 的 Agent/TUI 无法被新代码的 coordination fence 追溯约束，混用期间不提供新版本的并发一致性保证。生产运维应记录尚未重启的用户 Agent 与尚未重连的 TUI，并采用滚动方式完成切换。
 
-## 4. Web
+## 5. Web
 
 Web 服务器推荐使用版本目录和原子软链接：
 
@@ -101,7 +119,7 @@ Web 服务器推荐使用版本目录和原子软链接：
 
 部署过程只解压已经验证的 Web 制品，检查 `index.html`、CSP 和静态资源，再切换 `current`。Nginx 永远指向 `current`。回滚只切回旧目录，不重新构建。
 
-## 5. Relay
+## 6. Relay
 
 Relay 使用类似目录：
 
@@ -115,7 +133,7 @@ systemd 或其他 supervisor 使用稳定的 `current/dist/cli.js`。`ce-relay s
 
 从旧版升级时，必须先将 systemd 模板中的 `__INSTALLATION_ID__` 替换为现有 provisioner 的 ID；保留占位符会因 ID 格式非法而启动失败。该升级只增加 Relay 的 fail-closed installation 边界和 installation-scoped 登录发现，不轮换已有 v3/v4 route ID，Agent、Administrator Controller 与浏览器中已保存的 Host Profile 可继续使用。主密钥签名的 v1/v2 capability 仅作为明确的运维兼容路径保留。
 
-## 6. 环境与审批
+## 7. 环境与审批
 
 推荐至少维护 `staging` 与 `production`：
 
@@ -143,7 +161,7 @@ systemd 或其他 supervisor 使用稳定的 `current/dist/cli.js`。`ce-relay s
 
 个人部署可以直接把 inventory 保存在只有部署账号可写的本地文件中，并通过项目目录之外的加密备份保护。私有 ops 仓库只是可选的多环境协作层；真实 secret 始终使用服务器文件权限、GitHub Environments 或专用 secret manager，不提交到任何 Git 历史。
 
-## 7. 配置与备份
+## 8. 配置与备份
 
 程序、配置和状态必须分离：
 
@@ -155,8 +173,8 @@ systemd 或其他 supervisor 使用稳定的 `current/dist/cli.js`。`ce-relay s
 
 升级前备份配置和 inventory，升级后确认其 inode、权限或内容未被安装器替换。敏感备份必须加密并设置保留期。Release 制品无需备份，可随时从 GitHub 重新下载。
 
-## 8. 兼容与可观测性
+## 9. 兼容与可观测性
 
-Web 和 Agent 的版本可能在滚动升级期间短暂不一致，因此协议变更至少保持当前版与上一版兼容。Relay 尽量只转发密文，不依赖业务消息结构。
+v0.4 不兼容 Gateway API v1。Web 与 Agent 版本不一致时必须返回 `CLIENT_UPGRADE_REQUIRED` 或 `AGENT_UPGRADE_REQUIRED` 并阻断业务请求；禁止把协议错误当成离线、重试副作用或自动降级。Relay 继续只转发 version 1 密文帧，不依赖 Gateway 业务结构，因此无需与每个用户的数据库迁移同步重启。
 
-最终应在 Web 设置、Agent 状态和 Relay 健康端点显示项目版本、commit 与协议版本；生产 inventory 同时记录三个组件的已部署 Release。版本不一致应提示，但不能在兼容范围内阻断用户。
+Web 设置、Agent 状态和 Relay 健康端点应显示项目版本、commit、Gateway API、Noise 和 Relay wire 版本；生产 inventory 同时记录三个组件的 Release。v0.4 后的兼容策略必须由协议合同明确声明，不能默认“当前版与上一版兼容”。

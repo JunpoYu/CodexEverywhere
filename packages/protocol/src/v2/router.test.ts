@@ -22,6 +22,24 @@ describe("GatewayV2Router", () => {
     expect(() => router.seal()).toThrow("Missing Gateway handlers");
   });
 
+  it("seals an access-scoped router without unrelated admin handlers", async () => {
+    const router = new GatewayV2Router(testMutationMiddleware());
+    for (const method of gatewayMethodNames) {
+      if (method.startsWith("admin/")) continue;
+      router.register(method, (() => defaultResult(method)) as never);
+    }
+    router.seal({ access: new Set(["pre-auth", "user"]) });
+
+    const denied = await router.route(
+      request("admin/host/status", { version: 1 }),
+      context("admin"),
+    );
+    expect(denied).toMatchObject({
+      closeConnection: true,
+      response: { ok: false, error: { code: "ACCESS_DENIED" } },
+    });
+  });
+
   it("authorizes and validates before calling a handler", async () => {
     const handler = vi.fn(() => ({ version: 1, workspaces: [] }) as const);
     const router = createRouter(testMutationMiddleware(), {
@@ -49,6 +67,27 @@ describe("GatewayV2Router", () => {
     expect(handler).toHaveBeenCalledOnce();
   });
 
+  it("revalidates revocable session credentials before dispatch", async () => {
+    const handler = vi.fn(() => hostPingResult());
+    const router = createRouter(testMutationMiddleware(), {
+      "host/ping": handler,
+    });
+    const result = await router.route(request("host/ping", { version: 1 }), {
+      ...context("user"),
+      assertCurrent: () => {
+        throw new GatewayV2Error("REAUTH_REQUIRED", "Device was revoked", {
+          closeConnection: true,
+        });
+      },
+    });
+
+    expect(result).toMatchObject({
+      closeConnection: true,
+      response: { ok: false, error: { code: "REAUTH_REQUIRED" } },
+    });
+    expect(handler).not.toHaveBeenCalled();
+  });
+
   it("runs mutation metadata through the unified middleware", async () => {
     const invocations: MutationInvocation[] = [];
     const middleware = testMutationMiddleware(invocations);
@@ -69,6 +108,7 @@ describe("GatewayV2Router", () => {
         idempotency: "durable",
         principalId: "user:test",
         requestId,
+        input: { version: 1, itemId: "item-1" },
       },
     ]);
   });

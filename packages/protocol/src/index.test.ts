@@ -1,37 +1,14 @@
 import { describe, expect, it } from "vitest";
 
 import {
-  PROTOCOL_VERSION,
   RELAY_MESSAGE_TYPES,
-  parseEventEnvelope,
   parseGatewayAuthenticationPayload,
   parseGatewayCipherFrame,
   parseGatewayHandshakeAccepted,
   parseGatewayHandshakeResult,
   parseGatewayHandshakeReply,
-  parseGatewayServerEnvelope,
   parseRelayWireMessage,
-  parseResponseEnvelope,
-  requestEnvelope,
 } from "./index.js";
-
-describe("requestEnvelope", () => {
-  it("creates a versioned idempotent request", () => {
-    expect(
-      requestEnvelope(
-        "thread.list",
-        { limit: 20 },
-        { requestId: "r1", idempotencyKey: "i1" },
-      ),
-    ).toEqual({
-      version: PROTOCOL_VERSION,
-      requestId: "r1",
-      idempotencyKey: "i1",
-      method: "thread.list",
-      payload: { limit: 20 },
-    });
-  });
-});
 
 describe("gateway wire validation", () => {
   it("accepts only an explicit, bounded session resume payload", () => {
@@ -53,7 +30,7 @@ describe("gateway wire validation", () => {
     ).toThrow("Invalid gateway authentication payload");
   });
 
-  it("accepts complete v1 handshake, response, and event envelopes", () => {
+  it("accepts complete v1 transport handshakes", () => {
     expect(
       parseGatewayHandshakeReply({
         type: "handshake/reply",
@@ -65,13 +42,15 @@ describe("gateway wire validation", () => {
       parseGatewayHandshakeAccepted({
         version: 1,
         ok: true,
+        gatewayApiVersion: 2,
         principal: "user",
-        capabilities: ["side-fork-v1", "future-feature"],
+        capabilities: ["gateway-v2", "future-feature"],
       }),
     ).toMatchObject({
       ok: true,
+      gatewayApiVersion: 2,
       principal: "user",
-      capabilities: ["side-fork-v1", "future-feature"],
+      capabilities: ["gateway-v2", "future-feature"],
     });
     expect(
       parseGatewayHandshakeResult({
@@ -84,23 +63,6 @@ describe("gateway wire validation", () => {
       ok: false,
       error: { code: "REAUTH_REQUIRED" },
     });
-    expect(
-      parseResponseEnvelope({
-        version: 1,
-        requestId: "request-1",
-        ok: true,
-        result: null,
-      }),
-    ).toMatchObject({ requestId: "request-1", ok: true });
-    expect(
-      parseEventEnvelope({
-        version: 1,
-        eventId: "event-1",
-        cursor: "1",
-        type: "turn/started",
-        payload: {},
-      }),
-    ).toMatchObject({ eventId: "event-1", cursor: "1" });
   });
 
   it("rejects unsupported handshake and cipher frame versions", () => {
@@ -135,7 +97,15 @@ describe("gateway wire validation", () => {
         version: 1,
         ok: true,
         principal: "user",
-        capabilities: ["side-fork-v1", 42],
+        capabilities: ["gateway-v2", 42],
+      }),
+    ).toThrow("Invalid gateway handshake result");
+    expect(() =>
+      parseGatewayHandshakeAccepted({
+        version: 1,
+        ok: true,
+        gatewayApiVersion: 0,
+        principal: "user",
       }),
     ).toThrow("Invalid gateway handshake result");
   });
@@ -150,43 +120,6 @@ describe("gateway wire validation", () => {
         ciphertext: "",
       }),
     ).toThrow("Invalid gateway cipher frame");
-  });
-
-  it("rejects malformed response and event envelopes", () => {
-    expect(() =>
-      parseResponseEnvelope({
-        version: 1,
-        requestId: "request-1",
-        ok: false,
-      }),
-    ).toThrow("Invalid gateway error response");
-    expect(() =>
-      parseResponseEnvelope({
-        version: 1,
-        requestId: "request-1",
-        ok: true,
-        error: { code: "FAILED", message: "must not be present" },
-      }),
-    ).toThrow("contains an error");
-    expect(() =>
-      parseEventEnvelope({
-        version: 1,
-        eventId: "event-1",
-        cursor: "",
-        type: "turn/started",
-      }),
-    ).toThrow("Invalid gateway event envelope");
-    expect(() =>
-      parseGatewayServerEnvelope({
-        version: 1,
-        requestId: "request-1",
-        ok: true,
-        eventId: "event-1",
-        cursor: "1",
-        type: "turn/started",
-        payload: {},
-      }),
-    ).toThrow("Ambiguous gateway server envelope");
   });
 });
 

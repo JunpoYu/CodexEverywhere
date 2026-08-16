@@ -12,6 +12,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { HostStateStore } from "../../host/state-store.js";
+import { AdminStateDatabase } from "../repositories/admin-state-database.js";
 import { UserStateDatabase } from "../repositories/user-state-database.js";
 import { loadSqliteRuntime } from "../repositories/sqlite-runtime.js";
 import { StateConversionError } from "../repositories/legacy-state-conversion.js";
@@ -297,6 +298,95 @@ describe("state migration", () => {
     await expect(UserStateDatabase.open(statePath)).rejects.toThrow(
       "kind mismatch",
     );
+  });
+
+  it("merges the two v0.3 administrator databases and splits them on rollback", async () => {
+    const directory = await temporaryDirectory();
+    const controllerPath = join(directory, "controller.sqlite");
+    const privilegedPath = join(directory, "privileged.sqlite");
+    const controller = await HostStateStore.open(controllerPath);
+    await controller.transaction((database) => {
+      database.run(
+        "INSERT INTO web_password (id, registration_record, updated_at) VALUES (1, 'admin-record', ?)",
+        [now.toISOString()],
+      );
+    });
+    await controller.close();
+    const privileged = await HostStateStore.open(privilegedPath);
+    await privileged.transaction((database) => {
+      database.run(
+        "INSERT INTO admin_managed_users (uid, username, home, status, registered_at, updated_at, revision, remove_after) VALUES (1001, 'alice', '/home/alice', 'enabled', ?, ?, 1, NULL)",
+        [now.toISOString(), now.toISOString()],
+      );
+      database.run(
+        "INSERT INTO admin_audit_events (id, request_id, actor, action, target_username, result, created_at) VALUES ('audit-1', 'request-1', 'device:1', 'admin/user/register', 'alice', 'succeeded', ?)",
+        [now.toISOString()],
+      );
+      database.run(
+        `INSERT INTO admin_idempotency (request_id, result_json, created_at)
+         VALUES ('22222222-2222-4222-8222-222222222222', '{"version":1,"fingerprint":"f","result":{"version":1}}', ?)`,
+        [now.toISOString()],
+      );
+    });
+    await privileged.close();
+
+    const forward = await migrateState({
+      statePath: controllerPath,
+      auxiliaryAdminStatePath: privilegedPath,
+      kind: "admin",
+      direction: "v0.3-to-v0.4",
+      runtime: quietRuntime(),
+      now,
+    });
+    expect(forward.counts).toMatchObject({
+      identities: 1,
+      managedUsers: 1,
+      auditEvents: 1,
+      mutationReceipts: 1,
+    });
+    expect(forward.auxiliarySourceSha256).toMatch(/^[0-9a-f]{64}$/u);
+    expect((await stat(forward.auxiliaryBackupPath!)).mode & 0o777).toBe(0o600);
+
+    const v4 = await AdminStateDatabase.open(controllerPath);
+    const snapshot = await v4.exportSnapshot();
+    expect(snapshot.records.identity.password?.registrationRecord).toBe(
+      "admin-record",
+    );
+    expect(snapshot.records.managedUsers[0]?.username).toBe("alice");
+    await v4.close();
+
+    await migrateState({
+      statePath: controllerPath,
+      auxiliaryAdminStatePath: privilegedPath,
+      kind: "admin",
+      direction: "v0.4-to-v0.3",
+      runtime: quietRuntime(),
+      now: new Date("2026-08-16T12:01:00.000Z"),
+    });
+
+    const rolledBackController = await HostStateStore.open(controllerPath);
+    await expect(
+      rolledBackController.read((database) => ({
+        passwords: database.exec("SELECT COUNT(*) FROM web_password")[0]
+          ?.values[0]?.[0],
+        users: database.exec("SELECT COUNT(*) FROM admin_managed_users")[0]
+          ?.values[0]?.[0],
+      })),
+    ).resolves.toEqual({ passwords: 1, users: 0 });
+    await rolledBackController.close();
+
+    const rolledBackPrivileged = await HostStateStore.open(privilegedPath);
+    await expect(
+      rolledBackPrivileged.read((database) => ({
+        passwords: database.exec("SELECT COUNT(*) FROM web_password")[0]
+          ?.values[0]?.[0],
+        users: database.exec("SELECT COUNT(*) FROM admin_managed_users")[0]
+          ?.values[0]?.[0],
+        audit: database.exec("SELECT COUNT(*) FROM admin_audit_events")[0]
+          ?.values[0]?.[0],
+      })),
+    ).resolves.toEqual({ passwords: 0, users: 1, audit: 1 });
+    await rolledBackPrivileged.close();
   });
 });
 

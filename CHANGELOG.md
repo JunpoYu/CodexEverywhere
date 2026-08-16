@@ -4,12 +4,47 @@
 
 ## [Unreleased]
 
+暂无。
+
+## [0.4.0-alpha.1] - 2026-08-16
+
+### Added
+
+- 新增纯 TypeScript 内核：类型化 `ServiceRegistry`、层级 `Scope`、`TypedEventBus` 和 generation-safe `Actor`；Agent 与 React Web 使用静态 composition root，不加载第三方代码。
+- 新增加密后的 Gateway API v2、Zod 运行时 schema、类型化 client、声明式 handler registry 和统一版本、身份、权限、capability 与幂等校验。`mutation/status` 为 durable 副作用提供 `missing | pending | completed | indeterminate` 权威对账。
+- 新增 `IdentityService`、`SetupService`、`WorkspaceService`、`CodexSupervisor`、`CodexClientFactory`、`ThreadLeaseManager`、`InteractionBroker`、`QueueService`、`PreferencesService` 和隔离的 `AdminService`。同一 thread 支持多 viewer、单 lease、审批竞争和断线后权威重开。
+- 新增 React、React Router、actor/`useSyncExternalStore` 和 CSS Modules PWA，覆盖 Host/Auth、Onboarding、任务、结构化时间线、Interaction、Composer、Queue、Workspace、Settings 与独立 Admin 路由；User 与 Admin 使用互斥的 composition root，Markdown、KaTeX 和高亮按任务页懒加载。
+- 新增用户与管理员分离的 v0.4 SQLite schema、repository 边界、专用 `application_id`，以及 v0.3 schema 4 到 v0.4 的原子正向迁移、严格反向迁移、SHA-256 备份、receipt、自动恢复和显式 finalize。
+- 新增架构检查、Gateway 合同测试、schema fuzz、migration round-trip、Actor 乱序测试、无模型 app-server fixture，以及 Direct/Relay 行为一致性测试。
+
+### Changed
+
+- Codex app-server 明确成为 thread、turn、审批、工具活动和执行状态的唯一事实源；断线恢复统一为重新认证、`thread/open`、稳定 ID 合并、interaction 同步和 mutation 对账。
+- durable operation key 绑定完整 schema 校验后输入的 canonical SHA-256，数据库不保存提示词、Queue 文本、路径内容或凭据；一次性秘密结果只允许在每用户 Agent 内存中按同 key 有界重放。
+- Queue 使用持久 delivery claim 和 at-most-once 边界；无法证明 app-server 副作用结果时进入显式 `indeterminate`，不会静默重投。
+- Noise handshake、Relay wire、Host Profile、设备密钥和 pairing document 继续使用 version 1；Gateway API 独立升级为 version 2。Web/Agent 不匹配时明确要求升级，不静默降级，也不要求重新配对设备。
+- UI 将 app-server `thread` 显示为“任务”；内部协议与代码仍使用 `thread`。
+
+### Removed
+
+- 从 v0.4 活跃协议和产品入口移除 Side、`thread/fork`、连续事件 ACK/buffer、Side capability 和浏览器 `auth.json` 导入。
+- Schedule、Push、完整文件管理和第三方插件加载器不进入 v0.4 首版；非空旧数据会阻止迁移，不会被静默删除。
+
+### Security
+
+- 恢复码授权消费与整组替换在同一数据库事务中完成；旧码全部失效。Passkey、CE 密码、恢复码和临时登录均不复用 SSH/Linux 密码。
+- Workspace 继续先 `realpath` 再校验授权 root；Direct 与 Relay 共用 Noise E2EE，Relay 不接触业务明文；临时模式禁止持久化设备私钥、Host Profile、票据和业务缓存。
+- Router 与 repository 成为协议和 SQL 的单一边界；日志禁止提示词、Queue 文本、文件内容、路径内容、凭据、恢复码和已解密 Relay payload。
+
 ### Fixed
 
-- Web 的配对与恢复流程即使被后来启动的登录操作淘汰，也会先展示宿主机只返回一次的恢复码；所有未被采用的已认证 client 会在关闭 transport 前显式释放页面票据。关闭或刷新正在运行的 Side 时，Web 会先请求中断活动 turn，只有 Host 确认后才释放页面会话；无法确认活动状态、待确认发送或尚未返回的 Side 分叉会保留 continuity，避免产生无人可控制的临时执行。
-- Web 在首次认证和每次 silent resume 后都会先重新协商 Side continuity ACK，再接管新 transport；协商失败时关闭未绑定连接并复用内存恢复票据无限退避，不要求用户重复认证。每次登录、配对或恢复在任何网络与 WebAuthn 操作开始前就取得 activation epoch，因此用户后来发起的操作总能使较早但更慢的流程失效；旧流程在任何异步状态读取返回后都不得覆盖后来选中的 client、页面或 Side。transport swap 的 Side 状态快照改为合并已完成 turn，不再替换 DOM 中已经 ACK 的流式前缀。ACK 批处理会保留所有候选事件；若最新的普通实时事件不在 Agent 的 Side buffer 中，会退回确认较早的可重放 Side 前缀，不会把负确认误当成功并使缓冲持续增长。
-- Side continuity gap 现在是不可逆的生命周期状态：ACK 只删除已处理的重放前缀，不能清除 overflow；新版和缓存旧 PWA 在 gap 后都只能请求停止、unsubscribe 或版本化 Side release，其他请求失败关闭。Web 立即显示独立的仅控制视觉状态，禁止继续发送，也禁止在 Side 仍被保留时单独放弃 unknown/indeterminate 消息。gap 若发生在 fork 返回前，原 fork 操作会直接转为人工核对，迟到的成功或失败都不能清除唯一控制记录。活动 turn 必须先确认 interrupt；自动停止失败后，用户手动停止成功也会记录确认并继续 release，释放暂时失败时“返回主会话”仍可重试。只有 `side/session/release` 返回 version 1 成功才可返回父会话。若分叉本身结果不可判定，显式放弃会先等待可重试的 `auth/session/release` 确认，再关闭 transport 并要求重新认证，避免未知 fork 或 app-server inner 成为不可见后台状态。若 app-server 实例代次已经变化，Side 已确定不存在，才无需旧实例确认即可清理本地入口。
-- Agent 明确跳过其他 thread 与 Queue 的事件，而无法提取 thread 身份的新 `codex/*` 事件会按向前兼容原则进入 Side continuity buffer，不再在重连间隙静默丢失。每条 continuity 仍受 4096 条与 16 MiB 上限约束；同一用户 Agent 另外共享 32 MiB 总事件预算和 32 个 retained Side client 名额，创建或恢复 Side 会在 app-server 副作用前失败关闭。新增独立 `side-session-control-v1` capability，新 Web 只有同时协商到它和 `side-fork-v1` 才开放 `/side`。每条 Side 在创建时取得独立且稳定的 release 幂等键，正常返回、gap 自动清理和重连后的人工重试都复用该键；显式 release 只接受 ephemeral thread，响应随 transport 丢失后也能从 Agent durable result 确认成功。释放后同时清理权限缓存、终态 gap、共享预算和断连到期分类。普通页面仍在断线后立即释放 app-server 客户端，Side 异常断连仍受 24 小时回收宽限。
+- 修复相同 operation key 与相同 thread ID、不同提示词可能被错误当作同一 durable mutation 的问题。
+- 修复恢复、配对或 WebAuthn 完成响应在 transport 丢失后无法用同 operation key 安全取回的问题；配对握手成功后先保存已可信设备，避免一次性 pairing 被消费后留下不可恢复页面。
+- 修复旧 generation 的异步连接、任务、Composer 或 Queue 结果覆盖用户较新选择的问题。
+- 修复输入、通知等纯状态事件错误取消当前 Actor effect，导致连接、任务打开或 mutation 永久停留在中间状态的问题。
+- 修复首个 turn 在 lease 建立前启动时，审批或用户问题可能先于任务页订阅到达并丢失的问题。
+- 修复等待用户输入时 Composer 不能把后续消息加入 Queue，以及未知 Codex notification 不能稳定保留为 `codex/generic` 时间线项的问题。
+- 修复原生 `<dialog>` 继承页面静态定位后可能渲染到移动端视口外的问题。
 
 ## [0.3.0-alpha.11] - 2026-08-14
 

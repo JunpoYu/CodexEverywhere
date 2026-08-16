@@ -16,7 +16,6 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { QueueRegistry } from "./queue.js";
 import { HostStateStore } from "./state-store.js";
 import { writeProcessRecord } from "./process-files.js";
-import { ThreadPermissionRegistry } from "./thread-permissions.js";
 
 const temporaryDirectories: string[] = [];
 afterEach(async () => {
@@ -510,12 +509,13 @@ describe("HostStateStore", () => {
       ],
     });
     await expect(
-      new ThreadPermissionRegistry(migrated).read("thread-legacy"),
-    ).resolves.toEqual({
-      approvalPolicy: "never",
-      sandbox: "read-only",
-      updatedAt: "now",
-    });
+      migrated.read(
+        (database) =>
+          database.exec(
+            "SELECT approval_policy_json, approvals_reviewer, sandbox_mode, updated_at FROM thread_permissions WHERE thread_id = 'thread-legacy'",
+          )[0]?.values[0],
+      ),
+    ).resolves.toEqual(['"never"', "", "read-only", "now"]);
     await migrated.close();
   });
 

@@ -1,6 +1,6 @@
 {
   "name": "codex-everywhere",
-  "version": "0.3.0-alpha.11",
+  "version": "0.4.0-alpha.1",
   "description": "A self-hosted Codex Web/PWA control plane for Linux and HPC.",
   "private": true,
   "license": "Apache-2.0",
@@ -16,11 +16,14 @@
     "dev": "pnpm --parallel --filter @codex-everywhere/agent --filter @codex-everywhere/web dev",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
+    "generate:codex-notification-schema": "node scripts/generate-codex-notification-schema.mjs",
     "test": "vitest run",
     "test:app-server": "vitest run --config vitest.integration.config.ts",
+    "test:e2e": "playwright test",
     "typecheck": "tsc -b --pretty false"
   },
   "devDependencies": {
+    "@playwright/test": "^1.62.1",
     "@types/node": "^20.19.0",
     "prettier": "^3.6.0",
     "tsx": "^4.20.0",

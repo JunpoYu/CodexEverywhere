@@ -97,10 +97,41 @@ export const interactionSchema = z
     threadId: identifierSchema,
     turnId: identifierSchema.optional(),
     kind: interactionKindSchema,
+    requestMethod: z.string().min(1).max(256),
     createdAt: timestampSchema,
     payload: jsonObjectSchema,
   })
   .strict();
+
+export const interactionResponseSchema = z.discriminatedUnion("kind", [
+  z
+    .object({
+      version: z.literal(1),
+      kind: z.literal("approval"),
+      decision: z.enum(["accept", "decline"]),
+    })
+    .strict(),
+  z
+    .object({
+      version: z.literal(1),
+      kind: z.literal("user-input"),
+      answers: z.record(
+        z.string().min(1).max(256),
+        z.array(z.string().max(16_384)).max(32),
+      ),
+    })
+    .strict(),
+  z
+    .object({
+      version: z.literal(1),
+      kind: z.literal("mcp-elicitation"),
+      action: z.enum(["accept", "decline", "cancel"]),
+      content: jsonValueSchema.optional(),
+    })
+    .strict(),
+]);
+
+export type InteractionResponse = z.output<typeof interactionResponseSchema>;
 
 export const threadSettingsSchema = z
   .object({

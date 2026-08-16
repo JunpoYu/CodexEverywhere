@@ -5,25 +5,27 @@ import {
   RELAY_PROTOCOL_VERSION,
   parseRelayWireMessage,
 } from "@codex-everywhere/protocol";
+import type { StaticKeyPair } from "@codex-everywhere/crypto";
 import WebSocket, { type RawData } from "ws";
 
-import {
-  acceptGatewaySocket,
-  type DirectGatewayOptions,
-} from "./direct-gateway.js";
-
-export type RelayConnectorOptions = DirectGatewayOptions & {
-  endpoint: string;
-  routeId: string;
+export interface RelayConnectorOptions {
+  readonly endpoint: string;
+  readonly routeId: string;
   routeCapability: string;
-  directEndpoint?: string;
+  readonly nodeId: string;
+  readonly userId: string;
+  readonly principal?: "user" | "host-admin";
+  readonly identity: Pick<StaticKeyPair, "publicKey">;
+  readonly hostFingerprint: string;
+  readonly directEndpoint?: string;
+  readonly acceptGatewaySocket: (socket: WebSocket) => void;
   /** Relay control ping interval. Primarily configurable for tests. */
-  relayControlHeartbeatMs?: number;
+  readonly relayControlHeartbeatMs?: number;
   /** Consecutive unanswered control pings tolerated before reconnecting. */
-  relayControlHeartbeatMissLimit?: number;
+  readonly relayControlHeartbeatMissLimit?: number;
   /** Reconnect delay. Primarily configurable for deterministic tests. */
-  relayReconnectDelayMs?: number;
-};
+  readonly relayReconnectDelayMs?: number;
+}
 
 const CONTROL_HEARTBEAT_MS = 15_000;
 const CONTROL_HEARTBEAT_MISS_LIMIT = 4;
@@ -233,7 +235,7 @@ export class RelayConnector extends EventEmitter<{ connected: [] }> {
         await nextMessage(acceptedTunnel),
         RELAY_MESSAGE_TYPES.accepted,
       );
-      acceptGatewaySocket(acceptedTunnel, this.#options);
+      this.#options.acceptGatewaySocket(acceptedTunnel);
       acceptedTunnel.send(
         JSON.stringify({
           type: RELAY_MESSAGE_TYPES.tunnelReady,

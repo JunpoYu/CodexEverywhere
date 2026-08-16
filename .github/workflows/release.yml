@@ -39,11 +39,20 @@ jobs:
       - name: Check formatting
         run: pnpm format:check
 
+      - name: Check architecture boundaries
+        run: pnpm check:architecture
+
       - name: Check types
         run: pnpm typecheck
 
       - name: Run tests
         run: pnpm test
+
+      - name: Install Playwright Chromium
+        run: pnpm exec playwright install --with-deps chromium
+
+      - name: Run Web end-to-end tests
+        run: pnpm test:e2e
 
       - name: Install the latest stable Codex CLI
         run: |

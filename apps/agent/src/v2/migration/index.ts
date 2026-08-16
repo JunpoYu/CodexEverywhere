@@ -2,6 +2,7 @@ export {
   finalizeStateMigration,
   migrateState,
   type MigrationRuntimeState,
+  type MigrationFileOwner,
   type StateMigrationDirection,
   type StateMigrationOptions,
   type StateMigrationResult,

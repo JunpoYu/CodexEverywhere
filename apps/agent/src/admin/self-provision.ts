@@ -19,10 +19,9 @@ import {
   type GetentRunner,
   type UnixAccount,
 } from "./unix-accounts.js";
-import { HostStateStore } from "../host/state-store.js";
+import { AdminStateDatabase } from "../v2/repositories/admin-state-database.js";
 import { writePrivateJsonAtomically } from "../host/process-files.js";
 import { ADMIN_STATE_FILE } from "./access-policy.js";
-import { AdminUserRegistry } from "./registry.js";
 
 export const INSTALLED_PROVISIONER_VERSION = 1 as const;
 export const HOST_PROVISIONER_CONFIG_PATH =
@@ -223,12 +222,12 @@ export async function issueProvisioningGrantForAccount(
   }
   const now = options.now ?? new Date();
   const installed = await loadHostProvisioner(options.configPath, now);
-  const adminState = await HostStateStore.open(
+  const adminState = await AdminStateDatabase.open(
     options.adminStatePath ?? ADMIN_STATE_FILE,
+    { create: true },
   );
   try {
-    const registry = new AdminUserRegistry(adminState);
-    const current = await registry.get(account.username);
+    const current = await adminState.admin.get(account.username);
     if (
       current &&
       (current.status === "disabled" ||
@@ -240,7 +239,7 @@ export async function issueProvisioningGrantForAccount(
         "CodexEverywhere access is disabled; contact the host administrator",
       );
     }
-    await registry.register(account);
+    await adminState.admin.register(account);
   } finally {
     await adminState.close();
   }
