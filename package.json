@@ -10,6 +10,7 @@
   },
   "scripts": {
     "build": "pnpm -r --if-present build",
+    "check:architecture": "node scripts/check-architecture.mjs",
     "check:public": "node scripts/check-public-repo.mjs",
     "clean": "pnpm -r clean",
     "dev": "pnpm --parallel --filter @codex-everywhere/agent --filter @codex-everywhere/web dev",

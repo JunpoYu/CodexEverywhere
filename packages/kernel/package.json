@@ -1,0 +1,21 @@
+{
+  "name": "@codex-everywhere/kernel",
+  "version": "0.4.0-alpha.1",
+  "private": true,
+  "license": "Apache-2.0",
+  "type": "module",
+  "files": [
+    "dist"
+  ],
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -b",
+    "clean": "rm -rf dist *.tsbuildinfo",
+    "typecheck": "tsc -b --pretty false"
+  }
+}

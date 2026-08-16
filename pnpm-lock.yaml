@@ -129,7 +129,13 @@ importers:
         specifier: 1.6.5
         version: 1.6.5
 
-  packages/protocol: {}
+  packages/kernel: {}
+
+  packages/protocol:
+    dependencies:
+      zod:
+        specifier: 4.4.3
+        version: 4.4.3
 
   packages/testing: {}
 
@@ -1169,6 +1175,12 @@ packages:
         integrity: sha512-FIr/DEeoHfj7ftfylnoFt3rAIRoWXpx2AoDfrT2qD2wtp7Dp+COajvs/Icb7uHqRW9m60f5iXZwdsJJO3kvb7w==,
       }
 
+  zod@4.4.3:
+    resolution:
+      {
+        integrity: sha512-ytENFjIJFl2UwYglde2jchW2Hwm4GJFLDiSXWdTrJQBIN9Fcyp7n4DhxJEiWNAJMV1/BqWfW/kkg71UDcHJyTQ==,
+      }
+
 snapshots:
   "@esbuild/aix-ppc64@0.28.1":
     optional: true
@@ -1761,3 +1773,5 @@ snapshots:
   ws@8.21.1: {}
 
   xsalsa20@1.2.0: {}
+
+  zod@4.4.3: {}

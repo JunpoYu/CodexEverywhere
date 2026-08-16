@@ -101,6 +101,13 @@ import {
   stopAdminControllerService,
 } from "./runtime/admin-controller-service.js";
 import { inspectAdminControllerAuthorizationStatus } from "./runtime/admin-controller-status.js";
+import {
+  finalizeStateMigration,
+  inspectAdminMigrationRuntime,
+  inspectUserMigrationRuntime,
+  migrateState,
+  type StateMigrationDirection,
+} from "./v2/migration/index.js";
 
 const program = new Command();
 const paths = resolveHostPaths();
@@ -109,6 +116,71 @@ program
   .name("ce")
   .description("CodexEverywhere host agent and TUI launcher")
   .version(packageVersion());
+
+const upgrade = program
+  .command("upgrade")
+  .description("Prepare a coordinated CodexEverywhere upgrade");
+
+upgrade
+  .command("preflight")
+  .description("Verify that state and runtime are safe to migrate")
+  .option("--to <version>", "target version (v0.4 or v0.3)", "v0.4")
+  .option("--admin", "inspect Administrator Controller state")
+  .action(async (options: { to: string; admin?: boolean }) => {
+    const target = await resolveStateMigrationTarget(options.admin === true);
+    const direction = parseMigrationDirection(options.to);
+    const runtime = await inspectMigrationRuntime(target);
+    const result = await migrateState({
+      statePath: target.statePath,
+      kind: target.kind,
+      direction,
+      runtime,
+      dryRun: true,
+    });
+    process.stdout.write(
+      `${JSON.stringify({ ...result, runtime }, null, 2)}\n`,
+    );
+  });
+
+const stateCommand = program
+  .command("state")
+  .description("Inspect and migrate CodexEverywhere state");
+
+stateCommand
+  .command("migrate")
+  .description("Atomically migrate state between v0.3 and v0.4")
+  .requiredOption("--to <version>", "target version (v0.4 or v0.3)")
+  .option("--admin", "migrate Administrator Controller state")
+  .option("--dry-run", "validate without creating a backup or changing state")
+  .action(
+    async (options: { to: string; admin?: boolean; dryRun?: boolean }) => {
+      const target = await resolveStateMigrationTarget(options.admin === true);
+      const direction = parseMigrationDirection(options.to);
+      const runtime = await inspectMigrationRuntime(target);
+      const result = await migrateState({
+        statePath: target.statePath,
+        kind: target.kind,
+        direction,
+        runtime,
+        dryRun: options.dryRun === true,
+      });
+      process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+    },
+  );
+
+stateCommand
+  .command("migration-finalize")
+  .description("Delete one retained migration backup after rollback acceptance")
+  .argument("<receipt-path>")
+  .option("--admin", "finalize an Administrator Controller migration")
+  .action(async (receiptPath: string, options: { admin?: boolean }) => {
+    const target = await resolveStateMigrationTarget(options.admin === true);
+    await finalizeStateMigration({
+      statePath: target.statePath,
+      receiptPath,
+    });
+    process.stdout.write("Migration backup finalized.\n");
+  });
 
 const agent = program
   .command("agent")
@@ -1124,6 +1196,52 @@ async function withState<T>(
   } finally {
     await state.close();
   }
+}
+
+type StateMigrationTarget =
+  | {
+      readonly kind: "user";
+      readonly statePath: string;
+      readonly userPaths: typeof paths;
+    }
+  | {
+      readonly kind: "admin";
+      readonly statePath: string;
+      readonly controllerPidFile: string;
+    };
+
+async function resolveStateMigrationTarget(
+  admin: boolean,
+): Promise<StateMigrationTarget> {
+  if (!admin) {
+    return { kind: "user", statePath: paths.stateFile, userPaths: paths };
+  }
+  const config = await loadAdminControllerConfig();
+  if (process.getuid?.() !== config.runAsUid) {
+    throw new Error(
+      `Run the Administrator state migration as ${config.runAsUser}`,
+    );
+  }
+  const adminPaths = resolveAdminControllerPaths(config.home, config.runAsUid);
+  return {
+    kind: "admin",
+    statePath: adminPaths.stateFile,
+    controllerPidFile: adminPaths.pidFile,
+  };
+}
+
+function inspectMigrationRuntime(
+  target: StateMigrationTarget,
+): Promise<import("./v2/migration/index.js").MigrationRuntimeState> {
+  return target.kind === "user"
+    ? inspectUserMigrationRuntime(target.userPaths)
+    : inspectAdminMigrationRuntime(target.controllerPidFile);
+}
+
+function parseMigrationDirection(value: string): StateMigrationDirection {
+  if (value === "v0.4") return "v0.3-to-v0.4";
+  if (value === "v0.3") return "v0.4-to-v0.3";
+  throw new Error("Migration target must be v0.4 or v0.3");
 }
 
 function parsePort(value: string): number {
