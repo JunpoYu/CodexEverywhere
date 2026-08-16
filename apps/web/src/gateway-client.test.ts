@@ -25,6 +25,7 @@ import {
 
 import {
   GatewayClient,
+  GatewayClientUpgradeRequired,
   GatewayInteractiveReauthenticationFailed,
   GatewayReauthenticationRequired,
   GatewayResponseError,
@@ -218,6 +219,33 @@ describe("connection target selection", () => {
 
     await expect(GatewayClient.connect(host)).rejects.toThrow(
       "Invalid gateway handshake reply",
+    );
+  });
+
+  it("shows an upgrade error when Noise v1 carries Gateway API v2", async () => {
+    const hostIdentity = generateStaticKeyPair();
+    const simulation = simulatedHostWebSocket(hostIdentity, {
+      gatewayApiVersion: 2,
+    });
+    vi.stubGlobal("WebSocket", simulation.WebSocketClass);
+    const device = generateStaticKeyPair();
+    const host: SavedHost = {
+      id: "node-upgraded",
+      name: "alice",
+      endpoint: "wss://hpc.example/gateway",
+      transport: "direct",
+      nodeId: "node-1",
+      userId: "unix:1000",
+      hostPublicKey: bytesToBase64Url(hostIdentity.publicKey),
+      hostFingerprint: `sha256:${"B".repeat(43)}`,
+      deviceId: "device-1",
+      deviceName: "Browser",
+      devicePublicKey: bytesToBase64Url(device.publicKey),
+      deviceSecretKey: bytesToBase64Url(device.secretKey),
+    };
+
+    await expect(GatewayClient.connect(host)).rejects.toBeInstanceOf(
+      GatewayClientUpgradeRequired,
     );
   });
 });
@@ -711,6 +739,7 @@ function simulatedHostWebSocket(
     rejectResume?: boolean;
     onResumeHello?: () => void;
     capabilities?: string[];
+    gatewayApiVersion?: number;
   } = {},
 ): {
   WebSocketClass: typeof WebSocket;
@@ -777,6 +806,9 @@ function simulatedHostWebSocket(
                   }
                 : {
                     ok: true,
+                    ...(options.gatewayApiVersion === undefined
+                      ? {}
+                      : { gatewayApiVersion: options.gatewayApiVersion }),
                     principal: "user",
                     loginName: "alice",
                     ...(options.capabilities

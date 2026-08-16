@@ -65,11 +65,13 @@ describe("gateway wire validation", () => {
       parseGatewayHandshakeAccepted({
         version: 1,
         ok: true,
+        gatewayApiVersion: 2,
         principal: "user",
         capabilities: ["side-fork-v1", "future-feature"],
       }),
     ).toMatchObject({
       ok: true,
+      gatewayApiVersion: 2,
       principal: "user",
       capabilities: ["side-fork-v1", "future-feature"],
     });

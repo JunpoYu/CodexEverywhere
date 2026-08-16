@@ -176,6 +176,8 @@ export type GatewayHandshakeReply = {
 export type GatewayHandshakeAccepted = {
   version: ProtocolVersion;
   ok: true;
+  /** Gateway API is versioned independently from Noise transport. */
+  gatewayApiVersion?: number;
   principal: "user" | "host-admin";
   loginName?: string;
   capabilities?: string[];
@@ -276,6 +278,9 @@ export function parseGatewayHandshakeAccepted(
   if (
     value.version !== PROTOCOL_VERSION ||
     value.ok !== true ||
+    (value.gatewayApiVersion !== undefined &&
+      (!Number.isSafeInteger(value.gatewayApiVersion) ||
+        (value.gatewayApiVersion as number) <= 0)) ||
     (value.principal !== "user" && value.principal !== "host-admin") ||
     (value.loginName !== undefined &&
       !isBoundedIdentifier(value.loginName, 128)) ||

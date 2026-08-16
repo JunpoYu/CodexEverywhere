@@ -14,6 +14,28 @@ export function announcePwaUpdate(activate: UpdateActivation): void {
   for (const listener of updateListeners) listener(activate);
 }
 
+/**
+ * Bypass the browser's normal service-worker update cadence after a newer
+ * Agent proves that the cached Web bundle is incompatible. Activation still
+ * goes through the normal safety prompt.
+ */
+export async function forcePwaUpdateCheck(): Promise<boolean> {
+  if (typeof navigator === "undefined" || !("serviceWorker" in navigator)) {
+    return false;
+  }
+  try {
+    const registration = await navigator.serviceWorker.getRegistration();
+    if (!registration) return false;
+    await registration.update();
+    const waiting = registration.waiting;
+    if (!waiting) return false;
+    announcePwaUpdate(() => waiting.postMessage({ type: "SKIP_WAITING" }));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export function pwaUpdateBlockedReason(
   state: PwaUpdateSafetyState,
 ): string | undefined {

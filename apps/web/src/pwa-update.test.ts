@@ -1,8 +1,8 @@
 import { readFileSync } from "node:fs";
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
-import { pwaUpdateBlockedReason } from "./pwa-update.js";
+import { forcePwaUpdateCheck, pwaUpdateBlockedReason } from "./pwa-update.js";
 
 describe("safe PWA updates", () => {
   it("blocks refresh while a one-time secret is visible", () => {
@@ -33,6 +33,24 @@ describe("safe PWA updates", () => {
         operationPending: false,
       }),
     ).toBeUndefined();
+  });
+
+  it("forces an update check but keeps worker activation explicit", async () => {
+    const postMessage = vi.fn();
+    const update = vi.fn(async () => undefined);
+    vi.stubGlobal("navigator", {
+      serviceWorker: {
+        getRegistration: vi.fn(async () => ({
+          update,
+          waiting: { postMessage },
+        })),
+      },
+    });
+
+    await expect(forcePwaUpdateCheck()).resolves.toBe(true);
+    expect(update).toHaveBeenCalledOnce();
+    expect(postMessage).not.toHaveBeenCalled();
+    vi.unstubAllGlobals();
   });
 
   it("keeps a newly installed worker waiting for explicit activation", () => {

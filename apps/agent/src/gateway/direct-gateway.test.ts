@@ -1101,7 +1101,7 @@ async function connectClient(input: {
   const accepted = JSON.parse(
     Buffer.from(completed.payload).toString(),
   ) as Record<string, unknown>;
-  expect(accepted).toMatchObject({ ok: true });
+  expect(accepted).toMatchObject({ ok: true, gatewayApiVersion: 1 });
   return { socket, session: completed.session, accepted };
 }
 

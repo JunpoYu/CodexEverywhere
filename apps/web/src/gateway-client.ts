@@ -31,6 +31,7 @@ import {
   gatewayReconnectMode,
   type GatewayReconnectMode,
 } from "./login-preferences.js";
+import { forcePwaUpdateCheck } from "./pwa-update.js";
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
@@ -97,6 +98,15 @@ export class GatewayReauthenticationRequired extends Error {
   constructor() {
     super("The Host requires interactive authentication");
     this.name = "GatewayReauthenticationRequired";
+  }
+}
+
+export class GatewayClientUpgradeRequired extends Error {
+  constructor() {
+    super(
+      "当前网页版本过旧，无法连接已升级的 Agent。正在检查 PWA 更新；请按页面提示安全刷新。",
+    );
+    this.name = "GatewayClientUpgradeRequired";
   }
 }
 
@@ -608,6 +618,13 @@ export class GatewayClient {
         decoder.decode(completed.payload),
       );
       if (!accepted.ok) throw new GatewayReauthenticationRequired();
+      if (
+        accepted.gatewayApiVersion !== undefined &&
+        accepted.gatewayApiVersion > 1
+      ) {
+        void forcePwaUpdateCheck();
+        throw new GatewayClientUpgradeRequired();
+      }
       const expectedPrincipal = host.kind === "admin" ? "host-admin" : "user";
       if (accepted.principal !== expectedPrincipal) {
         throw new Error("Host returned the wrong identity domain");
