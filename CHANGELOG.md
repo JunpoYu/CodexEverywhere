@@ -11,6 +11,7 @@
 - 新增严格的多用户 staging receipt 初始化与校验器，只接受限定字段、布尔验收结果和 SHA-256，不允许记录主机名、用户名、路径或自由文本，并要求浏览器、Agent 与 Relay 的 NTP 时钟完成同步。
 - 新增供人和后续 Agent 执行的部署、升级与回滚操作手册，明确非秘密交接输入、只读预检、停止条件、Release 验证、Direct/Relay/Controller、v0.3→v0.4 和验收输出。
 - Release 的 HPC tools 现在包含首次 bootstrap、rootless/root-owned 安装及两类 inventory 回滚所需脚本。
+- 操作手册补充 root-owned Miniforge 的固定版本、双重 SHA-256 校验和隔离安装步骤，避免 Controller 部署时让 root 执行部署账号可写的 Conda、Node.js 或安装脚本。
 
 ### Fixed
 
