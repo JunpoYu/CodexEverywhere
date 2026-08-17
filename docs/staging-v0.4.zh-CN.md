@@ -125,4 +125,4 @@ sha256sum "${CE_STAGING_EVIDENCE_DIR}/staging.json"
 
 校验器会拒绝：检查项缺失或为 false、少于两个用户、缺少管理员、错误的目标 OS/Node/glibc、重复或非法 hash、未知字段、自由文本扩展、非规范时间、符号链接和非 0600 文件。
 
-只有 candidate receipt 与 staging receipt 都通过，并且 GitHub CI 对同一 commit 为绿色，才允许创建 `v0.4.0-alpha.1` tag。首次发布仍应只开放给少量测试用户；观察窗口结束后再扩大范围和 finalize 备份。
+candidate receipt 与 GitHub CI 对同一 commit 为绿色后，才允许创建 `v0.4.0-alpha.1` tag/Prerelease 来冻结不可变 staging 制品。staging 必须消费该 Release 原始制品；只有 staging receipt 也通过后，才允许批准 production 部署同一 manifest。不得在 staging 后重新构建或移动 tag。首次部署仍只开放给少量测试用户；观察窗口结束后再扩大范围和 finalize 备份。逐项命令见[部署、升级与回滚操作手册](operator-runbook.zh-CN.md)。

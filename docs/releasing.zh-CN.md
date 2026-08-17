@@ -69,7 +69,19 @@ pnpm verify:v0.4 -- --with-model --receipt /absolute/private/path/candidate.json
 - Direct 与 Relay 使用同一 Gateway v2 合同测试，未知方法、错误身份、缺失 operation key 和版本不匹配均失败关闭；
 - 390px 手机与桌面 Playwright 核心流程通过，PWA 更新不会刷新 outcome-unknown mutation；
 - Web 首始用户路由 JS gzip 不超过 250 KiB、CSS gzip 不超过 40 KiB；Markdown、KaTeX 与代码高亮保持独立懒加载；
-- 多用户 staging 已完成一次正向升级、v0.4 业务写入、反向迁移和制品回滚，源库备份尚未 finalize。
+- candidate receipt 已通过，目标 commit 与 CI commit 相同；staging 使用的 v0.3 回滚 release、两个非生产用户和管理员控制面已经准备好。多用户 staging 必须消费尚待创建的不可变 Prerelease 制品，因此不是创建候选 tag 的前置条件，而是 production 批准的前置条件。
+
+## 候选 Prerelease 与 staging
+
+v0.4 staging 必须验证 GitHub Release 的原始制品，而 Release workflow 又只能从 tag 构建。因此采用以下两阶段门槛，避免“没有 tag 就没有制品、没有制品又不能 staging”的循环依赖：
+
+1. candidate receipt、公开 CI 和人工源码检查通过后，在 `main` 的同一 commit 创建 annotated alpha tag；
+2. Release workflow 生成带 provenance 的 Prerelease，至此只表示“制品已冻结”，不表示允许 production；
+3. staging 下载该 Prerelease，记录 manifest SHA-256，完成正向迁移、业务写入、反向迁移和制品回滚；
+4. staging receipt 通过后，才批准 production 以该 manifest SHA-256 部署同一组字节；
+5. 不重新构建、不移动 tag，也不把另一 commit 的制品冒充已经 staging 的版本。
+
+Alpha tag/Prerelease 可以公开供测试，但发布说明必须明确 staging 状态。若 staging 失败，保留失败证据并发布新的 prerelease 序号；不得覆盖旧 tag 或旧 Release。
 
 ## 首次公开
 
@@ -89,7 +101,7 @@ git push -u public codex/public-release:main
 - Private Vulnerability Reporting；
 - 自动删除已合并分支。
 
-确认公开页面、README、许可证识别和安全报告入口正常后再创建 tag：
+确认公开页面、README、许可证识别、安全报告入口、candidate receipt 和目标 commit CI 正常后再创建候选 tag：
 
 ```bash
 git tag -a v0.4.0-alpha.1 codex/public-release \
@@ -97,7 +109,7 @@ git tag -a v0.4.0-alpha.1 codex/public-release \
 git push public v0.4.0-alpha.1
 ```
 
-Tag 推送后，[Release workflow](../.github/workflows/release.yml) 会重新执行格式、架构、类型、单元测试、Playwright 和构建检查，安装并记录当时 npm 最新稳定版 Codex CLI，再运行真实 app-server contract 集成测试。任何一项失败都不会生成制品。带连字符的版本会自动标记为 prerelease。
+Tag 推送后，[Release workflow](../.github/workflows/release.yml) 会重新执行格式、架构、类型、单元测试、Playwright 和构建检查，安装并记录当时 npm 最新稳定版 Codex CLI，再运行真实 app-server contract 集成测试。任何一项失败都不会生成制品。带连字符的版本会自动标记为 prerelease；该状态冻结 staging 输入，但不构成 production 批准。
 
 Release workflow 还会验证 tag commit 属于公开 `main`，并生成：
 
@@ -121,10 +133,10 @@ SHA256SUMS
 5. 创建并推送 annotated tag；
 6. 检查自动生成的 GitHub Release、安装文档和源代码归档；
 7. 检查 manifest、SHA-256、provenance attestation 的 workflow/tag/commit 身份约束，以及 Release 摘要中记录的 Codex app-server contract 基线；
-8. 由独立 staging 运维环境消费 Release，完成全新安装、重复安装恢复、安装内容漂移拒绝、升级和严格 inventory 回滚演练，并记录获批 `manifest.json` SHA-256；
-9. 人工批准后，由 production 安装器以该获批摘要为信任根部署同一组制品，不重新构建。
+8. 由独立 staging 运维环境消费 Prerelease，完成全新安装、重复安装恢复、安装内容漂移拒绝、升级和严格 inventory 回滚演练，并记录获批 `manifest.json` SHA-256；
+9. staging receipt 验证通过并人工批准后，由 production 安装器以该获批摘要为信任根部署同一组制品，不重新构建。
 
-不要把 GitHub Actions 的生产 SSH 私钥放进公开源码仓库。个人或单集群部署推荐由服务器上的无特权专用账号主动下载 Release，并把真实配置保留在服务器本地；多环境团队才需要私有 ops 仓库或带 Environment 审批的独立部署工作流。公开仓库的 CI 只构建和发布，绝不 SSH 到生产环境。完整流程见[部署与升级](deployment.zh-CN.md)。
+不要把 GitHub Actions 的生产 SSH 私钥放进公开源码仓库。个人或单集群部署推荐由服务器上的无特权专用账号主动下载 Release，并把真实配置保留在服务器本地；多环境团队才需要私有 ops 仓库或带 Environment 审批的独立部署工作流。公开仓库的 CI 只构建和发布，绝不 SSH 到生产环境。架构边界见[部署与升级](deployment.zh-CN.md)，逐项命令见[操作手册](operator-runbook.zh-CN.md)。
 
 ## 撤回与修复
 

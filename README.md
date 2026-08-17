@@ -21,7 +21,7 @@ CodexEverywhere（CE）是面向 Linux/HPC 的自托管 Codex Web/PWA 控制平�
 CE 不重新实现 AgentLoop。thread、turn、工具活动、审批请求和执行状态始终以官方 [Codex app-server](https://developers.openai.com/codex/app-server) 为唯一事实源；CE 只负责安全连接、Web 身份、移动端产品体验、持久 Queue 和 HPC 生命周期。
 
 > [!WARNING]
-> 当前代码线为 `v0.4.0-alpha.1` 架构重建版。Gateway API v2 和新状态库不兼容 v0.3 二进制；升级前必须执行预检和正式迁移。Alpha 版本建议先在多用户 staging 完成正向迁移、业务写入、反向迁移和制品回滚演练。
+> 当前代码线为 `v0.4.0-alpha.1` 架构重建版。Gateway API v2 和新状态库不兼容 v0.3 二进制；升级前必须执行预检和正式迁移。Alpha tag/Prerelease 只用于冻结待验收制品；同一制品必须先在多用户 staging 完成正向迁移、业务写入、反向迁移和制品回滚，才能批准 production 部署。
 
 > [!NOTE]
 > 这是独立的非官方开源项目，与 OpenAI 没有关联或背书。Codex 是 OpenAI 的产品。
@@ -119,7 +119,7 @@ node apps/agent/dist/cli.js device pair
 
 将 `apps/web/dist` 部署到配置的 HTTPS Origin，打开 PWA，粘贴 `ce device pair` 输出的一次性资料并注册首个 Passkey。恢复码必须立即离线保存。
 
-生产环境不要在服务器上 `git pull` 或临时构建；只部署经过校验的不可变 Release 制品。多用户 HPC、Relay、rootless provisioner 和管理员控制面的安装见[部署与升级](docs/deployment.zh-CN.md)。
+生产环境不要在服务器上 `git pull` 或临时构建；只部署经过校验的不可变 Release 制品。多用户 HPC、Relay、rootless provisioner 和管理员控制面的架构边界见[部署与升级](docs/deployment.zh-CN.md)；交给其他 Agent 执行时，使用带输入清单、停止条件和验收输出的[部署、升级与回滚操作手册](docs/operator-runbook.zh-CN.md)。
 
 ## 从 v0.3 迁移
 

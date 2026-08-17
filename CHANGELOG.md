@@ -9,10 +9,14 @@
 - 新增一键 v0.4 候选版本门禁和 0600 脱敏 receipt；默认拒绝脏工作区，真实订阅模型调用必须显式开启。
 - 新增机器执行的首屏 JS/CSS gzip 预算检查，并验证 Markdown、KaTeX 与代码高亮仍处于任务页懒加载边界。
 - 新增严格的多用户 staging receipt 初始化与校验器，只接受限定字段、布尔验收结果和 SHA-256，不允许记录主机名、用户名、路径或自由文本，并要求浏览器、Agent 与 Relay 的 NTP 时钟完成同步。
+- 新增供人和后续 Agent 执行的部署、升级与回滚操作手册，明确非秘密交接输入、只读预检、停止条件、Release 验证、Direct/Relay/Controller、v0.3→v0.4 和验收输出。
+- Release 的 HPC tools 现在包含首次 bootstrap、rootless/root-owned 安装及两类 inventory 回滚所需脚本。
 
 ### Fixed
 
 - 修复 HPC 安装器在 staging 常用的 `umask 077` 下把非秘密 release inventory 创建为 `0600`，随后又因要求精确 `0644` 而拒绝安装或回滚的问题；inventory 先以私有模式写入，再通过同一文件句柄发布为固定权限。
+- 修复 rootless 全局启动器拒绝 root、但 Administrator Controller 安装与 helper 又必须执行 root CLI 的部署死锁；root 现在只进入同 tag、root-owned 且经 inventory 校验的独立副本，普通用户继续进入无特权副本。
+- 修复发布门槛要求 staging 消费 Release、同时又禁止在 staging 前创建 tag 的循环依赖；alpha tag/Prerelease 现在只冻结候选字节，staging receipt 仍是 production 批准的硬门槛。
 
 ## [0.4.0-alpha.1] - 2026-08-16
 

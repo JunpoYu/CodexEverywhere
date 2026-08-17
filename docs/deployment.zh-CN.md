@@ -2,6 +2,8 @@
 
 本文档定义 CodexEverywhere 的生产部署边界。部署系统是 GitHub Release 的消费者，不是第二套构建系统。
 
+需要实际执行首次安装、补丁升级、v0.3→v0.4 或回滚时，使用[部署、升级与回滚操作手册](operator-runbook.zh-CN.md)。该手册同时规定后续 Agent 的输入、停止条件、rootless/root-owned 双 CLI、验证和交付格式；本文只解释为什么必须遵守这些边界。
+
 ## 1. 信任链
 
 ```text
@@ -60,7 +62,7 @@ Service Worker 更新期间，如果页面存在 outcome-unknown mutation、未�
 
 ## 4. HPC
 
-首次宿主机 bootstrap 仍按 README 创建无 sudo 权限的 `codexeverywhere` 账号、共享 Node.js/tmux runtime、rootless provisioner，以及 root 所有的固定 `/usr/local/bin/ce`。这是宿主机安装，不属于普通版本发布。
+首次宿主机 bootstrap 使用专用无 sudo 部署账号、共享 Node.js/tmux runtime、rootless provisioner，以及 root 所有的固定 `/usr/local/bin/ce`。启用 Administrator Controller 时，还必须从同一份 verified Agent release 安装独立的 root-owned CLI；全局启动器只让 root 进入该副本，绝不能让 root 执行部署账号可写的 JavaScript 或 runtime。两个副本必须保持同一 tag。这是宿主机安装，不属于普通版本发布，完整命令见[操作手册](operator-runbook.zh-CN.md)。
 
 宿主机 provisioner credential 具有独立有效期。生产监控应执行 `ce provisioner status`，并在到期前至少 30 天由 Relay 运维者以原 `installationId` 重新运行 `ce-relay issue-provisioner --installation-id <id> --expires-days <days>`，再通过受保护标准输入重复执行 `ce provisioner install ... --credential-stdin`。这一步是授权续期，不能由普通 Unix 用户自动完成；用户 Agent 只会在当前有效 credential 下为 UID/NSS 已绑定的随机 route 自动换发 capability。Administrator Controller 使用独立的 host-admin route registry：root 发布的 version 2 注册记录、请求文件内核 owner UID、当前 NSS tuple、admin handle 和 route ID 必须全部一致，provisioner 才会续签同一路由，Controller 不接触 credential。Agent 与 Controller 都会无限次重试，间隔上限依次为 12 小时、1 小时和 5 分钟，并按随机 route 做确定性抖动；该机制不会延长已经到期的 provisioner credential。升级旧管理员安装时，须在旧 capability 到期前完成固定顺序：先部署并重启当前 Release 的 rootless provisioner，确认其 descriptor 已声明 `admin-relay-capability-renewal-v1`；再由 root 原参数重跑一次 `ce admin install-controller`；最后重启 Administrator Controller，并用 `ce admin web status` 核对 version 2 注册状态和当前 Relay 授权截止时间。不能先重启仍依赖旧注册的 Controller。
 
@@ -102,6 +104,8 @@ hpc-tools/activate-rootless-release.sh \
   <old-tag> \
   /srv/codex-everywhere
 ```
+
+启用 Controller 的宿主机还要使用 `activate-shared-release.sh` 切换 root-owned 副本，并重新生成双路全局启动器；不能让 root 临时回退到 rootless release。首次 bootstrap、普通升级和回滚所需脚本都随 `codex-everywhere-hpc-tools-<tag>.tar.gz` 发布。
 
 该命令默认只接受由正式 Release 安装路径生成的 `verified` inventory。开发 bundle 由 `install-rootless-agent.sh` 记录为 `development`；若确需在非生产环境切回，必须显式执行 `activate-rootless-release.sh <id> <install-root> <runtime-directory> --allow-development`。升级前遗留且没有 `release-inventory.json` 的目录一律拒绝，不会因为其中恰好存在 `dist/cli.js` 就补写 release ID 或宣称已经验证；需要继续使用时应从可信制品重新安装为新目录。
 

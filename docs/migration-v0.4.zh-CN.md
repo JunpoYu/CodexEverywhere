@@ -2,6 +2,8 @@
 
 本文档说明 CodexEverywhere v0.3 schema 4 与 v0.4 schema 1 之间的正式状态迁移。迁移只转换 CE 自有状态；Codex thread、turn 和工具活动仍由 Codex app-server 保存和恢复。
 
+实际宿主机切换顺序、rootless/root-owned 双 release、watchdog 静止方式和 Web/Relay 回滚见[部署、升级与回滚操作手册](operator-runbook.zh-CN.md)。
+
 > [!WARNING]
 > Gateway API v2 和 v0.4 SQLite 都不兼容 v0.3 二进制。不能让 v0.3 Agent 打开 v0.4 数据库，也不能只切换程序制品而跳过迁移。
 
