@@ -63,6 +63,10 @@
 - Release 的 HPC tools 现在包含首次 bootstrap、rootless/root-owned 安装及两类 inventory 回滚所需脚本。
 - 操作手册补充 root-owned Miniforge 的固定版本、双重 SHA-256 校验和隔离安装步骤，避免 Controller 部署时让 root 执行部署账号可写的 Conda、Node.js 或安装脚本。
 
+### Changed
+
+- 发布规范明确提交 author 邮箱属于有意公开的 Git 元数据，可以使用个人邮箱或 GitHub noreply 邮箱，不作为安全检查或发布门槛；凭据和真实部署端点仍禁止进入公开仓库。
+
 ### Fixed
 
 - Noise transport 与 Relay wire 继续保持 version 1，但握手现在显式声明独立的 Gateway API version。v0.3 Web 遇到已升级为 Gateway API v2 的 Agent 时会显示明确的客户端升级提示，并立即绕过浏览器默认周期检查 Service Worker 更新；真正激活仍经过现有的一次性凭据、草稿和结果未知安全门槛。
