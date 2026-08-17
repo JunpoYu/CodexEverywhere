@@ -11,6 +11,7 @@ const project = JSON.parse(
   await readFile(resolve(repositoryRoot, "package.json"), "utf8"),
 );
 const REQUIRED_CHECKS = [
+  "environment.clock-synchronized",
   "transport.direct",
   "transport.relay",
   "viewport.desktop",

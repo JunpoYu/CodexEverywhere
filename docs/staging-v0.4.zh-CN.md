@@ -24,6 +24,8 @@
 
 不要把 SSH/Linux 密码、Codex 凭据、Passkey 私钥或 Relay 私钥交给自动化脚本。
 
+开始迁移前还必须确认浏览器、Agent 宿主机与 Relay 的 UTC 时钟均由健康的 NTP 源同步，任意两者的实测偏差不超过 30 秒。CentOS 7 至少检查 `timedatectl status`、`chronyc tracking` 和 `chronyc sources`：不能只看到 `chronyd` 进程存活，还要确认最近参考时间持续更新、Leap status 正常且没有陈旧的唯一上游。可从操作机在一次 SSH 往返中读取远端 `date -u +%s`，以往返中点估算偏差。修复时间源后才能将 `environment.clock-synchronized` 标记为 `true`。
+
 ## 3. 候选 commit 自动门禁
 
 在干净 checkout 中安装依赖、Playwright Chromium 和本机 Codex CLI，然后运行：

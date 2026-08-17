@@ -37,6 +37,7 @@ describe("v0.4 staging receipt", () => {
       kind: "codex-everywhere-v0.4-staging",
       status: "in-progress",
       environment: { testUserCount: 0, adminControlPlane: false },
+      checks: { "environment.clock-synchronized": false },
     });
     expect(Object.values(receipt.checks)).not.toContain(true);
     expect((await stat(path)).mode & 0o777).toBe(0o600);
