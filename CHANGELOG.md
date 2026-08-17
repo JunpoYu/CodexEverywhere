@@ -6,10 +6,16 @@
 
 ## [0.3.0-alpha.12] - 2026-08-17
 
+### Added
+
+- 新增供人和后续 Agent 执行的部署、升级与回滚操作手册，明确非秘密交接输入、只读预检、停止条件、Release 验证、Direct/Relay/Controller 和验收输出。
+- Release 的 HPC tools 现在包含首次 bootstrap、rootless/root-owned 安装及两类 inventory 回滚所需脚本。
+
 ### Fixed
 
 - Noise transport 与 Relay wire 继续保持 version 1，但握手现在显式声明独立的 Gateway API version。v0.3 Web 遇到已升级为 Gateway API v2 的 Agent 时会显示明确的客户端升级提示，并立即绕过浏览器默认周期检查 Service Worker 更新；真正激活仍经过现有的一次性凭据、草稿和结果未知安全门槛。
 - 修复 HPC 安装器在 `umask 077` 下把非秘密 release inventory 创建为 `0600`，随后又因要求精确 `0644` 而拒绝安装或回滚的问题；inventory 先以私有模式写入，再通过同一文件句柄发布为固定权限。
+- 修复 rootless 全局启动器拒绝 root、但 Administrator Controller 安装与 helper 又必须执行 root CLI 的部署死锁；root 现在只进入同 tag、root-owned 且经 inventory 校验的独立副本，普通用户继续进入无特权副本。
 
 ## [0.3.0-alpha.11] - 2026-08-14
 

@@ -54,6 +54,17 @@ git diff --check
 - 新提交使用 noreply author，当前变更不新增私人邮箱、部署域名或秘密；已有公开提交即使改写也不能视为完成秘密撤回，发现凭据时必须先轮换；
 - GitHub CI 在目标 commit 上通过。
 
+## Prerelease 与部署批准
+
+带连字符的 alpha tag 会生成 GitHub Prerelease。Tag/Prerelease 只冻结待部署字节，不等于 production 已批准：
+
+1. 公开 CI 和人工检查通过后，在 `main` 的同一 commit 创建 annotated tag；
+2. Release workflow 生成带 provenance 的 Prerelease；
+3. staging 下载原始制品并记录 manifest SHA-256；
+4. staging 验收后，production 以该摘要部署同一组字节，不重新构建或移动 tag。
+
+涉及 v0.3→v0.4 状态迁移时，以目标 v0.4 Release 中的迁移和 staging 手册为准。若验收失败，发布新的 prerelease 序号；不得覆盖旧 tag 或旧 Release。
+
 ## 首次公开
 
 在 GitHub 创建一个空仓库，不自动生成 README、LICENSE 或 `.gitignore`。然后把本地无父提交分支推为公开默认分支：
@@ -72,7 +83,7 @@ git push -u public codex/public-release:main
 - Private Vulnerability Reporting；
 - 自动删除已合并分支。
 
-确认公开页面、README、许可证识别和安全报告入口正常后再创建 tag：
+确认公开页面、README、许可证识别、安全报告入口、candidate receipt 和目标 commit CI 正常后再创建候选 tag：
 
 ```bash
 git tag -a v0.3.0-alpha.1 codex/public-release \
@@ -104,10 +115,10 @@ SHA256SUMS
 5. 创建并推送 annotated tag；
 6. 检查自动生成的 GitHub Release、安装文档和源代码归档；
 7. 检查 manifest、SHA-256、provenance attestation 的 workflow/tag/commit 身份约束，以及 Release 摘要中记录的 Codex app-server contract 基线；
-8. 由独立 staging 运维环境消费 Release，完成全新安装、重复安装恢复、安装内容漂移拒绝、升级和严格 inventory 回滚演练，并记录获批 `manifest.json` SHA-256；
-9. 人工批准后，由 production 安装器以该获批摘要为信任根部署同一组制品，不重新构建。
+8. 由独立 staging 运维环境消费 Prerelease，完成全新安装、重复安装恢复、安装内容漂移拒绝、升级和严格 inventory 回滚演练，并记录获批 `manifest.json` SHA-256；
+9. staging 验收记录通过并人工批准后，由 production 安装器以该获批摘要为信任根部署同一组制品，不重新构建。
 
-不要把 GitHub Actions 的生产 SSH 私钥放进公开源码仓库。个人或单集群部署推荐由服务器上的无特权专用账号主动下载 Release，并把真实配置保留在服务器本地；多环境团队才需要私有 ops 仓库或带 Environment 审批的独立部署工作流。公开仓库的 CI 只构建和发布，绝不 SSH 到生产环境。完整流程见[部署与升级](deployment.zh-CN.md)。
+不要把 GitHub Actions 的生产 SSH 私钥放进公开源码仓库。个人或单集群部署推荐由服务器上的无特权专用账号主动下载 Release，并把真实配置保留在服务器本地；多环境团队才需要私有 ops 仓库或带 Environment 审批的独立部署工作流。公开仓库的 CI 只构建和发布，绝不 SSH 到生产环境。架构边界见[部署与升级](deployment.zh-CN.md)，逐项命令见[操作手册](operator-runbook.zh-CN.md)。
 
 ## 撤回与修复
 
