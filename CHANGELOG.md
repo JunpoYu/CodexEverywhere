@@ -9,11 +9,12 @@
 - 新增一键 v0.4 候选版本门禁和 0600 脱敏 receipt；默认拒绝脏工作区，真实订阅模型调用必须显式开启。
 - 新增机器执行的首屏 JS/CSS gzip 预算检查，并验证 Markdown、KaTeX 与代码高亮仍处于任务页懒加载边界。
 - 新增严格的多用户 staging receipt 初始化与校验器，只接受限定字段、布尔验收结果和 SHA-256，不允许记录主机名、用户名、路径或自由文本，并要求浏览器、Agent 与 Relay 的 NTP 时钟完成同步。
-- 新增供人和后续 Agent 执行的部署、升级与回滚操作手册，明确非秘密交接输入、只读预检、停止条件、Release 验证、Direct/Relay/Controller、v0.3→v0.4 和验收输出。
+- 新增供人和后续 Agent 执行的部署、升级与回滚操作手册，明确非秘密交接输入、只读预检、停止条件、Release 验证、Direct/Relay/Controller、v0.4 全新初始化和验收输出。
 
 ### Fixed
 
 - 修复发布门槛要求 staging 消费 Release、同时又禁止在 staging 前创建 tag 的循环依赖；alpha tag/Prerelease 现在只冻结候选字节，staging receipt 仍是 production 批准的硬门槛。
+- v0.4 改为全新初始化边界：删除 v0.3 正反迁移、迁移 CLI、旧 schema 转换器和数据回滚承诺；切换时归档旧 CE 状态并重新配对，`~/.codex` 与 app-server 任务不属于清理范围。
 
 ## [0.4.0-alpha.1] - 2026-08-16
 
@@ -23,8 +24,8 @@
 - 新增加密后的 Gateway API v2、Zod 运行时 schema、类型化 client、声明式 handler registry 和统一版本、身份、权限、capability 与幂等校验。`mutation/status` 为 durable 副作用提供 `missing | pending | completed | indeterminate` 权威对账。
 - 新增 `IdentityService`、`SetupService`、`WorkspaceService`、`CodexSupervisor`、`CodexClientFactory`、`ThreadLeaseManager`、`InteractionBroker`、`QueueService`、`PreferencesService` 和隔离的 `AdminService`。同一 thread 支持多 viewer、单 lease、审批竞争和断线后权威重开。
 - 新增 React、React Router、actor/`useSyncExternalStore` 和 CSS Modules PWA，覆盖 Host/Auth、Onboarding、任务、结构化时间线、Interaction、Composer、Queue、Workspace、Settings 与独立 Admin 路由；User 与 Admin 使用互斥的 composition root，Markdown、KaTeX 和高亮按任务页懒加载。
-- 新增用户与管理员分离的 v0.4 SQLite schema、repository 边界、专用 `application_id`，以及 v0.3 schema 4 到 v0.4 的原子正向迁移、严格反向迁移、SHA-256 备份、receipt、自动恢复和显式 finalize。
-- 新增架构检查、Gateway 合同测试、schema fuzz、migration round-trip、Actor 乱序测试、无模型 app-server fixture，以及 Direct/Relay 行为一致性测试。
+- 新增用户与管理员分离的 v0.4 SQLite schema、repository 边界和专用 `application_id`；旧 CE 状态不会被 v0.4 二进制隐式打开或转换。
+- 新增架构检查、Gateway 合同测试、schema fuzz、Actor 乱序测试、无模型 app-server fixture，以及 Direct/Relay 行为一致性测试。
 
 ### Changed
 
@@ -37,7 +38,7 @@
 ### Removed
 
 - 从 v0.4 活跃协议和产品入口移除 Side、`thread/fork`、连续事件 ACK/buffer、Side capability 和浏览器 `auth.json` 导入。
-- Schedule、Push、完整文件管理和第三方插件加载器不进入 v0.4 首版；非空旧数据会阻止迁移，不会被静默删除。
+- Schedule、Push、完整文件管理和第三方插件加载器不进入 v0.4 首版；v0.3 旧库整体隔离，不被 v0.4 读取或部分导入。
 
 ### Security
 
@@ -54,6 +55,26 @@
 - 修复首个 turn 在 lease 建立前启动时，审批或用户问题可能先于任务页订阅到达并丢失的问题。
 - 修复等待用户输入时 Composer 不能把后续消息加入 Queue，以及未知 Codex notification 不能稳定保留为 `codex/generic` 时间线项的问题。
 - 修复原生 `<dialog>` 继承页面静态定位后可能渲染到移动端视口外的问题。
+
+## [0.3.0-alpha.14] - 2026-08-17
+
+### Fixed
+
+- fresh root-owned Agent 安装现在与 rootless 安装和 shared rollback 一样，原子发布 `current` 后同时创建跟随它的 `active-release` receipt；首次启用 Controller 后可直接按操作手册核对活动版本，不再需要额外执行一次 shared activator 补齐该指针。
+
+## [0.3.0-alpha.13] - 2026-08-17
+
+### Added
+
+- `install-release.sh` 支持从 `CE_RELEASE_ASSET_DIRECTORY` 消费已在联网操作机验证并转交到 HPC 的原始 Release 文件；受限宿主机仍必须提供 staging 批准的 manifest SHA-256，并会重新校验 manifest、制品、build metadata、归档路径和完整 release inventory。
+
+### Changed
+
+- rootless 与 root-owned runtime 创建器显式覆盖继承的 Conda channel 列表，只从 `conda-forge` 解析固定的 Node.js 20.20.2 和 tmux，避免 root 或站点 `.condarc` 意外混入无关 channel。
+
+### Fixed
+
+- Release inventory 不再把 Linux 上无语义且跨文件系统不稳定的符号链接 mode 当作内容身份；旧 schema v1 inventory 中该字段继续兼容，但链接路径、目标以及目标文件内容仍严格校验。修复 Parastor 上的 verified rootless release 复制到 XFS root-owned 安装时因 `0755`/`0777` 差异被误拒绝的问题。
 
 ## [0.3.0-alpha.12] - 2026-08-17
 

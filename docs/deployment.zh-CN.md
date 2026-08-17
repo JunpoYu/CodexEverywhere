@@ -2,7 +2,7 @@
 
 本文档定义 CodexEverywhere 的生产部署边界。部署系统是 GitHub Release 的消费者，不是第二套构建系统。
 
-需要实际执行首次安装、补丁升级、v0.3→v0.4 或回滚时，使用[部署、升级与回滚操作手册](operator-runbook.zh-CN.md)。该手册同时规定后续 Agent 的输入、停止条件、rootless/root-owned 双 CLI、验证和交付格式；本文只解释为什么必须遵守这些边界。
+需要实际执行首次安装、补丁升级、v0.4 全新切换或回滚时，使用[部署、升级与回滚操作手册](operator-runbook.zh-CN.md)。该手册同时规定后续 Agent 的输入、停止条件、rootless/root-owned 双 CLI、验证和交付格式；本文只解释为什么必须遵守这些边界。
 
 ## 1. 信任链
 
@@ -42,31 +42,23 @@
 
 Release 制品由 GitHub Actions 从 tag 的干净 checkout 构建一次。制品脚本自身也会拒绝脏工作区、未跟踪文件、`HEAD`/传入 commit 不一致或 tag 未指向该 commit，避免本地误用时把一份源码标成另一份 commit。部署时不得执行 `pnpm build`，也不得重新打包制品。
 
-## 3. v0.3 到 v0.4 的协调升级
+## 3. v0.3 到 v0.4 的全新切换
 
-v0.4 是一次有状态、协议不兼容升级，不能使用普通的滚动兼容假设。Noise handshake、Relay wire、Host Profile、设备密钥和 pairing document 保持 version 1，但加密后的 Gateway API 从 version 1 升到 version 2，用户与管理员 SQLite 也必须正式迁移。
+v0.4 是协议不兼容的全新初始化，不提供 v0.3 数据库转换或反向迁移。Noise transport 和 Relay wire 保持 version 1，加密后的 Gateway API 使用 version 2。旧浏览器与新 Agent、新浏览器与旧 Agent 都明确失败，不静默降级。
 
-对每个用户采用以下顺序：
+切换时必须停止旧 Agent/Controller，但保持健康的 Codex app-server；完整改名保留旧 `~/.codex-everywhere` 与 `CE_ADMIN_HOME`，再由 v0.4 创建新状态。Passkey、CE 密码、恢复码、Host Profile、Relay route、Workspace、偏好和 Queue 都重新初始化。`~/.codex`、Codex 登录和 app-server 任务不属于清理范围。
 
-1. 确认无运行中 turn、未解决 interaction、投递中的 Queue、pending mutation 或登录流程，并退出所有 v0.3 Side；
-2. 停止 v0.3 Agent，但保持健康的 Codex app-server 运行；
-3. 使用 v0.4 CLI 执行 `ce upgrade preflight --to v0.4`、`ce state migrate --to v0.4 --dry-run` 和正式迁移；
-4. 切换并启动 v0.4 Agent，再验证 Direct/Relay、任务恢复、Queue 和身份状态；
-5. 最后切换 PWA 静态文件。旧 PWA 与 v0.4 Agent、v0.4 PWA 与旧 Agent 都会显示明确升级错误，不允许静默降级。
+多用户 staging 仍要验证隔离、Direct/Relay、Controller、新设备配对和制品指针回滚，但不再执行正反数据迁移。观察窗内可通过停止 v0.4、将新 CE 目录留存、原子恢复旧目录并切回 alpha.14 来恢复；两份状态不得合并。
 
-Administrator Controller 必须单独停止，并对预检与迁移命令添加 `--admin`。生产升级应按测试用户分批执行；在多用户 staging 完成正向迁移、v0.4 业务写入、反向迁移和制品回滚之前，不得整体替换 v0.3。
-
-Service Worker 更新期间，如果页面存在 outcome-unknown mutation、未保存秘密或草稿，只提示新版本，不自动刷新。最后一个 v0.3 维护版应先部署兼容错误页面与强制刷新能力，避免缓存旧 Web 只显示通用网络失败。
-
-完整迁移、回滚和备份 finalize 步骤见 [v0.4 迁移手册](migration-v0.4.zh-CN.md)。
+完整步骤见 [v0.4 全新初始化与切换手册](migration-v0.4.zh-CN.md)。Service Worker 更新期间，如果页面存在 outcome-unknown mutation、未保存秘密或草稿，只提示新版本，不自动刷新。
 
 ## 4. HPC
 
 首次宿主机 bootstrap 使用专用无 sudo 部署账号、共享 Node.js/tmux runtime、rootless provisioner，以及 root 所有的固定 `/usr/local/bin/ce`。启用 Administrator Controller 时，还必须从同一份 verified Agent release 安装独立的 root-owned CLI；全局启动器只让 root 进入该副本，绝不能让 root 执行部署账号可写的 JavaScript 或 runtime。两个副本必须保持同一 tag。这是宿主机安装，不属于普通版本发布，完整命令见[操作手册](operator-runbook.zh-CN.md)。
 
-宿主机 provisioner credential 具有独立有效期。生产监控应执行 `ce provisioner status`，并在到期前至少 30 天由 Relay 运维者以原 `installationId` 重新运行 `ce-relay issue-provisioner --installation-id <id> --expires-days <days>`，再通过受保护标准输入重复执行 `ce provisioner install ... --credential-stdin`。这一步是授权续期，不能由普通 Unix 用户自动完成；用户 Agent 只会在当前有效 credential 下为 UID/NSS 已绑定的随机 route 自动换发 capability。Administrator Controller 使用独立的 host-admin route registry：root 发布的 version 2 注册记录、请求文件内核 owner UID、当前 NSS tuple、admin handle 和 route ID 必须全部一致，provisioner 才会续签同一路由，Controller 不接触 credential。Agent 与 Controller 都会无限次重试，间隔上限依次为 12 小时、1 小时和 5 分钟，并按随机 route 做确定性抖动；该机制不会延长已经到期的 provisioner credential。升级旧管理员安装时，须在旧 capability 到期前完成固定顺序：先部署并重启当前 Release 的 rootless provisioner，确认其 descriptor 已声明 `admin-relay-capability-renewal-v1`；再由 root 原参数重跑一次 `ce admin install-controller`；最后重启 Administrator Controller，并用 `ce admin web status` 核对 version 2 注册状态和当前 Relay 授权截止时间。不能先重启仍依赖旧注册的 Controller。
+宿主机 provisioner credential 具有独立有效期。生产监控应执行 `ce provisioner status`，并在到期前至少 30 天由 Relay 运维者以原 `installationId` 重新运行 `ce-relay issue-provisioner --installation-id <id> --expires-days <days>`，再通过受保护标准输入重复执行 `ce provisioner install ... --credential-stdin`。这一步是授权续期，不能由普通 Unix 用户自动完成；用户 Agent 只会在当前有效 credential 下为 UID/NSS 已绑定的随机 route 自动换发 capability。Administrator Controller 使用独立的 host-admin route registry：root 发布的 version 2 注册记录、请求文件内核 owner UID、当前 NSS tuple、admin handle 和 route ID 必须全部一致，provisioner 才会续签同一路由，Controller 不接触 credential。Agent 与 Controller 都会无限次重试，间隔上限依次为 12 小时、1 小时和 5 分钟，并按随机 route 做确定性抖动；该机制不会延长已经到期的 provisioner credential。
 
-首次部署同路由续签支持时，升级顺序是：切换共享 Release、重启 rootless provisioner、确认 descriptor 已声明 renewal feature、安装仍有效的新 credential、再滚动重启用户 Agent。必须在旧 capability 对应的旧 credential 到期前完成，才能把既有随机 route 通过完整验签迁入私有 route registry。新版客户端遇到旧 provisioner 会拒绝续签，不会把初始化响应误当续签并覆盖 SavedHost。若历史用户已越过迁移窗口，Relay 运维者必须先核验 Unix 身份和用户本地配置中的旧 route ID，再用 `ce-relay issue-route --route-id <old-route-id> --login-name <username> --expires-days <days>` 显式签发兼容恢复 capability。用户先执行 `ce agent stop` 释放旧 owner 注册，再通过安全标准输入执行 `ce transport relay <endpoint> --capability-stdin` 并用 `ce agent start` 恢复；停止 Agent 不会停止 app-server 中的活动 turn。禁止把任意 route ID 输入接入自助 provisioner。
+v0.4 全新初始化会通过当前 rootless provisioner 签发新 route，不尝试把 v0.3 capability 迁入新 registry，也不覆盖旧 route ID。切换前先重启当前 Release 的 provisioner 并核对 descriptor/credential，再停止旧 Agent、隔离旧 CE 目录和重新配对。
 
 后续版本由专用账号执行。先从 Release 下载并验证 `codex-everywhere-hpc-tools-<tag>.tar.gz`，然后在解压目录运行。安装机已配置支持所需约束参数的 GitHub CLI 时，安装器会验证 GitHub provenance attestation，并把签名者限定为本仓库 `.github/workflows/release.yml`、source ref 限定为请求的 tag、source digest 限定为 manifest 中的 commit，同时拒绝 self-hosted runner provenance：
 

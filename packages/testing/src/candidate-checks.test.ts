@@ -27,7 +27,7 @@ describe("v0.4 candidate check runner", () => {
         "architecture",
         "test-runtime-capabilities",
         "typecheck",
-        "unit-protocol-migration",
+        "unit-and-protocol",
         "build",
         "web-bundle-budget",
         "playwright",

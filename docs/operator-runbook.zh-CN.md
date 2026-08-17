@@ -1,6 +1,6 @@
 # 部署、升级与回滚操作手册（供人和 Agent 执行）
 
-本文档是 CodexEverywhere 的可执行运维入口。它把[部署边界](deployment.zh-CN.md)、[发布流程](releasing.zh-CN.md)、[v0.4 迁移](migration-v0.4.zh-CN.md)和 [staging 验收](staging-v0.4.zh-CN.md)转换为有停止条件的操作顺序。后续接手的 Agent 必须先完整阅读本文，再开始任何写操作。
+本文档是 CodexEverywhere 的可执行运维入口。它把[部署边界](deployment.zh-CN.md)、[发布流程](releasing.zh-CN.md)、[v0.4 全新初始化](migration-v0.4.zh-CN.md)和 [staging 验收](staging-v0.4.zh-CN.md)转换为有停止条件的操作顺序。后续接手的 Agent 必须先完整阅读本文，再开始任何写操作。
 
 本文中的 `<占位符>` 必须替换后才能执行。填好的主机名、用户名、路径和 inventory 只能保存在对应服务器或私有运维环境，不能提交到公开仓库。命令输出不得粘贴业务日志、数据库、配对资料、恢复码、Relay capability、Codex 凭据或解密 payload。
 
@@ -10,7 +10,7 @@
 
 1. 只读采集当前版本、release 指针、服务状态、时钟、磁盘和回滚制品；
 2. 向操作者复述目标版本、影响用户、Direct/Relay/Web/Controller 范围和回滚点；
-3. 在得到本次变更的明确授权后才下载、安装、切换、重启或迁移；
+3. 在得到本次变更的明确授权后才下载、安装、切换、重启或重建 CE 状态；
 4. 每个阶段先验证再进入下一阶段，失败时停止，不在服务器 checkout 中临时修代码；
 5. 结束时报告版本、commit、manifest SHA-256、服务健康和未完成事项，但不报告敏感内容。
 
@@ -20,9 +20,8 @@
 - production 没有 staging 批准的 `manifest.json` SHA-256；
 - 浏览器、Agent 宿主机或 Relay 的 UTC 偏差超过 30 秒，或 NTP 未同步；
 - 目标或回滚 release 不完整、inventory 校验失败、安装目录发生内容漂移；
-- v0.3→v0.4 前仍有运行中 turn、未解决 interaction、delivering Queue、pending mutation、登录流程或 Side；
-- 旧库中存在非空 Schedule、Schedule run 或 Push subscription；
-- 反向迁移 dry-run 报告 v0.3 无法表达的数据；
+- v0.4 全新切换前仍有运行中 turn、未解决 interaction、delivering Queue、pending mutation、登录流程或 Side；
+- 旧 CE 目录不能以原子改名的方式完整隔离，或保留目标已存在；
 - 需要首次 Passkey、恢复码或 Codex 设备码登录，但对应的人不在场；
 - 命令要求把 secret 放入参数、shell history、Git、Issue 或普通日志。
 
@@ -32,11 +31,11 @@
 
 ```yaml
 schemaVersion: 1
-operation: inspect | fresh-install | patch-upgrade | v0.3-to-v0.4 | rollback
+operation: inspect | fresh-install | patch-upgrade | clean-v0.4-cutover | rollback
 environment: staging | production
 repository: example/CodexEverywhere
 targetTag: v0.4.0-alpha.1
-rollbackTag: v0.3.0-alpha.12
+rollbackTag: v0.3.0-alpha.14
 approvedManifestSha256: <64 个小写十六进制字符>
 pwaOrigin: https://codex.example.com
 relayEndpoint: wss://codex.example.com/relay
@@ -134,7 +133,7 @@ sudo -iu <controllerUser> env CE_ADMIN_HOME=<controller-home> \
   /usr/local/bin/ce admin web status
 ```
 
-状态检查可以报告路径，但不得把真实路径复制到公开日志。迁移前还要在 Web 中确认 turn、interaction、Queue、mutation 和登录流程已经静止。
+状态检查可以报告路径，但不得把真实路径复制到公开日志。全新切换前还要在 Web 中确认 turn、interaction、Queue、mutation 和登录流程已经静止。
 
 ## 5. 获取并验证 Release
 
@@ -201,6 +200,35 @@ fi
 
 任何将由 root 执行的 HPC 工具必须先从已验证的 archive 解压到 root 拥有、非组/全局可写的版本目录；禁止 `sudo` 执行部署账号或源码 checkout 中可修改的脚本。
 
+### 5.1 无法直连 GitHub 的 HPC
+
+联网操作机必须先按上一节完成全部 checksum 和 provenance 验证，再通过站点批准的 SSH/SCP 通道原样传输六个 Release 文件。HPC 上的交接目录应为仓库和业务状态目录之外的 `0700` 目录，并由 `<deployUser>` 拥有；传输后先重新执行 `sha256sum -c SHA256SUMS`，再把 manifest 摘要与批准值对账。不能把“通过 SSH 传输”本身当作 Release 身份证明。
+
+alpha.13 及以后可以让同一个安装器从该目录读取，不需要 HPC 访问 GitHub：
+
+```bash
+sudo -iu <deployUser> env \
+  CE_RELEASE_ASSET_DIRECTORY=<absoluteTransferredAssetDirectory> \
+  <root-owned-hpc-tools>/install-release.sh \
+  <tag> <owner/repository> <rootlessRoot> <rootlessRoot>/runtime \
+  <approvedManifestSha256>
+```
+
+本地目录模式只接受普通文件，不接受 symlink；安装器会把文件复制到私有临时目录，并重新验证批准的 manifest 摘要、`SHA256SUMS`、Agent 大小和摘要、manifest/build identity、归档路径以及安装后的完整 inventory。`<root-owned-hpc-tools>` 仍必须来自同一个已验证的 HPC tools archive：先把 archive 复制到 root-owned 路径并再次核对摘要，再检查归档路径、解压、`chown -R root:root` 和 `chmod -R go-w`。不得让 root 直接执行交接目录中的脚本。
+
+如果只在 bootstrap 时借助 SSH/FRP 提供临时出网，应把代理绑定在 HPC 的 loopback，并只注入该次安装命令：
+
+```bash
+ssh -R 127.0.0.1:<remoteProxyPort>:127.0.0.1:<localProxyPort> <host> \
+  'sudo env -i HOME=<rootCondaRoot>/conda-home PATH=/usr/bin:/bin \
+    HTTP_PROXY=http://127.0.0.1:<remoteProxyPort> \
+    HTTPS_PROXY=http://127.0.0.1:<remoteProxyPort> \
+    <root-owned-hpc-tools>/create-shared-runtime.sh \
+    <rootCondaRoot>/miniforge3/bin/conda <privilegedRoot>/runtime'
+```
+
+该代理不得写入 CE、用户 home、Relay 或浏览器配置；SSH 会话结束即撤销监听。若本地代理、远端端口或站点策略不明确，停止并由管理员提供批准的传输方式。
+
 ## 6. 首次安装多用户 HPC
 
 ### 6.1 准备运行时和 rootless release
@@ -251,6 +279,7 @@ printf '%s  %s\n' '<miniforgeSha256>' \
 
 ```bash
 sudo install -d -o root -g root -m 0755 <rootCondaRoot>
+sudo install -d -o root -g root -m 0700 <rootCondaRoot>/conda-home
 sudo install -o root -g root -m 0700 \
   "$CE_MINIFORGE_DIR/<miniforgeAsset>" \
   <rootCondaRoot>/<miniforgeAsset>
@@ -258,7 +287,7 @@ sudo install -o root -g root -m 0700 \
 printf '%s  %s\n' '<miniforgeSha256>' \
   '<rootCondaRoot>/<miniforgeAsset>' | sudo sha256sum -c -
 
-sudo env -i HOME=/root PATH=/usr/bin:/bin \
+sudo env -i HOME=<rootCondaRoot>/conda-home PATH=/usr/bin:/bin \
   /bin/bash <rootCondaRoot>/<miniforgeAsset> \
   -b -p <rootCondaRoot>/miniforge3
 
@@ -267,10 +296,11 @@ sudo chmod -R go-w <rootCondaRoot>/miniforge3
 sudo <rootCondaRoot>/miniforge3/bin/conda --version
 ```
 
-安装器和 Miniforge 根目录都不是业务状态，可以作为本次部署的供应链审计材料保留；不得放入用户 home、rootless release 或公开日志。随后使用 root-owned Miniforge 创建独立 runtime，再从已经验证并带 inventory 的 rootless release 复制同一 CE tag：
+安装器和 Miniforge 根目录都不是业务状态，可以作为本次部署的供应链审计材料保留；不得放入用户 home、rootless release 或公开日志。runtime 创建器会用 `--override-channels --channel conda-forge` 忽略继承的 channel 列表，避免 root 或站点 `.condarc` 混入无关来源。随后使用隔离的 root-owned home 创建独立 runtime，再从已经验证并带 inventory 的 rootless release 复制同一 CE tag：
 
 ```bash
-sudo <root-owned-hpc-tools>/create-shared-runtime.sh \
+sudo env -i HOME=<rootCondaRoot>/conda-home PATH=/usr/bin:/bin \
+  <root-owned-hpc-tools>/create-shared-runtime.sh \
   <rootCondaRoot>/miniforge3/bin/conda <privilegedRoot>/runtime
 
 sudo <root-owned-hpc-tools>/install-shared-agent.sh \
@@ -404,37 +434,37 @@ sudo -iu <controllerUser> env CE_ADMIN_HOME=<controller-home> \
 
 如果 Release 说明包含跨进程权限协调或锁格式变化，升级前已经运行的 `ce tui` 必须在 Agent 重启后退出并重新连接；退出 TUI 不会中断 app-server 中的 turn。
 
-## 8. v0.3 → v0.4 升级
+## 8. v0.3 → v0.4 全新切换
 
-这是 whole-host 协调升级，不是普通滚动升级。先部署最后一个 v0.3 maintenance Web/Agent，使旧浏览器具备明确的版本错误和 Service Worker 刷新能力。随后只在已通过 staging 的维护窗口执行：
+v0.4 不提供 v0.3 状态迁移器，也不允许旧库被新二进制隐式升级。切换会重建 CE 自有的 Web 身份、可信设备、Workspace 登记、偏好、权限和 Queue；不删除、移动或改写 `~/.codex`，也不停止健康的 Codex app-server。任务历史仍以 app-server 为权威来源。
 
-1. 在管理员控制面暂时 disable 全部受影响用户，使现有 watchdog 看到 root-owned access marker 后不再重启 Agent；
-2. 等待 turn、interaction、Queue、mutation 和登录流程静止，退出所有 Side；
-3. 停止用户 Agent，但保持健康 app-server；停止 Controller；
-4. 安装 v0.4 rootless 与 privileged release，但暂不切换 Web；
-5. 对每个用户运行 preflight、正向 dry-run 和正式迁移；
-6. 对管理员库执行同样操作并添加 `--admin`；
-7. 启动 Controller，解除用户 disable，再启动用户 Agent；
-8. 验证 v0.4 Direct/Relay、任务、interaction、Queue 和身份状态；
-9. 最后切换 v0.4 Web；保留全部源备份和 migration receipt。
+切换前：
 
-每个用户执行：
+1. 保留 alpha.14 的 verified rootless/privileged/Web/Relay 目录、manifest SHA-256 和 inventory；
+2. 确认浏览器、Agent 宿主机和 Relay 时钟偏差不超过 30 秒；
+3. 等待 turn、interaction、Queue delivery、mutation 和登录流程静止；
+4. 停止用户 Agent 和 Controller，但保持健康 app-server；
+5. 将每个用户完整的 `~/.codex-everywhere` 原子改名为不存在的带时间戳保留目录，权限保持 0700；不得覆盖旧保留目录；
+6. 对已存在的 Controller 同样保留其 `CE_ADMIN_HOME`；本次未安装 Controller 时跳过；
+7. 切换并启动 v0.4 rootless/privileged release，然后原子切换 Web。
 
-```bash
-sudo -iu <username> /usr/local/bin/ce upgrade preflight --to v0.4
-sudo -iu <username> /usr/local/bin/ce state migrate --to v0.4 --dry-run
-sudo -iu <username> /usr/local/bin/ce state migrate --to v0.4
-```
-
-管理员库执行：
+示例（占位符和时间戳必须先确认）：
 
 ```bash
-sudo /usr/local/bin/ce upgrade preflight --to v0.4 --admin
-sudo /usr/local/bin/ce state migrate --to v0.4 --admin --dry-run
-sudo /usr/local/bin/ce state migrate --to v0.4 --admin
+sudo -iu <username> /usr/local/bin/ce agent stop
+sudo -iu <username> sh -eu -c '
+  retained="$HOME/.codex-everywhere.v0.3-retained.<UTC-timestamp>"
+  test -d "$HOME/.codex-everywhere"
+  test ! -e "$retained"
+  mv "$HOME/.codex-everywhere" "$retained"
+  chmod 0700 "$retained"
+'
+sudo -iu <username> /usr/local/bin/ce device pair
 ```
 
-任何用户失败都停止整轮升级，不允许让共享 Web 长期服务于混合 Gateway v1/v2 Agent。不得在验收或回滚窗口结束前执行 `migration-finalize`。
+`ce device pair` 通过 rootless provisioner 创建新的 v0.4 Host 配置和 Relay route。操作者在 PWA 中完成新设备配对、Passkey/CE 密码与恢复码保存，然后重新添加 Workspace 并启动 Agent。旧 Host Profile、CE 恢复码和 Queue 不得继续使用。
+
+任何用户初始化失败都停止整轮切换，不让共享 Web 长期服务于混合 Gateway v1/v2 Agent。旧 CE 目录在观察窗结束前只读保留，不导入 v0.4，也不输出到日志或 JSON。
 
 ## 9. 回滚
 
@@ -455,17 +485,9 @@ sudo <root-owned-hpc-tools>/install-rootless-global-shim.sh \
 
 随后恢复旧 Web/Relay 原子指针，按第 7 节重启并 smoke test。inventory 失败时禁止回滚到该目录，应重新从可信 Release 安装。
 
-### 9.2 v0.4 回滚到 v0.3
+### 9.2 v0.4 切换失败后恢复 alpha.14
 
-必须先在 v0.4 程序下完成反向迁移，再切换旧程序：
-
-```bash
-sudo -iu <username> /usr/local/bin/ce agent stop
-sudo -iu <username> /usr/local/bin/ce state migrate --to v0.3 --dry-run
-sudo -iu <username> /usr/local/bin/ce state migrate --to v0.3
-```
-
-管理员库添加 `--admin`。所有反向迁移成功后，才切回 v0.3 rootless/privileged/Web release 并启动服务。任一 dry-run 失败都保持 v0.4，不允许部分回滚或让 v0.3 打开 v0.4 数据库。
+没有数据反向迁移。只能在旧 CE 保留目录仍完整时，先停止 v0.4 Agent/Controller，将新 v0.4 CE 目录改名留存，再把原 v0.3 目录原子改回 `~/.codex-everywhere`，最后切回 alpha.14 制品并启动服务。回复时不得合并两个目录、不得让 alpha.14 打开 v0.4 数据库，也不得把 v0.4 Queue 复制回旧库。v0.4 切换后新产生的 CE 身份、Workspace、Queue 和偏好不会出现在 alpha.14 中。
 
 ## 10. 验收和交付记录
 
@@ -475,7 +497,7 @@ Agent 完成后应向操作者报告：
 - rootless、privileged、Web、Relay 当前 tag 是否一致；
 - provisioner、Controller、各用户 Agent 和 app-server 是否健康；
 - Direct/Relay、桌面/移动端、任务打开、interaction 和 Queue smoke 是否通过；
-- 是否发生回滚，哪些 migration receipt/备份仍保留；
+- 是否发生回滚，哪些旧 CE 保留目录仍在观察窗内；
 - 仍需用户亲自完成的 Passkey、恢复码保存或 Codex 设备码登录。
 
-不要报告真实 prompt、Queue 文本、文件/Workspace 内容、数据库、恢复码、Passkey 数据、capability 或凭据。源备份只有在观察窗口结束、production 被明确接受后，才可按确切 receipt 路径人工执行 `ce state migration-finalize`；Agent 不得自动 finalize。
+不要报告真实 prompt、Queue 文本、文件/Workspace 内容、数据库、恢复码、Passkey 数据、capability 或凭据。旧 CE 保留目录只有在观察窗结束、production 被明确接受且操作者再次确认后才能按精确路径删除；Agent 不得自动删除。

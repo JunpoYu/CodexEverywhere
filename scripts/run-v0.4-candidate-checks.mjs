@@ -28,7 +28,7 @@ const steps = [
   command("architecture", "pnpm", ["check:architecture"]),
   command("test-runtime-capabilities", "pnpm", ["check:test-runtime"]),
   command("typecheck", "pnpm", ["typecheck"]),
-  command("unit-protocol-migration", "pnpm", ["test"]),
+  command("unit-and-protocol", "pnpm", ["test"]),
   command("build", "pnpm", ["build"]),
   command("web-bundle-budget", "pnpm", ["check:web-budget"]),
   command("playwright", "pnpm", ["test:e2e"]),
@@ -77,7 +77,7 @@ const receipt = {
   checks: [],
   remainingExternalGates: [
     ...(options.withModel ? [] : ["subscription-model-integration"]),
-    "multi-user-staging-migration-and-rollback",
+    "multi-user-fresh-install-staging",
   ],
 };
 let receiptCreated = false;

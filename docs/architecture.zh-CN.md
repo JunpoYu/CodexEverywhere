@@ -242,9 +242,9 @@ Queue item 和 delivery claim 在同一用户库中。dispatcher 在 app-server 
 - `UserStateDatabase`：metadata、workspace、preferences、thread permissions、identity、mutation receipts、Queue、最小安全审计；
 - `AdminStateDatabase`：管理员 identity、managed users、admin audit 和 admin mutation receipts。
 
-repository 之外禁止 import `sql.js`。状态文件继续使用跨进程锁、真实 UID、0600、文件 fsync、目录 durability 和原子 rename。进程内迁移使用 `StateSnapshotV1`，不把快照、密码记录、恢复哈希或 Queue 内容导出为 JSON 文件或日志。
+repository 之外禁止 import `sql.js`。状态文件继续使用跨进程锁、真实 UID、0600、文件 fsync、目录 durability 和原子 rename。`StateSnapshotV1` 只是 repository 内部的类型化数据形状，不对外提供 v0.3 转换或 JSON 导出。密码记录、恢复哈希和 Queue 内容不进入日志。
 
-迁移、回滚和备份规则见[迁移手册](migration-v0.4.zh-CN.md)。
+v0.3 切换采用整目录隔离和全新初始化，不导入旧数据库。规则见[全新初始化与切换手册](migration-v0.4.zh-CN.md)。
 
 ## 9. 日志与敏感数据
 
@@ -269,4 +269,4 @@ repository 之外禁止 import `sql.js`。状态文件继续使用跨进程锁�
 - raw Gateway envelope 只存在于 gateway adapter；
 - v2/v4 活跃源码不出现 Side、`thread/fork` 或 `auth/import` 方法。
 
-发布前必须通过 format、architecture、typecheck、unit/protocol/migration、build、Direct/Relay integration 和真实 app-server contract。模型调用测试使用显式环境开关。用户路由初始 JS gzip 上限 250 KiB，CSS gzip 上限 40 KiB；Markdown/KaTeX 必须保持独立懒加载。
+发布前必须通过 format、architecture、typecheck、unit/protocol、build、Direct/Relay integration 和真实 app-server contract。模型调用测试使用显式环境开关。用户路由初始 JS gzip 上限 250 KiB，CSS gzip 上限 40 KiB；Markdown/KaTeX 必须保持独立懒加载。

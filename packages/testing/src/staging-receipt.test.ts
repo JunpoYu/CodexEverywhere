@@ -56,10 +56,6 @@ describe("v0.4 staging receipt", () => {
     receipt.evidence = {
       manifestSha256: hash("1"),
       candidateReceiptSha256: hash("2"),
-      sourceBackupSha256s: [hash("3"), hash("4"), hash("5")],
-      forwardReceiptSha256s: [hash("6"), hash("7"), hash("8")],
-      reverseReceiptSha256s: [hash("9"), hash("a"), hash("b")],
-      secondForwardReceiptSha256s: [hash("c"), hash("d"), hash("e")],
     };
     for (const check of Object.keys(receipt.checks))
       receipt.checks[check] = true;

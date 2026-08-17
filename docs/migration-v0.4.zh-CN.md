@@ -1,167 +1,113 @@
-# v0.3 与 v0.4 状态迁移手册
+# v0.4 全新初始化与切换手册
 
-本文档说明 CodexEverywhere v0.3 schema 4 与 v0.4 schema 1 之间的正式状态迁移。迁移只转换 CE 自有状态；Codex thread、turn 和工具活动仍由 Codex app-server 保存和恢复。
+v0.4 不迁移 v0.3 的 CE 状态，也不提供反向数据迁移。本文保留原文件名，避免旧链接失效；这里的“切换”只归档旧 CE 目录、启用 v0.4 制品并重新初始化 CE，不转换数据库内容。
 
-实际宿主机切换顺序、rootless/root-owned 双 release、watchdog 静止方式和 Web/Relay 回滚见[部署、升级与回滚操作手册](operator-runbook.zh-CN.md)。
+## 1. 数据边界
 
-> [!WARNING]
-> Gateway API v2 和 v0.4 SQLite 都不兼容 v0.3 二进制。不能让 v0.3 Agent 打开 v0.4 数据库，也不能只切换程序制品而跳过迁移。
+| 内容                               | v0.4 切换行为               |
+| ---------------------------------- | --------------------------- |
+| `~/.codex`、Codex 登录与官方任务   | 保留，不读取或改写          |
+| 健康的 Codex app-server            | 保持运行，不因 CE 切换重启  |
+| `~/.codex-everywhere`              | 整目录改名保留，不导入 v0.4 |
+| Passkey、CE 密码、恢复码、设备信任 | 重新注册                    |
+| Host Profile 与 Relay route        | 重新配对、重新签发          |
+| Workspace、偏好与任务权限          | 重新配置                    |
+| Queue 与 mutation receipt          | 丢弃，不重放                |
+| 管理员 Controller 状态             | 重新初始化                  |
 
-## 1. 迁移保证
+任务、turn、审批和工具活动始终以 Codex app-server 为事实源。重新打开任务时由 v0.4 从 app-server 读取权威状态；CE 不从旧数据库重建任务历史。
 
-迁移器执行以下安全步骤：
+## 2. 停止条件
 
-1. 检查运行时和持久状态已经静止；
-2. 取得与正常状态写入相同的跨进程文件锁；
-3. 严格校验源库版本、`application_id`、必需表、文件所有者和 `0600` 权限；
-4. 在内存中构建版本化逻辑快照，不把快照、凭据或业务内容写入 JSON 或日志；
-5. 在临时路径创建目标数据库并校验记录计数、领域不变量和 SQLite 完整性；
-6. 为原库创建 `0600` 备份并记录 SHA-256；
-7. `fsync` 后原子替换状态文件，再以只读方式重新打开并 smoke check；
-8. 写入只含迁移元数据、文件名和摘要的 `0600` receipt。
+出现下列任一情况时停止切换：
 
-任何发布后的验证失败都会在文件锁内自动恢复源库。正向和反向迁移都保留源库备份，直到运维者显式 finalize。
+- 目标 Release、manifest、checksum、provenance 或 inventory 校验失败；
+- 浏览器、Agent 宿主机或 Relay 的 UTC 偏差超过 30 秒；
+- 仍有运行中的 turn、未解决 interaction、delivering Queue、pending mutation 或登录流程；
+- Agent 停止后 app-server 不健康；
+- 旧 CE 目录不是目标 Unix 用户所有、权限异常或保留目标已存在；
+- 需要用户完成 Passkey、恢复码或 Codex 设备码操作，但用户不在场；
+- v0.4 初始化尝试读取或修改旧 CE 数据库。
 
-## 2. 正向迁移前置条件
+## 3. 切换前检查
 
-对每个待升级的 Unix 用户确认：
+1. 记录当前 v0.3 tag、commit、manifest SHA-256、rootless/privileged/Web/Relay 指针和 inventory 结论。
+2. 验证 v0.4 candidate receipt、CI、Release manifest、checksum 与 provenance。
+3. 确认 alpha.14 的 verified release 目录仍完整，作为观察窗口内的程序回退点。
+4. 确认 rootless provisioner 已运行且 credential 有效。
+5. 退出旧 Side，清空或明确放弃旧 Queue，等待副作用静止。
+6. 记录 app-server PID，并确认 `ce app-server status` 为 healthy。
 
-- v0.3 Agent 已停止；停止 Agent 不会停止健康的 Codex app-server；
-- app-server 中没有 `active` thread，即没有运行中的 turn；
-- 没有未解决的审批、用户问题或 MCP elicitation；
-- 没有正在投递的 Queue item 或未完成 Queue claim；
-- 没有 pending mutation 或正在进行的登录流程；
-- 所有 Side 页面已经退出。v0.3 无法从进程外列举 Side，因此预检把“旧 Agent 仍运行”直接视为 Side blocker；
-- `schedules`、`schedule_runs` 和 `push_subscriptions` 均为空。
+不得把旧数据库、配置、capability、恢复码或配对资料复制到日志、Issue、PR 或 staging receipt。
 
-Schedule、Schedule run 或 Push 数据不属于 v0.4 首版。迁移器只报告各类记录数量并失败关闭，不打印记录内容，也不会静默删除。
+## 4. 用户状态切换
 
-## 3. 用户库正向迁移
-
-先部署 v0.4 程序制品，但不要启动 v0.4 Agent。随后以该 Unix 用户执行：
+先停止 Agent。停止命令不得停止 app-server：
 
 ```bash
-ce agent stop
-ce upgrade preflight --to v0.4
-ce state migrate --to v0.4 --dry-run
-ce state migrate --to v0.4
+sudo -iu <username> /usr/local/bin/ce agent stop
+sudo -iu <username> /usr/local/bin/ce app-server status
 ```
 
-`preflight` 和 `--dry-run` 都不会创建备份或修改状态。正式命令成功后会输出：
-
-- `sourceSha256`；
-- 迁移后的各领域记录计数；
-- `backupPath`；
-- `receiptPath`。
-
-记录这些非秘密元数据，然后启动 v0.4 Agent：
+为本次窗口选择一个不会与现有路径冲突的规范 UTC 时间戳，然后按精确路径改名。命令中的占位符必须先替换：
 
 ```bash
+sudo -iu <username> sh -eu -c '
+  retained="$HOME/.codex-everywhere.v0.3-retained.<UTC-timestamp>"
+  test -d "$HOME/.codex-everywhere"
+  test ! -e "$retained"
+  mv "$HOME/.codex-everywhere" "$retained"
+  chmod 0700 "$retained"
+'
+```
+
+这一步不接触 `~/.codex` 和 `/tmp` 中仍健康的 app-server socket/PID。随后切换 v0.4 rootless/privileged release 与 Web，再由用户执行：
+
+```bash
+ce device pair
+ce workspace add /absolute/path/to/project
 ce agent start
 ce agent status
 ce app-server status
+ce doctor
 ```
 
-在 Web 中至少完成一次只读 smoke test：登录、列出 Workspace、打开既有任务、查看 Queue 和身份状态。确认前不要执行 migration finalize。
+在 PWA 中使用新的配对资料，重新注册 Passkey 或 CE 密码并离线保存新恢复码。旧 Host Profile、旧 CE 恢复码和旧 Queue 均不再有效。
 
-## 4. 管理员库正向迁移
+## 5. 管理员控制面
 
-Administrator Controller 使用独立数据库和文件所有者。先停止 Controller，再以有权读取管理员状态的安装身份执行带 `--admin` 的命令；生产安装通常需要 root：
+没有 Controller 时直接按当前 v0.4 操作手册全新安装。已有 Controller 时：
 
-```bash
-ce admin web stop
-ce upgrade preflight --to v0.4 --admin
-ce state migrate --to v0.4 --admin --dry-run
-ce state migrate --to v0.4 --admin
-ce admin web start
-ce admin web status
-```
+1. 停止 Controller；
+2. 核对 rootless 与 privileged CLI 为同一 v0.4 tag；
+3. 将现有 `CE_ADMIN_HOME` 整目录改名保留，不合并其数据库；
+4. 重新执行 `ce admin install-controller`；
+5. 以 Controller 账号生成新配对资料；
+6. 操作者本人在 `/admin` 注册新管理员 Passkey/CE 密码并保存恢复码；
+7. 验证管理员只能看到宿主控制面，不能看到用户业务数据。
 
-v0.3 的 Controller 身份库与 privileged admin 状态可能位于两个文件。迁移器会同时锁定、备份、合并和验证两者；任一文件失败时不会发布部分管理员状态。
+## 6. 验收
 
-## 5. 数据转换规则
+至少验证：
 
-正向迁移保留：
+- app-server PID 在切换前后不变且健康；
+- 新 CE 状态库具有 v0.4 application ID、schema 和 0600 权限；
+- 能重新打开 app-server 中已有任务；
+- Direct 与 Relay、桌面与 390px 移动端均可用；
+- Passkey、CE 密码、恢复码和临时登录符合预期；
+- Workspace 越界被拒绝；
+- interaction、interrupt、Queue 与 TUI 接力可用；
+- 日志不包含提示词、Queue 文本、路径内容、凭据或解密 payload。
 
-- Passkey、CE 密码记录、恢复码哈希、可信设备和仍有效的身份状态；
-- Workspace、默认 Workspace、偏好和 thread 权限 revision；
-- pairing/recovery handoff 中仍有效且可表达的数据；
-- 未完成 Queue item、delivery claim 和结果未知状态；
-- 仍有效的 mutation receipt；
-- 用户最小安全审计、managed users 和管理员审计。
+## 7. 观察窗口内回退
 
-以下数据不迁移：
+不存在 v0.4→v0.3 数据转换。若 v0.4 验收失败：
 
-- `thread_cache`；任务历史从 Codex app-server 重建；
-- 已过期的 pairing、recovery handoff 和幂等结果；
-- v0.3 仅驻内存的 Side 状态；
-- Schedule、Schedule run 和 Push subscription。只要这些表非空，迁移整体失败。
+1. 停止 v0.4 Agent/Controller；
+2. 将新建的 v0.4 CE 目录改名留存，不与旧目录合并；
+3. 把原 v0.3 保留目录原子改回 `~/.codex-everywhere`；
+4. 原子切回 alpha.14 rootless/privileged/Web 制品；
+5. 启动 alpha.14 Agent，并验证 app-server、Relay 和旧 Web 身份；
+6. 明确告知操作者：v0.4 期间新建的 CE 身份、Workspace、Queue 和偏好不会回到 v0.3。
 
-迁移输出和 receipt 不包含密码记录、Passkey、恢复哈希、Queue 文本、提示词、文件内容或路径内容。
-
-## 6. 回滚到 v0.3
-
-回滚既包括程序制品切换，也包括正式反向数据库迁移。先停止 v0.4 Agent，并确认：
-
-- 所有 thread lease 已 idle；
-- 没有运行中的 turn、未解决 interaction、delivering Queue、pending mutation 或登录流程；
-- v0.4 数据能够由 v0.3 完整表达。
-
-以下状态会使反向迁移失败关闭：
-
-- pending 或 indeterminate mutation receipt；
-- delivering Queue item；
-- v0.3 无法表达的自定义 Workspace label；
-- 非 `system` 主题或非 `zh-CN` locale；
-- 缺少 v0.3 durable receipt 所需 rollback fingerprint 的记录；
-- 任何无法无损转换的新领域数据。
-
-执行：
-
-```bash
-ce agent stop
-ce state migrate --to v0.3 --dry-run
-ce state migrate --to v0.3
-```
-
-管理员库使用相同命令并添加 `--admin`。反向迁移会重建完整 schema 4，并为 v0.4 Queue 状态写入旧版 rollback barrier，避免旧 Agent 重复投递。发布后还会重新读回 schema 4 并核对语义计数。
-
-迁移成功后，原子切换到已验证的 v0.3 Release，再启动对应 Agent/Controller。不要在反向迁移完成前启动旧二进制。
-
-## 7. 备份、恢复与 finalize
-
-迁移结果中的 `backupPath` 是原始 SQLite 文件副本，文件名标记源版本；`receiptPath` 与状态库位于同一目录。只要没有 finalize，就可以结合已验证的旧程序制品进行回滚演练。
-
-若正式迁移命令报错：
-
-1. 不要启动目标版本；
-2. 保存完整错误码、记录数量、receipt 路径和 SHA-256，但不要收集数据库或业务内容到普通日志；
-3. 检查状态文件仍能由源版本只读打开；迁移器在原子发布后失败时会自动恢复备份；
-4. 若怀疑文件系统或进程并发写入，保持 Agent/Controller 停止并重新运行 dry-run；
-5. 只有在核对 state path、backup path、owner、mode 和 SHA-256 后，才可进行人工恢复。
-
-在 staging 和 production 都完成业务验证、回滚窗口结束后，按迁移输出的确切 receipt 路径执行：
-
-```bash
-ce state migration-finalize /absolute/path/to/migration-<id>.receipt.json
-```
-
-管理员 receipt 添加 `--admin`。finalize 会删除该 receipt 引用的源库备份并在 receipt 中记录 `finalizedAt`；它不会删除 receipt。该操作不可逆，不应被安装脚本或定时任务自动执行。
-
-## 8. 多用户 staging 演练
-
-发布 `v0.4.0-alpha.1` 前至少选择两个非生产测试用户和一个管理员控制面，完成：
-
-1. v0.3 基线登录、任务、Queue、Workspace 和恢复码检查；
-2. 停止各自 Agent/Controller，分别运行 preflight、dry-run 和正式正向迁移；
-3. 启动 v0.4，验证 Direct 与 Relay、手机与桌面、审批竞争、断线恢复和 Queue；
-4. 在 v0.4 写入可回滚的 Workspace、偏好、权限、身份和 Queue 变化；
-5. 停止服务，运行反向 dry-run 和正式迁移；
-6. 原子切回 v0.3 制品并验证业务语义与 Queue rollback barrier；
-7. 再次正向迁移并切回 v0.4；
-8. 记录 Release manifest SHA-256、源库 SHA-256、receipt、用时和结果；
-9. 只有验收通过且回滚窗口结束后才 finalize。
-
-测试数据库、备份和 receipt 都属于敏感宿主机状态，不得复制到源码仓库、Issue、CI artifact 或公开日志。
-
-完整的候选版本门禁、场景布尔项和脱敏证据格式见 [v0.4 staging 验收手册](staging-v0.4.zh-CN.md)。
+只有当 v0.4 被明确接受、观察窗口结束且操作者再次批准精确删除目标后，旧 CE 保留目录才可删除。不得由安装器、Agent 或定时任务自动删除。

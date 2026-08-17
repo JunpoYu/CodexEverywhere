@@ -24,6 +24,5 @@ export * from "./gateway/relay-connector.js";
 export * from "./v2/adapters/direct-transport.js";
 export * from "./v2/codex/index.js";
 export * from "./v2/gateway/index.js";
-export * from "./v2/migration/index.js";
 export * from "./v2/repositories/index.js";
 export * from "./v2/services/index.js";

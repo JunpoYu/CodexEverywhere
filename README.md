@@ -21,7 +21,7 @@ CodexEverywhere（CE）是面向 Linux/HPC 的自托管 Codex Web/PWA 控制平�
 CE 不重新实现 AgentLoop。thread、turn、工具活动、审批请求和执行状态始终以官方 [Codex app-server](https://developers.openai.com/codex/app-server) 为唯一事实源；CE 只负责安全连接、Web 身份、移动端产品体验、持久 Queue 和 HPC 生命周期。
 
 > [!WARNING]
-> 当前代码线为 `v0.4.0-alpha.1` 架构重建版。Gateway API v2 和新状态库不兼容 v0.3 二进制；升级前必须执行预检和正式迁移。Alpha tag/Prerelease 只用于冻结待验收制品；同一制品必须先在多用户 staging 完成正向迁移、业务写入、反向迁移和制品回滚，才能批准 production 部署。生产环境只使用经过 CI 验证的 [GitHub Release](https://github.com/JunpoYu/CodexEverywhere/releases) 制品。
+> 当前代码线为 `v0.4.0-alpha.1` 架构重建版。Gateway API v2 和新状态库不兼容 v0.3；v0.4 采用全新初始化，不迁移 v0.3 CE 状态。`~/.codex`、Codex 登录和 app-server 任务不属于清理范围。`v0.3.0-alpha.14` 是已完成实机验证的最后维护基线，只用于观察窗内恢复已保留的旧 CE 目录。v0.4 Alpha tag/Prerelease 冻结待验收制品；同一制品必须先完成多用户全新安装 staging，才能批准 production 部署。
 
 > [!NOTE]
 > 这是独立的非官方开源项目，与 OpenAI 没有关联或背书。Codex 是 OpenAI 的产品。
@@ -121,34 +121,11 @@ node apps/agent/dist/cli.js device pair
 
 生产环境不要在服务器上 `git pull` 或临时构建；只部署经过校验的不可变 Release 制品。多用户 HPC、Relay、rootless provisioner 和管理员控制面的架构边界见[部署与升级](docs/deployment.zh-CN.md)；交给其他 Agent 执行时，使用带输入清单、停止条件和验收输出的[部署、升级与回滚操作手册](docs/operator-runbook.zh-CN.md)。
 
-## 从 v0.3 迁移
+## 从 v0.3 全新切换
 
-v0.4 不允许旧二进制直接打开新库，也不会静默删除 Schedule、Push 或无法表达的数据。
+v0.4 不提供状态迁移 CLI。切换时先停止旧 Agent（保持健康 app-server），将完整的 `~/.codex-everywhere` 改名保留，再启用 v0.4 并重新配对。Passkey、CE 密码、恢复码、Workspace、偏好和 Queue 会重建；`~/.codex`、Codex 登录与 app-server 任务保留。
 
-```bash
-# 1. 先确认没有运行中 turn、未解决 interaction、delivering Queue 或 pending mutation
-#    v0.3 无法从进程外证明 Side 已释放，因此必须停止旧 Agent；健康 app-server 保持运行
-ce agent stop
-
-# 2. 只读预检
-ce upgrade preflight --to v0.4
-
-# 3. 创建 0600 备份、导入新库、验证并原子替换
-ce state migrate --to v0.4
-
-# 4. 启动 v0.4 Agent 并完成 smoke test
-ce agent start
-```
-
-回滚前同样要求所有 lease idle，随后执行：
-
-```bash
-ce agent stop
-ce state migrate --to v0.3 --dry-run
-ce state migrate --to v0.3
-```
-
-正反迁移都保留源库备份；只有接受迁移或回滚结果后，才可按 receipt 中的路径显式执行 `ce state migration-finalize <receipt-path>`。管理员库迁移使用相同命令并添加 `--admin`。详见 [v0.4 迁移手册](docs/migration-v0.4.zh-CN.md)。
+旧 CE 目录在观察窗内只读保留，不导入新库。若切换失败，只能停止 v0.4、将新目录留存、原子恢复旧目录并切回 alpha.14；不合并两份状态。详见 [v0.4 全新初始化与切换手册](docs/migration-v0.4.zh-CN.md)。
 
 ## Web / TUI 接力
 
@@ -189,7 +166,7 @@ ce tui /absolute/path/to/project --new
 | Queue、Steer、结果未知保护                    | 已实现     |
 | Workspace、任务设置和 TUI 接力                | 已实现     |
 | Direct、无状态 E2EE Relay、多用户管理员控制面 | 已实现     |
-| v0.3 ↔ v0.4 正反迁移、备份和 receipt          | 已实现     |
+| v0.4 全新初始化、旧 CE 目录隔离与观察窗恢复   | 已实现     |
 | Schedule、Push、完整文件管理、通用插件        | 不进入首版 |
 | Side、`thread/fork`、浏览器 `auth.json` 导入  | 已移除     |
 

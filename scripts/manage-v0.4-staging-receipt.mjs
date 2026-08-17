@@ -47,14 +47,11 @@ const REQUIRED_CHECKS = [
   "isolation.two-users",
   "isolation.workspace",
   "isolation.admin-user-runtime",
-  "migration.preflight",
-  "migration.forward",
-  "migration.v0.4-writes",
-  "migration.reverse",
-  "migration.artifact-rollback",
-  "migration.v0.3-semantics",
-  "migration.forward-again",
-  "migration.backups-retained",
+  "cutover.v0.3-state-retained",
+  "cutover.v0.4-state-fresh",
+  "cutover.codex-home-untouched",
+  "cutover.artifact-rollback",
+  "cutover.v0.4-reactivation",
   "security.logs-sanitized",
   "model.real-subscription-call",
 ];
@@ -105,10 +102,6 @@ async function initialize(path) {
     evidence: {
       manifestSha256: "",
       candidateReceiptSha256: "",
-      sourceBackupSha256s: [],
-      forwardReceiptSha256s: [],
-      reverseReceiptSha256s: [],
-      secondForwardReceiptSha256s: [],
     },
     checks: Object.fromEntries(REQUIRED_CHECKS.map((check) => [check, false])),
   };
@@ -176,7 +169,7 @@ async function validate(path) {
     throw new Error("receipt status is not passed");
 
   validateEnvironment(receipt.environment);
-  validateEvidence(receipt.evidence, receipt.environment.testUserCount);
+  validateEvidence(receipt.evidence);
   assertExactKeys(receipt.checks, REQUIRED_CHECKS, "checks");
   const incomplete = REQUIRED_CHECKS.filter(
     (check) => receipt.checks[check] !== true,
@@ -223,17 +216,10 @@ function validateEnvironment(environment) {
   }
 }
 
-function validateEvidence(evidence, testUserCount) {
+function validateEvidence(evidence) {
   assertExactKeys(
     evidence,
-    [
-      "manifestSha256",
-      "candidateReceiptSha256",
-      "sourceBackupSha256s",
-      "forwardReceiptSha256s",
-      "reverseReceiptSha256s",
-      "secondForwardReceiptSha256s",
-    ],
+    ["manifestSha256", "candidateReceiptSha256"],
     "evidence",
   );
   assertPattern(evidence.manifestSha256, SHA256_PATTERN, "manifestSha256");
@@ -242,37 +228,6 @@ function validateEvidence(evidence, testUserCount) {
     SHA256_PATTERN,
     "candidateReceiptSha256",
   );
-  const minimumStateFiles = testUserCount + 1;
-  validateHashList(
-    evidence.sourceBackupSha256s,
-    minimumStateFiles,
-    "sourceBackupSha256s",
-  );
-  validateHashList(
-    evidence.forwardReceiptSha256s,
-    minimumStateFiles,
-    "forwardReceiptSha256s",
-  );
-  validateHashList(
-    evidence.reverseReceiptSha256s,
-    minimumStateFiles,
-    "reverseReceiptSha256s",
-  );
-  validateHashList(
-    evidence.secondForwardReceiptSha256s,
-    minimumStateFiles,
-    "secondForwardReceiptSha256s",
-  );
-}
-
-function validateHashList(value, minimum, label) {
-  if (!Array.isArray(value) || value.length < minimum) {
-    throw new Error(`${label} requires at least ${minimum} hashes`);
-  }
-  for (const hash of value) assertPattern(hash, SHA256_PATTERN, label);
-  if (new Set(value).size !== value.length) {
-    throw new Error(`${label} contains duplicate hashes`);
-  }
 }
 
 function assertExactKeys(value, expected, label) {

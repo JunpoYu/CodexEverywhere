@@ -35,12 +35,14 @@ const files = [
 const fileSet = new Set(files);
 const graph = new Map(files.map((file) => [file, []]));
 const failures = [];
-const removedGatewayMethodAllowlist = new Set([
-  // The migration adapter must recognize v0.3 receipts in order to reject or
-  // round-trip them; it is not reachable from the v0.4 Gateway router.
-  "apps/agent/src/v2/repositories/legacy-state-conversion.ts",
-]);
-
+for (const file of files) {
+  if (
+    file.startsWith("apps/agent/src/v2/migration/") ||
+    file === "apps/agent/src/v2/repositories/legacy-state-conversion.ts"
+  ) {
+    failures.push(`${file}: v0.4 must use fresh CE state, not v0.3 conversion`);
+  }
+}
 for (const file of files) {
   const content = readFileSync(join(repositoryRoot, file), "utf8");
   const imports = parseImports(content);
@@ -126,10 +128,8 @@ for (const file of files) {
   }
 
   if (
-    (file.startsWith("apps/agent/src/v2/") ||
-      architectureEntrypoints.includes(file)) &&
-    !file.includes("/migration/") &&
-    file !== "apps/agent/src/v2/repositories/legacy-state-conversion.ts"
+    file.startsWith("apps/agent/src/v2/") ||
+    architectureEntrypoints.includes(file)
   ) {
     for (const specifier of imports) {
       if (
@@ -160,7 +160,6 @@ for (const file of files) {
     (file.startsWith("apps/agent/src/v2/") ||
       file.startsWith("apps/web/src/v4/") ||
       file.startsWith("packages/protocol/src/v2/")) &&
-    !removedGatewayMethodAllowlist.has(file) &&
     /(["'`])(?:side\/[^"'`]*|thread\/fork|setup\/codex\/auth\/import)\1/u.test(
       content,
     )
@@ -225,6 +224,13 @@ function checkAgentEntrypoint() {
     failures.push(
       `${entryPath}: Administrator serve command is not bound to v0.4`,
     );
+  }
+  if (
+    /\.command\(["'](?:upgrade|state)["']\)|migration-finalize|state migrate/u.test(
+      entry,
+    )
+  ) {
+    failures.push(`${entryPath}: v0.3 state migration CLI was reintroduced`);
   }
 }
 

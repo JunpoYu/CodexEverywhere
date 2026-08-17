@@ -55,17 +55,41 @@ afterEach(async () => {
 
 describe("rootless release activation", () => {
   it("ships bootstrap tools and separates root from deployment-account code", async () => {
-    const [shim, shared, assets] = await Promise.all([
-      readFile(rootlessGlobalShim, "utf8"),
-      readFile(sharedInstaller, "utf8"),
-      readFile(releaseAssetPreparer, "utf8"),
-    ]);
+    const [shim, shared, assets, rootlessRuntime, sharedRuntime] =
+      await Promise.all([
+        readFile(rootlessGlobalShim, "utf8"),
+        readFile(sharedInstaller, "utf8"),
+        readFile(releaseAssetPreparer, "utf8"),
+        readFile(
+          new URL(
+            "../../../deploy/hpc/create-rootless-runtime.sh",
+            import.meta.url,
+          ),
+          "utf8",
+        ),
+        readFile(
+          new URL(
+            "../../../deploy/hpc/create-shared-runtime.sh",
+            import.meta.url,
+          ),
+          "utf8",
+        ),
+      ]);
 
     expect(shared).toContain('mv "$root_cli" "$install_root/bin/ce"');
+    expect(shared).toContain('mv -Tf "$current_link" "$install_root/current"');
+    expect(shared).toContain(
+      'mv -Tf "$active_release" "$install_root/active-release"',
+    );
     expect(shim).toContain("exec '$root_cli' \"\\$@\"");
     expect(shim).toContain("exec '$install_root/bin/ce' \"\\$@\"");
     expect(shim).toContain("Root CLI must be owned by root");
     expect(shim).toContain("assert_root_owned_directory_chain");
+    for (const runtimeInstaller of [rootlessRuntime, sharedRuntime]) {
+      expect(runtimeInstaller).toContain(
+        "create --yes --override-channels --channel conda-forge",
+      );
+    }
 
     for (const requiredTool of [
       "create-rootless-runtime.sh",
@@ -96,6 +120,7 @@ describe("rootless release activation", () => {
       join(release.bundle, "release-manifest.json"),
       await readFile(release.manifest),
     );
+    await symlink("cli.js", join(release.bundle, "dist", "cli-link.js"));
     const inventory = join(directory, "inventory.json");
 
     const created = runNodeWithPrivateUmaskResult([
@@ -108,6 +133,27 @@ describe("rootless release activation", () => {
     ]);
     expect(created.status, created.stderr).toBe(0);
     expect((await lstat(inventory)).mode & 0o777).toBe(0o644);
+    const createdInventory = JSON.parse(await readFile(inventory, "utf8")) as {
+      entries: Array<Record<string, unknown>>;
+    };
+    const symlinkEntry = createdInventory.entries.find(
+      (entry) => entry.path === "dist/cli-link.js",
+    );
+    expect(symlinkEntry).toEqual({
+      path: "dist/cli-link.js",
+      type: "symlink",
+      target: "cli.js",
+    });
+
+    // schema v1 inventories created on Parastor recorded a filesystem-specific
+    // symlink mode. A root-owned XFS copy must remain verifiable because only
+    // the link path and target carry security meaning.
+    if (!symlinkEntry) throw new Error("Expected symlink inventory entry");
+    symlinkEntry.mode = 0o755;
+    await writeFile(
+      inventory,
+      `${JSON.stringify(createdInventory, null, 2)}\n`,
+    );
     await rename(inventory, join(release.bundle, "release-inventory.json"));
     const verified = runNodeResult([
       inventoryVerifier,
@@ -369,6 +415,7 @@ describe("rootless release activation", () => {
         join(fakeBin, "curl"),
         `#!/bin/sh
 set -eu
+if [ "\${CE_TEST_FAIL_NETWORK:-}" = 1 ]; then exit 99; fi
 source_url=
 destination=
 while [ "$#" -gt 0 ]; do
@@ -458,6 +505,23 @@ exit 1
       await expect(
         readFile(join(installRoot, "active-release"), "utf8"),
       ).resolves.toBe(`${version}\n`);
+
+      const transferred = runResult(
+        releaseInstaller,
+        [
+          version,
+          "example/CodexEverywhere",
+          installRoot,
+          runtime,
+          manifestHash,
+        ],
+        {
+          ...environment,
+          CE_RELEASE_ASSET_DIRECTORY: fixture,
+          CE_TEST_FAIL_NETWORK: "1",
+        },
+      );
+      expect(transferred.status, transferred.stderr).toBe(0);
 
       const ghLog = join(directory, "gh-arguments.log");
       await writeExecutable(

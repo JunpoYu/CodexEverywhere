@@ -51,16 +51,6 @@ export {
   type WorkspaceRecord,
 } from "./workspace-repository.js";
 export {
-  StateConversionError,
-  assertReverseRepresentable,
-  inspectLegacyPersistentBlockers,
-  openLegacyDatabase,
-  readLegacyStateSnapshot,
-  writeLegacyStateSnapshot,
-  type LegacyPersistentBlockers,
-  type LegacyStateKind,
-} from "./legacy-state-conversion.js";
-export {
   ADMIN_STATE_APPLICATION_ID,
   USER_STATE_APPLICATION_ID,
   V4_STATE_SCHEMA_VERSION,

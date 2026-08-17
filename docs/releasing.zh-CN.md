@@ -65,11 +65,11 @@ pnpm verify:v0.4 -- --with-model --receipt /absolute/private/path/candidate.json
 - 依赖许可证仍与 Apache-2.0 兼容；
 - 当前变更不新增部署域名或秘密；提交 author 邮箱不在此限制内。已有公开提交即使改写也不能视为完成秘密撤回，发现凭据时必须先轮换；
 - GitHub CI 在目标 commit 上通过。
-- v0.3 → v0.4 → v0.3 migration round-trip、损坏库、备份自动恢复和 finalize 测试通过；
+- v0.4 全新初始化、旧 CE 目录隔离、`~/.codex`/app-server 保留和观察窗制品恢复测试通过；
 - Direct 与 Relay 使用同一 Gateway v2 合同测试，未知方法、错误身份、缺失 operation key 和版本不匹配均失败关闭；
 - 390px 手机与桌面 Playwright 核心流程通过，PWA 更新不会刷新 outcome-unknown mutation；
 - Web 首始用户路由 JS gzip 不超过 250 KiB、CSS gzip 不超过 40 KiB；Markdown、KaTeX 与代码高亮保持独立懒加载；
-- candidate receipt 已通过，目标 commit 与 CI commit 相同；staging 使用的 v0.3 回滚 release、两个非生产用户和管理员控制面已经准备好。多用户 staging 必须消费尚待创建的不可变 Prerelease 制品，因此不是创建候选 tag 的前置条件，而是 production 批准的前置条件。
+- candidate receipt 已通过，目标 commit 与 CI commit 相同；staging 使用的 alpha.14 保留 release、两个非生产用户和管理员控制面已经准备好。多用户 staging 必须消费尚待创建的不可变 Prerelease 制品，因此不是创建候选 tag 的前置条件，而是 production 批准的前置条件。
 
 ## 候选 Prerelease 与 staging
 
@@ -77,7 +77,7 @@ v0.4 staging 必须验证 GitHub Release 的原始制品，而 Release workflow 
 
 1. candidate receipt、公开 CI 和人工源码检查通过后，在 `main` 的同一 commit 创建 annotated alpha tag；
 2. Release workflow 生成带 provenance 的 Prerelease，至此只表示“制品已冻结”，不表示允许 production；
-3. staging 下载该 Prerelease，记录 manifest SHA-256，完成正向迁移、业务写入、反向迁移和制品回滚；
+3. staging 下载该 Prerelease，记录 manifest SHA-256，完成旧 CE 状态隔离、v0.4 全新初始化、核心业务验收和制品指针回滚/再激活；
 4. staging receipt 通过后，才批准 production 以该 manifest SHA-256 部署同一组字节；
 5. 不重新构建、不移动 tag，也不把另一 commit 的制品冒充已经 staging 的版本。
 
