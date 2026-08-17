@@ -10,7 +10,7 @@
 - 所有功能分支都从公开 `main` 创建并通过 Pull Request 合并；不得把旧的私人 `main` 合并回公开历史。
 - `main` 是唯一可信源码主线；功能分支、PR head、本地提交和脏工作区不得作为生产部署输入。
 - Release tag 是已发布版本的唯一不可变标识。已经推送的 tag 不得移动或复用。
-- 新提交使用 GitHub noreply 邮箱；GitHub 账号也应开启邮箱隐私，并在首次 squash merge 后复核生成提交的 author。Issue、PR、提交说明和测试数据不得包含真实部署身份、主机名、域名、路径或凭据。
+- 提交 author 邮箱是公开元数据，可以使用有意公开的个人邮箱或 GitHub noreply 邮箱，不作为安全检查或发布门槛。Issue、PR、提交说明和测试数据不得包含真实部署身份、主机名、域名、路径或凭据。
 
 ## 版本规则
 
@@ -51,7 +51,7 @@ git diff --check
 - 没有 `.env`、`auth.json`、证书、私钥、数据库、日志或运行目录；
 - 示例只使用 `example.com`、`example`、`invalid`、loopback 地址及 `alice`/`bob` 等虚构身份；
 - 依赖许可证仍与 Apache-2.0 兼容；
-- 新提交使用 noreply author，当前变更不新增私人邮箱、部署域名或秘密；已有公开提交即使改写也不能视为完成秘密撤回，发现凭据时必须先轮换；
+- 当前变更不新增部署域名或秘密；提交 author 邮箱不在此限制内。已有公开提交即使改写也不能视为完成秘密撤回，发现凭据时必须先轮换；
 - GitHub CI 在目标 commit 上通过。
 
 ## Prerelease 与部署批准
