@@ -1,17 +1,10 @@
-import "katex/dist/katex.min.css";
-import "./style.css";
-
 import { announcePwaUpdate } from "./pwa-update.js";
 
 const PWA_ASSET_CACHE = "codex-everywhere-v44";
 
 void registerServiceWorker();
 
-if (location.pathname === "/admin" || location.pathname.startsWith("/admin/")) {
-  void import("./admin-main.js");
-} else {
-  void import("./main.js");
-}
+void import("./v4/bootstrap.js");
 
 async function registerServiceWorker(): Promise<void> {
   if (!("serviceWorker" in navigator)) return;

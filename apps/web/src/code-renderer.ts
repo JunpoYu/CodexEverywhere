@@ -1,6 +1,28 @@
 import { katex } from "@mdit/plugin-katex";
 import DOMPurify, { type Config } from "dompurify";
+import hljs from "highlight.js/lib/core";
+import bash from "highlight.js/lib/languages/bash";
+import cpp from "highlight.js/lib/languages/cpp";
+import css from "highlight.js/lib/languages/css";
+import diff from "highlight.js/lib/languages/diff";
+import javascript from "highlight.js/lib/languages/javascript";
+import json from "highlight.js/lib/languages/json";
+import python from "highlight.js/lib/languages/python";
+import sql from "highlight.js/lib/languages/sql";
+import typescript from "highlight.js/lib/languages/typescript";
+import xml from "highlight.js/lib/languages/xml";
 import MarkdownIt from "markdown-it";
+
+hljs.registerLanguage("bash", bash);
+hljs.registerLanguage("cpp", cpp);
+hljs.registerLanguage("css", css);
+hljs.registerLanguage("diff", diff);
+hljs.registerLanguage("javascript", javascript);
+hljs.registerLanguage("json", json);
+hljs.registerLanguage("python", python);
+hljs.registerLanguage("sql", sql);
+hljs.registerLanguage("typescript", typescript);
+hljs.registerLanguage("xml", xml);
 
 const markdown = new MarkdownIt({
   html: false,
@@ -152,6 +174,8 @@ export function renderMessageContent(
         .find((name) => name.startsWith("language-"))
         ?.slice("language-".length),
     );
+    code.innerHTML = highlightCode(source, language);
+    code.classList.add("hljs");
     const block = document.createElement("div");
     block.className = "message-code-block";
     const toolbar = document.createElement("div");
@@ -181,6 +205,14 @@ export function renderMessageContent(
   for (const anchor of Array.from(container.querySelectorAll("a"))) {
     prepareMarkdownLink(anchor);
   }
+}
+
+/** Returns escaped Highlight.js markup using only the task-page lazy chunk. */
+export function highlightCode(source: string, language?: string): string {
+  if (language !== undefined && hljs.getLanguage(language) !== undefined) {
+    return hljs.highlight(source, { language, ignoreIllegals: true }).value;
+  }
+  return hljs.highlightAuto(source).value;
 }
 
 export function renderUnifiedDiff(diff: string): HTMLElement {

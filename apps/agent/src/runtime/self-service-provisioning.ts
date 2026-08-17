@@ -6,8 +6,10 @@ import { routeIdFromCapability } from "@codex-everywhere/protocol/relay-capabili
 import {
   relayTransport,
   updateHostConfig,
+  updateHostConfigWithCoordination,
   withRelayTransport,
   type HostConfig,
+  type HostConfigCoordination,
 } from "../host/config.js";
 import {
   validateCodexNetworkConfig,
@@ -91,6 +93,7 @@ export async function applyRelayCapabilityRenewal(
     username: userInfo().username,
     uid: process.getuid?.() ?? -1,
   },
+  coordination?: HostConfigCoordination,
 ): Promise<HostConfig> {
   const grant = parseSelfProvisioningGrant(grantValue);
   if (
@@ -99,7 +102,7 @@ export async function applyRelayCapabilityRenewal(
   ) {
     throw new Error("Host provisioner returned a different Unix identity");
   }
-  return updateHostConfig(paths, (config): HostConfig => {
+  const update = (config: HostConfig): HostConfig => {
     const relay = relayTransport(config.transport);
     if (!relay) throw new Error("Relay transport is not configured");
     if (relay.routeCapability !== expectedCapability) {
@@ -117,7 +120,10 @@ export async function applyRelayCapabilityRenewal(
         routeCapability: grant.routeCapability,
       }),
     };
-  });
+  };
+  return coordination === undefined
+    ? updateHostConfig(paths, update)
+    : updateHostConfigWithCoordination(paths, coordination, update);
 }
 
 export function parseSelfProvisioningGrant(

@@ -1,9 +1,14 @@
 {
   "extends": "../../tsconfig.base.json",
-  "compilerOptions": { "outDir": "dist", "rootDir": "src" },
-  "include": ["src/**/*.ts"],
+  "compilerOptions": {
+    "outDir": "dist",
+    "rootDir": "src",
+    "jsx": "react-jsx"
+  },
+  "include": ["src/**/*.ts", "src/**/*.tsx"],
   "references": [
     { "path": "../../packages/crypto" },
+    { "path": "../../packages/kernel" },
     { "path": "../../packages/protocol" }
   ]
 }

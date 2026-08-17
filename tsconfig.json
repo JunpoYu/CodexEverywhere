@@ -2,6 +2,7 @@
   "files": [],
   "references": [
     { "path": "packages/codex-app-server-schema" },
+    { "path": "packages/kernel" },
     { "path": "packages/protocol" },
     { "path": "packages/crypto" },
     { "path": "packages/testing" },

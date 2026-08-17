@@ -5,39 +5,6 @@ const MAX_GATEWAY_CIPHERTEXT_BASE64URL_LENGTH = 128 * 1024;
 
 export type ProtocolVersion = typeof PROTOCOL_VERSION;
 
-export const IDEMPOTENCY_OUTCOME_INDETERMINATE =
-  "IDEMPOTENCY_OUTCOME_INDETERMINATE" as const;
-
-export type RequestEnvelope<T = unknown> = {
-  version: ProtocolVersion;
-  requestId: string;
-  idempotencyKey: string;
-  method: string;
-  payload: T;
-};
-
-export type ProtocolError = {
-  code: string;
-  message: string;
-  retryable?: boolean;
-};
-
-export type ResponseEnvelope<T = unknown> = {
-  version: ProtocolVersion;
-  requestId: string;
-  ok: boolean;
-  result?: T;
-  error?: ProtocolError;
-};
-
-export type EventEnvelope<T = unknown> = {
-  version: ProtocolVersion;
-  eventId: string;
-  cursor: string;
-  type: string;
-  payload: T;
-};
-
 export const CODEX_INSTALL_PROGRESS_EVENT =
   "setup/codex/install/progress" as const;
 
@@ -71,18 +38,6 @@ export type SessionPermissionDefaults = {
   sandbox: SessionSandboxDefault;
   approvalPolicy: SessionApprovalDefault;
   updatedAt?: string;
-};
-
-export type CodexAuthImportRequest = {
-  version: 1;
-  content: string;
-};
-
-export type CodexAuthImportResult = {
-  version: 1;
-  imported: true;
-  replacedExisting: boolean;
-  restartRequired: boolean;
 };
 
 export type TransportKind = "direct" | "relay";
@@ -182,10 +137,6 @@ export type GatewayHandshakeAccepted = {
   loginName?: string;
   capabilities?: string[];
 };
-
-export const GATEWAY_CAPABILITIES = {
-  sideForkV1: "side-fork-v1",
-} as const;
 
 export type GatewayHandshakeRejected = {
   version: ProtocolVersion;
@@ -335,57 +286,6 @@ export function parseGatewayCipherFrame(input: unknown): GatewayCipherFrame {
   return value as GatewayCipherFrame;
 }
 
-export function parseResponseEnvelope(input: unknown): ResponseEnvelope {
-  const value = parseWireRecord(input, "gateway response envelope");
-  if (
-    value.version !== PROTOCOL_VERSION ||
-    !isBoundedIdentifier(value.requestId) ||
-    typeof value.ok !== "boolean"
-  ) {
-    throw new Error("Invalid gateway response envelope");
-  }
-  if (value.ok) {
-    if (value.error !== undefined) {
-      throw new Error("Successful gateway response contains an error");
-    }
-  } else {
-    if (value.result !== undefined || !isProtocolError(value.error)) {
-      throw new Error("Invalid gateway error response");
-    }
-  }
-  return value as ResponseEnvelope;
-}
-
-export function parseEventEnvelope(input: unknown): EventEnvelope {
-  const value = parseWireRecord(input, "gateway event envelope");
-  if (
-    value.version !== PROTOCOL_VERSION ||
-    !isBoundedIdentifier(value.eventId) ||
-    !isBoundedIdentifier(value.cursor) ||
-    !isBoundedIdentifier(value.type) ||
-    !Object.hasOwn(value, "payload")
-  ) {
-    throw new Error("Invalid gateway event envelope");
-  }
-  return value as EventEnvelope;
-}
-
-export function parseGatewayServerEnvelope(
-  input: unknown,
-): ResponseEnvelope | EventEnvelope {
-  const value = parseWireRecord(input, "gateway server envelope");
-  const responseLike =
-    Object.hasOwn(value, "requestId") || Object.hasOwn(value, "ok");
-  const eventLike =
-    Object.hasOwn(value, "eventId") || Object.hasOwn(value, "cursor");
-  if (responseLike === eventLike) {
-    throw new Error("Ambiguous gateway server envelope");
-  }
-  return responseLike
-    ? parseResponseEnvelope(value)
-    : parseEventEnvelope(value);
-}
-
 export type PairingHandshakePayload = {
   mode: "pair";
   pairingId: string;
@@ -442,20 +342,6 @@ export function parseGatewayAuthenticationPayload(
   throw new Error("Invalid gateway authentication payload");
 }
 
-export function requestEnvelope<T>(
-  method: string,
-  payload: T,
-  options: { requestId: string; idempotencyKey: string },
-): RequestEnvelope<T> {
-  return {
-    version: PROTOCOL_VERSION,
-    requestId: options.requestId,
-    idempotencyKey: options.idempotencyKey,
-    method,
-    payload,
-  };
-}
-
 function parseWireRecord(
   input: unknown,
   description: string,
@@ -505,14 +391,4 @@ function isBoundedBase64Url(
   maximumLength: number,
 ): value is string {
   return isBase64Url(value) && value.length <= maximumLength;
-}
-
-function isProtocolError(value: unknown): value is ProtocolError {
-  if (!isRecord(value)) return false;
-  return (
-    isBoundedIdentifier(value.code, 128) &&
-    typeof value.message === "string" &&
-    value.message.length > 0 &&
-    (value.retryable === undefined || typeof value.retryable === "boolean")
-  );
 }

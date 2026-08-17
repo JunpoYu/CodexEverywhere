@@ -7,12 +7,11 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import WebSocket, { WebSocketServer } from "ws";
 
-import { HostStateStore } from "../host/state-store.js";
-import { ThreadPermissionRegistry } from "../host/thread-permissions.js";
+import { UserStateDatabase } from "../v2/repositories/user-state-database.js";
 import {
   startTuiPermissionProxy,
   stripResumePermissionOverrides,
-  tuiThreadPermissionOptions,
+  tuiV4ThreadPermissionOptions,
 } from "./tui-permission-proxy.js";
 
 describe("TUI permission inheritance proxy", () => {
@@ -97,14 +96,19 @@ describe("TUI permission inheritance proxy", () => {
     });
     await listen(upstreamServer, upstreamSocketPath);
 
-    const state = await HostStateStore.open(join(directory, "state.sqlite"));
-    const registry = new ThreadPermissionRegistry(state);
-    await registry.save("thread-1", {
+    const state = await UserStateDatabase.open(
+      join(directory, "state.sqlite"),
+      {
+        create: true,
+      },
+    );
+    const repository = state.threadSettings;
+    await repository.saveObserved("thread-1", {
       approvalPolicy: "never",
       approvalsReviewer: "guardian_subagent",
       sandboxPolicy: { type: "dangerFullAccess" },
     });
-    const permissionOptions = tuiThreadPermissionOptions(registry);
+    const permissionOptions = tuiV4ThreadPermissionOptions(repository);
     const proxy = await startTuiPermissionProxy({
       upstreamSocketPath,
       runtimeDir: directory,
@@ -261,12 +265,16 @@ describe("TUI permission inheritance proxy", () => {
         sandboxPolicy: { type: "readOnly", networkAccess: false },
       },
     ]);
-    await expect(registry.read("thread-1")).resolves.toMatchObject({
+    await expect(
+      repository.applyToResume({ threadId: "thread-1" }),
+    ).resolves.toMatchObject({
       approvalPolicy: "on-request",
       approvalsReviewer: "guardian_subagent",
       sandbox: "read-only",
     });
-    await expect(registry.read("thread-new")).resolves.toMatchObject({
+    await expect(
+      repository.applyToResume({ threadId: "thread-new" }),
+    ).resolves.toMatchObject({
       approvalPolicy: "on-request",
       approvalsReviewer: "user",
       sandbox: "read-only",
@@ -279,7 +287,9 @@ describe("TUI permission inheritance proxy", () => {
         params: { threadId: "thread-new" },
       }),
     );
-    await expect(registry.read("thread-new")).resolves.toBeUndefined();
+    await expect(
+      repository.applyToResume({ threadId: "thread-new" }),
+    ).resolves.toEqual({ threadId: "thread-new" });
 
     client.terminate();
     await proxy.close();
@@ -380,12 +390,15 @@ describe("TUI permission inheritance proxy", () => {
     await listen(upstreamServer, upstreamSocketPath);
 
     const statePath = join(directory, "state.sqlite");
-    const ownerState = await HostStateStore.open(statePath);
-    const tuiState = await HostStateStore.open(statePath);
-    const ownerRegistry = new ThreadPermissionRegistry(ownerState);
-    const tuiRegistry = new ThreadPermissionRegistry(tuiState);
-    const heldLease = await ownerRegistry.acquireMutation("thread-1");
-    const permissionOptions = tuiThreadPermissionOptions(tuiRegistry);
+    const ownerState = await UserStateDatabase.open(statePath, {
+      create: true,
+    });
+    const tuiState = await UserStateDatabase.open(statePath);
+    const heldLease =
+      await ownerState.threadSettings.acquireMutation("thread-1");
+    const permissionOptions = tuiV4ThreadPermissionOptions(
+      tuiState.threadSettings,
+    );
     let acquisitionStarted!: () => void;
     const acquisitionWasStarted = new Promise<void>((resolve) => {
       acquisitionStarted = resolve;

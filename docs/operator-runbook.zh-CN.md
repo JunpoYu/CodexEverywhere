@@ -1,6 +1,6 @@
 # 部署、升级与回滚操作手册（供人和 Agent 执行）
 
-本文档是 CodexEverywhere v0.3 maintenance 的可执行运维入口。它把[部署边界](deployment.zh-CN.md)和[发布流程](releasing.zh-CN.md)转换为有停止条件的操作顺序。后续接手的 Agent 必须先完整阅读本文，再开始任何写操作；迁移到 v0.4 时还必须改读目标 v0.4 Release 中的迁移与 staging 手册，不能假设 v0.3 CLI 已经包含迁移命令。
+本文档是 CodexEverywhere 的可执行运维入口。它把[部署边界](deployment.zh-CN.md)、[发布流程](releasing.zh-CN.md)、[v0.4 全新初始化](migration-v0.4.zh-CN.md)和 [staging 验收](staging-v0.4.zh-CN.md)转换为有停止条件的操作顺序。后续接手的 Agent 必须先完整阅读本文，再开始任何写操作。
 
 本文中的 `<占位符>` 必须替换后才能执行。填好的主机名、用户名、路径和 inventory 只能保存在对应服务器或私有运维环境，不能提交到公开仓库。命令输出不得粘贴业务日志、数据库、配对资料、恢复码、Relay capability、Codex 凭据或解密 payload。
 
@@ -10,7 +10,7 @@
 
 1. 只读采集当前版本、release 指针、服务状态、时钟、磁盘和回滚制品；
 2. 向操作者复述目标版本、影响用户、Direct/Relay/Web/Controller 范围和回滚点；
-3. 在得到本次变更的明确授权后才下载、安装、切换、重启或迁移；
+3. 在得到本次变更的明确授权后才下载、安装、切换、重启或重建 CE 状态；
 4. 每个阶段先验证再进入下一阶段，失败时停止，不在服务器 checkout 中临时修代码；
 5. 结束时报告版本、commit、manifest SHA-256、服务健康和未完成事项，但不报告敏感内容。
 
@@ -20,9 +20,8 @@
 - production 没有 staging 批准的 `manifest.json` SHA-256；
 - 浏览器、Agent 宿主机或 Relay 的 UTC 偏差超过 30 秒，或 NTP 未同步；
 - 目标或回滚 release 不完整、inventory 校验失败、安装目录发生内容漂移；
-- v0.3→v0.4 前仍有运行中 turn、未解决 interaction、delivering Queue、pending mutation、登录流程或 Side；
-- 旧库中存在非空 Schedule、Schedule run 或 Push subscription；
-- 反向迁移 dry-run 报告 v0.3 无法表达的数据；
+- v0.4 全新切换前仍有运行中 turn、未解决 interaction、delivering Queue、pending mutation、登录流程或 Side；
+- 旧 CE 目录不能以原子改名的方式完整隔离，或保留目标已存在；
 - 需要首次 Passkey、恢复码或 Codex 设备码登录，但对应的人不在场；
 - 命令要求把 secret 放入参数、shell history、Git、Issue 或普通日志。
 
@@ -32,11 +31,11 @@
 
 ```yaml
 schemaVersion: 1
-operation: inspect | fresh-install | patch-upgrade | prepare-v0.4 | rollback
+operation: inspect | fresh-install | patch-upgrade | clean-v0.4-cutover | rollback
 environment: staging | production
 repository: example/CodexEverywhere
-targetTag: v0.3.0-alpha.14
-rollbackTag: v0.3.0-alpha.11
+targetTag: v0.4.0-alpha.1
+rollbackTag: v0.3.0-alpha.14
 approvedManifestSha256: <64 个小写十六进制字符>
 pwaOrigin: https://codex.example.com
 relayEndpoint: wss://codex.example.com/relay
@@ -134,7 +133,7 @@ sudo -iu <controllerUser> env CE_ADMIN_HOME=<controller-home> \
   /usr/local/bin/ce admin web status
 ```
 
-状态检查可以报告路径，但不得把真实路径复制到公开日志。迁移前还要在 Web 中确认 turn、interaction、Queue、mutation 和登录流程已经静止。
+状态检查可以报告路径，但不得把真实路径复制到公开日志。全新切换前还要在 Web 中确认 turn、interaction、Queue、mutation 和登录流程已经静止。
 
 ## 5. 获取并验证 Release
 
@@ -435,19 +434,37 @@ sudo -iu <controllerUser> env CE_ADMIN_HOME=<controller-home> \
 
 如果 Release 说明包含跨进程权限协调或锁格式变化，升级前已经运行的 `ce tui` 必须在 Agent 重启后退出并重新连接；退出 TUI 不会中断 app-server 中的 turn。
 
-## 8. 为 v0.4 迁移做准备
+## 8. v0.3 → v0.4 全新切换
 
-v0.3.0-alpha.14 只提供 Gateway v1/v2 明确不匹配提示、安全的 Service Worker 刷新能力和可移植的 Release 安装能力，不包含 v0.4 状态迁移器。准备步骤是：
+v0.4 不提供 v0.3 状态迁移器，也不允许旧库被新二进制隐式升级。切换会重建 CE 自有的 Web 身份、可信设备、Workspace 登记、偏好、权限和 Queue；不删除、移动或改写 `~/.codex`，也不停止健康的 Codex app-server。任务历史仍以 app-server 为权威来源。
 
-1. 先把所有 v0.3 Web/Agent/privileged CLI 升级到 alpha.14，验证 Direct、Relay、Controller 和旧浏览器更新提示；
-2. 保留 alpha.14 的 verified rootless/privileged/Web/Relay 目录、manifest SHA-256 和 inventory，作为正式回滚点；
-3. 准备至少两个非生产 NSS/SSH 用户、隔离的管理员控制面、Direct 与 Relay 入口；
-4. 确认浏览器、Agent 宿主机和 Relay 的 NTP 偏差不超过 30 秒；
-5. 退出所有 Side，并等待 turn、interaction、Queue、mutation 和登录流程静止；
-6. 完整阅读目标 v0.4 Release 自带的迁移与 staging 手册，使用目标 v0.4 CLI 执行 preflight、dry-run 和正式迁移；
-7. 不得从 v0.3 文档猜测迁移参数，也不得让 v0.3 二进制打开 v0.4 数据库。
+切换前：
 
-v0.4 是 whole-host 协调升级，不是普通补丁滚动升级。任何测试用户或管理员库失败都停止整轮演练，不切换共享 Web，不删除源备份。
+1. 保留 alpha.14 的 verified rootless/privileged/Web/Relay 目录、manifest SHA-256 和 inventory；
+2. 确认浏览器、Agent 宿主机和 Relay 时钟偏差不超过 30 秒；
+3. 等待 turn、interaction、Queue delivery、mutation 和登录流程静止；
+4. 停止用户 Agent 和 Controller，但保持健康 app-server；
+5. 将每个用户完整的 `~/.codex-everywhere` 原子改名为不存在的带时间戳保留目录，权限保持 0700；不得覆盖旧保留目录；
+6. 对已存在的 Controller 同样保留其 `CE_ADMIN_HOME`；本次未安装 Controller 时跳过；
+7. 切换并启动 v0.4 rootless/privileged release，然后原子切换 Web。
+
+示例（占位符和时间戳必须先确认）：
+
+```bash
+sudo -iu <username> /usr/local/bin/ce agent stop
+sudo -iu <username> sh -eu -c '
+  retained="$HOME/.codex-everywhere.v0.3-retained.<UTC-timestamp>"
+  test -d "$HOME/.codex-everywhere"
+  test ! -e "$retained"
+  mv "$HOME/.codex-everywhere" "$retained"
+  chmod 0700 "$retained"
+'
+sudo -iu <username> /usr/local/bin/ce device pair
+```
+
+`ce device pair` 通过 rootless provisioner 创建新的 v0.4 Host 配置和 Relay route。操作者在 PWA 中完成新设备配对、Passkey/CE 密码与恢复码保存，然后重新添加 Workspace 并启动 Agent。旧 Host Profile、CE 恢复码和 Queue 不得继续使用。
+
+任何用户初始化失败都停止整轮切换，不让共享 Web 长期服务于混合 Gateway v1/v2 Agent。旧 CE 目录在观察窗结束前只读保留，不导入 v0.4，也不输出到日志或 JSON。
 
 ## 9. 回滚
 
@@ -468,9 +485,9 @@ sudo <root-owned-hpc-tools>/install-rootless-global-shim.sh \
 
 随后恢复旧 Web/Relay 原子指针，按第 7 节重启并 smoke test。inventory 失败时禁止回滚到该目录，应重新从可信 Release 安装。
 
-### 9.2 v0.4 回滚到 v0.3
+### 9.2 v0.4 切换失败后恢复 alpha.14
 
-必须严格按目标 v0.4 Release 的迁移手册，在 v0.4 程序下先完成每个用户和管理员库的反向 dry-run 与正式迁移，再切回本手册保留的 v0.3 verified release。任一 dry-run 失败都保持 v0.4，不允许部分回滚或让 v0.3 打开 v0.4 数据库。
+没有数据反向迁移。只能在旧 CE 保留目录仍完整时，先停止 v0.4 Agent/Controller，将新 v0.4 CE 目录改名留存，再把原 v0.3 目录原子改回 `~/.codex-everywhere`，最后切回 alpha.14 制品并启动服务。回复时不得合并两个目录、不得让 alpha.14 打开 v0.4 数据库，也不得把 v0.4 Queue 复制回旧库。v0.4 切换后新产生的 CE 身份、Workspace、Queue 和偏好不会出现在 alpha.14 中。
 
 ## 10. 验收和交付记录
 
@@ -480,7 +497,7 @@ Agent 完成后应向操作者报告：
 - rootless、privileged、Web、Relay 当前 tag 是否一致；
 - provisioner、Controller、各用户 Agent 和 app-server 是否健康；
 - Direct/Relay、桌面/移动端、任务打开、interaction 和 Queue smoke 是否通过；
-- 是否发生回滚，哪些 migration receipt/备份仍保留；
+- 是否发生回滚，哪些旧 CE 保留目录仍在观察窗内；
 - 仍需用户亲自完成的 Passkey、恢复码保存或 Codex 设备码登录。
 
-不要报告真实 prompt、Queue 文本、文件/Workspace 内容、数据库、恢复码、Passkey 数据、capability 或凭据。涉及 v0.4 迁移时，源备份只有在观察窗口结束、production 被明确接受后，才可按目标 v0.4 手册人工 finalize；Agent 不得自动 finalize。
+不要报告真实 prompt、Queue 文本、文件/Workspace 内容、数据库、恢复码、Passkey 数据、capability 或凭据。旧 CE 保留目录只有在观察窗结束、production 被明确接受且操作者再次确认后才能按精确路径删除；Agent 不得自动删除。

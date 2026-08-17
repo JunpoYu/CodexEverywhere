@@ -4,6 +4,58 @@
 
 ## [Unreleased]
 
+### Added
+
+- 新增一键 v0.4 候选版本门禁和 0600 脱敏 receipt；默认拒绝脏工作区，真实订阅模型调用必须显式开启。
+- 新增机器执行的首屏 JS/CSS gzip 预算检查，并验证 Markdown、KaTeX 与代码高亮仍处于任务页懒加载边界。
+- 新增严格的多用户 staging receipt 初始化与校验器，只接受限定字段、布尔验收结果和 SHA-256，不允许记录主机名、用户名、路径或自由文本，并要求浏览器、Agent 与 Relay 的 NTP 时钟完成同步。
+- 新增供人和后续 Agent 执行的部署、升级与回滚操作手册，明确非秘密交接输入、只读预检、停止条件、Release 验证、Direct/Relay/Controller、v0.4 全新初始化和验收输出。
+
+### Fixed
+
+- 修复发布门槛要求 staging 消费 Release、同时又禁止在 staging 前创建 tag 的循环依赖；alpha tag/Prerelease 现在只冻结候选字节，staging receipt 仍是 production 批准的硬门槛。
+- v0.4 改为全新初始化边界：删除 v0.3 正反迁移、迁移 CLI、旧 schema 转换器和数据回滚承诺；切换时归档旧 CE 状态并重新配对，`~/.codex` 与 app-server 任务不属于清理范围。
+
+## [0.4.0-alpha.1] - 2026-08-16
+
+### Added
+
+- 新增纯 TypeScript 内核：类型化 `ServiceRegistry`、层级 `Scope`、`TypedEventBus` 和 generation-safe `Actor`；Agent 与 React Web 使用静态 composition root，不加载第三方代码。
+- 新增加密后的 Gateway API v2、Zod 运行时 schema、类型化 client、声明式 handler registry 和统一版本、身份、权限、capability 与幂等校验。`mutation/status` 为 durable 副作用提供 `missing | pending | completed | indeterminate` 权威对账。
+- 新增 `IdentityService`、`SetupService`、`WorkspaceService`、`CodexSupervisor`、`CodexClientFactory`、`ThreadLeaseManager`、`InteractionBroker`、`QueueService`、`PreferencesService` 和隔离的 `AdminService`。同一 thread 支持多 viewer、单 lease、审批竞争和断线后权威重开。
+- 新增 React、React Router、actor/`useSyncExternalStore` 和 CSS Modules PWA，覆盖 Host/Auth、Onboarding、任务、结构化时间线、Interaction、Composer、Queue、Workspace、Settings 与独立 Admin 路由；User 与 Admin 使用互斥的 composition root，Markdown、KaTeX 和高亮按任务页懒加载。
+- 新增用户与管理员分离的 v0.4 SQLite schema、repository 边界和专用 `application_id`；旧 CE 状态不会被 v0.4 二进制隐式打开或转换。
+- 新增架构检查、Gateway 合同测试、schema fuzz、Actor 乱序测试、无模型 app-server fixture，以及 Direct/Relay 行为一致性测试。
+
+### Changed
+
+- Codex app-server 明确成为 thread、turn、审批、工具活动和执行状态的唯一事实源；断线恢复统一为重新认证、`thread/open`、稳定 ID 合并、interaction 同步和 mutation 对账。
+- durable operation key 绑定完整 schema 校验后输入的 canonical SHA-256，数据库不保存提示词、Queue 文本、路径内容或凭据；一次性秘密结果只允许在每用户 Agent 内存中按同 key 有界重放。
+- Queue 使用持久 delivery claim 和 at-most-once 边界；无法证明 app-server 副作用结果时进入显式 `indeterminate`，不会静默重投。
+- Noise handshake、Relay wire、Host Profile、设备密钥和 pairing document 继续使用 version 1；Gateway API 独立升级为 version 2。Web/Agent 不匹配时明确要求升级，不静默降级，也不要求重新配对设备。
+- UI 将 app-server `thread` 显示为“任务”；内部协议与代码仍使用 `thread`。
+
+### Removed
+
+- 从 v0.4 活跃协议和产品入口移除 Side、`thread/fork`、连续事件 ACK/buffer、Side capability 和浏览器 `auth.json` 导入。
+- Schedule、Push、完整文件管理和第三方插件加载器不进入 v0.4 首版；v0.3 旧库整体隔离，不被 v0.4 读取或部分导入。
+
+### Security
+
+- 恢复码授权消费与整组替换在同一数据库事务中完成；旧码全部失效。Passkey、CE 密码、恢复码和临时登录均不复用 SSH/Linux 密码。
+- Workspace 继续先 `realpath` 再校验授权 root；Direct 与 Relay 共用 Noise E2EE，Relay 不接触业务明文；临时模式禁止持久化设备私钥、Host Profile、票据和业务缓存。
+- Router 与 repository 成为协议和 SQL 的单一边界；日志禁止提示词、Queue 文本、文件内容、路径内容、凭据、恢复码和已解密 Relay payload。
+
+### Fixed
+
+- 修复相同 operation key 与相同 thread ID、不同提示词可能被错误当作同一 durable mutation 的问题。
+- 修复恢复、配对或 WebAuthn 完成响应在 transport 丢失后无法用同 operation key 安全取回的问题；配对握手成功后先保存已可信设备，避免一次性 pairing 被消费后留下不可恢复页面。
+- 修复旧 generation 的异步连接、任务、Composer 或 Queue 结果覆盖用户较新选择的问题。
+- 修复输入、通知等纯状态事件错误取消当前 Actor effect，导致连接、任务打开或 mutation 永久停留在中间状态的问题。
+- 修复首个 turn 在 lease 建立前启动时，审批或用户问题可能先于任务页订阅到达并丢失的问题。
+- 修复等待用户输入时 Composer 不能把后续消息加入 Queue，以及未知 Codex notification 不能稳定保留为 `codex/generic` 时间线项的问题。
+- 修复原生 `<dialog>` 继承页面静态定位后可能渲染到移动端视口外的问题。
+
 ## [0.3.0-alpha.14] - 2026-08-17
 
 ### Fixed

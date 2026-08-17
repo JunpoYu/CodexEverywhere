@@ -1,0 +1,191 @@
+.page {
+  display: grid;
+  min-height: 100vh;
+  place-items: center;
+  padding: 32px 16px;
+  background:
+    radial-gradient(circle at 10% 0%, var(--accent-soft), transparent 34%),
+    var(--bg);
+}
+
+.card {
+  width: min(620px, 100%);
+  padding: 30px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: color-mix(in srgb, var(--surface) 94%, transparent);
+  box-shadow: var(--shadow);
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+}
+
+.brand > div {
+  display: flex;
+  flex-direction: column;
+  line-height: 1.1;
+}
+
+.brand small {
+  margin-top: 4px;
+  color: var(--text-muted);
+  font-size: 9px;
+  letter-spacing: 0.12em;
+}
+
+.brandMark {
+  display: grid;
+  width: 38px;
+  height: 38px;
+  place-items: center;
+  border-radius: 11px;
+  background: var(--accent);
+  color: white;
+  font-size: 13px;
+  font-weight: 850;
+}
+
+.heading {
+  margin: 34px 0 28px;
+}
+
+.heading h1 {
+  margin: 0;
+  font-size: clamp(29px, 6vw, 44px);
+  letter-spacing: -0.045em;
+}
+
+.heading > p:last-child {
+  color: var(--text-muted);
+  line-height: 1.65;
+}
+
+.savedHosts h2,
+.loginPanel h2,
+.pairForm h2 {
+  font-size: 16px;
+}
+
+.savedHost {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.savedHost > button:first-child {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 54px;
+}
+
+.savedHost span {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.deleteButton {
+  width: 44px;
+  padding: 0;
+}
+
+.loginPanel {
+  display: grid;
+  gap: 13px;
+  margin-top: 26px;
+  padding-top: 24px;
+  border-top: 1px solid var(--border);
+}
+
+.loginPanel label,
+.pairForm label,
+.alternatives {
+  display: grid;
+  gap: 6px;
+  color: var(--text-muted);
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.alternatives,
+.connectionDetails,
+.firstUse {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface-subtle);
+}
+
+.alternatives > summary,
+.connectionDetails > summary,
+.firstUse > summary {
+  cursor: pointer;
+  padding: 13px 14px;
+  color: var(--text-muted);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.alternatives[open],
+.connectionDetails[open] {
+  display: grid;
+  gap: 12px;
+  padding: 0 14px 14px;
+}
+
+.alternatives[open] > summary,
+.connectionDetails[open] > summary {
+  margin: 0 -14px;
+}
+
+.checkbox {
+  display: flex !important;
+  align-items: center;
+}
+
+.checkbox input {
+  width: auto;
+}
+
+.persistenceNote {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.firstUse {
+  margin-top: 18px;
+}
+
+.pairForm {
+  display: grid;
+  gap: 13px;
+  margin: 0;
+  padding: 0 14px 14px;
+}
+
+.pairForm p {
+  margin: -5px 0 2px;
+  color: var(--text-muted);
+  font-size: 14px;
+  line-height: 1.55;
+}
+
+.scenarioActions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 18px;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+@media (max-width: 760px) {
+  .card {
+    padding: 22px 17px;
+  }
+}

@@ -1,6 +1,6 @@
 {
   "name": "@codex-everywhere/protocol",
-  "version": "0.3.0-alpha.14",
+  "version": "0.4.0-alpha.1",
   "private": true,
   "license": "Apache-2.0",
   "type": "module",
@@ -15,11 +15,18 @@
     "./relay-capability": {
       "types": "./dist/relay-capability.d.ts",
       "default": "./dist/relay-capability.js"
+    },
+    "./v2": {
+      "types": "./dist/v2/index.d.ts",
+      "default": "./dist/v2/index.js"
     }
   },
   "scripts": {
     "build": "tsc -b",
     "clean": "rm -rf dist *.tsbuildinfo",
     "typecheck": "tsc -b --pretty false"
+  },
+  "dependencies": {
+    "zod": "4.4.3"
   }
 }

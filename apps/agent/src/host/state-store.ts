@@ -1,27 +1,16 @@
 import { randomUUID } from "node:crypto";
 import { createRequire } from "node:module";
-import {
-  link,
-  mkdir,
-  open,
-  readFile,
-  readdir,
-  rename,
-  rm,
-  stat,
-  utimes,
-} from "node:fs/promises";
-import { basename, dirname, join } from "node:path";
+import { mkdir, open, readFile, rename, rm } from "node:fs/promises";
+import { dirname } from "node:path";
 
 import initSqlJs, { type Database, type SqlJsStatic } from "sql.js";
 
-import {
-  processRecordMatches,
-  processRecordUsesCurrentHostIdentity,
-  readProcessRecord,
-  writeProcessRecord,
-} from "./process-files.js";
 import { syncDirectoryForDurability } from "./durable-file.js";
+import {
+  acquireStateLock,
+  assertAbortSignalsActive,
+  type StateLock,
+} from "./state-lock.js";
 
 const require = createRequire(import.meta.url);
 // user_preferences, thread_permissions, durable_mutation_claims,
@@ -30,7 +19,8 @@ const require = createRequire(import.meta.url);
 // Keep the persisted marker at 4 so a release rollback can still open the
 // database. Version 5 was used briefly by the unreleased implementation and
 // is normalized back to 4 when encountered.
-const SCHEMA_VERSION = 4;
+export const LEGACY_STATE_SCHEMA_VERSION = 4;
+const SCHEMA_VERSION = LEGACY_STATE_SCHEMA_VERSION;
 const ROLLBACK_COMPATIBLE_DRAFT_VERSION = 5;
 let sqlModule: Promise<SqlJsStatic> | undefined;
 
@@ -172,6 +162,14 @@ export class HostStateStore {
   }
 
   async #migrate(lock: StateLock): Promise<void> {
+    const applicationId = Number(
+      this.#database.exec("PRAGMA application_id")[0]?.values[0]?.[0] ?? 0,
+    );
+    if (applicationId !== 0) {
+      throw new Error(
+        "Host state belongs to a newer schema kind; run an explicit state rollback migration",
+      );
+    }
     const version = Number(
       this.#database.exec("PRAGMA user_version")[0]?.values[0]?.[0] ?? 0,
     );
@@ -209,7 +207,7 @@ export class HostStateStore {
     this.#database.run("BEGIN IMMEDIATE");
     let committed = false;
     try {
-      this.#database.run(SCHEMA_V1);
+      this.#database.run(LEGACY_STATE_SCHEMA_V4);
       // A short-lived unreleased build used a thread/start-specific table.
       // Preserve its claims in the generic table, then securely remove the old
       // whole-payload fingerprints. A rollback recreates the additive table
@@ -413,10 +411,13 @@ export class HostStateStore {
     const version = Number(
       replacement.exec("PRAGMA user_version")[0]?.values[0]?.[0] ?? 0,
     );
-    if (version !== SCHEMA_VERSION) {
+    const applicationId = Number(
+      replacement.exec("PRAGMA application_id")[0]?.values[0]?.[0] ?? 0,
+    );
+    if (applicationId !== 0 || version !== SCHEMA_VERSION) {
       replacement.close();
       throw new Error(
-        `Host state schema changed while running: expected ${SCHEMA_VERSION}, got ${version}`,
+        `Host state schema changed while running: expected legacy schema ${SCHEMA_VERSION}`,
       );
     }
     const previous = this.#database;
@@ -438,544 +439,6 @@ export class HostStateStore {
   }
 }
 
-type StateLock = {
-  beginCommit(): Promise<StateCommitFence>;
-  assertOwned(): Promise<void>;
-  release(): Promise<void>;
-};
-
-type StateCommitFence = { release(): Promise<void> };
-
-type FileIdentity = { dev: bigint; ino: bigint };
-
-const STATE_LOCK_TIMEOUT_MS = 10_000;
-const STATE_LOCK_POLL_MS = 25;
-const STATE_LOCK_HEARTBEAT_MS = 5_000;
-const STATE_LOCK_LEASE_MS = 60_000;
-const abandonedStateLockOwners = new Map<string, Set<string>>();
-
-type StateLockWait = {
-  deadline?: number;
-  signals?: readonly AbortSignal[];
-};
-
-async function acquireStateLock(
-  path: string,
-  options: {
-    waitIndefinitely?: boolean;
-    signals?: readonly AbortSignal[];
-  } = {},
-): Promise<StateLock> {
-  const wait: StateLockWait = {
-    ...(options.waitIndefinitely
-      ? {}
-      : { deadline: Date.now() + STATE_LOCK_TIMEOUT_MS }),
-    ...(options.signals ? { signals: options.signals } : {}),
-  };
-  assertStateLockWaitActive(wait);
-  await retryAbandonedStateLockReleases(path);
-  while (true) {
-    assertStateLockWaitActive(wait);
-    if (
-      (await stateCommitFenceIsBlocking(path, wait)) ||
-      (await hasBlockingQuarantine(path))
-    ) {
-      await waitForStateLock(wait);
-      continue;
-    }
-
-    const ownerPath = await createStateLockOwner(path);
-    let acquired = false;
-    let published = false;
-    try {
-      try {
-        await link(ownerPath, path);
-        published = true;
-      } catch (error) {
-        if (!isAlreadyExists(error)) throw error;
-        if (!(await reclaimStaleStateLock(path, wait))) {
-          await waitForStateLock(wait);
-        }
-        continue;
-      }
-
-      // A stale-lock reclaimer may have moved the previous owner after our
-      // preflight check but before this hard link was published. Quarantine
-      // entries gate new owners; relinquish this claim and retry once the
-      // reclaimer has restored or removed the file it inspected.
-      if (await hasBlockingQuarantine(path)) {
-        await relinquishOwnedStateLock(path, ownerPath);
-        published = false;
-        await waitForStateLock(wait);
-        continue;
-      }
-
-      assertStateLockWaitActive(wait);
-      let released = false;
-      const stopHeartbeat = startStateLockHeartbeat(ownerPath);
-      acquired = true;
-      return {
-        beginCommit: () => acquireStateCommitFence(path, ownerPath),
-        assertOwned: () => assertOwnedStateLock(path, ownerPath),
-        release: async () => {
-          if (released) return;
-          stopHeartbeat();
-          try {
-            await relinquishOwnedStateLock(path, ownerPath);
-            await rm(ownerPath, { force: true });
-            forgetAbandonedStateLockOwner(path, ownerPath);
-            released = true;
-          } catch (error) {
-            rememberAbandonedStateLockOwner(path, ownerPath);
-            throw error;
-          }
-        },
-      };
-    } finally {
-      // The hard link at `path` keeps the owner inode alive after acquisition.
-      // On retries or errors, this removes only our unique auxiliary name.
-      if (!acquired) {
-        if (published) {
-          try {
-            await relinquishOwnedStateLock(path, ownerPath);
-            published = false;
-          } catch (error) {
-            rememberAbandonedStateLockOwner(path, ownerPath);
-            throw error;
-          }
-        }
-        if (!published) await rm(ownerPath, { force: true });
-      }
-    }
-  }
-}
-
-async function createStateLockOwner(path: string): Promise<string> {
-  const token = randomUUID();
-  const ownerPath = `${path}.owner.${token}`;
-  await writeProcessRecord(ownerPath);
-  return ownerPath;
-}
-
-async function reclaimStaleStateLock(
-  path: string,
-  wait: StateLockWait,
-): Promise<boolean> {
-  if (await stateCommitFenceIsBlocking(path, wait)) return false;
-  const proofPath = `${path}.proof.${randomUUID()}`;
-  try {
-    try {
-      // Pin the exact inode we inspected. If another reclaimer replaces the
-      // public lock name before our rename, the inode comparison below detects
-      // that replacement and restores it instead of deleting the new owner.
-      await link(path, proofPath);
-    } catch (error) {
-      if (isMissing(error)) return true;
-      throw error;
-    }
-
-    const snapshot = await readStateLockSnapshot(proofPath);
-    if (!snapshot) return true;
-    if (await stateLockLeaseIsActive(snapshot)) return false;
-
-    const quarantinePath = stateLockQuarantinePath(path, "reclaim");
-    try {
-      await rename(path, quarantinePath);
-    } catch (error) {
-      if (isMissing(error)) return true;
-      throw error;
-    }
-
-    if (await sameFile(quarantinePath, proofPath)) {
-      // The expired owner may have resumed after the first lease observation.
-      // Re-read only after moving the stable name: a resumed writer either
-      // refreshes this inode before the move (and is restored here), or sees
-      // that it lost the public name and fails its fencing assertion.
-      const current = await readStateLockSnapshot(quarantinePath);
-      if (
-        (await stateCommitFenceIsBlocking(path, wait)) ||
-        (current && (await stateLockLeaseIsActive(current)))
-      ) {
-        await restoreQuarantinedStateLock(quarantinePath, path, wait);
-        return false;
-      }
-      await rm(quarantinePath, { force: true });
-      return true;
-    }
-
-    await restoreQuarantinedStateLock(quarantinePath, path, wait);
-    return false;
-  } finally {
-    await rm(proofPath, { force: true });
-  }
-}
-
-async function acquireStateCommitFence(
-  path: string,
-  ownerPath: string,
-): Promise<StateCommitFence> {
-  const fencePath = stateCommitFencePath(path);
-  try {
-    await link(ownerPath, fencePath);
-  } catch (error) {
-    if (!isAlreadyExists(error)) throw error;
-    throw new Error("Host state commit fence is already held");
-  }
-  try {
-    await assertOwnedStateLock(path, ownerPath);
-  } catch (error) {
-    await relinquishOwnedStateCommitFence(fencePath, ownerPath);
-    throw error;
-  }
-  let released = false;
-  return {
-    release: async () => {
-      if (released) return;
-      await relinquishOwnedStateCommitFence(fencePath, ownerPath);
-      released = true;
-    },
-  };
-}
-
-async function stateCommitFenceIsBlocking(
-  path: string,
-  wait: StateLockWait = boundedStateLockWait(),
-): Promise<boolean> {
-  const fencePath = stateCommitFencePath(path);
-  const proofPath = `${fencePath}.proof.${randomUUID()}`;
-  try {
-    try {
-      await link(fencePath, proofPath);
-    } catch (error) {
-      if (isMissing(error)) return false;
-      throw error;
-    }
-    const snapshot = await readStateLockSnapshot(proofPath);
-    if (
-      !snapshot?.record ||
-      !(await processRecordUsesCurrentHostIdentity(snapshot.record)) ||
-      (await stateLockProcessIdentityMatches(snapshot.record))
-    ) {
-      return true;
-    }
-
-    // Only a process identity proven dead on this boot can be recovered
-    // automatically. Foreign commit fences deliberately fail closed because a
-    // paused writer is indistinguishable from a crashed one across hosts.
-    const quarantinePath = `${fencePath}.quarantine.reclaim.${randomUUID()}`;
-    try {
-      await rename(fencePath, quarantinePath);
-    } catch (error) {
-      if (isMissing(error)) return false;
-      throw error;
-    }
-    if (await sameFile(quarantinePath, proofPath)) {
-      await rm(quarantinePath, { force: true });
-      return false;
-    }
-    await restoreQuarantinedStateLock(quarantinePath, fencePath, wait);
-    return true;
-  } finally {
-    await rm(proofPath, { force: true });
-  }
-}
-
-async function relinquishOwnedStateCommitFence(
-  fencePath: string,
-  ownerPath: string,
-): Promise<void> {
-  const quarantinePath = `${fencePath}.quarantine.release.${randomUUID()}`;
-  try {
-    await rename(fencePath, quarantinePath);
-  } catch (error) {
-    if (!isMissing(error)) throw error;
-  }
-  if (await sameFile(quarantinePath, ownerPath)) {
-    await rm(quarantinePath, { force: true });
-  } else if (await pathExists(quarantinePath)) {
-    await restoreQuarantinedStateLock(quarantinePath, fencePath);
-  }
-}
-
-function stateCommitFencePath(path: string): string {
-  return `${path}.commit`;
-}
-
-async function assertOwnedStateLock(
-  path: string,
-  ownerPath: string,
-): Promise<void> {
-  try {
-    const now = new Date();
-    await utimes(ownerPath, now, now);
-  } catch (error) {
-    if (!isMissing(error)) throw error;
-    throw new Error("Host state transaction lease was lost before commit");
-  }
-  if (!(await sameFile(path, ownerPath))) {
-    throw new Error("Host state transaction lease was lost before commit");
-  }
-}
-
-async function relinquishOwnedStateLock(
-  path: string,
-  ownerPath: string,
-): Promise<void> {
-  const quarantinePath = stateLockQuarantinePath(path, "release");
-  try {
-    await rename(path, quarantinePath);
-  } catch (error) {
-    if (!isMissing(error)) throw error;
-  }
-
-  if (await sameFile(quarantinePath, ownerPath)) {
-    await rm(quarantinePath, { force: true });
-  } else if (await pathExists(quarantinePath)) {
-    await restoreQuarantinedStateLock(quarantinePath, path);
-  }
-
-  // A racing stale reclaimer can temporarily move our inode away from the
-  // stable path. Its quarantine name is unique, so deleting only names that
-  // still resolve to our owner inode cannot affect a replacement lock.
-  for (const candidate of await stateLockQuarantines(path)) {
-    if (await sameFile(candidate, ownerPath)) {
-      await rm(candidate, { force: true });
-    }
-  }
-}
-
-async function hasBlockingQuarantine(path: string): Promise<boolean> {
-  let blocked = false;
-  for (const candidate of await stateLockQuarantines(path)) {
-    const snapshot = await readStateLockSnapshot(candidate);
-    if (!snapshot) continue;
-    if (await stateLockLeaseIsActive(snapshot)) {
-      blocked = true;
-      continue;
-    }
-    // Quarantine names are random and never reused, so stale entries can be
-    // removed without touching the stable lock name or a successor owner.
-    await rm(candidate, { force: true });
-  }
-  return blocked;
-}
-
-async function stateLockLeaseIsActive(
-  snapshot: NonNullable<Awaited<ReturnType<typeof readStateLockSnapshot>>>,
-): Promise<boolean> {
-  // A record tied to this host can be reclaimed immediately once its PID and
-  // process identity no longer match. Foreign and legacy records are safe to
-  // reclaim only after their filesystem lease has clearly expired.
-  if (
-    snapshot.record &&
-    (await processRecordUsesCurrentHostIdentity(snapshot.record))
-  )
-    return stateLockProcessIdentityMatches(snapshot.record);
-  return Date.now() - snapshot.mtimeMs >= 0
-    ? Date.now() - snapshot.mtimeMs < STATE_LOCK_LEASE_MS
-    : true;
-}
-
-function stateLockProcessIdentityMatches(
-  record: NonNullable<Awaited<ReturnType<typeof readProcessRecord>>>,
-): Promise<boolean> {
-  // executable and cmdline may legitimately change when an on-disk runtime is
-  // upgraded. PID starttime, boot ID, and UID are the immutable identity used
-  // to decide whether a state writer can still be alive.
-  const { executable: _executable, cmdline: _cmdline, ...identity } = record;
-  return processRecordMatches(identity);
-}
-
-function startStateLockHeartbeat(ownerPath: string): () => void {
-  const timer = setInterval(() => {
-    const now = new Date();
-    void utimes(ownerPath, now, now).catch(() => undefined);
-  }, STATE_LOCK_HEARTBEAT_MS);
-  timer.unref();
-  return () => clearInterval(timer);
-}
-
-function rememberAbandonedStateLockOwner(
-  path: string,
-  ownerPath: string,
-): void {
-  const owners = abandonedStateLockOwners.get(path) ?? new Set<string>();
-  owners.add(ownerPath);
-  abandonedStateLockOwners.set(path, owners);
-}
-
-function forgetAbandonedStateLockOwner(path: string, ownerPath: string): void {
-  const owners = abandonedStateLockOwners.get(path);
-  owners?.delete(ownerPath);
-  if (owners?.size === 0) abandonedStateLockOwners.delete(path);
-}
-
-async function retryAbandonedStateLockReleases(path: string): Promise<void> {
-  const owners = abandonedStateLockOwners.get(path);
-  if (!owners) return;
-  for (const ownerPath of [...owners]) {
-    try {
-      await relinquishOwnedStateLock(path, ownerPath);
-      await rm(ownerPath, { force: true });
-      forgetAbandonedStateLockOwner(path, ownerPath);
-    } catch {
-      // The regular acquisition timeout remains the final backstop when the
-      // filesystem error is persistent rather than transient.
-    }
-  }
-}
-
-async function restoreQuarantinedStateLock(
-  quarantinePath: string,
-  path: string,
-  wait: StateLockWait = boundedStateLockWait(),
-): Promise<void> {
-  while (await pathExists(quarantinePath)) {
-    try {
-      await link(quarantinePath, path);
-      await rm(quarantinePath, { force: true });
-      return;
-    } catch (error) {
-      if (isMissing(error)) return;
-      if (!isAlreadyExists(error)) throw error;
-    }
-    if (await sameFile(quarantinePath, path)) {
-      await rm(quarantinePath, { force: true });
-      return;
-    }
-    await waitForStateLock(wait);
-  }
-}
-
-async function stateLockQuarantines(path: string): Promise<string[]> {
-  const directory = dirname(path);
-  const prefix = `${basename(path)}.quarantine.`;
-  let entries: string[];
-  try {
-    entries = await readdir(directory);
-  } catch (error) {
-    if (isMissing(error)) return [];
-    throw error;
-  }
-  return entries
-    .filter((entry) => entry.startsWith(prefix))
-    .map((entry) => join(directory, entry));
-}
-
-function stateLockQuarantinePath(
-  path: string,
-  purpose: "reclaim" | "release",
-): string {
-  return `${path}.quarantine.${purpose}.${randomUUID()}`;
-}
-
-async function readStateLockSnapshot(path: string): Promise<
-  | {
-      record: Awaited<ReturnType<typeof readProcessRecord>>;
-      mtimeMs: number;
-    }
-  | undefined
-> {
-  try {
-    const metadata = await stat(path);
-    const record = await readProcessRecord(path);
-    return { record, mtimeMs: metadata.mtimeMs };
-  } catch (error) {
-    if (isMissing(error)) return undefined;
-    throw error;
-  }
-}
-
-async function sameFile(first: string, second: string): Promise<boolean> {
-  try {
-    const [left, right] = await Promise.all([
-      fileIdentity(first),
-      fileIdentity(second),
-    ]);
-    return left.dev === right.dev && left.ino === right.ino;
-  } catch (error) {
-    if (isMissing(error)) return false;
-    throw error;
-  }
-}
-
-async function fileIdentity(path: string): Promise<FileIdentity> {
-  const metadata = await stat(path, { bigint: true });
-  return { dev: metadata.dev, ino: metadata.ino };
-}
-
-async function pathExists(path: string): Promise<boolean> {
-  try {
-    await stat(path);
-    return true;
-  } catch (error) {
-    if (isMissing(error)) return false;
-    throw error;
-  }
-}
-
-function boundedStateLockWait(): StateLockWait {
-  return { deadline: Date.now() + STATE_LOCK_TIMEOUT_MS };
-}
-
-function assertStateLockWaitActive(wait: StateLockWait): void {
-  assertAbortSignalsActive(wait.signals ?? []);
-  if (wait.deadline !== undefined && Date.now() >= wait.deadline)
-    throw new Error("Timed out waiting for host state transaction lock");
-}
-
-function assertAbortSignalsActive(signals: readonly AbortSignal[]): void {
-  const aborted = signals.find((signal) => signal.aborted);
-  if (!aborted) return;
-  throw aborted.reason instanceof Error
-    ? aborted.reason
-    : new Error("Host state lock acquisition was cancelled");
-}
-
-async function waitForStateLock(wait: StateLockWait): Promise<void> {
-  assertStateLockWaitActive(wait);
-  await new Promise<void>((resolve, reject) => {
-    const listeners = new Map<AbortSignal, () => void>();
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    let settled = false;
-    const cleanup = () => {
-      if (timer) clearTimeout(timer);
-      for (const [signal, listener] of listeners) {
-        signal.removeEventListener("abort", listener);
-      }
-      listeners.clear();
-    };
-    const finish = () => {
-      if (settled) return;
-      settled = true;
-      cleanup();
-      resolve();
-    };
-    const cancel = (signal: AbortSignal) => {
-      if (settled) return;
-      settled = true;
-      cleanup();
-      reject(
-        signal.reason instanceof Error
-          ? signal.reason
-          : new Error("Host state lock acquisition was cancelled"),
-      );
-    };
-    timer = setTimeout(finish, STATE_LOCK_POLL_MS);
-    for (const signal of wait.signals ?? []) {
-      const listener = () => cancel(signal);
-      listeners.set(signal, listener);
-      signal.addEventListener("abort", listener, { once: true });
-      // AbortSignal does not replay an abort to listeners attached after the
-      // event, so close the check/listener race explicitly.
-      if (signal.aborted) {
-        cancel(signal);
-        break;
-      }
-    }
-  });
-}
-
 async function loadSqlModule(): Promise<SqlJsStatic> {
   sqlModule ??= initSqlJs({
     locateFile: (file) =>
@@ -991,14 +454,6 @@ function isMissing(error: unknown): boolean {
     error instanceof Error &&
     "code" in error &&
     (error as NodeJS.ErrnoException).code === "ENOENT"
-  );
-}
-
-function isAlreadyExists(error: unknown): boolean {
-  return (
-    error instanceof Error &&
-    "code" in error &&
-    (error as NodeJS.ErrnoException).code === "EEXIST"
   );
 }
 
@@ -1057,7 +512,7 @@ function legacyQueueConsumptionIdentity(
   }
 }
 
-const SCHEMA_V1 = `
+export const LEGACY_STATE_SCHEMA_V4 = `
 CREATE TABLE IF NOT EXISTS workspace_roots (
   path TEXT PRIMARY KEY,
   created_at TEXT NOT NULL

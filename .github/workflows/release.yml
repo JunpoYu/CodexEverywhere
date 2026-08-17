@@ -39,11 +39,23 @@ jobs:
       - name: Check formatting
         run: pnpm format:check
 
+      - name: Check architecture boundaries
+        run: pnpm check:architecture
+
+      - name: Check test runtime capabilities
+        run: pnpm check:test-runtime
+
       - name: Check types
         run: pnpm typecheck
 
       - name: Run tests
         run: pnpm test
+
+      - name: Install Playwright Chromium
+        run: pnpm exec playwright install --with-deps chromium
+
+      - name: Run Web end-to-end tests
+        run: pnpm test:e2e
 
       - name: Install the latest stable Codex CLI
         run: |
@@ -60,6 +72,9 @@ jobs:
 
       - name: Build
         run: pnpm build
+
+      - name: Enforce Web bundle budget and lazy boundaries
+        run: pnpm check:web-budget
 
       - name: Require the tag commit to belong to main
         run: |

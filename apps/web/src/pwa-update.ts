@@ -61,6 +61,7 @@ export function readPwaUpdateSafetyState(
     "#admin-secret-dialog[open]",
   );
   const adminSecret = root.querySelector<HTMLElement>("#admin-secret-value");
+  const v4Secret = root.querySelector<HTMLElement>("[data-one-time-secret]");
   const draftFields = root.querySelectorAll<
     HTMLTextAreaElement | HTMLInputElement
   >(
@@ -75,7 +76,8 @@ export function readPwaUpdateSafetyState(
   return {
     oneTimeSecretVisible: Boolean(
       (recoveryDialog?.open && recoveryCode?.value) ||
-      (adminSecretDialog?.open && adminSecret?.textContent?.trim()),
+      (adminSecretDialog?.open && adminSecret?.textContent?.trim()) ||
+      v4Secret?.textContent?.trim(),
     ),
     draftPresent: [...draftFields].some((field) => {
       if (field.closest("[hidden]")) return false;

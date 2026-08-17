@@ -20,8 +20,7 @@ import {
   pruneExpiredRenewalVerificationCredentials,
   setHostProvisionerDefaultCodexNetwork,
 } from "./self-provision.js";
-import { HostStateStore } from "../host/state-store.js";
-import { AdminUserRegistry } from "./registry.js";
+import { AdminStateDatabase } from "../v2/repositories/admin-state-database.js";
 
 const temporaryDirectories: string[] = [];
 afterEach(async () => {
@@ -529,16 +528,15 @@ describe("host self-provisioner", () => {
         },
         configPath,
       );
-      const state = await HostStateStore.open(adminStatePath);
-      const registry = new AdminUserRegistry(state);
-      const registered = await registry.register({
+      const state = await AdminStateDatabase.open(adminStatePath, {
+        create: true,
+      });
+      const registered = await state.admin.register({
         username: "bob",
         uid,
-        gid,
         home,
-        shell: "/bin/bash",
       });
-      await registry.setStatus({
+      await state.admin.setStatus({
         username: "bob",
         expectedRevision: registered.revision,
         status,

@@ -8,11 +8,11 @@ import WebSocket, { WebSocketServer, type RawData } from "ws";
 import type { ThreadResumeResponse } from "@codex-everywhere/codex-app-server-schema/v2";
 
 import {
-  resumePermissionRepair,
-  type ThreadPermissionRegistry,
-  type ThreadPermissionMutationLease,
-  type ThreadPermissionObservation,
-} from "../host/thread-permissions.js";
+  resumeThreadSettingsRepair,
+  type ThreadSettingsMutationLease,
+  type ThreadSettingsObservation,
+  type ThreadSettingsRepository,
+} from "../v2/repositories/thread-settings-repository.js";
 
 type JsonRpcMessage = Record<string, unknown>;
 
@@ -33,8 +33,8 @@ export type TuiThreadPermissionRepair = {
   response: Record<string, unknown>;
 };
 
-export function tuiThreadPermissionOptions(
-  registry: ThreadPermissionRegistry,
+export function tuiV4ThreadPermissionOptions(
+  repository: ThreadSettingsRepository,
 ): Pick<
   Parameters<typeof startTuiPermissionProxy>[0],
   | "prepareThreadResume"
@@ -46,21 +46,20 @@ export function tuiThreadPermissionOptions(
   | "onThreadDeleted"
 > {
   return {
-    prepareThreadResume: (params) => registry.applyToResume(params),
+    prepareThreadResume: (params) => repository.applyToResume(params),
     repairThreadResume: (requested, response) =>
-      resumePermissionRepair(requested, response as ThreadResumeResponse),
+      resumeThreadSettingsRepair(requested, response as ThreadResumeResponse),
     beginThreadPermissionObservation: (threadId) =>
-      registry.beginObservation(threadId),
+      repository.beginObservation(threadId),
     claimThreadPermissionRepair: (threadId, expected) =>
-      registry.claimRepairObservation(threadId, expected),
+      repository.claimRepairObservation(threadId, expected),
     acquireThreadPermissionMutation: (threadId, options) =>
-      registry.acquireMutation(threadId, options),
+      repository.acquireMutation(threadId, options),
     onThreadPermissions: async (observation, causalObservation) => {
       const { threadId, ...snapshot } = observation;
-      await registry.save(threadId, snapshot, causalObservation);
+      await repository.saveObserved(threadId, snapshot, causalObservation);
     },
-    onThreadDeleted: (threadId) =>
-      registry.remove(threadId).then(() => undefined),
+    onThreadDeleted: (threadId) => repository.remove(threadId),
   };
 }
 
@@ -72,8 +71,8 @@ type PendingPermissionRequest = {
     | "thread/settings/update"
     | "thread/delete";
   params: Record<string, unknown>;
-  observation?: ThreadPermissionObservation;
-  lease?: ThreadPermissionMutationLease;
+  observation?: ThreadSettingsObservation;
+  lease?: ThreadSettingsMutationLease;
   releasePromise?: Promise<void>;
 };
 
@@ -99,19 +98,19 @@ export async function startTuiPermissionProxy(options: {
     | undefined;
   beginThreadPermissionObservation?(
     threadId?: string,
-  ): Promise<ThreadPermissionObservation>;
+  ): Promise<ThreadSettingsObservation>;
   claimThreadPermissionRepair?(
     threadId: string,
-    expected: ThreadPermissionObservation,
-  ): Promise<ThreadPermissionObservation | undefined>;
+    expected: ThreadSettingsObservation,
+  ): Promise<ThreadSettingsObservation | undefined>;
   acquireThreadPermissionMutation?(
     threadId: string,
     options?: { signal?: AbortSignal },
-  ): Promise<ThreadPermissionMutationLease>;
+  ): Promise<ThreadSettingsMutationLease>;
   internalRepairTimeoutMs?: number;
   onThreadPermissions?(
     observation: TuiThreadPermissionObservation,
-    causalObservation?: ThreadPermissionObservation,
+    causalObservation?: ThreadSettingsObservation,
   ): Promise<void> | void;
   onThreadDeleted?(threadId: string): Promise<void> | void;
 }): Promise<TuiPermissionProxy> {
