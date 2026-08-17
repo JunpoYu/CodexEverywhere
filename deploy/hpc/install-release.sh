@@ -15,6 +15,7 @@ repository=${2:-JunpoYu/CodexEverywhere}
 install_root=${3:-$HOME/software/codex-everywhere}
 runtime_directory=${4:-$install_root/runtime}
 approved_manifest_sha256=${5:-${CE_APPROVED_MANIFEST_SHA256:-}}
+release_asset_directory=${CE_RELEASE_ASSET_DIRECTORY:-}
 case "$version" in
   v[0-9]*[!A-Za-z0-9._-]* | *[!A-Za-z0-9._-]*)
     echo "Invalid release version" >&2
@@ -56,7 +57,6 @@ if [ -n "$approved_manifest_sha256" ]; then
     exit 1
   fi
 fi
-
 script_directory=$(CDPATH= cd -- "$(dirname "$0")" && pwd)
 installer=$script_directory/install-rootless-agent.sh
 if [ ! -x "$installer" ]; then
@@ -67,22 +67,55 @@ if [ ! -x "$runtime_directory/bin/node" ]; then
   echo "Rootless shared Node.js runtime is missing: $runtime_directory" >&2
   exit 1
 fi
-for command in curl tar sha256sum awk grep mktemp wc; do
+for command in tar sha256sum awk grep mktemp wc cp readlink; do
   if ! command -v "$command" >/dev/null 2>&1; then
     echo "Required command is unavailable: $command" >&2
     exit 1
   fi
 done
+if [ -z "$release_asset_directory" ] && ! command -v curl >/dev/null 2>&1; then
+  echo "Required command is unavailable: curl" >&2
+  exit 1
+fi
+if [ -n "$release_asset_directory" ]; then
+  case "$release_asset_directory" in
+    /*) ;;
+    *)
+      echo "CE_RELEASE_ASSET_DIRECTORY must be an absolute path" >&2
+      exit 1
+      ;;
+  esac
+  if [ ! -d "$release_asset_directory" ] || [ -L "$release_asset_directory" ]; then
+    echo "Release asset directory is unavailable" >&2
+    exit 1
+  fi
+  release_asset_directory=$(readlink -f "$release_asset_directory") || {
+    echo "Release asset directory cannot be resolved" >&2
+    exit 1
+  }
+fi
 
 temporary_directory=$(mktemp -d "${TMPDIR:-/tmp}/ce-release.XXXXXX")
 trap 'rm -rf "$temporary_directory"' EXIT HUP INT TERM
 asset=codex-everywhere-agent-$version.tar.gz
 base_url=https://github.com/$repository/releases/download/$version
 
-download_release_file() {
-  source_url=$1
+fetch_release_file() {
+  file_name=$1
   destination=$2
   partial=$destination.partial
+  if [ -n "$release_asset_directory" ]; then
+    source_file=$release_asset_directory/$file_name
+    if [ ! -f "$source_file" ] || [ -L "$source_file" ]; then
+      echo "Release asset is missing or is not a regular file: $file_name" >&2
+      return 1
+    fi
+    rm -f "$partial"
+    cp "$source_file" "$partial"
+    mv "$partial" "$destination"
+    return 0
+  fi
+  source_url=$base_url/$file_name
   attempt=1
   while [ "$attempt" -le 5 ]; do
     rm -f "$partial"
@@ -102,9 +135,9 @@ download_release_file() {
   return 1
 }
 
-download_release_file "$base_url/SHA256SUMS" "$temporary_directory/SHA256SUMS"
-download_release_file "$base_url/manifest.json" "$temporary_directory/manifest.json"
-download_release_file "$base_url/$asset" "$temporary_directory/$asset"
+fetch_release_file SHA256SUMS "$temporary_directory/SHA256SUMS"
+fetch_release_file manifest.json "$temporary_directory/manifest.json"
+fetch_release_file "$asset" "$temporary_directory/$asset"
 
 manifest_expected=$(awk '$2 == "manifest.json" { print $1 }' "$temporary_directory/SHA256SUMS")
 manifest_actual=$(sha256sum "$temporary_directory/manifest.json" | awk '{ print $1 }')

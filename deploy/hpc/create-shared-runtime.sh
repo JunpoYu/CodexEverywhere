@@ -68,7 +68,8 @@ if [ -e "$runtime_directory" ]; then
   fi
 else
   mkdir -p "$(dirname "$runtime_directory")"
-  "$conda_binary" create --yes --prefix "$runtime_directory" \
+  "$conda_binary" create --yes --override-channels --channel conda-forge \
+    --prefix "$runtime_directory" \
     nodejs=20.20.2 tmux
 fi
 
