@@ -58,7 +58,7 @@ describe("rootless release activation", () => {
     );
     const inventory = join(directory, "inventory.json");
 
-    const created = runNodeResult([
+    const created = runNodeWithPrivateUmaskResult([
       inventoryVerifier,
       "create",
       release.bundle,
@@ -67,6 +67,7 @@ describe("rootless release activation", () => {
       inventory,
     ]);
     expect(created.status, created.stderr).toBe(0);
+    expect((await lstat(inventory)).mode & 0o777).toBe(0o644);
     await rename(inventory, join(release.bundle, "release-inventory.json"));
     const verified = runNodeResult([
       inventoryVerifier,
@@ -547,6 +548,20 @@ function runResult(
 
 function runNodeResult(args: string[]) {
   return spawnSync(process.execPath, args, { encoding: "utf8" });
+}
+
+function runNodeWithPrivateUmaskResult(args: string[]) {
+  return spawnSync(
+    "sh",
+    [
+      "-c",
+      'umask 077; exec "$@"',
+      "ce-release-test",
+      process.execPath,
+      ...args,
+    ],
+    { encoding: "utf8" },
+  );
 }
 
 function run(script: string, args: string[]): void {

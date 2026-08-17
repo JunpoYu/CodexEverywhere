@@ -2,13 +2,7 @@
 
 import { createHash } from "node:crypto";
 import { createReadStream } from "node:fs";
-import {
-  lstat,
-  readFile,
-  readdir,
-  readlink,
-  writeFile,
-} from "node:fs/promises";
+import { lstat, open, readFile, readdir, readlink } from "node:fs/promises";
 import { join } from "node:path";
 
 const INVENTORY_SCHEMA_VERSION = 1;
@@ -170,10 +164,18 @@ async function createInventory(root, releaseId, releaseKind, outputPath) {
     ...metadata,
     entries: await collectEntries(root),
   };
-  await writeFile(outputPath, `${JSON.stringify(inventory, null, 2)}\n`, {
-    flag: "wx",
-    mode: 0o644,
-  });
+  // File creation modes are filtered through the caller's umask. Staging and
+  // migration workflows intentionally use umask 077, while this inventory is
+  // non-secret release metadata whose verifier requires an exact 0644 mode.
+  // Publish it privately first, then normalize through the same open handle so
+  // a path replacement cannot redirect chmod between creation and publication.
+  const output = await open(outputPath, "wx", 0o600);
+  try {
+    await output.writeFile(`${JSON.stringify(inventory, null, 2)}\n`);
+    await output.chmod(0o644);
+  } finally {
+    await output.close();
+  }
 }
 
 async function verifyInventory(root, releaseId, requiredKind) {

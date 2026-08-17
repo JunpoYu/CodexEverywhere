@@ -9,6 +9,7 @@
 ### Fixed
 
 - Noise transport 与 Relay wire 继续保持 version 1，但握手现在显式声明独立的 Gateway API version。v0.3 Web 遇到已升级为 Gateway API v2 的 Agent 时会显示明确的客户端升级提示，并立即绕过浏览器默认周期检查 Service Worker 更新；真正激活仍经过现有的一次性凭据、草稿和结果未知安全门槛。
+- 修复 HPC 安装器在 `umask 077` 下把非秘密 release inventory 创建为 `0600`，随后又因要求精确 `0644` 而拒绝安装或回滚的问题；inventory 先以私有模式写入，再通过同一文件句柄发布为固定权限。
 
 ## [0.3.0-alpha.11] - 2026-08-14
 
