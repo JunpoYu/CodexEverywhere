@@ -35,7 +35,7 @@ schemaVersion: 1
 operation: inspect | fresh-install | patch-upgrade | prepare-v0.4 | rollback
 environment: staging | production
 repository: example/CodexEverywhere
-targetTag: v0.3.0-alpha.13
+targetTag: v0.3.0-alpha.14
 rollbackTag: v0.3.0-alpha.11
 approvedManifestSha256: <64 个小写十六进制字符>
 pwaOrigin: https://codex.example.com
@@ -437,10 +437,10 @@ sudo -iu <controllerUser> env CE_ADMIN_HOME=<controller-home> \
 
 ## 8. 为 v0.4 迁移做准备
 
-v0.3.0-alpha.13 只提供 Gateway v1/v2 明确不匹配提示、安全的 Service Worker 刷新能力和可移植的 Release 安装能力，不包含 v0.4 状态迁移器。准备步骤是：
+v0.3.0-alpha.14 只提供 Gateway v1/v2 明确不匹配提示、安全的 Service Worker 刷新能力和可移植的 Release 安装能力，不包含 v0.4 状态迁移器。准备步骤是：
 
-1. 先把所有 v0.3 Web/Agent/privileged CLI 升级到 alpha.13，验证 Direct、Relay、Controller 和旧浏览器更新提示；
-2. 保留 alpha.13 的 verified rootless/privileged/Web/Relay 目录、manifest SHA-256 和 inventory，作为正式回滚点；
+1. 先把所有 v0.3 Web/Agent/privileged CLI 升级到 alpha.14，验证 Direct、Relay、Controller 和旧浏览器更新提示；
+2. 保留 alpha.14 的 verified rootless/privileged/Web/Relay 目录、manifest SHA-256 和 inventory，作为正式回滚点；
 3. 准备至少两个非生产 NSS/SSH 用户、隔离的管理员控制面、Direct 与 Relay 入口；
 4. 确认浏览器、Agent 宿主机和 Relay 的 NTP 偏差不超过 30 秒；
 5. 退出所有 Side，并等待 turn、interaction、Queue、mutation 和登录流程静止；

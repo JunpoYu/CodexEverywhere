@@ -95,7 +95,9 @@ wrapper=$(mktemp /usr/local/bin/.ce.XXXXXX)
 helper=$(mktemp /usr/local/libexec/.ce-self-provision.XXXXXX)
 sudoers=$(mktemp /etc/sudoers.d/.codex-everywhere-self-provision.XXXXXX)
 development_inventory=
-trap 'rm -f "$root_cli" "$wrapper" "$helper" "$sudoers"; if [ -n "$development_inventory" ]; then rm -f "$development_inventory"; fi; rm -rf "$staging_directory"' EXIT HUP INT TERM
+current_link=
+active_release=
+trap 'rm -f "$root_cli" "$wrapper" "$helper" "$sudoers"; if [ -n "$development_inventory" ]; then rm -f "$development_inventory"; fi; if [ -n "$current_link" ]; then rm -f "$current_link"; fi; if [ -n "$active_release" ]; then rm -f "$active_release"; fi; rm -rf "$staging_directory"' EXIT HUP INT TERM
 cat >"$root_cli" <<EOF
 #!/bin/sh
 PATH='$runtime_directory/bin':"\$PATH"
@@ -161,7 +163,14 @@ mv "$root_cli" "$install_root/bin/ce"
 mv "$wrapper" /usr/local/bin/ce
 mv "$helper" /usr/local/libexec/ce-self-provision
 mv "$sudoers" /etc/sudoers.d/codex-everywhere-self-provision
-ln -sfn "releases/$release_id" "$install_root/current"
+current_link=$install_root/.current.$$
+ln -s "releases/$release_id" "$current_link"
+mv -Tf "$current_link" "$install_root/current"
+current_link=
+active_release=$install_root/.active-release.$$
+ln -s "current/release-id" "$active_release"
+mv -Tf "$active_release" "$install_root/active-release"
+active_release=
 trap - EXIT HUP INT TERM
 
 echo "Shared Agent installed: $release_directory"

@@ -77,6 +77,10 @@ describe("rootless release activation", () => {
       ]);
 
     expect(shared).toContain('mv "$root_cli" "$install_root/bin/ce"');
+    expect(shared).toContain('mv -Tf "$current_link" "$install_root/current"');
+    expect(shared).toContain(
+      'mv -Tf "$active_release" "$install_root/active-release"',
+    );
     expect(shim).toContain("exec '$root_cli' \"\\$@\"");
     expect(shim).toContain("exec '$install_root/bin/ce' \"\\$@\"");
     expect(shim).toContain("Root CLI must be owned by root");

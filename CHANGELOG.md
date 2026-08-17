@@ -4,6 +4,12 @@
 
 ## [Unreleased]
 
+## [0.3.0-alpha.14] - 2026-08-17
+
+### Fixed
+
+- fresh root-owned Agent 安装现在与 rootless 安装和 shared rollback 一样，原子发布 `current` 后同时创建跟随它的 `active-release` receipt；首次启用 Controller 后可直接按操作手册核对活动版本，不再需要额外执行一次 shared activator 补齐该指针。
+
 ## [0.3.0-alpha.13] - 2026-08-17
 
 ### Added
