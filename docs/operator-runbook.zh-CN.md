@@ -46,6 +46,10 @@ deployUser: codexeverywhere
 controllerUser: ce-admin
 rootlessRoot: /srv/codex-everywhere
 privilegedRoot: /opt/codex-everywhere-privileged
+rootCondaRoot: /opt/codex-everywhere-bootstrap
+miniforgeTag: <固定的官方 Miniforge release tag>
+miniforgeAsset: <该 tag 的 Linux 架构安装器完整文件名>
+miniforgeSha256: <从官方 release 固定并复核的 64 位小写十六进制摘要>
 webRoot: /srv/codex-everywhere-web
 relayRoot: /opt/codex-everywhere-relay
 affectedUsers:
@@ -220,11 +224,54 @@ staging 如果没有已批准摘要，可以让安装器使用具备完整 ident
 
 ### 6.2 安装 root-owned CLI（启用 Controller 时必须）
 
-先以 root 创建独立 runtime，再从已经验证并带 inventory 的 rootless release 复制同一 tag：
+root-owned runtime 不能复用或直接执行 `<deployUser>`、普通用户或源码 checkout 中可写的 Conda/Node.js。站点已经提供 root-owned、目录链不可写且兼容 glibc 2.17 的 Conda 时可以直接使用；否则先按以下步骤安装独立 Miniforge。
+
+先确认架构和 glibc。Miniforge 的[官方兼容性与安装说明](https://github.com/conda-forge/miniforge#requirements-and-installers)是唯一允许的下载入口；交接清单必须固定具体 release tag、完整 asset 名和预期 SHA-256，禁止使用 `latest` 重定向：
+
+```bash
+uname -m
+getconf GNU_LIBC_VERSION
+
+umask 077
+CE_MINIFORGE_DIR=$(mktemp -d "${TMPDIR:-/tmp}/ce-miniforge.XXXXXX")
+chmod 0700 "$CE_MINIFORGE_DIR"
+
+gh release download <miniforgeTag> \
+  --repo conda-forge/miniforge \
+  --dir "$CE_MINIFORGE_DIR" \
+  --pattern '<miniforgeAsset>' \
+  --pattern '<miniforgeAsset>.sha256'
+
+(cd "$CE_MINIFORGE_DIR" && sha256sum -c '<miniforgeAsset>.sha256')
+printf '%s  %s\n' '<miniforgeSha256>' \
+  "$CE_MINIFORGE_DIR/<miniforgeAsset>" | sha256sum -c -
+```
+
+官方 `.sha256` 文件与交接清单中的独立固定摘要必须同时匹配。然后把安装器复制到 root-owned、非组/全局可写的路径，并在复制后以 root 再校验一次；不得通过 `sudo bash "$CE_MINIFORGE_DIR/..."` 直接执行操作账号可写文件：
+
+```bash
+sudo install -d -o root -g root -m 0755 <rootCondaRoot>
+sudo install -o root -g root -m 0700 \
+  "$CE_MINIFORGE_DIR/<miniforgeAsset>" \
+  <rootCondaRoot>/<miniforgeAsset>
+
+printf '%s  %s\n' '<miniforgeSha256>' \
+  '<rootCondaRoot>/<miniforgeAsset>' | sudo sha256sum -c -
+
+sudo env -i HOME=/root PATH=/usr/bin:/bin \
+  /bin/bash <rootCondaRoot>/<miniforgeAsset> \
+  -b -p <rootCondaRoot>/miniforge3
+
+sudo chown -R root:root <rootCondaRoot>/miniforge3
+sudo chmod -R go-w <rootCondaRoot>/miniforge3
+sudo <rootCondaRoot>/miniforge3/bin/conda --version
+```
+
+安装器和 Miniforge 根目录都不是业务状态，可以作为本次部署的供应链审计材料保留；不得放入用户 home、rootless release 或公开日志。随后使用 root-owned Miniforge 创建独立 runtime，再从已经验证并带 inventory 的 rootless release 复制同一 CE tag：
 
 ```bash
 sudo <root-owned-hpc-tools>/create-shared-runtime.sh \
-  <root-owned-conda-binary> <privilegedRoot>/runtime
+  <rootCondaRoot>/miniforge3/bin/conda <privilegedRoot>/runtime
 
 sudo <root-owned-hpc-tools>/install-shared-agent.sh \
   <rootlessRoot>/releases/<tag> <tag> \
