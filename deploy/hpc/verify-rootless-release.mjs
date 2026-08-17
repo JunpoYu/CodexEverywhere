@@ -116,7 +116,6 @@ async function collectEntries(root) {
         entries.push({
           path: relativePath,
           type: "symlink",
-          mode,
           target: await readlink(path),
         });
       } else {
@@ -126,6 +125,19 @@ async function collectEntries(root) {
   }
   await walk([]);
   return entries;
+}
+
+function portableEntries(entries) {
+  return entries.map((entry) => {
+    if (!record(entry) || entry.type !== "symlink") return entry;
+    // Symlink mode bits are not meaningful on Linux and differ between
+    // filesystems (for example, Parastor may report 0755 while XFS reports
+    // 0777 for the same link). Older inventories recorded that value, so
+    // ignore it during verification while continuing to compare the link
+    // path and target exactly.
+    const { mode: _ignoredMode, ...portableEntry } = entry;
+    return portableEntry;
+  });
 }
 
 async function validateReleaseId(root, releaseId) {
@@ -228,7 +240,10 @@ async function verifyInventory(root, releaseId, requiredKind) {
     throw new Error("Release metadata digest does not match inventory");
   }
   const actualEntries = await collectEntries(root);
-  if (JSON.stringify(inventory.entries) !== JSON.stringify(actualEntries)) {
+  if (
+    JSON.stringify(portableEntries(inventory.entries)) !==
+    JSON.stringify(portableEntries(actualEntries))
+  ) {
     throw new Error("Installed release content does not match inventory");
   }
 }

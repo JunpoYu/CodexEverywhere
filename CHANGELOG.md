@@ -4,6 +4,20 @@
 
 ## [Unreleased]
 
+## [0.3.0-alpha.13] - 2026-08-17
+
+### Added
+
+- `install-release.sh` 支持从 `CE_RELEASE_ASSET_DIRECTORY` 消费已在联网操作机验证并转交到 HPC 的原始 Release 文件；受限宿主机仍必须提供 staging 批准的 manifest SHA-256，并会重新校验 manifest、制品、build metadata、归档路径和完整 release inventory。
+
+### Changed
+
+- rootless 与 root-owned runtime 创建器显式覆盖继承的 Conda channel 列表，只从 `conda-forge` 解析固定的 Node.js 20.20.2 和 tmux，避免 root 或站点 `.condarc` 意外混入无关 channel。
+
+### Fixed
+
+- Release inventory 不再把 Linux 上无语义且跨文件系统不稳定的符号链接 mode 当作内容身份；旧 schema v1 inventory 中该字段继续兼容，但链接路径、目标以及目标文件内容仍严格校验。修复 Parastor 上的 verified rootless release 复制到 XFS root-owned 安装时因 `0755`/`0777` 差异被误拒绝的问题。
+
 ## [0.3.0-alpha.12] - 2026-08-17
 
 ### Added

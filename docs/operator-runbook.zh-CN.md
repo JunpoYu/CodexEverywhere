@@ -35,7 +35,7 @@ schemaVersion: 1
 operation: inspect | fresh-install | patch-upgrade | prepare-v0.4 | rollback
 environment: staging | production
 repository: example/CodexEverywhere
-targetTag: v0.3.0-alpha.12
+targetTag: v0.3.0-alpha.13
 rollbackTag: v0.3.0-alpha.11
 approvedManifestSha256: <64 个小写十六进制字符>
 pwaOrigin: https://codex.example.com
@@ -201,6 +201,35 @@ fi
 
 任何将由 root 执行的 HPC 工具必须先从已验证的 archive 解压到 root 拥有、非组/全局可写的版本目录；禁止 `sudo` 执行部署账号或源码 checkout 中可修改的脚本。
 
+### 5.1 无法直连 GitHub 的 HPC
+
+联网操作机必须先按上一节完成全部 checksum 和 provenance 验证，再通过站点批准的 SSH/SCP 通道原样传输六个 Release 文件。HPC 上的交接目录应为仓库和业务状态目录之外的 `0700` 目录，并由 `<deployUser>` 拥有；传输后先重新执行 `sha256sum -c SHA256SUMS`，再把 manifest 摘要与批准值对账。不能把“通过 SSH 传输”本身当作 Release 身份证明。
+
+alpha.13 及以后可以让同一个安装器从该目录读取，不需要 HPC 访问 GitHub：
+
+```bash
+sudo -iu <deployUser> env \
+  CE_RELEASE_ASSET_DIRECTORY=<absoluteTransferredAssetDirectory> \
+  <root-owned-hpc-tools>/install-release.sh \
+  <tag> <owner/repository> <rootlessRoot> <rootlessRoot>/runtime \
+  <approvedManifestSha256>
+```
+
+本地目录模式只接受普通文件，不接受 symlink；安装器会把文件复制到私有临时目录，并重新验证批准的 manifest 摘要、`SHA256SUMS`、Agent 大小和摘要、manifest/build identity、归档路径以及安装后的完整 inventory。`<root-owned-hpc-tools>` 仍必须来自同一个已验证的 HPC tools archive：先把 archive 复制到 root-owned 路径并再次核对摘要，再检查归档路径、解压、`chown -R root:root` 和 `chmod -R go-w`。不得让 root 直接执行交接目录中的脚本。
+
+如果只在 bootstrap 时借助 SSH/FRP 提供临时出网，应把代理绑定在 HPC 的 loopback，并只注入该次安装命令：
+
+```bash
+ssh -R 127.0.0.1:<remoteProxyPort>:127.0.0.1:<localProxyPort> <host> \
+  'sudo env -i HOME=<rootCondaRoot>/conda-home PATH=/usr/bin:/bin \
+    HTTP_PROXY=http://127.0.0.1:<remoteProxyPort> \
+    HTTPS_PROXY=http://127.0.0.1:<remoteProxyPort> \
+    <root-owned-hpc-tools>/create-shared-runtime.sh \
+    <rootCondaRoot>/miniforge3/bin/conda <privilegedRoot>/runtime'
+```
+
+该代理不得写入 CE、用户 home、Relay 或浏览器配置；SSH 会话结束即撤销监听。若本地代理、远端端口或站点策略不明确，停止并由管理员提供批准的传输方式。
+
 ## 6. 首次安装多用户 HPC
 
 ### 6.1 准备运行时和 rootless release
@@ -251,6 +280,7 @@ printf '%s  %s\n' '<miniforgeSha256>' \
 
 ```bash
 sudo install -d -o root -g root -m 0755 <rootCondaRoot>
+sudo install -d -o root -g root -m 0700 <rootCondaRoot>/conda-home
 sudo install -o root -g root -m 0700 \
   "$CE_MINIFORGE_DIR/<miniforgeAsset>" \
   <rootCondaRoot>/<miniforgeAsset>
@@ -258,7 +288,7 @@ sudo install -o root -g root -m 0700 \
 printf '%s  %s\n' '<miniforgeSha256>' \
   '<rootCondaRoot>/<miniforgeAsset>' | sudo sha256sum -c -
 
-sudo env -i HOME=/root PATH=/usr/bin:/bin \
+sudo env -i HOME=<rootCondaRoot>/conda-home PATH=/usr/bin:/bin \
   /bin/bash <rootCondaRoot>/<miniforgeAsset> \
   -b -p <rootCondaRoot>/miniforge3
 
@@ -267,10 +297,11 @@ sudo chmod -R go-w <rootCondaRoot>/miniforge3
 sudo <rootCondaRoot>/miniforge3/bin/conda --version
 ```
 
-安装器和 Miniforge 根目录都不是业务状态，可以作为本次部署的供应链审计材料保留；不得放入用户 home、rootless release 或公开日志。随后使用 root-owned Miniforge 创建独立 runtime，再从已经验证并带 inventory 的 rootless release 复制同一 CE tag：
+安装器和 Miniforge 根目录都不是业务状态，可以作为本次部署的供应链审计材料保留；不得放入用户 home、rootless release 或公开日志。runtime 创建器会用 `--override-channels --channel conda-forge` 忽略继承的 channel 列表，避免 root 或站点 `.condarc` 混入无关来源。随后使用隔离的 root-owned home 创建独立 runtime，再从已经验证并带 inventory 的 rootless release 复制同一 CE tag：
 
 ```bash
-sudo <root-owned-hpc-tools>/create-shared-runtime.sh \
+sudo env -i HOME=<rootCondaRoot>/conda-home PATH=/usr/bin:/bin \
+  <root-owned-hpc-tools>/create-shared-runtime.sh \
   <rootCondaRoot>/miniforge3/bin/conda <privilegedRoot>/runtime
 
 sudo <root-owned-hpc-tools>/install-shared-agent.sh \
@@ -406,10 +437,10 @@ sudo -iu <controllerUser> env CE_ADMIN_HOME=<controller-home> \
 
 ## 8. 为 v0.4 迁移做准备
 
-v0.3.0-alpha.12 只提供 Gateway v1/v2 明确不匹配提示和安全的 Service Worker 刷新能力，不包含 v0.4 状态迁移器。准备步骤是：
+v0.3.0-alpha.13 只提供 Gateway v1/v2 明确不匹配提示、安全的 Service Worker 刷新能力和可移植的 Release 安装能力，不包含 v0.4 状态迁移器。准备步骤是：
 
-1. 先把所有 v0.3 Web/Agent/privileged CLI 升级到 alpha.12，验证 Direct、Relay、Controller 和旧浏览器更新提示；
-2. 保留 alpha.12 的 verified rootless/privileged/Web/Relay 目录、manifest SHA-256 和 inventory，作为正式回滚点；
+1. 先把所有 v0.3 Web/Agent/privileged CLI 升级到 alpha.13，验证 Direct、Relay、Controller 和旧浏览器更新提示；
+2. 保留 alpha.13 的 verified rootless/privileged/Web/Relay 目录、manifest SHA-256 和 inventory，作为正式回滚点；
 3. 准备至少两个非生产 NSS/SSH 用户、隔离的管理员控制面、Direct 与 Relay 入口；
 4. 确认浏览器、Agent 宿主机和 Relay 的 NTP 偏差不超过 30 秒；
 5. 退出所有 Side，并等待 turn、interaction、Queue、mutation 和登录流程静止；
