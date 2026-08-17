@@ -121,8 +121,13 @@ hpc_tools_archive=$output_directory/codex-everywhere-hpc-tools-$version.tar.gz
 source_date_epoch=$(git show -s --format=%ct "$commit")
 mkdir "$staging_directory/hpc-tools"
 cp \
+  deploy/hpc/create-rootless-runtime.sh \
+  deploy/hpc/create-shared-runtime.sh \
+  deploy/hpc/activate-shared-release.sh \
   deploy/hpc/install-release.sh \
   deploy/hpc/install-rootless-agent.sh \
+  deploy/hpc/install-rootless-global-shim.sh \
+  deploy/hpc/install-shared-agent.sh \
   deploy/hpc/activate-rootless-release.sh \
   deploy/hpc/verify-rootless-release.mjs \
   "$staging_directory/hpc-tools/"

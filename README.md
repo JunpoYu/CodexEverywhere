@@ -30,7 +30,7 @@ CodexEverywhere 是一个面向 Linux/HPC 的自托管 Codex Web/PWA 控制平�
 它不重新实现 Codex Agent。thread、turn、工具调用和执行状态仍以官方 [Codex app-server](https://developers.openai.com/codex/app-server) 为唯一事实源；CodexEverywhere 只补上安全连接、移动端体验、持久 Queue 和 HPC 运行层。
 
 > [!WARNING]
-> CodexEverywhere 目前处于 Alpha 阶段，最新预发布版本为 `v0.3.0-alpha.11`。协议、配置和存储结构仍可能变化，现阶段建议用于个人环境或可信团队试用。生产部署请只使用经过 CI 验证的 [GitHub Release](https://github.com/JunpoYu/CodexEverywhere/releases) 制品。
+> CodexEverywhere 目前处于 Alpha 阶段，最新预发布版本为 `v0.3.0-alpha.12`。协议、配置和存储结构仍可能变化，现阶段建议用于个人环境或可信团队试用。生产部署请只使用经过 CI 验证的 [GitHub Release](https://github.com/JunpoYu/CodexEverywhere/releases) 制品。
 
 > [!NOTE]
 > 这是一个独立的非官方开源项目，与 OpenAI 没有关联或背书。Codex 是 OpenAI 的产品。
@@ -117,7 +117,7 @@ node apps/agent/dist/cli.js device pair
 
 将 `apps/web/dist` 部署到前面配置的 HTTPS Origin，打开 PWA，把 `device pair` 输出的配对 JSON 粘贴到“首次初始化”页面，注册第一个 Passkey，并保存只显示一次的恢复码。
 
-> 源码 checkout 只用于开发、测试和生成 Release。生产环境不要在服务器上 `git pull` 或临时重建，请使用经过校验的版本化制品。
+> 源码 checkout 只用于开发、测试和生成 Release。生产环境不要在服务器上 `git pull` 或临时重建，只部署经过校验的不可变 Release 制品。架构边界见[部署与升级](docs/deployment.zh-CN.md)；交给其他 Agent 执行时，使用带输入清单、停止条件和验收输出的[部署、升级与回滚操作手册](docs/operator-runbook.zh-CN.md)。
 
 ### 生产部署
 
@@ -126,7 +126,7 @@ CodexEverywhere 支持两种规模：
 - **个人或单用户宿主机**：部署 Web，配置 Direct 或 Relay，然后安装用户级 tmux/crontab watchdog。
 - **多用户 HPC**：由无特权 `codexeverywhere` 账号持有共享 runtime、版本化 Agent 和 rootless provisioner；普通 SSH/NSS 用户运行 `ce device pair` 自助初始化。
 
-生产部署涉及 TLS Origin、Relay installation、制品 attestation、rootless provisioner、原子升级/回滚与可选管理员控制面。请按[部署与升级指南](docs/deployment.zh-CN.md)执行，不要从 README 中拼接生产命令。
+生产部署涉及 TLS Origin、Relay installation、制品 attestation、rootless provisioner、原子升级/回滚与可选管理员控制面。理解边界请读[部署与升级指南](docs/deployment.zh-CN.md)，实际执行请读[操作手册](docs/operator-runbook.zh-CN.md)，不要从 README 中拼接生产命令。
 
 ## SSH TUI 接力
 

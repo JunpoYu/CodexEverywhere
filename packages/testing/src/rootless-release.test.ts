@@ -34,6 +34,18 @@ const inventoryVerifier = new URL(
   "../../../deploy/hpc/verify-rootless-release.mjs",
   import.meta.url,
 ).pathname;
+const rootlessGlobalShim = new URL(
+  "../../../deploy/hpc/install-rootless-global-shim.sh",
+  import.meta.url,
+).pathname;
+const sharedInstaller = new URL(
+  "../../../deploy/hpc/install-shared-agent.sh",
+  import.meta.url,
+).pathname;
+const releaseAssetPreparer = new URL(
+  "../../../deploy/release/prepare-release-assets.sh",
+  import.meta.url,
+).pathname;
 
 afterEach(async () => {
   for (const directory of temporaryDirectories.splice(0)) {
@@ -42,6 +54,34 @@ afterEach(async () => {
 });
 
 describe("rootless release activation", () => {
+  it("ships bootstrap tools and separates root from deployment-account code", async () => {
+    const [shim, shared, assets] = await Promise.all([
+      readFile(rootlessGlobalShim, "utf8"),
+      readFile(sharedInstaller, "utf8"),
+      readFile(releaseAssetPreparer, "utf8"),
+    ]);
+
+    expect(shared).toContain('mv "$root_cli" "$install_root/bin/ce"');
+    expect(shim).toContain("exec '$root_cli' \"\\$@\"");
+    expect(shim).toContain("exec '$install_root/bin/ce' \"\\$@\"");
+    expect(shim).toContain("Root CLI must be owned by root");
+    expect(shim).toContain("assert_root_owned_directory_chain");
+
+    for (const requiredTool of [
+      "create-rootless-runtime.sh",
+      "create-shared-runtime.sh",
+      "activate-shared-release.sh",
+      "install-release.sh",
+      "install-rootless-agent.sh",
+      "install-rootless-global-shim.sh",
+      "install-shared-agent.sh",
+      "activate-rootless-release.sh",
+      "verify-rootless-release.mjs",
+    ]) {
+      expect(assets).toContain(`deploy/hpc/${requiredTool}`);
+    }
+  });
+
   it("records and verifies every installed release entry", async () => {
     const directory = await mkdtemp(join(tmpdir(), "ce-release-inventory-"));
     temporaryDirectories.push(directory);
@@ -58,7 +98,7 @@ describe("rootless release activation", () => {
     );
     const inventory = join(directory, "inventory.json");
 
-    const created = runNodeResult([
+    const created = runNodeWithPrivateUmaskResult([
       inventoryVerifier,
       "create",
       release.bundle,
@@ -67,6 +107,7 @@ describe("rootless release activation", () => {
       inventory,
     ]);
     expect(created.status, created.stderr).toBe(0);
+    expect((await lstat(inventory)).mode & 0o777).toBe(0o644);
     await rename(inventory, join(release.bundle, "release-inventory.json"));
     const verified = runNodeResult([
       inventoryVerifier,
@@ -547,6 +588,20 @@ function runResult(
 
 function runNodeResult(args: string[]) {
   return spawnSync(process.execPath, args, { encoding: "utf8" });
+}
+
+function runNodeWithPrivateUmaskResult(args: string[]) {
+  return spawnSync(
+    "sh",
+    [
+      "-c",
+      'umask 077; exec "$@"',
+      "ce-release-test",
+      process.execPath,
+      ...args,
+    ],
+    { encoding: "utf8" },
+  );
 }
 
 function run(script: string, args: string[]): void {

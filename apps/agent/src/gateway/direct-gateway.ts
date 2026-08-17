@@ -372,6 +372,7 @@ class GatewayConnection {
         JSON.stringify({
           ok: true,
           version: PROTOCOL_VERSION,
+          gatewayApiVersion: 1,
           principal: this.#options.principal ?? "user",
           capabilities: [GATEWAY_CAPABILITIES.sideForkV1],
           ...(this.#options.loginName
