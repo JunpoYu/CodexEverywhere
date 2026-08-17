@@ -1,6 +1,6 @@
 # 发布流程
 
-本文档定义 CodexEverywhere 的公开发布流程。当前公开版本为 `v0.3.0-alpha.11`。GitHub Release 从 tag 的干净 checkout 构建 Web、Agent、Relay 和 HPC 部署工具，不发布 npm 包；生产环境只消费这些不可变制品，不从开发工作区重新构建。
+本文档定义 CodexEverywhere 的公开发布流程。当前准备发布的版本为 `v0.3.0-alpha.12`。GitHub Release 从 tag 的干净 checkout 构建 Web、Agent、Relay 和 HPC 部署工具，不发布 npm 包；生产环境只消费这些不可变制品，不从开发工作区重新构建。
 
 发布与部署是两个阶段：公开仓库负责把源码变成可验证制品，生产运维环境负责选择版本、保存部署秘密并消费制品。真实域名、主机、SSH 参数、credential 和环境 inventory 不进入公开仓库。
 

@@ -4,6 +4,8 @@
 
 ## [Unreleased]
 
+## [0.3.0-alpha.12] - 2026-08-17
+
 ### Fixed
 
 - Noise transport 与 Relay wire 继续保持 version 1，但握手现在显式声明独立的 Gateway API version。v0.3 Web 遇到已升级为 Gateway API v2 的 Agent 时会显示明确的客户端升级提示，并立即绕过浏览器默认周期检查 Service Worker 更新；真正激活仍经过现有的一次性凭据、草稿和结果未知安全门槛。
