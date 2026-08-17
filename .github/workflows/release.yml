@@ -42,6 +42,9 @@ jobs:
       - name: Check architecture boundaries
         run: pnpm check:architecture
 
+      - name: Check test runtime capabilities
+        run: pnpm check:test-runtime
+
       - name: Check types
         run: pnpm typecheck
 
@@ -69,6 +72,9 @@ jobs:
 
       - name: Build
         run: pnpm build
+
+      - name: Enforce Web bundle budget and lazy boundaries
+        run: pnpm check:web-budget
 
       - name: Require the tag commit to belong to main
         run: |

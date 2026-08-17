@@ -161,3 +161,5 @@ ce state migration-finalize /absolute/path/to/migration-<id>.receipt.json
 9. 只有验收通过且回滚窗口结束后才 finalize。
 
 测试数据库、备份和 receipt 都属于敏感宿主机状态，不得复制到源码仓库、Issue、CI artifact 或公开日志。
+
+完整的候选版本门禁、场景布尔项和脱敏证据格式见 [v0.4 staging 验收手册](staging-v0.4.zh-CN.md)。

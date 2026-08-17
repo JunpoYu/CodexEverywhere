@@ -12,15 +12,19 @@
     "build": "pnpm -r --if-present build",
     "check:architecture": "node scripts/check-architecture.mjs",
     "check:public": "node scripts/check-public-repo.mjs",
+    "check:test-runtime": "node scripts/check-test-runtime-capabilities.mjs",
+    "check:web-budget": "node scripts/check-web-bundle-budget.mjs",
     "clean": "pnpm -r clean",
     "dev": "pnpm --parallel --filter @codex-everywhere/agent --filter @codex-everywhere/web dev",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "generate:codex-notification-schema": "node scripts/generate-codex-notification-schema.mjs",
+    "staging:receipt": "node scripts/manage-v0.4-staging-receipt.mjs",
     "test": "vitest run",
     "test:app-server": "vitest run --config vitest.integration.config.ts",
     "test:e2e": "playwright test",
-    "typecheck": "tsc -b --pretty false"
+    "typecheck": "tsc -b --pretty false",
+    "verify:v0.4": "node scripts/run-v0.4-candidate-checks.mjs"
   },
   "devDependencies": {
     "@playwright/test": "^1.62.1",

@@ -103,6 +103,7 @@ pnpm check:architecture
 pnpm typecheck
 pnpm test
 pnpm build
+pnpm check:web-budget
 ```
 
 初始化一个新用户 Agent：
@@ -215,6 +216,7 @@ packages/
 ```bash
 pnpm format:check
 pnpm check:architecture
+pnpm check:test-runtime
 pnpm typecheck
 pnpm test
 pnpm build
@@ -222,6 +224,8 @@ pnpm build
 # 需要本机已有可用 Codex；模型调用仍由显式环境开关控制
 pnpm test:app-server
 ```
+
+干净候选提交可使用 `pnpm verify:v0.4 -- --receipt <仓库外路径>` 一次运行完整门禁并生成只含版本、commit、状态和耗时的 0600 receipt。添加 `--with-model` 才会启用真实订阅模型调用；未启用时 receipt 会明确保留该外部门槛。多用户升级与回滚见 [v0.4 staging 验收手册](docs/staging-v0.4.zh-CN.md)。
 
 协议、安全、路径、生命周期、数据库或 Queue 变更必须同步测试和中文文档。贡献流程见 [CONTRIBUTING.md](CONTRIBUTING.md)，发布流程见[发布文档](docs/releasing.zh-CN.md)，版本变化见 [CHANGELOG.md](CHANGELOG.md)。
 

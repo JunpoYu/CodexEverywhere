@@ -37,13 +37,23 @@ corepack enable
 pnpm install --frozen-lockfile
 pnpm format:check
 pnpm check:architecture
+pnpm check:test-runtime
 pnpm typecheck
 pnpm test
 pnpm test:e2e
 pnpm build
+pnpm check:web-budget
 pnpm test:app-server
 git diff --check
 ```
+
+干净发布候选应优先用以下命令执行同一组门禁并在源码仓库外生成 0600 脱敏 receipt：
+
+```bash
+pnpm verify:v0.4 -- --with-model --receipt /absolute/private/path/candidate.json
+```
+
+不带 `--with-model` 的运行会明确保留订阅模型门槛；`--allow-dirty` 只允许本地开发核对，其 receipt 不能作为发布证据。完整多用户证据必须另行通过 `pnpm staging:receipt -- validate <receipt>`，流程见 [v0.4 staging 验收手册](staging-v0.4.zh-CN.md)。
 
 `test:app-server` 需要本机安装发布时的 npm 最新稳定版 Codex；不得用跳过集成测试的方式发布 Codex 适配层变更。若项目声明额外的兼容版本，也应分别运行，但运行时不得仅按版本号拒绝用户已有的 Codex。
 
