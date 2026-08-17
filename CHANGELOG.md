@@ -10,13 +10,9 @@
 - 新增机器执行的首屏 JS/CSS gzip 预算检查，并验证 Markdown、KaTeX 与代码高亮仍处于任务页懒加载边界。
 - 新增严格的多用户 staging receipt 初始化与校验器，只接受限定字段、布尔验收结果和 SHA-256，不允许记录主机名、用户名、路径或自由文本，并要求浏览器、Agent 与 Relay 的 NTP 时钟完成同步。
 - 新增供人和后续 Agent 执行的部署、升级与回滚操作手册，明确非秘密交接输入、只读预检、停止条件、Release 验证、Direct/Relay/Controller、v0.3→v0.4 和验收输出。
-- Release 的 HPC tools 现在包含首次 bootstrap、rootless/root-owned 安装及两类 inventory 回滚所需脚本。
-- 操作手册补充 root-owned Miniforge 的固定版本、双重 SHA-256 校验和隔离安装步骤，避免 Controller 部署时让 root 执行部署账号可写的 Conda、Node.js 或安装脚本。
 
 ### Fixed
 
-- 修复 HPC 安装器在 staging 常用的 `umask 077` 下把非秘密 release inventory 创建为 `0600`，随后又因要求精确 `0644` 而拒绝安装或回滚的问题；inventory 先以私有模式写入，再通过同一文件句柄发布为固定权限。
-- 修复 rootless 全局启动器拒绝 root、但 Administrator Controller 安装与 helper 又必须执行 root CLI 的部署死锁；root 现在只进入同 tag、root-owned 且经 inventory 校验的独立副本，普通用户继续进入无特权副本。
 - 修复发布门槛要求 staging 消费 Release、同时又禁止在 staging 前创建 tag 的循环依赖；alpha tag/Prerelease 现在只冻结候选字节，staging receipt 仍是 production 批准的硬门槛。
 
 ## [0.4.0-alpha.1] - 2026-08-16
@@ -58,6 +54,20 @@
 - 修复首个 turn 在 lease 建立前启动时，审批或用户问题可能先于任务页订阅到达并丢失的问题。
 - 修复等待用户输入时 Composer 不能把后续消息加入 Queue，以及未知 Codex notification 不能稳定保留为 `codex/generic` 时间线项的问题。
 - 修复原生 `<dialog>` 继承页面静态定位后可能渲染到移动端视口外的问题。
+
+## [0.3.0-alpha.12] - 2026-08-17
+
+### Added
+
+- 新增供人和后续 Agent 执行的部署、升级与回滚操作手册，明确非秘密交接输入、只读预检、停止条件、Release 验证、Direct/Relay/Controller 和验收输出。
+- Release 的 HPC tools 现在包含首次 bootstrap、rootless/root-owned 安装及两类 inventory 回滚所需脚本。
+- 操作手册补充 root-owned Miniforge 的固定版本、双重 SHA-256 校验和隔离安装步骤，避免 Controller 部署时让 root 执行部署账号可写的 Conda、Node.js 或安装脚本。
+
+### Fixed
+
+- Noise transport 与 Relay wire 继续保持 version 1，但握手现在显式声明独立的 Gateway API version。v0.3 Web 遇到已升级为 Gateway API v2 的 Agent 时会显示明确的客户端升级提示，并立即绕过浏览器默认周期检查 Service Worker 更新；真正激活仍经过现有的一次性凭据、草稿和结果未知安全门槛。
+- 修复 HPC 安装器在 `umask 077` 下把非秘密 release inventory 创建为 `0600`，随后又因要求精确 `0644` 而拒绝安装或回滚的问题；inventory 先以私有模式写入，再通过同一文件句柄发布为固定权限。
+- 修复 rootless 全局启动器拒绝 root、但 Administrator Controller 安装与 helper 又必须执行 root CLI 的部署死锁；root 现在只进入同 tag、root-owned 且经 inventory 校验的独立副本，普通用户继续进入无特权副本。
 
 ## [0.3.0-alpha.11] - 2026-08-14
 

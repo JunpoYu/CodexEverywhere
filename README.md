@@ -21,7 +21,7 @@ CodexEverywhere（CE）是面向 Linux/HPC 的自托管 Codex Web/PWA 控制平�
 CE 不重新实现 AgentLoop。thread、turn、工具活动、审批请求和执行状态始终以官方 [Codex app-server](https://developers.openai.com/codex/app-server) 为唯一事实源；CE 只负责安全连接、Web 身份、移动端产品体验、持久 Queue 和 HPC 生命周期。
 
 > [!WARNING]
-> 当前代码线为 `v0.4.0-alpha.1` 架构重建版。Gateway API v2 和新状态库不兼容 v0.3 二进制；升级前必须执行预检和正式迁移。Alpha tag/Prerelease 只用于冻结待验收制品；同一制品必须先在多用户 staging 完成正向迁移、业务写入、反向迁移和制品回滚，才能批准 production 部署。
+> 当前代码线为 `v0.4.0-alpha.1` 架构重建版。Gateway API v2 和新状态库不兼容 v0.3 二进制；升级前必须执行预检和正式迁移。Alpha tag/Prerelease 只用于冻结待验收制品；同一制品必须先在多用户 staging 完成正向迁移、业务写入、反向迁移和制品回滚，才能批准 production 部署。生产环境只使用经过 CI 验证的 [GitHub Release](https://github.com/JunpoYu/CodexEverywhere/releases) 制品。
 
 > [!NOTE]
 > 这是独立的非官方开源项目，与 OpenAI 没有关联或背书。Codex 是 OpenAI 的产品。

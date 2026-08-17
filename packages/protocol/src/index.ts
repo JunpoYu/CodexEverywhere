@@ -131,6 +131,7 @@ export type GatewayHandshakeReply = {
 export type GatewayHandshakeAccepted = {
   version: ProtocolVersion;
   ok: true;
+  /** Gateway API is versioned independently from Noise transport. */
   gatewayApiVersion?: number;
   principal: "user" | "host-admin";
   loginName?: string;
