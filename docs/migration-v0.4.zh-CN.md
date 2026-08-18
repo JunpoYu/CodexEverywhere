@@ -14,6 +14,8 @@ v0.4 不迁移 v0.3 的 CE 状态，也不提供反向数据迁移。本文保�
 | Workspace、偏好与任务权限          | 重新配置                    |
 | Queue 与 mutation receipt          | 丢弃，不重放                |
 | 管理员 Controller 状态             | 重新初始化                  |
+| 宿主 provisioner admin 状态库      | 改名保留，按 v0.4 新建      |
+| provisioner credential 与身份密钥  | 保留，不重新签发或复制      |
 
 任务、turn、审批和工具活动始终以 Codex app-server 为事实源。重新打开任务时由 v0.4 从 app-server 读取权威状态；CE 不从旧数据库重建任务历史。
 
@@ -26,6 +28,7 @@ v0.4 不迁移 v0.3 的 CE 状态，也不提供反向数据迁移。本文保�
 - 仍有运行中的 turn、未解决 interaction、delivering Queue、pending mutation 或登录流程；
 - Agent 停止后 app-server 不健康；
 - 旧 CE 目录不是目标 Unix 用户所有、权限异常或保留目标已存在；
+- provisioner 仍有请求正在处理，或已有 v0.4 用户完成配对；
 - 需要用户完成 Passkey、恢复码或 Codex 设备码操作，但用户不在场；
 - v0.4 初始化尝试读取或修改旧 CE 数据库。
 
@@ -39,6 +42,32 @@ v0.4 不迁移 v0.3 的 CE 状态，也不提供反向数据迁移。本文保�
 6. 记录 app-server PID，并确认 `ce app-server status` 为 healthy。
 
 不得把旧数据库、配置、capability、恢复码或配对资料复制到日志、Issue、PR 或 staging receipt。
+
+### 3.1 宿主 provisioner 状态切换
+
+这一步是一次性的宿主级切换，必须在切换到 v0.4 Agent 制品之后、任何用户执行 `ce device pair` 之前完成。v0.3 rootless provisioner 的 `admin-state.sqlite` 使用旧 schema；保留它会使 v0.4 在签发 route 时失败。只隔离 CE admin 状态，保留 provisioner `config.json`、credential、身份密钥、Origin 与 Relay endpoint。
+
+先确认请求目录为空并停止 provisioner，然后使用不存在的 UTC 时间戳目标改名：
+
+```bash
+sudo -iu <deployUser> /usr/local/bin/ce provisioner stop
+
+sudo -iu <deployUser> sh -eu -c '
+  home="$HOME/.codex-everywhere-provisioner"
+  db="$home/admin-state.sqlite"
+  retained="$db.v0.3-retained.<UTC-timestamp>"
+  test -f "$db"
+  test ! -L "$db"
+  test ! -e "$retained"
+  mv "$db" "$retained"
+  chmod 0600 "$retained"
+'
+
+sudo -iu <deployUser> /usr/local/bin/ce provisioner install-service
+sudo -iu <deployUser> /usr/local/bin/ce provisioner status
+```
+
+若 root-owned fallback 使用的 `/etc/codex-everywhere/admin-state.sqlite` 存在，也必须在没有 helper 调用进行时由 root 按精确路径改名保留。不得移动整个 provisioner home，不得删除 `config.json`、`keys/` 或 credential。v0.4 会在第一次签发前创建 application ID 为 `0x43454134`、`user_version = 1`、权限 0600 的新 admin 库。若签发返回 provisioning state incompatible，停止重试并核对本步骤，而不是上传数据库或 capability。
 
 ## 4. 用户状态切换
 
@@ -61,7 +90,7 @@ sudo -iu <username> sh -eu -c '
 '
 ```
 
-这一步不接触 `~/.codex` 和 `/tmp` 中仍健康的 app-server socket/PID。随后切换 v0.4 rootless/privileged release 与 Web，再由用户执行：
+这一步不接触 `~/.codex` 和 `/tmp` 中仍健康的 app-server socket/PID。确认宿主 provisioner 已按 3.1 节完成一次性状态切换、v0.4 rootless/privileged release 与 Web 均已启用后，再由用户执行：
 
 ```bash
 ce device pair

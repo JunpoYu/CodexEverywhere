@@ -446,7 +446,9 @@ v0.4 不提供 v0.3 状态迁移器，也不允许旧库被新二进制隐式升
 4. 停止用户 Agent 和 Controller，但保持健康 app-server；
 5. 将每个用户完整的 `~/.codex-everywhere` 原子改名为不存在的带时间戳保留目录，权限保持 0700；不得覆盖旧保留目录；
 6. 对已存在的 Controller 同样保留其 `CE_ADMIN_HOME`；本次未安装 Controller 时跳过；
-7. 切换并启动 v0.4 rootless/privileged release，然后原子切换 Web。
+7. 切换 v0.4 rootless/privileged release；在任何用户配对前停止 rootless provisioner，确认请求目录为空，将 `<deployHome>/.codex-everywhere-provisioner/admin-state.sqlite` 精确改名为带时间戳的 0600 保留文件；root-owned fallback 的 `/etc/codex-everywhere/admin-state.sqlite` 若存在也由 root 同样处理；
+8. 保留 provisioner `config.json`、credential 和 `keys/`，用 v0.4 重新执行 `provisioner install-service/status`；新 admin 库必须为 application ID `0x43454134`、`user_version = 1` 和 0600；
+9. 原子切换 Web，随后才允许用户执行 `ce device pair`。若出现 `Host provisioning state is incompatible with this release`，停止配对并复核第 7、8 步。
 
 示例（占位符和时间戳必须先确认）：
 

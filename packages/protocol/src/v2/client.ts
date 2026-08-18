@@ -51,7 +51,19 @@ export class GatewayV2Client {
     if (!parsedInput.success) {
       throw new GatewayV2Error(
         "INVALID_CLIENT_INPUT",
-        "Gateway request input did not match its schema",
+        `Gateway request input for ${method} did not match its schema`,
+        {
+          details: {
+            issues: parsedInput.error.issues.slice(0, 32).map((issue) => ({
+              path: issue.path.map((part) =>
+                typeof part === "symbol"
+                  ? (part.description ?? "symbol")
+                  : part,
+              ),
+              code: issue.code,
+            })),
+          },
+        },
       );
     }
     const requestId = this.#createRequestId();

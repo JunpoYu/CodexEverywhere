@@ -8,8 +8,10 @@ import type {
   PublicKeyCredentialRequestOptionsJSON,
 } from "@simplewebauthn/browser";
 import {
+  jsonObjectSchema,
   MutationOutcomeUnknownError,
   type InputOf,
+  type JsonValue,
   type OutputOf,
   type RequestOptionsOf,
 } from "@codex-everywhere/protocol/v2";
@@ -183,7 +185,7 @@ export async function pairHost(
           version: 1,
           challengeId: challenge.challengeId,
           deviceName,
-          response: response as unknown as Record<string, never>,
+          response: normalizeWebAuthnResponse(response),
           rememberDevice: true,
         },
       );
@@ -283,7 +285,7 @@ export async function registerPasskey(
       version: 1,
       challengeId: challenge.challengeId,
       deviceName,
-      response: response as unknown as Record<string, never>,
+      response: normalizeWebAuthnResponse(response),
       rememberDevice,
     },
   );
@@ -337,7 +339,7 @@ async function authenticate(
       {
         version: 1,
         challengeId: challenge.challengeId,
-        response: response as unknown as Record<string, never>,
+        response: normalizeWebAuthnResponse(response),
         deviceName: options.deviceName,
         rememberDevice: options.rememberDevice,
       },
@@ -571,6 +573,31 @@ function assertPassword(password: string): void {
   ) {
     throw new Error("密码至少 9 个字符，并需要同时包含字母和数字");
   }
+}
+
+/**
+ * SimpleWebAuthn returns a JSON-shaped object that can still contain explicit
+ * `undefined` compatibility fields. Normalize it with the same semantics as
+ * an actual JSON transport before applying the Gateway's strict JSON schema.
+ */
+export function normalizeWebAuthnResponse(
+  value: unknown,
+): Record<string, JsonValue> {
+  let serialized: string | undefined;
+  try {
+    serialized = JSON.stringify(value);
+  } catch (cause) {
+    throw new Error("Passkey 响应无法转换为 JSON", { cause });
+  }
+  if (serialized === undefined) {
+    throw new Error("Passkey 响应不是 JSON 对象");
+  }
+
+  const parsed = jsonObjectSchema.safeParse(JSON.parse(serialized) as unknown);
+  if (!parsed.success) {
+    throw new Error("Passkey 响应格式无效");
+  }
+  return parsed.data;
 }
 
 export function parsePairingDocument(raw: string): PairingDocumentV1 {

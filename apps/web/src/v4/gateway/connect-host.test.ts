@@ -24,6 +24,7 @@ vi.mock("./encrypted-transport.js", () => ({
 
 import {
   loginHost,
+  normalizeWebAuthnResponse,
   rotateRecoveryCodes,
   type HostLoginOptions,
 } from "./connect-host.js";
@@ -50,6 +51,43 @@ describe("secret-bearing Web identity mutations", () => {
     await expect(result).resolves.toEqual(["replacement-code"]);
     expect(gateway.operationKeys).toHaveLength(2);
     expect(new Set(gateway.operationKeys).size).toBe(1);
+  });
+});
+
+describe("WebAuthn JSON boundary", () => {
+  it("removes the undefined compatibility fields returned by SimpleWebAuthn", () => {
+    const response = normalizeWebAuthnResponse({
+      id: "credential-id",
+      rawId: "credential-id",
+      response: {
+        attestationObject: "attestation",
+        clientDataJSON: "client-data",
+        transports: undefined,
+        publicKeyAlgorithm: undefined,
+        publicKey: undefined,
+        authenticatorData: undefined,
+      },
+      type: "public-key",
+      clientExtensionResults: {},
+      authenticatorAttachment: undefined,
+    });
+
+    expect(response).toEqual({
+      id: "credential-id",
+      rawId: "credential-id",
+      response: {
+        attestationObject: "attestation",
+        clientDataJSON: "client-data",
+      },
+      type: "public-key",
+      clientExtensionResults: {},
+    });
+  });
+
+  it("rejects values that are not JSON objects", () => {
+    expect(() => normalizeWebAuthnResponse(undefined)).toThrow(
+      "Passkey 响应不是 JSON 对象",
+    );
   });
 });
 

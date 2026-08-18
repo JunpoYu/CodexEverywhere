@@ -46,7 +46,7 @@ Release 制品由 GitHub Actions 从 tag 的干净 checkout 构建一次。制�
 
 v0.4 是协议不兼容的全新初始化，不提供 v0.3 数据库转换或反向迁移。Noise transport 和 Relay wire 保持 version 1，加密后的 Gateway API 使用 version 2。旧浏览器与新 Agent、新浏览器与旧 Agent 都明确失败，不静默降级。
 
-切换时必须停止旧 Agent/Controller，但保持健康的 Codex app-server；完整改名保留旧 `~/.codex-everywhere` 与 `CE_ADMIN_HOME`，再由 v0.4 创建新状态。Passkey、CE 密码、恢复码、Host Profile、Relay route、Workspace、偏好和 Queue 都重新初始化。`~/.codex`、Codex 登录和 app-server 任务不属于清理范围。
+切换时必须停止旧 Agent/Controller，但保持健康的 Codex app-server；完整改名保留旧 `~/.codex-everywhere` 与 `CE_ADMIN_HOME`。宿主级 rootless provisioner 也有独立的 admin 状态库：必须在任何 v0.4 用户配对前停止 provisioner，将旧 `admin-state.sqlite` 改名保留，再用 v0.4 创建新库；root-owned fallback 的同名库若存在也按相同规则处理。provisioner 的 `config.json`、credential 和身份密钥必须保留。Passkey、CE 密码、恢复码、Host Profile、Relay route、Workspace、偏好和 Queue 都重新初始化。`~/.codex`、Codex 登录和 app-server 任务不属于清理范围。
 
 多用户 staging 仍要验证隔离、Direct/Relay、Controller、新设备配对和制品指针回滚，但不再执行正反数据迁移。观察窗内可通过停止 v0.4、将新 CE 目录留存、原子恢复旧目录并切回 alpha.14 来恢复；两份状态不得合并。
 
@@ -58,7 +58,7 @@ v0.4 是协议不兼容的全新初始化，不提供 v0.3 数据库转换或反
 
 宿主机 provisioner credential 具有独立有效期。生产监控应执行 `ce provisioner status`，并在到期前至少 30 天由 Relay 运维者以原 `installationId` 重新运行 `ce-relay issue-provisioner --installation-id <id> --expires-days <days>`，再通过受保护标准输入重复执行 `ce provisioner install ... --credential-stdin`。这一步是授权续期，不能由普通 Unix 用户自动完成；用户 Agent 只会在当前有效 credential 下为 UID/NSS 已绑定的随机 route 自动换发 capability。Administrator Controller 使用独立的 host-admin route registry：root 发布的 version 2 注册记录、请求文件内核 owner UID、当前 NSS tuple、admin handle 和 route ID 必须全部一致，provisioner 才会续签同一路由，Controller 不接触 credential。Agent 与 Controller 都会无限次重试，间隔上限依次为 12 小时、1 小时和 5 分钟，并按随机 route 做确定性抖动；该机制不会延长已经到期的 provisioner credential。
 
-v0.4 全新初始化会通过当前 rootless provisioner 签发新 route，不尝试把 v0.3 capability 迁入新 registry，也不覆盖旧 route ID。切换前先重启当前 Release 的 provisioner 并核对 descriptor/credential，再停止旧 Agent、隔离旧 CE 目录和重新配对。
+v0.4 全新初始化会通过当前 rootless provisioner 签发新 route，不尝试把 v0.3 capability 迁入新 registry，也不覆盖旧 route ID。切换前先按全新初始化手册隔离 provisioner 的旧 admin 状态库，再重启当前 Release 的 provisioner 并核对 descriptor/credential；不得删除或重建 provisioner credential、`config.json` 或身份密钥。随后停止旧 Agent、隔离旧 CE 目录和重新配对。
 
 后续版本由专用账号执行。先从 Release 下载并验证 `codex-everywhere-hpc-tools-<tag>.tar.gz`，然后在解压目录运行。安装机已配置支持所需约束参数的 GitHub CLI 时，安装器会验证 GitHub provenance attestation，并把签名者限定为本仓库 `.github/workflows/release.yml`、source ref 限定为请求的 tag、source digest 限定为 manifest 中的 commit，同时拒绝 self-hosted runner provenance：
 

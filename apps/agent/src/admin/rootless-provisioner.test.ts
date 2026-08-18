@@ -121,6 +121,41 @@ describe("rootless Unix-user provisioner", () => {
     });
   });
 
+  it("returns an actionable error for an incompatible legacy admin database", async () => {
+    const server = generateStaticKeyPair();
+    const { initiator, raw } = createRequest(server.publicKey);
+    const completed = await createRootlessProvisioningResponse(
+      raw,
+      1003,
+      paths(),
+      server,
+      {
+        now: NOW,
+        inspectAccount: async (uid) => ({
+          eligible: true as const,
+          account: {
+            username: "alice",
+            uid,
+            gid: 100,
+            home: "/public/home/alice",
+            shell: "/bin/bash",
+          },
+        }),
+        issueGrant: async () => {
+          throw new Error("State database kind mismatch: expected admin");
+        },
+      },
+    );
+    const opened = initiator.finish(
+      decodeHandshake(completed.response.handshake),
+    );
+    expect(JSON.parse(Buffer.from(opened.payload).toString("utf8"))).toEqual({
+      ok: false,
+      error:
+        "Host provisioning state is incompatible with this release; follow the documented fresh-state cutover before retrying",
+    });
+  });
+
   it("passes an encrypted Relay renewal proof only to the UID-bound issuer", async () => {
     const server = generateStaticKeyPair();
     const { initiator, raw } = createRequest(server.publicKey, NOW, {

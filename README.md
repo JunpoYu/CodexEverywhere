@@ -123,7 +123,7 @@ node apps/agent/dist/cli.js device pair
 
 ## 从 v0.3 全新切换
 
-v0.4 不提供状态迁移 CLI。切换时先停止旧 Agent（保持健康 app-server），将完整的 `~/.codex-everywhere` 改名保留，再启用 v0.4 并重新配对。Passkey、CE 密码、恢复码、Workspace、偏好和 Queue 会重建；`~/.codex`、Codex 登录与 app-server 任务保留。
+v0.4 不提供状态迁移 CLI。切换时先停止旧 Agent（保持健康 app-server），将完整的 `~/.codex-everywhere` 改名保留，并在任何 v0.4 用户配对前隔离宿主 provisioner 的旧 admin 状态库，再启用 v0.4 并重新配对。Passkey、CE 密码、恢复码、Workspace、偏好和 Queue 会重建；provisioner credential/密钥、`~/.codex`、Codex 登录与 app-server 任务保留。
 
 旧 CE 目录在观察窗内只读保留，不导入新库。若切换失败，只能停止 v0.4、将新目录留存、原子恢复旧目录并切回 alpha.14；不合并两份状态。详见 [v0.4 全新初始化与切换手册](docs/migration-v0.4.zh-CN.md)。
 
