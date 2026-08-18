@@ -25,6 +25,7 @@ export interface ThreadActorState {
     | "failed";
   readonly threadId?: string;
   readonly snapshot?: Snapshot;
+  readonly refreshing?: boolean;
   readonly error?: string;
 }
 
@@ -64,7 +65,7 @@ export function createThreadActor(scope: Scope, gateway: GatewayPort) {
             state.snapshot !== undefined
           ) {
             return {
-              state: { ...state, status: "syncing" },
+              state: { ...state, refreshing: true },
               effects: [{ type: "FETCH", threadId: event.threadId }],
             };
           }
@@ -78,6 +79,7 @@ export function createThreadActor(scope: Scope, gateway: GatewayPort) {
               status: event.snapshot.state,
               threadId: event.snapshot.thread.id,
               snapshot: preserveTransientEvents(state.snapshot, event.snapshot),
+              refreshing: false,
             },
           };
         case "LOAD_EARLIER":
@@ -124,7 +126,9 @@ export function createThreadActor(scope: Scope, gateway: GatewayPort) {
             preserveEffects: true,
           };
         case "RECONNECTING":
-          return { state: { ...state, status: "reconnecting" } };
+          return {
+            state: { ...state, status: "reconnecting", refreshing: false },
+          };
         case "CLOSE":
           return {
             state: { status: "closed" },
@@ -132,7 +136,12 @@ export function createThreadActor(scope: Scope, gateway: GatewayPort) {
           };
         case "FAILED":
           return {
-            state: { ...state, status: "failed", error: event.message },
+            state: {
+              ...state,
+              status: "failed",
+              refreshing: false,
+              error: event.message,
+            },
           };
       }
     },

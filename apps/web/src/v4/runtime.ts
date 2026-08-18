@@ -89,13 +89,17 @@ export class UserWebRuntime {
             this.onboarding.dispatch({ type: "INSPECT" });
           }
         }
-        const payload = event.payload as Record<string, unknown>;
-        if (
-          (event.type === "codex/notification" ||
-            event.type === "codex/generic") &&
-          payload.threadId === this.thread.getSnapshot().threadId
-        ) {
-          this.#scheduleThreadRefresh(String(payload.threadId));
+        if (event.type === "codex/notification") {
+          const notification = parseGatewayEventPayload(
+            "codex/notification",
+            event.payload,
+          );
+          if (
+            notification.threadId === this.thread.getSnapshot().threadId &&
+            notificationRequiresThreadSnapshot(notification.method)
+          ) {
+            this.#scheduleThreadRefresh(notification.threadId);
+          }
         }
       }),
     );
@@ -128,14 +132,18 @@ export class UserWebRuntime {
   }
 
   #scheduleThreadRefresh(threadId: string): void {
-    if (this.#threadRefreshScope !== undefined) return;
+    const pending = this.#threadRefreshScope;
+    this.#threadRefreshScope = undefined;
+    void pending?.close("thread-refresh-debounced");
     const refreshScope = this.scope.fork("thread-refresh");
     this.#threadRefreshScope = refreshScope;
     refreshScope.setTimeout(() => {
       if (this.#threadRefreshScope === refreshScope) {
         this.#threadRefreshScope = undefined;
       }
-      this.thread.dispatch({ type: "OPEN", threadId });
+      if (this.thread.getSnapshot().threadId === threadId) {
+        this.thread.dispatch({ type: "OPEN", threadId });
+      }
       void refreshScope.close("thread-refresh-complete");
     }, 100);
   }
@@ -154,4 +162,23 @@ export class UserWebRuntime {
       this.composer.dispatch({ type: "RECONCILE", operationKey });
     }
   }
+}
+
+const THREAD_SNAPSHOT_NOTIFICATION_METHODS = new Set([
+  "thread/archived",
+  "thread/closed",
+  "thread/compacted",
+  "thread/deleted",
+  "thread/name/updated",
+  "thread/settings/updated",
+  "thread/unarchived",
+]);
+
+function notificationRequiresThreadSnapshot(method: string): boolean {
+  return (
+    method.startsWith("item/") ||
+    method.startsWith("turn/") ||
+    method.startsWith("thread/realtime/") ||
+    THREAD_SNAPSHOT_NOTIFICATION_METHODS.has(method)
+  );
 }

@@ -20,6 +20,7 @@ import {
 import { InteractionAlreadyResolvedError } from "./interaction-broker.js";
 import type { PreferencesService } from "./preferences-service.js";
 import type {
+  AuthoritativeThreadState,
   ThreadLease,
   ThreadLeaseHandle,
   ThreadLeaseManager,
@@ -58,6 +59,7 @@ export class ThreadService {
   readonly #settings: ThreadSettingsRepository;
   readonly #appServerSocketPath: string | undefined;
   readonly #runtimeSettings = new Map<string, RuntimeThreadSettings>();
+  readonly #resumedLeases = new WeakSet<ThreadLease>();
 
   constructor(options: ThreadServiceOptions) {
     this.#scope = options.scope.fork("threads");
@@ -129,23 +131,32 @@ export class ThreadService {
     input: Pick<InputOf<"thread/open">, "historyCursor" | "historyLimit">,
   ): Promise<OutputOf<"thread/open">> {
     const stored = await this.#settings.read(handle.threadId);
-    const response = jsonObject(
-      await handle.lease.request("thread/resume", {
-        threadId: handle.threadId,
-        ...(stored.approvalPolicy === undefined
-          ? {}
-          : { approvalPolicy: stored.approvalPolicy }),
-        ...(stored.sandbox === undefined ? {} : { sandbox: stored.sandbox }),
-      }),
-      "thread/resume response",
-    );
-    const thread = requiredObject(response.thread, "resumed thread");
-    const state = handle.lease.adoptAuthoritativeThread(thread);
+    let runtime = this.#runtimeSettings.get(handle.threadId);
+    let thread: Readonly<Record<string, JsonValue>>;
+    let state: AuthoritativeThreadState;
+    if (!this.#resumedLeases.has(handle.lease) || runtime === undefined) {
+      const response = jsonObject(
+        await handle.lease.request("thread/resume", {
+          threadId: handle.threadId,
+          ...(stored.approvalPolicy === undefined
+            ? {}
+            : { approvalPolicy: stored.approvalPolicy }),
+          ...(stored.sandbox === undefined ? {} : { sandbox: stored.sandbox }),
+        }),
+        "thread/resume response",
+      );
+      thread = requiredObject(response.thread, "resumed thread");
+      state = handle.lease.adoptAuthoritativeThread(thread);
+      runtime = runtimeSettings(response, stored);
+      this.#runtimeSettings.set(handle.threadId, runtime);
+      this.#resumedLeases.add(handle.lease);
+    } else {
+      state = await handle.lease.synchronize(true);
+      thread = requiredObject(state.thread, "thread");
+    }
     const workspace = await this.#workspaces.workspaceForPath(
       state.workspacePath,
     );
-    const runtime = runtimeSettings(response, stored);
-    this.#runtimeSettings.set(handle.threadId, runtime);
     const page = historyPage(
       timelineFromThread(thread),
       input.historyCursor,
@@ -244,6 +255,7 @@ export class ThreadService {
       handle.lease.adoptAuthoritativeThread(
         requiredObject(resumed.thread, "resumed thread"),
       );
+      this.#resumedLeases.add(handle.lease);
       const turn = jsonObject(
         await handle.lease.request("turn/start", {
           threadId,
@@ -427,6 +439,7 @@ export class ThreadService {
         "thread/resume response",
       );
       runtime = runtimeSettings(resumed, stored);
+      this.#resumedLeases.add(handle.lease);
     }
     const next: RuntimeThreadSettings = {
       ...runtime,
