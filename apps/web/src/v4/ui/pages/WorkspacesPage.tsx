@@ -31,6 +31,7 @@ export function WorkspacesPage() {
     try {
       await operation();
       load();
+      runtime.refreshTasks();
       return true;
     } catch (reason) {
       setError(message(reason));
