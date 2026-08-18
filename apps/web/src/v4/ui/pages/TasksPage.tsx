@@ -21,6 +21,13 @@ export function TasksPage() {
   const navigate = useNavigate();
 
   useEffect(() => {
+    const currentTasks = runtime.tasks.getSnapshot();
+    if (
+      currentTasks.status !== "loading" &&
+      currentTasks.status !== "paginating"
+    ) {
+      runtime.refreshTasks();
+    }
     void loadWorkspaces(runtime.gateway).then((items) => {
       setWorkspaces(items);
       setWorkspaceId(
@@ -121,6 +128,12 @@ export function TasksPage() {
       ) : null}
       {error === undefined ? null : <p className="error">{error}</p>}
 
+      {tasks.status === "failed" ? (
+        <p className="error" role="alert">
+          {tasks.error ?? "任务列表读取失败"}
+        </p>
+      ) : null}
+
       <section className="task-grid" aria-busy={tasks.status === "loading"}>
         {tasks.tasks.map((task) => (
           <Link
@@ -136,7 +149,12 @@ export function TasksPage() {
             <p>{new Date(task.updatedAt).toLocaleString("zh-CN")}</p>
           </Link>
         ))}
-        {tasks.status === "ready" && tasks.tasks.length === 0 ? (
+        {tasks.status === "loading" && tasks.tasks.length === 0 ? (
+          <div className="empty-state">
+            <strong>正在读取任务…</strong>
+            <span>历史较多时，Codex app-server 首次索引可能需要片刻。</span>
+          </div>
+        ) : tasks.status === "ready" && tasks.tasks.length === 0 ? (
           <div className="empty-state">
             <strong>{tasks.archived ? "没有已归档任务" : "还没有任务"}</strong>
             <span>

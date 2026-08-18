@@ -104,8 +104,20 @@ export class UserWebRuntime {
   start(): void {
     this.connection.dispatch({ type: "CONNECTED", hostName: this.host.name });
     this.onboarding.dispatch({ type: "INSPECT" });
-    this.tasks.dispatch({ type: "LOAD" });
+    this.refreshTasks();
     this.queue.dispatch({ type: "LOAD" });
+  }
+
+  /** Reloads the authoritative task list without discarding the active view. */
+  refreshTasks(): void {
+    const current = this.tasks.getSnapshot();
+    this.tasks.dispatch({
+      type: "LOAD",
+      archived: current.archived,
+      ...(current.workspaceId === undefined
+        ? {}
+        : { workspaceId: current.workspaceId }),
+    });
   }
 
   async close(): Promise<void> {
@@ -131,7 +143,7 @@ export class UserWebRuntime {
   #restoreAuthoritativeState(): void {
     this.connection.dispatch({ type: "CONNECTED", hostName: this.host.name });
     this.onboarding.dispatch({ type: "INSPECT" });
-    this.tasks.dispatch({ type: "LOAD" });
+    this.refreshTasks();
     this.queue.dispatch({ type: "LOAD" });
     const threadId = this.thread.getSnapshot().threadId;
     if (threadId !== undefined) {
