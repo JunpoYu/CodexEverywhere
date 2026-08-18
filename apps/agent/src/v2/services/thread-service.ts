@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { Scope } from "@codex-everywhere/kernel";
 import {
   GatewayV2Error,
+  THREAD_TITLE_MAX_LENGTH,
   jsonValueSchema,
   type InputOf,
   type InteractionResponse,
@@ -656,12 +657,21 @@ function threadSummary(
     version: 1,
     id: requiredString(thread.id, "thread id"),
     workspaceId: workspace.id,
-    title: name ?? preview,
+    title: boundedThreadTitle(name ?? preview),
     state: threadState(thread.status),
     archived,
     createdAt: requiredTimestamp(thread.createdAt, "thread createdAt"),
     updatedAt: requiredTimestamp(thread.updatedAt, "thread updatedAt"),
   };
+}
+
+function boundedThreadTitle(value: string): string {
+  if (value.length <= THREAD_TITLE_MAX_LENGTH) return value;
+
+  let end = THREAD_TITLE_MAX_LENGTH;
+  const lastCodeUnit = value.charCodeAt(end - 1);
+  if (lastCodeUnit >= 0xd800 && lastCodeUnit <= 0xdbff) end -= 1;
+  return value.slice(0, end);
 }
 
 function threadState(value: JsonValue | undefined): ThreadLeaseState {

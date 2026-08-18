@@ -4,6 +4,13 @@
 
 ## [Unreleased]
 
+## [0.4.0-alpha.4] - 2026-08-18
+
+### Fixed
+
+- 修复旧任务的 Codex `preview` 超过 Gateway 标题上限时，`thread/list` 整页被输出 schema 拒绝并显示 `Gateway handler returned an invalid result` 的问题；Agent 现在会在协议边界安全截断摘要，并避免切断 UTF-16 代理对。
+- 推进 PWA 缓存代次，确保已安装的 alpha.3 页面能够发现并激活 alpha.4 Web 版本。
+
 ## [0.4.0-alpha.3] - 2026-08-18
 
 ### Fixed

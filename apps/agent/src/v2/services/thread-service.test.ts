@@ -3,6 +3,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { Scope } from "@codex-everywhere/kernel";
+import {
+  gatewayMethodDefinitions,
+  THREAD_TITLE_MAX_LENGTH,
+} from "@codex-everywhere/protocol/v2";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type {
@@ -32,6 +36,49 @@ afterEach(async () => {
 });
 
 describe("ThreadService", () => {
+  it("bounds old app-server previews to the Gateway thread title limit", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "ce-thread-service-"));
+    directories.push(directory);
+    const workspacePath = join(directory, "workspace");
+    await mkdir(workspacePath);
+    const state = await UserStateDatabase.open(
+      join(directory, "state.sqlite"),
+      { create: true },
+    );
+    const scope = new Scope("thread-list-test");
+    scopes.push(scope);
+    scope.defer(() => state.close());
+    const preview = `${"x".repeat(THREAD_TITLE_MAX_LENGTH - 1)}\ud83d\ude80${"y".repeat(10_000)}`;
+    const factory = new ThreadListFactory(workspacePath, preview);
+    const workspaces = new WorkspaceService(state.workspaces, {
+      home: directory,
+    });
+    await workspaces.add(workspacePath, "Workspace");
+    const service = new ThreadService({
+      scope,
+      clients: factory,
+      leases: new ThreadLeaseManager({ scope, clientFactory: factory }),
+      workspaces,
+      preferences: new PreferencesService(state.preferences),
+      settings: state.threadSettings,
+    });
+
+    const result = await service.list({
+      version: 1,
+      archived: false,
+      limit: 50,
+    });
+
+    expect(result.threads).toHaveLength(1);
+    expect(result.threads[0]?.title).toBe(
+      "x".repeat(THREAD_TITLE_MAX_LENGTH - 1),
+    );
+    expect(
+      gatewayMethodDefinitions["thread/list"].output.safeParse(result).success,
+    ).toBe(true);
+    expect(factory.client.closed).toBe(true);
+  });
+
   it("owns the first turn with a lease before an interaction can arrive", async () => {
     const directory = await mkdtemp(join(tmpdir(), "ce-thread-service-"));
     directories.push(directory);
@@ -94,6 +141,61 @@ describe("ThreadService", () => {
     await eventually(() => leases.size === 0 && factory.clients[1]!.closed);
   });
 });
+
+class ThreadListFactory implements CodexClientFactoryPort {
+  readonly client: ThreadListClient;
+
+  constructor(workspacePath: string, preview: string) {
+    this.client = new ThreadListClient(workspacePath, preview);
+  }
+
+  create(scope: Scope): Promise<CodexClient> {
+    scope.defer(() => this.client.close());
+    return Promise.resolve(this.client);
+  }
+}
+
+class ThreadListClient implements CodexClient {
+  closed = false;
+
+  constructor(
+    private readonly workspacePath: string,
+    private readonly preview: string,
+  ) {}
+
+  request<Result = unknown>(method: string): Promise<Result> {
+    if (method !== "thread/list") {
+      return Promise.reject(new Error(`Unexpected request: ${method}`));
+    }
+    return Promise.resolve({
+      data: [
+        {
+          ...thread(this.workspacePath),
+          name: null,
+          preview: this.preview,
+        },
+      ],
+      nextCursor: null,
+    } as Result);
+  }
+
+  onNotification(): () => void {
+    return () => undefined;
+  }
+
+  onServerRequest(): () => void {
+    return () => undefined;
+  }
+
+  onClose(): () => void {
+    return () => undefined;
+  }
+
+  close(): Promise<void> {
+    this.closed = true;
+    return Promise.resolve();
+  }
+}
 
 class FirstTurnFactory implements CodexClientFactoryPort {
   readonly clients: FirstTurnClient[] = [];

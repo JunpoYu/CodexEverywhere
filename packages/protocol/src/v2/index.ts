@@ -17,6 +17,7 @@ export {
   type MutationStatus,
 } from "./common.js";
 export {
+  THREAD_TITLE_MAX_LENGTH,
   adminAuditSchema,
   adminUserSchema,
   authenticationResultSchema,
