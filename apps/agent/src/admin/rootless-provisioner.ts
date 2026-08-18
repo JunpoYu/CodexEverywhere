@@ -500,6 +500,13 @@ function safeProvisioningError(error: unknown): string {
   if (/disabled/u.test(message)) return "CodexEverywhere access is disabled";
   if (/eligible|NSS|home/u.test(message)) return message;
   if (/Relay|route|credential|renew/u.test(message)) return message;
+  if (
+    /State database kind mismatch|Unsupported admin state schema|Admin state metadata is missing/u.test(
+      message,
+    )
+  ) {
+    return "Host provisioning state is incompatible with this release; follow the documented fresh-state cutover before retrying";
+  }
   return "Host provisioning failed";
 }
 

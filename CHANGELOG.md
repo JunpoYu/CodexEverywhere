@@ -13,6 +13,7 @@
 
 ### Fixed
 
+- 修正 v0.3→v0.4 全新切换遗漏宿主 rootless provisioner 旧 admin 状态库的问题；文档要求在首次 v0.4 配对前隔离旧库并保留 credential/密钥，Agent 对不兼容 schema 返回可操作且不泄密的错误。
 - 修复发布门槛要求 staging 消费 Release、同时又禁止在 staging 前创建 tag 的循环依赖；alpha tag/Prerelease 现在只冻结候选字节，staging receipt 仍是 production 批准的硬门槛。
 - v0.4 改为全新初始化边界：删除 v0.3 正反迁移、迁移 CLI、旧 schema 转换器和数据回滚承诺；切换时归档旧 CE 状态并重新配对，`~/.codex` 与 app-server 任务不属于清理范围。
 
