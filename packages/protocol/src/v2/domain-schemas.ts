@@ -49,12 +49,14 @@ export const threadStateSchema = z.enum([
   "failed",
 ]);
 
+export const THREAD_TITLE_MAX_LENGTH = 1_024;
+
 export const threadSummarySchema = z
   .object({
     version: z.literal(1),
     id: identifierSchema,
     workspaceId: identifierSchema,
-    title: z.string().max(1_024),
+    title: z.string().max(THREAD_TITLE_MAX_LENGTH),
     state: threadStateSchema,
     archived: z.boolean(),
     createdAt: timestampSchema,
