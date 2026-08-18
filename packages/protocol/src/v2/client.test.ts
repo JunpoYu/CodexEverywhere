@@ -55,13 +55,30 @@ describe("GatewayV2Client", () => {
   it("rejects invalid client input before transport", async () => {
     const exchange = vi.fn();
     const client = createClient({ exchange });
+    const error = await client
+      .request("queue/remove", { version: 1, itemId: "" }, { operationKey })
+      .catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(GatewayV2Error);
+    expect(error).toMatchObject({
+      code: "INVALID_CLIENT_INPUT",
+      message:
+        "Gateway request input for queue/remove did not match its schema",
+      details: { issues: [expect.objectContaining({ path: ["itemId"] })] },
+    });
+    expect(exchange).not.toHaveBeenCalled();
+  });
+
+  it("rejects an invalid mutation operation key before transport", async () => {
+    const exchange = vi.fn();
+    const client = createClient({ exchange });
+
     await expect(
       client.request(
         "queue/remove",
         { version: 1, itemId: "item-1" },
         { operationKey: "not-a-uuid" },
       ),
-    ).rejects.toBeInstanceOf(GatewayV2Error);
+    ).rejects.toMatchObject({ code: "INVALID_OPERATION_KEY" });
     expect(exchange).not.toHaveBeenCalled();
   });
 
