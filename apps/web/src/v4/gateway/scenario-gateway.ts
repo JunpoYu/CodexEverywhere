@@ -727,11 +727,22 @@ export class ScenarioGateway implements GatewayPort {
         turnId,
       );
       thread.items.push(item);
-      this.#emit("codex/generic", {
+      this.#emit("codex/notification", {
         version: 1,
         threadId,
-        method: "scenario/assistant-message",
-        params: item.data,
+        method: "item/completed",
+        params: {
+          threadId,
+          turnId,
+          item: {
+            type: "agentMessage",
+            id: item.id,
+            text: String(item.data.text),
+            phase: null,
+            memoryCitation: null,
+          },
+          completedAtMs: Date.now(),
+        },
       });
       this.#setThreadState(threadId, "idle");
     }, 250);

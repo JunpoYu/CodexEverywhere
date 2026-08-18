@@ -64,6 +64,7 @@ describe("ScenarioGateway", () => {
     expect(completed.state).toBe("idle");
     expect(completed.interactions).toEqual([]);
     expect(completed.items.at(-1)?.data.text).toContain("Scenario 回复已完成");
+    expect(events).toContain("codex/notification");
 
     const receipt = await gateway.request(
       "mutation/status",

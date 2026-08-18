@@ -4,6 +4,15 @@
 
 ## [Unreleased]
 
+## [0.4.0-alpha.5] - 2026-08-19
+
+### Fixed
+
+- 修复打开任务后 `thread/resume` 产生的目标用量、目标清理等元数据通知反复触发 `thread/open`，导致页面持续显示 `syncing`、发送按钮不断切换可用状态的问题。
+- 同一任务 lease 只在首次打开时执行 `thread/resume`，后续权威刷新改用无通知回放的 `thread/read`；内容通知采用尾随防抖，未知通知继续作为 generic event 本地保留。
+- 后台权威刷新现在保留任务的实际运行状态，不再把普通内容同步暴露为阻断输入的 `syncing` 状态；ScenarioGateway 也改为使用与真实 app-server 一致的已知 item 通知完成流式收口。
+- 推进 PWA 缓存代次，确保已安装的 alpha.4 页面能够发现并安全激活 alpha.5 Web 版本。
+
 ## [0.4.0-alpha.4] - 2026-08-18
 
 ### Fixed

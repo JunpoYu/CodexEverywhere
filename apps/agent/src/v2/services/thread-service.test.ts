@@ -79,6 +79,47 @@ describe("ThreadService", () => {
     expect(factory.client.closed).toBe(true);
   });
 
+  it("resumes a lease once and uses thread/read for later refreshes", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "ce-thread-service-"));
+    directories.push(directory);
+    const workspacePath = join(directory, "workspace");
+    await mkdir(workspacePath);
+    const state = await UserStateDatabase.open(
+      join(directory, "state.sqlite"),
+      { create: true },
+    );
+    const scope = new Scope("thread-open-refresh-test");
+    scopes.push(scope);
+    scope.defer(() => state.close());
+    const factory = new ThreadOpenFactory(workspacePath);
+    const leases = new ThreadLeaseManager({ scope, clientFactory: factory });
+    const workspaces = new WorkspaceService(state.workspaces, {
+      home: directory,
+    });
+    await workspaces.add(workspacePath, "Workspace");
+    const service = new ThreadService({
+      scope,
+      clients: factory,
+      leases,
+      workspaces,
+      preferences: new PreferencesService(state.preferences),
+      settings: state.threadSettings,
+    });
+    const handle = await leases.acquire("thread-1", {
+      kind: "viewer",
+      id: "viewer-1",
+    });
+
+    try {
+      await service.open(handle, { historyLimit: 100 });
+      await service.open(handle, { historyLimit: 100 });
+    } finally {
+      await handle.release();
+    }
+
+    expect(factory.client.methods).toEqual(["thread/resume", "thread/read"]);
+  });
+
   it("owns the first turn with a lease before an interaction can arrive", async () => {
     const directory = await mkdtemp(join(tmpdir(), "ce-thread-service-"));
     directories.push(directory);
@@ -141,6 +182,58 @@ describe("ThreadService", () => {
     await eventually(() => leases.size === 0 && factory.clients[1]!.closed);
   });
 });
+
+class ThreadOpenFactory implements CodexClientFactoryPort {
+  readonly client: ThreadOpenClient;
+
+  constructor(workspacePath: string) {
+    this.client = new ThreadOpenClient(workspacePath);
+  }
+
+  create(scope: Scope): Promise<CodexClient> {
+    scope.defer(() => this.client.close());
+    return Promise.resolve(this.client);
+  }
+}
+
+class ThreadOpenClient implements CodexClient {
+  readonly methods: string[] = [];
+  closed = false;
+
+  constructor(private readonly workspacePath: string) {}
+
+  request<Result = unknown>(method: string): Promise<Result> {
+    this.methods.push(method);
+    if (method === "thread/resume") {
+      return Promise.resolve({
+        thread: thread(this.workspacePath),
+        approvalPolicy: "on-request",
+        sandbox: workspaceWriteSandbox(),
+      } as Result);
+    }
+    if (method === "thread/read") {
+      return Promise.resolve({ thread: thread(this.workspacePath) } as Result);
+    }
+    return Promise.reject(new Error(`Unexpected request: ${method}`));
+  }
+
+  onNotification(): () => void {
+    return () => undefined;
+  }
+
+  onServerRequest(): () => void {
+    return () => undefined;
+  }
+
+  onClose(): () => void {
+    return () => undefined;
+  }
+
+  close(): Promise<void> {
+    this.closed = true;
+    return Promise.resolve();
+  }
+}
 
 class ThreadListFactory implements CodexClientFactoryPort {
   readonly client: ThreadListClient;

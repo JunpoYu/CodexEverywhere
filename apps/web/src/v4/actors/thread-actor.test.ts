@@ -60,19 +60,29 @@ describe("v0.4 thread actor", () => {
     );
   });
 
-  it("keeps the authoritative snapshot visible while refreshing the same task", () => {
+  it("keeps the operational state while refreshing the same task", async () => {
     const scope = new Scope("thread-refresh-test");
     scopes.push(scope);
-    const actor = createThreadActor(scope, new DeferredThreadGateway());
+    const gateway = new DeferredThreadGateway();
+    const actor = createThreadActor(scope, gateway);
     actor.dispatch({ type: "OPENED", snapshot: snapshot("thread-a") });
 
     actor.dispatch({ type: "OPEN", threadId: "thread-a" });
 
     expect(actor.getSnapshot()).toMatchObject({
-      status: "syncing",
+      status: "idle",
+      refreshing: true,
       threadId: "thread-a",
       snapshot: { thread: { id: "thread-a" } },
     });
+
+    gateway.resolve("thread-a", snapshot("thread-a"));
+    await vi.waitFor(() =>
+      expect(actor.getSnapshot()).toMatchObject({
+        status: "idle",
+        refreshing: false,
+      }),
+    );
   });
 
   it("does not cancel thread/open when an unrelated Gateway event arrives", async () => {
