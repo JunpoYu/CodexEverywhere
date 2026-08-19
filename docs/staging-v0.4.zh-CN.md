@@ -31,7 +31,7 @@
 ```bash
 corepack enable
 pnpm install --frozen-lockfile
-pnpm exec playwright install chromium
+pnpm exec playwright install --only-shell chromium
 umask 077
 CE_STAGING_EVIDENCE_DIR="${XDG_STATE_HOME:-${HOME}/.local/state}/codex-everywhere-staging"
 mkdir -p "${CE_STAGING_EVIDENCE_DIR}"
