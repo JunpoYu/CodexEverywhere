@@ -4,6 +4,9 @@ import type { OutputOf } from "@codex-everywhere/protocol/v2";
 import { useActorState } from "../../actors/use-actor.js";
 import { durableMutation } from "../../gateway/durable-mutation.js";
 import { mutationOptions, queryOptions } from "../../gateway/gateway-port.js";
+import { Icon } from "../components/Icon.js";
+import { ModalDialog } from "../components/ModalDialog.js";
+import { StatusMessage } from "../components/StatusMessage.js";
 import { useAdminRuntime } from "../runtime-context.js";
 
 type Inspection = OutputOf<"admin/user/inspect">;
@@ -76,13 +79,17 @@ export function AdminPage() {
           凭据。
         </p>
       </aside>
-      <main className="page">
+      <main aria-busy={admin.status === "mutating"} className="page">
         <header className="page-heading">
           <div>
-            <p className="eyebrow">Host control plane</p>
+            <p className="eyebrow">宿主机控制面</p>
             <h1>{admin.host?.serverName ?? "宿主机管理"}</h1>
           </div>
-          <button onClick={() => runtime.admin.dispatch({ type: "LOAD" })}>
+          <button
+            disabled={admin.status === "mutating"}
+            onClick={() => runtime.admin.dispatch({ type: "LOAD" })}
+          >
+            <Icon name="refresh" />
             刷新
           </button>
         </header>
@@ -155,11 +162,11 @@ export function AdminPage() {
           </div>
         </section>
         {(error ?? admin.error) ? (
-          <p className="error">{error ?? admin.error}</p>
+          <StatusMessage tone="error">{error ?? admin.error}</StatusMessage>
         ) : null}
       </main>
       {handoff === undefined ? null : (
-        <dialog className="ce-dialog" open aria-labelledby="handoff-title">
+        <ModalDialog className="ce-dialog" aria-labelledby="handoff-title">
           <h2 id="handoff-title">{handoff.username} 的恢复交接码</h2>
           <p>
             仅在完成线下身份核验后交给用户。有效期至{" "}
@@ -181,7 +188,7 @@ export function AdminPage() {
               我已安全交接
             </button>
           </div>
-        </dialog>
+        </ModalDialog>
       )}
     </div>
   );
@@ -295,7 +302,7 @@ function UserActions(input: {
       <div>
         <strong>{input.user.username}</strong>
         <code>{input.user.home}</code>
-        <span>{input.user.status}</span>
+        <span>{adminUserStatusLabel(input.user.status)}</span>
       </div>
       <div className="admin-user-actions">
         {input.user.status === "enabled" ? (
@@ -349,7 +356,9 @@ function UserActions(input: {
           签发恢复交接码
         </button>
       </div>
-      {error === undefined ? null : <p className="error">{error}</p>}
+      {error === undefined ? null : (
+        <StatusMessage tone="error">{error}</StatusMessage>
+      )}
     </div>
   );
 }
@@ -371,4 +380,15 @@ function Metric(input: { readonly label: string; readonly value: number }) {
 
 function message(error: unknown): string {
   return error instanceof Error ? error.message : "管理操作失败";
+}
+
+function adminUserStatusLabel(status: AdminUser["status"]): string {
+  const labels: Record<AdminUser["status"], string> = {
+    enabled: "已启用",
+    disabled: "已停用",
+    removal_pending: "等待移除",
+    removing: "正在移除",
+    removed: "已移除",
+  };
+  return labels[status];
 }

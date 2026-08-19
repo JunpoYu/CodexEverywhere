@@ -194,7 +194,9 @@ sequenceDiagram
 
 request fingerprint 是完整、已验证 input 的 canonical SHA-256；数据库不保存 prompt、路径、Queue 文本或凭据。相同 key 与不同 input 必须返回 `OPERATION_KEY_REUSED`。transport 丢失以及 Agent 明确返回的 `MUTATION_PENDING` / `MUTATION_OUTCOME_UNKNOWN` 都进入同一 `mutation/status` 对账路径；Codex app-server 明确返回的 JSON-RPC error 则作为确定失败保存，不误标为结果未知。进程启动时残留 `pending` claim 转为 `indeterminate`，禁止自动重放。
 
-任务设置只把用户实际修改的字段发送给 app-server。CE 的 lease-owned app-server client 在 `initialize` 时显式声明 `capabilities.experimentalApi: true`，因为 `thread/settings/update` 属于实验 API；未完成该能力协商时必须把 Codex 的拒绝当作确定失败，不得伪造本地设置成功。Web 与 `ce tui` 的同任务权限写入共用持久 coordination fence；每次打开任务还会把 repository 中较新的 sandbox/approval 权限合并回运行视图，避免旧内存快照覆盖跨进程更新。
+任务设置只把用户实际修改的字段发送给 app-server。Web 设置面板以 Gateway 返回的 `ThreadSettings` 和新 revision 直接更新 Thread actor，不能通过盲目重开任务伪造成功；面板在保存期间保持打开，明确区分 dirty、saving、reconciling、saved 和 error，并在新改动出现前保持成功反馈。结果未知或确定拒绝时才重新读取权威设置。`thread/open` 同步期间收到的 `thread/settings/updated` acknowledgement 必须抑制递归刷新，避免页面持续显示同步并反复切换 Composer 可用状态。
+
+CE 的 lease-owned app-server client 在 `initialize` 时显式声明 `capabilities.experimentalApi: true`，因为 `thread/settings/update` 属于实验 API；未完成该能力协商时必须把 Codex 的拒绝当作确定失败，不得伪造本地设置成功。Web 与 `ce tui` 的同任务权限写入共用持久 coordination fence；每次打开任务还会把 repository 中较新的 sandbox/approval 权限合并回运行视图，避免旧内存快照覆盖跨进程更新。
 
 包含恢复码、handoff code 或 resume token 的方法只能使用有界内存 `ephemeral` 重放；协议测试和 middleware metadata 校验共同阻止它们进入 SQLite。
 
@@ -234,6 +236,8 @@ Queue item 和 delivery claim 在同一用户库中。dispatcher 在 app-server 
 路由：`/hosts`、`/setup`、`/tasks`、`/tasks/:threadId`、`/queue`、`/workspaces`、`/settings`、`/admin/*`。未完成 onboarding 时 user route gate 强制进入 `/setup`。
 
 桌面使用左侧导航/任务列表、中间任务内容和按需操作区；390px 移动端使用任务、Queue、工作区、设置四项底部导航。Markdown、KaTeX 和代码呈现只在任务页懒加载，并继续经 DOMPurify 清洗。
+
+交互状态使用统一的成功、警告、错误和信息反馈组件；异步按钮必须在请求期间锁定并显示进行中语义，表单提交按钮还要由 dirty/valid 状态控制。常用触控目标不小于 44px，移动端主要操作不依赖 hover；任务删除使用可访问的应用内确认对话框，不依赖浏览器原生 confirm。状态名称面向用户本地化，内部 actor 状态不得直接显示为英文枚举。
 
 `GatewayPort` 是 React 唯一远端边界。顶层身份边界只创建一个 runtime：普通用户进入 `UserWebRuntime`，管理员进入 `AdminWebRuntime`。两者使用独立 context、actor 和路由；Admin runtime 不导入或实例化 thread、workspace、Queue 等用户业务 actor。`ReconnectingGatewayPort` 热切换 Direct/Relay transport，actor 和组件不会持有 WebSocket。恢复后用户 runtime 重新读取 onboarding、任务、Queue、当前 `thread/open`，并对账 composer operation key。
 

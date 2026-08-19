@@ -32,6 +32,11 @@ export interface ThreadActorState {
 type Event =
   | { readonly type: "OPEN"; readonly threadId: string }
   | { readonly type: "OPENED"; readonly snapshot: Snapshot }
+  | {
+      readonly type: "SETTINGS_UPDATED";
+      readonly threadId: string;
+      readonly settings: OutputOf<"thread/settings/update">;
+    }
   | { readonly type: "LOAD_EARLIER" }
   | {
       readonly type: "HISTORY_LOADED";
@@ -81,6 +86,21 @@ export function createThreadActor(scope: Scope, gateway: GatewayPort) {
               snapshot: preserveTransientEvents(state.snapshot, event.snapshot),
               refreshing: false,
             },
+          };
+        case "SETTINGS_UPDATED":
+          if (
+            state.threadId !== event.threadId ||
+            state.snapshot === undefined ||
+            event.settings.revision < state.snapshot.settings.revision
+          ) {
+            return { state, preserveEffects: true };
+          }
+          return {
+            state: {
+              ...state,
+              snapshot: { ...state.snapshot, settings: event.settings },
+            },
+            preserveEffects: true,
           };
         case "LOAD_EARLIER":
           if (

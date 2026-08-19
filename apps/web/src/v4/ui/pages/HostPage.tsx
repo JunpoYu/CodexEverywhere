@@ -11,6 +11,8 @@ import {
 import { GatewayReauthenticationRequiredError } from "../../gateway/encrypted-transport.js";
 import type { GatewayPort } from "../../gateway/gateway-port.js";
 import { lookupHostProfile } from "../../gateway/host-discovery.js";
+import { Icon } from "../components/Icon.js";
+import { StatusMessage } from "../components/StatusMessage.js";
 import styles from "./HostPage.module.css";
 
 export function HostPage(input: {
@@ -128,7 +130,7 @@ export function HostPage(input: {
 
   return (
     <main className={styles.page}>
-      <section className={styles.card}>
+      <section aria-busy={busy} className={styles.card}>
         <div className={styles.brand}>
           <span className={styles.brandMark}>CE</span>
           <div>
@@ -162,6 +164,7 @@ export function HostPage(input: {
                 <button
                   className={styles.deleteButton}
                   aria-label={`删除 ${host.name}`}
+                  disabled={busy}
                   type="button"
                   onClick={() => {
                     void deleteHost(host.id).then(() =>
@@ -171,7 +174,7 @@ export function HostPage(input: {
                     );
                   }}
                 >
-                  ×
+                  <Icon name="trash" />
                 </button>
               </div>
             ))}
@@ -197,7 +200,7 @@ export function HostPage(input: {
             type="button"
             onClick={() => void login("passkey")}
           >
-            使用 Passkey 继续
+            {busy ? "正在建立安全连接…" : "使用 Passkey 继续"}
           </button>
           <details className={styles.alternatives}>
             <summary>使用 CE 密码、恢复码或临时模式</summary>
@@ -333,9 +336,9 @@ export function HostPage(input: {
           </div>
         ) : null}
         {error === undefined ? null : (
-          <p className="error" role="alert">
-            {error}
-          </p>
+          <div className={styles.feedback}>
+            <StatusMessage tone="error">{error}</StatusMessage>
+          </div>
         )}
       </section>
     </main>

@@ -7,6 +7,7 @@ import {
 
 import { approvalPresentation } from "../../../session-controls.js";
 import { durableMutation } from "../../gateway/durable-mutation.js";
+import { StatusMessage } from "../components/StatusMessage.js";
 import { useRuntime } from "../runtime-context.js";
 
 type Interaction = OutputOf<"interaction/list">["interactions"][number];
@@ -62,7 +63,11 @@ export function InteractionCard(input: { readonly interaction: Interaction }) {
       });
     };
     return (
-      <form className="interaction-card interaction-form" onSubmit={submit}>
+      <form
+        aria-busy={busy}
+        className="interaction-card interaction-form"
+        onSubmit={submit}
+      >
         <div>
           <strong>Codex 需要你的输入</strong>
           {questions.map((question) => (
@@ -102,10 +107,12 @@ export function InteractionCard(input: { readonly interaction: Interaction }) {
               )}
             </label>
           ))}
-          {error === undefined ? null : <p className="error">{error}</p>}
+          {error === undefined ? null : (
+            <StatusMessage tone="error">{error}</StatusMessage>
+          )}
         </div>
         <button className="primary" disabled={busy} type="submit">
-          提交回答
+          {busy ? "正在提交…" : "提交回答"}
         </button>
       </form>
     );
@@ -131,7 +138,7 @@ export function InteractionCard(input: { readonly interaction: Interaction }) {
       });
     };
     return (
-      <div className="interaction-card interaction-form">
+      <div aria-busy={busy} className="interaction-card interaction-form">
         <div>
           <strong>{presentation.title}</strong>
           <p>{presentation.summary}</p>
@@ -150,7 +157,9 @@ export function InteractionCard(input: { readonly interaction: Interaction }) {
               打开 MCP 授权页面
             </a>
           )}
-          {error === undefined ? null : <p className="error">{error}</p>}
+          {error === undefined ? null : (
+            <StatusMessage tone="error">{error}</StatusMessage>
+          )}
         </div>
         <div>
           <button
@@ -164,7 +173,7 @@ export function InteractionCard(input: { readonly interaction: Interaction }) {
               })
             }
           >
-            拒绝
+            {busy ? "处理中…" : "拒绝"}
           </button>
           <button
             className="primary"
@@ -172,7 +181,7 @@ export function InteractionCard(input: { readonly interaction: Interaction }) {
             type="button"
             onClick={accept}
           >
-            允许
+            {busy ? "处理中…" : "允许"}
           </button>
         </div>
       </div>
@@ -180,7 +189,7 @@ export function InteractionCard(input: { readonly interaction: Interaction }) {
   }
 
   return (
-    <div className="interaction-card">
+    <div aria-busy={busy} className="interaction-card">
       <div>
         <strong>{presentation.title}</strong>
         <p>{presentation.summary}</p>
@@ -190,7 +199,9 @@ export function InteractionCard(input: { readonly interaction: Interaction }) {
         {presentation.meta.map((line) => (
           <small key={line}>{line}</small>
         ))}
-        {error === undefined ? null : <p className="error">{error}</p>}
+        {error === undefined ? null : (
+          <StatusMessage tone="error">{error}</StatusMessage>
+        )}
       </div>
       <div>
         <button
@@ -204,7 +215,7 @@ export function InteractionCard(input: { readonly interaction: Interaction }) {
             })
           }
         >
-          拒绝
+          {busy ? "处理中…" : "拒绝"}
         </button>
         <button
           className="primary"
@@ -218,7 +229,7 @@ export function InteractionCard(input: { readonly interaction: Interaction }) {
             })
           }
         >
-          允许
+          {busy ? "处理中…" : "允许"}
         </button>
       </div>
     </div>

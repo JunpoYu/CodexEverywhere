@@ -10,6 +10,8 @@ import {
 import { durableMutation } from "../../gateway/durable-mutation.js";
 import { mutationOptions, queryOptions } from "../../gateway/gateway-port.js";
 import { useActorState } from "../../actors/use-actor.js";
+import { StatusMessage } from "../components/StatusMessage.js";
+import { ModalDialog } from "../components/ModalDialog.js";
 import { useRuntime } from "../runtime-context.js";
 
 export function SettingsPage() {
@@ -25,6 +27,7 @@ export function SettingsPage() {
   const [codexVersion, setCodexVersion] =
     useState<OutputOf<"setup/codex/version">>();
   const [busy, setBusy] = useState(false);
+  const [preferenceBusy, setPreferenceBusy] = useState(false);
   const [error, setError] = useState<string>();
   const [notice, setNotice] = useState<string>();
 
@@ -59,7 +62,9 @@ export function SettingsPage() {
     >,
   ) => {
     if (preferences === undefined) return;
+    setPreferenceBusy(true);
     setError(undefined);
+    setNotice(undefined);
     try {
       const result = await durableMutation({
         owner: runtime.scope,
@@ -73,16 +78,21 @@ export function SettingsPage() {
           delete document.documentElement.dataset.theme;
         else document.documentElement.dataset.theme = patch.theme;
       }
+      setNotice("偏好设置已保存。新任务会使用更新后的默认值。");
     } catch (reason) {
       setError(message(reason));
+    } finally {
+      setPreferenceBusy(false);
     }
   };
 
   const identityAction = async (
     action: () => Promise<readonly string[]>,
+    success: string,
   ): Promise<boolean> => {
     setBusy(true);
     setError(undefined);
+    setNotice(undefined);
     try {
       const codes = await action();
       if (codes.length > 0) setRecoveryCodes(codes);
@@ -93,6 +103,7 @@ export function SettingsPage() {
           queryOptions(),
         ),
       );
+      setNotice(success);
       return true;
     } catch (reason) {
       setError(message(reason));
@@ -108,13 +119,15 @@ export function SettingsPage() {
       setError("两次输入的密码不一致");
       return;
     }
-    void identityAction(() =>
-      registerPassword(
-        runtime.gateway,
-        runtime.host,
-        password,
-        auth?.temporary === false,
-      ),
+    void identityAction(
+      () =>
+        registerPassword(
+          runtime.gateway,
+          runtime.host,
+          password,
+          auth?.temporary === false,
+        ),
+      "CE 密码已更新。",
     ).then((saved) => {
       if (saved) {
         setPassword("");
@@ -144,29 +157,30 @@ export function SettingsPage() {
   };
 
   return (
-    <main className="page narrow-page">
+    <main aria-busy={busy || preferenceBusy} className="page narrow-page">
       <header className="page-heading">
         <div>
-          <p className="eyebrow">Per-user preferences</p>
+          <p className="eyebrow">个人偏好</p>
           <h1>设置</h1>
           <p>任务权限与 Web 身份保存在运行 Codex 的宿主机。</p>
         </div>
       </header>
       {auth?.temporary ? (
-        <p className="warning">
+        <StatusMessage tone="warning">
           当前为临时登录；CE 不会把设备密钥、会话票据或业务缓存写入浏览器存储。
-        </p>
+        </StatusMessage>
       ) : null}
       {preferences === undefined ? (
         <span className="spinner" />
       ) : (
-        <section className="settings-list">
+        <section className="settings-list" aria-busy={preferenceBusy}>
           <label>
             <span>
               <strong>主题</strong>
               <small>跟随系统、浅色或深色</small>
             </span>
             <select
+              disabled={preferenceBusy || busy}
               value={preferences.theme}
               onChange={(event) =>
                 void update({
@@ -185,6 +199,7 @@ export function SettingsPage() {
               <small>新任务的文件访问边界</small>
             </span>
             <select
+              disabled={preferenceBusy || busy}
               value={preferences.sandbox}
               onChange={(event) =>
                 void update({
@@ -203,6 +218,7 @@ export function SettingsPage() {
               <small>Codex 请求外部副作用时的策略</small>
             </span>
             <select
+              disabled={preferenceBusy || busy}
               value={preferences.approvalPolicy}
               onChange={(event) =>
                 void update({
@@ -221,31 +237,36 @@ export function SettingsPage() {
 
       <section className="settings-security">
         <div>
-          <p className="eyebrow">Web identity</p>
+          <p className="eyebrow">Web 身份</p>
           <h2>登录与恢复</h2>
           <p>CE 密码独立于 SSH/Linux 密码。恢复码每次轮换后旧码立即失效。</p>
         </div>
         <div className="identity-actions">
           <button
-            disabled={busy}
+            disabled={busy || preferenceBusy}
             type="button"
             onClick={() =>
-              void identityAction(() =>
-                registerPasskey(
-                  runtime.gateway,
-                  runtime.host.deviceName,
-                  auth?.temporary === false,
-                ),
+              void identityAction(
+                () =>
+                  registerPasskey(
+                    runtime.gateway,
+                    runtime.host.deviceName,
+                    auth?.temporary === false,
+                  ),
+                "Passkey 已添加。",
               )
             }
           >
             添加 Passkey
           </button>
           <button
-            disabled={busy}
+            disabled={busy || preferenceBusy}
             type="button"
             onClick={() =>
-              void identityAction(() => rotateRecoveryCodes(runtime.gateway))
+              void identityAction(
+                () => rotateRecoveryCodes(runtime.gateway),
+                "新的恢复码已签发，请立即保存。",
+              )
             }
           >
             轮换恢复码
@@ -274,14 +295,18 @@ export function SettingsPage() {
               required
             />
           </label>
-          <button className="primary" disabled={busy} type="submit">
+          <button
+            className="primary"
+            disabled={busy || preferenceBusy}
+            type="submit"
+          >
             {auth?.passwordAvailable ? "更改 CE 密码" : "设置 CE 密码"}
           </button>
         </form>
       </section>
       <section className="settings-security">
         <div>
-          <p className="eyebrow">Codex runtime</p>
+          <p className="eyebrow">Codex 运行环境</p>
           <h2>安装与 app-server</h2>
           <p>
             当前版本 {codexVersion?.installedVersion ?? "未安装"}
@@ -292,11 +317,13 @@ export function SettingsPage() {
           </p>
         </div>
         {onboarding.installProgress === undefined ? null : (
-          <p role="status">安装状态：{onboarding.installProgress.phase}</p>
+          <p role="status">
+            安装状态：{installPhaseLabel(onboarding.installProgress.phase)}
+          </p>
         )}
         <div className="identity-actions">
           <button
-            disabled={busy}
+            disabled={busy || preferenceBusy}
             type="button"
             onClick={() =>
               void runLifecycle(
@@ -314,7 +341,7 @@ export function SettingsPage() {
             检查并更新 Codex
           </button>
           <button
-            disabled={busy}
+            disabled={busy || preferenceBusy}
             type="button"
             onClick={() =>
               void runLifecycle(
@@ -336,7 +363,9 @@ export function SettingsPage() {
             重启 app-server
           </button>
           <button
-            disabled={busy || !onboarding.status?.codexAuthenticated}
+            disabled={
+              busy || preferenceBusy || !onboarding.status?.codexAuthenticated
+            }
             type="button"
             onClick={() => {
               if (
@@ -364,12 +393,15 @@ export function SettingsPage() {
           </button>
         </div>
       </section>
-      {error === undefined ? null : <p className="error">{error}</p>}
-      {notice === undefined ? null : <p role="status">{notice}</p>}
+      {error === undefined ? null : (
+        <StatusMessage tone="error">{error}</StatusMessage>
+      )}
+      {notice === undefined ? null : (
+        <StatusMessage tone="success">{notice}</StatusMessage>
+      )}
       {recoveryCodes.length === 0 ? null : (
-        <dialog
+        <ModalDialog
           className="ce-dialog"
-          open
           aria-labelledby="settings-recovery-title"
         >
           <h2 id="settings-recovery-title">请立即保存新的恢复码</h2>
@@ -392,7 +424,7 @@ export function SettingsPage() {
               我已保存
             </button>
           </div>
-        </dialog>
+        </ModalDialog>
       )}
     </main>
   );
@@ -400,4 +432,15 @@ export function SettingsPage() {
 
 function message(error: unknown): string {
   return error instanceof Error ? error.message : "设置保存失败";
+}
+
+function installPhaseLabel(phase: string): string {
+  const labels: Record<string, string> = {
+    preparing: "准备中",
+    installing: "安装中",
+    verifying: "校验中",
+    completed: "已完成",
+    failed: "失败",
+  };
+  return labels[phase] ?? phase;
 }

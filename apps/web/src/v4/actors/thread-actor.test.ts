@@ -85,6 +85,52 @@ describe("v0.4 thread actor", () => {
     );
   });
 
+  it("applies a confirmed settings revision without reopening the task", () => {
+    const scope = new Scope("thread-settings-test");
+    scopes.push(scope);
+    const actor = createThreadActor(scope, new DeferredThreadGateway());
+    actor.dispatch({ type: "OPENED", snapshot: snapshot("thread-a") });
+
+    actor.dispatch({
+      type: "SETTINGS_UPDATED",
+      threadId: "thread-a",
+      settings: {
+        version: 1,
+        revision: 1,
+        sandbox: "workspace-write",
+        approvalPolicy: "on-request",
+      },
+    });
+
+    expect(actor.getSnapshot()).toMatchObject({
+      status: "idle",
+      refreshing: false,
+      snapshot: {
+        settings: {
+          revision: 1,
+          sandbox: "workspace-write",
+          approvalPolicy: "on-request",
+        },
+      },
+    });
+
+    actor.dispatch({
+      type: "SETTINGS_UPDATED",
+      threadId: "thread-a",
+      settings: {
+        version: 1,
+        revision: 0,
+        sandbox: "read-only",
+        approvalPolicy: "untrusted",
+      },
+    });
+    expect(actor.getSnapshot().snapshot?.settings).toMatchObject({
+      revision: 1,
+      sandbox: "workspace-write",
+      approvalPolicy: "on-request",
+    });
+  });
+
   it("does not cancel thread/open when an unrelated Gateway event arrives", async () => {
     const gateway = new DeferredThreadGateway();
     const scope = new Scope("thread-event-race-test");

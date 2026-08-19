@@ -5,14 +5,19 @@ import {
   readPwaUpdateSafetyState,
 } from "../../../pwa-update.js";
 import { useActorState } from "../../actors/use-actor.js";
+import { Icon, type IconName } from "../components/Icon.js";
 import { useRuntime } from "../runtime-context.js";
 import styles from "./AppShell.module.css";
 
-const navigation = [
-  ["/tasks", "任务", "◫"],
-  ["/queue", "Queue", "≡"],
-  ["/workspaces", "工作区", "⌂"],
-  ["/settings", "设置", "⚙"],
+const navigation: readonly {
+  readonly to: string;
+  readonly label: string;
+  readonly icon: IconName;
+}[] = [
+  { to: "/tasks", label: "任务", icon: "task" },
+  { to: "/queue", label: "Queue", icon: "queue" },
+  { to: "/workspaces", label: "工作区", icon: "workspace" },
+  { to: "/settings", label: "设置", icon: "settings" },
 ] as const;
 
 export function AppShell(input: { readonly onDisconnect: () => void }) {
@@ -31,11 +36,11 @@ export function AppShell(input: { readonly onDisconnect: () => void }) {
           </div>
         </NavLink>
         <div
-          className={`${styles.connection} ${connection.status === "online" ? styles.online : ""}`}
+          className={`${styles.connection} ${styles[connection.status] ?? ""}`}
           role="status"
         >
           <i />
-          {connection.status === "online" ? "已连接" : connection.status}
+          {connectionLabel(connection.status)}
         </div>
         <button className="ghost" type="button" onClick={input.onDisconnect}>
           切换宿主机
@@ -58,8 +63,8 @@ export function AppShell(input: { readonly onDisconnect: () => void }) {
         </aside>
       )}
       <aside className={styles.sidebar}>
-        <nav>
-          {navigation.map(([to, label, icon]) => (
+        <nav aria-label="主导航">
+          {navigation.map(({ to, label, icon }) => (
             <NavLink
               className={({ isActive }) =>
                 `${styles.navLink} ${isActive ? styles.active : ""}`
@@ -67,7 +72,7 @@ export function AppShell(input: { readonly onDisconnect: () => void }) {
               key={to}
               to={to}
             >
-              <span>{icon}</span>
+              <Icon name={icon} />
               {label}
             </NavLink>
           ))}
@@ -91,6 +96,9 @@ export function AppShell(input: { readonly onDisconnect: () => void }) {
               <span className={styles.taskTitle}>
                 {task.title || "未命名任务"}
               </span>
+              <span className={styles.visuallyHidden}>
+                {taskStateLabel(task.state)}
+              </span>
             </NavLink>
           ))}
         </div>
@@ -99,13 +107,13 @@ export function AppShell(input: { readonly onDisconnect: () => void }) {
         <Outlet />
       </div>
       <nav className={styles.mobileNav} aria-label="主导航">
-        {navigation.map(([to, label, icon]) => (
+        {navigation.map(({ to, label, icon }) => (
           <NavLink
             className={({ isActive }) => (isActive ? styles.active : undefined)}
             key={to}
             to={to}
           >
-            <span>{icon}</span>
+            <Icon name={icon} />
             <small>{label}</small>
           </NavLink>
         ))}
@@ -140,4 +148,23 @@ function taskStateClass(state: string): string {
   if (state === "waiting-input") return styles.waitingInput ?? "";
   if (state === "failed") return styles.failed ?? "";
   return "";
+}
+
+function taskStateLabel(state: string): string {
+  if (state === "running") return "运行中";
+  if (state === "waiting-input") return "等待操作";
+  if (state === "failed") return "失败";
+  return "就绪";
+}
+
+function connectionLabel(status: string): string {
+  const labels: Record<string, string> = {
+    disconnected: "未连接",
+    connecting: "正在连接",
+    authenticating: "正在验证",
+    online: "已连接",
+    reconnecting: "正在重连",
+    "upgrade-required": "需要更新",
+  };
+  return labels[status] ?? "连接异常";
 }

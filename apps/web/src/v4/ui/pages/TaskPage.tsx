@@ -4,6 +4,9 @@ import { useNavigate, useParams } from "react-router-dom";
 import { useActorState } from "../../actors/use-actor.js";
 import { durableMutation } from "../../gateway/durable-mutation.js";
 import { mutationOptions } from "../../gateway/gateway-port.js";
+import { Icon } from "../components/Icon.js";
+import { ModalDialog } from "../components/ModalDialog.js";
+import { StatusMessage } from "../components/StatusMessage.js";
 import { InteractionCard } from "../interactions/InteractionCard.js";
 import { useRuntime } from "../runtime-context.js";
 import { ThreadSettingsPanel } from "./ThreadSettingsPanel.js";
@@ -20,6 +23,9 @@ export function TaskPage() {
   const [actionError, setActionError] = useState<string>();
   const [renameTitle, setRenameTitle] = useState<string>();
   const [taskMutating, setTaskMutating] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [handoffCopied, setHandoffCopied] = useState(false);
+  const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
 
   useEffect(() => {
     if (threadId.length > 0)
@@ -29,6 +35,13 @@ export function TaskPage() {
 
   const submit = (event: FormEvent) => {
     event.preventDefault();
+    if (
+      composer.status !== "idle" ||
+      thread.status !== "idle" ||
+      composer.draft.trim().length === 0
+    ) {
+      return;
+    }
     runtime.composer.dispatch({ type: "SUBMIT", threadId });
   };
 
@@ -113,8 +126,6 @@ export function TaskPage() {
   };
 
   const deleteTask = async () => {
-    if (!window.confirm("永久删除这个 Codex 任务？此操作无法从 CE 恢复。"))
-      return;
     setTaskMutating(true);
     setActionError(undefined);
     try {
@@ -156,45 +167,78 @@ export function TaskPage() {
       }
     >
       <header className="conversation-header">
-        <div>
+        <div className="conversation-title">
           <p className="eyebrow">任务</p>
           <h1>{snapshot.thread.title || "未命名任务"}</h1>
+          <span className={`state-pill ${thread.status}`}>
+            <i />
+            {threadStateLabel(thread.status)}
+            {thread.refreshing ? " · 正在同步" : ""}
+          </span>
         </div>
         <div className="conversation-actions">
           {thread.status === "running" ? (
             <button type="button" onClick={() => void interrupt()}>
+              <Icon name="stop" />
               中断
             </button>
           ) : null}
           <button type="button" onClick={() => void tuiHandoff()}>
+            <Icon name="terminal" />
             转到 TUI
           </button>
-          <button
-            disabled={taskMutating}
-            type="button"
-            onClick={() => setRenameTitle(snapshot.thread.title)}
-          >
-            重命名
+          <button type="button" onClick={() => setSettingsOpen(true)}>
+            <Icon name="settings" />
+            任务设置
           </button>
-          <button
-            disabled={taskMutating || thread.status === "running"}
-            type="button"
-            onClick={() => void archive(snapshot.thread.archived)}
-          >
-            {snapshot.thread.archived ? "取消归档" : "归档"}
-          </button>
-          <button
-            disabled={taskMutating || thread.status === "running"}
-            type="button"
-            onClick={() => void deleteTask()}
-          >
-            删除
-          </button>
-          <span className={`state-pill ${thread.status}`}>{thread.status}</span>
+          <details className="task-action-menu">
+            <summary aria-label="更多任务操作">
+              <Icon name="more" />
+            </summary>
+            <div>
+              <button
+                disabled={taskMutating}
+                type="button"
+                onClick={(event) => {
+                  event.currentTarget
+                    .closest("details")
+                    ?.removeAttribute("open");
+                  setRenameTitle(snapshot.thread.title);
+                }}
+              >
+                重命名
+              </button>
+              <button
+                disabled={taskMutating || thread.status === "running"}
+                type="button"
+                onClick={() => void archive(snapshot.thread.archived)}
+              >
+                <Icon name="archive" />
+                {snapshot.thread.archived ? "取消归档" : "归档"}
+              </button>
+              <button
+                className="danger-action"
+                disabled={taskMutating || thread.status === "running"}
+                type="button"
+                onClick={(event) => {
+                  event.currentTarget
+                    .closest("details")
+                    ?.removeAttribute("open");
+                  setActionError(undefined);
+                  setDeleteConfirmOpen(true);
+                }}
+              >
+                <Icon name="trash" />
+                删除
+              </button>
+            </div>
+          </details>
         </div>
       </header>
-      {actionError === undefined ? null : (
-        <p className="error">{actionError}</p>
+      {actionError === undefined || deleteConfirmOpen ? null : (
+        <div className="conversation-notice">
+          <StatusMessage tone="error">{actionError}</StatusMessage>
+        </div>
       )}
       {renameTitle === undefined ? null : (
         <form className="conversation-rename" onSubmit={rename}>
@@ -222,7 +266,10 @@ export function TaskPage() {
           </button>
         ) : null}
         {snapshot.items.map((item) => (
-          <article className={`timeline-item type-${item.type}`} key={item.id}>
+          <article
+            className={`timeline-item type-${item.type} ${messageRoleClass(item.type, item.data.role)}`}
+            key={item.id}
+          >
             <header>
               <span>{itemLabel(item.type, item.data.role)}</span>
               {item.createdAt ? (
@@ -244,11 +291,6 @@ export function TaskPage() {
         ))}
       </section>
       <section className="composer-dock">
-        <ThreadSettingsPanel
-          key={snapshot.settings.revision}
-          settings={snapshot.settings}
-          threadId={threadId}
-        />
         {snapshot.interactions.map((interaction) => (
           <InteractionCard interaction={interaction} key={interaction.id} />
         ))}
@@ -270,9 +312,7 @@ export function TaskPage() {
           </div>
         ) : null}
         {composer.status === "idle" && composer.error !== undefined ? (
-          <p className="error" role="alert">
-            {composer.error}
-          </p>
+          <StatusMessage tone="error">{composer.error}</StatusMessage>
         ) : null}
         <form className="composer" onSubmit={submit}>
           <textarea
@@ -290,6 +330,12 @@ export function TaskPage() {
                 value: event.target.value,
               })
             }
+            onKeyDown={(event) => {
+              if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
+                event.preventDefault();
+                event.currentTarget.form?.requestSubmit();
+              }
+            }}
           />
           <div>
             {taskActive ? (
@@ -308,35 +354,101 @@ export function TaskPage() {
             ) : null}
             <button
               className="primary"
-              disabled={composer.status !== "idle" || thread.status !== "idle"}
+              disabled={
+                composer.status !== "idle" ||
+                thread.status !== "idle" ||
+                composer.draft.trim().length === 0
+              }
               type="submit"
             >
+              <Icon name="send" />
               {composer.status === "submitting" ? "发送中…" : "发送"}
             </button>
           </div>
         </form>
+        <p className="composer-hint">按 Ctrl/⌘ + Enter 发送</p>
       </section>
+      {settingsOpen ? (
+        <ThreadSettingsPanel
+          settings={snapshot.settings}
+          threadId={threadId}
+          onClose={() => setSettingsOpen(false)}
+        />
+      ) : null}
+      {deleteConfirmOpen ? (
+        <ModalDialog
+          aria-describedby="delete-task-description"
+          aria-labelledby="delete-task-title"
+          className="ce-dialog confirm-dialog"
+          onRequestClose={() => {
+            if (!taskMutating) setDeleteConfirmOpen(false);
+          }}
+        >
+          <span className="dialog-icon danger">
+            <Icon name="trash" />
+          </span>
+          <h2 id="delete-task-title">永久删除这个任务？</h2>
+          <p id="delete-task-description">
+            任务将从 Codex app-server 中删除，CE
+            无法恢复。工作区中的文件不会被删除。
+          </p>
+          {actionError === undefined ? null : (
+            <StatusMessage tone="error">{actionError}</StatusMessage>
+          )}
+          <div className="dialog-actions">
+            <button
+              disabled={taskMutating}
+              type="button"
+              onClick={() => setDeleteConfirmOpen(false)}
+            >
+              取消
+            </button>
+            <button
+              className="danger-button"
+              disabled={taskMutating}
+              type="button"
+              onClick={() => void deleteTask()}
+            >
+              {taskMutating ? "正在删除…" : "永久删除"}
+            </button>
+          </div>
+        </ModalDialog>
+      ) : null}
       {handoff === undefined ? null : (
-        <dialog className="ce-dialog" open aria-labelledby="tui-handoff-title">
+        <ModalDialog
+          aria-labelledby="tui-handoff-title"
+          className="ce-dialog"
+          onRequestClose={() => {
+            setHandoff(undefined);
+            setHandoffCopied(false);
+          }}
+        >
           <h2 id="tui-handoff-title">在 HPC 终端继续</h2>
           <p>此命令只接管官方 TUI，不会中断正在运行的 turn。</p>
           <pre>{handoff}</pre>
           <div className="dialog-actions">
             <button
               type="button"
-              onClick={() => void navigator.clipboard.writeText(handoff)}
+              onClick={() =>
+                void navigator.clipboard.writeText(handoff).then(() => {
+                  setHandoffCopied(true);
+                })
+              }
             >
-              复制
+              {handoffCopied ? "已复制" : "复制"}
             </button>
             <button
               className="primary"
               type="button"
-              onClick={() => setHandoff(undefined)}
+              onClick={() => {
+                setHandoff(undefined);
+                setHandoffCopied(false);
+              }}
             >
               关闭
             </button>
           </div>
-        </dialog>
+        </ModalDialog>
       )}
     </main>
   );
@@ -354,4 +466,23 @@ function itemLabel(type: string, role: unknown): string {
     generic: "事件",
   };
   return labels[type] ?? type;
+}
+
+function messageRoleClass(type: string, role: unknown): string {
+  if (type !== "message") return "";
+  return role === "user" ? "role-user" : "role-assistant";
+}
+
+function threadStateLabel(status: string): string {
+  const labels: Record<string, string> = {
+    closed: "已关闭",
+    opening: "正在打开",
+    syncing: "正在同步",
+    idle: "就绪",
+    running: "正在运行",
+    "waiting-input": "等待你的操作",
+    reconnecting: "正在重连",
+    failed: "出现错误",
+  };
+  return labels[status] ?? status;
 }

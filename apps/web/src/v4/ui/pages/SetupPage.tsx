@@ -8,6 +8,8 @@ import type {
 import { useActorState } from "../../actors/use-actor.js";
 import { durableMutation } from "../../gateway/durable-mutation.js";
 import { mutationOptions, queryOptions } from "../../gateway/gateway-port.js";
+import { Icon } from "../components/Icon.js";
+import { StatusMessage } from "../components/StatusMessage.js";
 import { useRuntime } from "../runtime-context.js";
 
 type LoginOperation = OutputOf<"setup/codex/login/start">;
@@ -22,6 +24,7 @@ export function SetupPage() {
   const [noProxy, setNoProxy] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
+  const [codeCopied, setCodeCopied] = useState(false);
   const navigate = useNavigate();
 
   useEffect(() => {
@@ -76,7 +79,7 @@ export function SetupPage() {
   };
 
   return (
-    <main className="page narrow-page">
+    <main aria-busy={busy} className="page narrow-page">
       <header className="page-heading">
         <div>
           <p className="eyebrow">首次初始化</p>
@@ -219,10 +222,23 @@ export function SetupPage() {
           </button>
           {login === undefined ? null : (
             <div className="device-code">
+              <div>
+                <span>设备验证码</span>
+                <strong>{login.userCode}</strong>
+              </div>
               <a href={login.verificationUri} target="_blank" rel="noreferrer">
-                打开登录页面
+                打开官方登录页面
               </a>
-              <strong>{login.userCode}</strong>
+              <button
+                type="button"
+                onClick={() =>
+                  void navigator.clipboard
+                    .writeText(login.userCode)
+                    .then(() => setCodeCopied(true))
+                }
+              >
+                {codeCopied ? "已复制" : "复制验证码"}
+              </button>
               <small>
                 有效期至 {new Date(login.expiresAt).toLocaleTimeString("zh-CN")}
               </small>
@@ -236,6 +252,7 @@ export function SetupPage() {
                       mutationOptions(),
                     );
                     setLogin(undefined);
+                    setCodeCopied(false);
                   })
                 }
               >
@@ -265,10 +282,15 @@ export function SetupPage() {
           ) : null}
         </Step>
       </ol>
+      {busy ? (
+        <StatusMessage tone="info">正在处理初始化操作，请稍候…</StatusMessage>
+      ) : null}
       {onboarding.error === undefined ? null : (
-        <p className="error">{onboarding.error}</p>
+        <StatusMessage tone="error">{onboarding.error}</StatusMessage>
       )}
-      {error === undefined ? null : <p className="error">{error}</p>}
+      {error === undefined ? null : (
+        <StatusMessage tone="error">{error}</StatusMessage>
+      )}
     </main>
   );
 }
@@ -281,7 +303,7 @@ function Step(input: {
 }) {
   return (
     <li className={input.active ? "active" : input.complete ? "complete" : ""}>
-      <i>{input.complete ? "✓" : ""}</i>
+      <i>{input.complete ? <Icon name="check" /> : null}</i>
       <div>
         <h2>{input.title}</h2>
         {input.children}
