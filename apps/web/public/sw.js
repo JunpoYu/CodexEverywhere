@@ -1,5 +1,5 @@
 const CACHE_PREFIX = "codex-everywhere-v";
-const CACHE = "codex-everywhere-v47";
+const CACHE = "codex-everywhere-v48";
 const ASSET_MANIFEST = "/asset-manifest.json";
 const CORE = ["/manifest.webmanifest", "/icon.svg"];
 const VERSION_REQUEST = "PWA_CACHE_VERSION_REQUEST";
