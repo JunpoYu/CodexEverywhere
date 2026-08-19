@@ -4,6 +4,14 @@
 
 ## [Unreleased]
 
+## [0.4.0-alpha.7] - 2026-08-19
+
+### Fixed
+
+- CE Agent 创建的所有 lease-owned app-server client 现在会在 `initialize` 时显式启用 `experimentalApi`，使 Web 的 sandbox 与审批策略更新能够调用 Codex `thread/settings/update`，不再被 app-server 以缺少 capability 拒绝。
+- 新增 supervisor 装配回归测试，并以 Codex CLI `0.148.0` 重新生成 app-server notification schema、通过真实无模型合约测试。
+- 推进 PWA 缓存代次，确保已安装的 alpha.6 页面能够发现并安全激活 alpha.7 Web 版本。
+
 ## [0.4.0-alpha.6] - 2026-08-19
 
 ### Fixed

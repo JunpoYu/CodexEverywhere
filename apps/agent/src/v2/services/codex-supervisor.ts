@@ -11,7 +11,10 @@ import {
   restartAppServer,
   type AppServerInspection,
 } from "../../runtime/app-server-supervisor.js";
-import { CodexAppServerClient } from "../../runtime/codex-app-server-client.js";
+import {
+  CodexAppServerClient,
+  type InitializeOptions,
+} from "../../runtime/codex-app-server-client.js";
 import {
   probeCodexInstallation,
   type CodexInstallation,
@@ -39,7 +42,10 @@ export interface CodexSupervisorDependencies {
       readonly force: true;
     },
   ): Promise<{ started: boolean; pid?: number }>;
-  connect(socketPath: string): Promise<CodexAppServerClient>;
+  connect(
+    socketPath: string,
+    options: Pick<InitializeOptions, "experimentalApi">,
+  ): Promise<CodexAppServerClient>;
 }
 
 const DEFAULT_DEPENDENCIES: CodexSupervisorDependencies = {
@@ -48,7 +54,8 @@ const DEFAULT_DEPENDENCIES: CodexSupervisorDependencies = {
   inspect: inspectAppServer,
   ensure: ensureAppServer,
   restart: restartAppServer,
-  connect: (socketPath) => CodexAppServerClient.connectUnix(socketPath),
+  connect: (socketPath, options) =>
+    CodexAppServerClient.connectUnix(socketPath, options),
 };
 
 export interface CodexSupervisorPort {
@@ -126,7 +133,12 @@ export class CodexSupervisor implements CodexSupervisorPort {
   async connect(): Promise<CodexAppServerClient> {
     await this.ensure();
     this.#scope.throwIfClosed();
-    return this.#dependencies.connect(this.#paths.appServerSocket);
+    // CE exposes thread/settings/update in Gateway API v2. Codex app-server
+    // classifies that method as experimental and rejects it unless every
+    // lease-owned connection explicitly opts in during initialize.
+    return this.#dependencies.connect(this.#paths.appServerSocket, {
+      experimentalApi: true,
+    });
   }
 
   async #runtime(): Promise<{
