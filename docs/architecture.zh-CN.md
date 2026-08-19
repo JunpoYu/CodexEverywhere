@@ -194,7 +194,7 @@ sequenceDiagram
 
 request fingerprint 是完整、已验证 input 的 canonical SHA-256；数据库不保存 prompt、路径、Queue 文本或凭据。相同 key 与不同 input 必须返回 `OPERATION_KEY_REUSED`。transport 丢失以及 Agent 明确返回的 `MUTATION_PENDING` / `MUTATION_OUTCOME_UNKNOWN` 都进入同一 `mutation/status` 对账路径；Codex app-server 明确返回的 JSON-RPC error 则作为确定失败保存，不误标为结果未知。进程启动时残留 `pending` claim 转为 `indeterminate`，禁止自动重放。
 
-任务设置只把用户实际修改的字段发送给 app-server。Web 与 `ce tui` 的同任务权限写入共用持久 coordination fence；每次打开任务还会把 repository 中较新的 sandbox/approval 权限合并回运行视图，避免旧内存快照覆盖跨进程更新。
+任务设置只把用户实际修改的字段发送给 app-server。CE 的 lease-owned app-server client 在 `initialize` 时显式声明 `capabilities.experimentalApi: true`，因为 `thread/settings/update` 属于实验 API；未完成该能力协商时必须把 Codex 的拒绝当作确定失败，不得伪造本地设置成功。Web 与 `ce tui` 的同任务权限写入共用持久 coordination fence；每次打开任务还会把 repository 中较新的 sandbox/approval 权限合并回运行视图，避免旧内存快照覆盖跨进程更新。
 
 包含恢复码、handoff code 或 resume token 的方法只能使用有界内存 `ephemeral` 重放；协议测试和 middleware metadata 校验共同阻止它们进入 SQLite。
 
