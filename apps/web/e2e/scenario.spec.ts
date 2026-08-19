@@ -63,9 +63,9 @@ test("审批期间可排入、Steer 和移除 Queue", async ({ page }) => {
     hasText: "审批完成后继续检查 Queue",
   });
   await expect(row).toBeVisible();
-  await row.getByRole("button", { name: "Steer" }).click();
+  await row.getByRole("button", { name: "调整内容" }).click();
   await row.getByLabel("Steer 替换内容").fill("替换后的 Queue 请求");
-  await row.getByRole("button", { name: "发送到当前 turn" }).click();
+  await row.getByRole("button", { name: "发送到当前任务" }).click();
   const updatedRow = page.locator(".queue-row").filter({
     hasText: "替换后的 Queue 请求",
   });
@@ -103,6 +103,7 @@ test("任务可重命名、归档、取消归档并删除", async ({ page }) => 
   await createTask(page, "任务生命周期原始名称");
   await expectScenarioReply(page);
 
+  await openTaskActions(page);
   await page.getByRole("button", { name: "重命名" }).click();
   await page.getByLabel("任务名称").fill("任务生命周期新名称");
   await page.getByRole("button", { name: "保存" }).click();
@@ -110,23 +111,60 @@ test("任务可重命名、归档、取消归档并删除", async ({ page }) => 
     page.getByRole("heading", { name: "任务生命周期新名称" }),
   ).toBeVisible();
 
+  await openTaskActions(page);
   await page.getByRole("button", { name: "归档", exact: true }).click();
   await expect(
     page.getByRole("heading", { name: "任务", exact: true }),
   ).toBeVisible();
   await page.getByRole("button", { name: "查看已归档" }).click();
   await openTaskCard(page, "任务生命周期新名称");
+  await openTaskActions(page);
   await page.getByRole("button", { name: "取消归档" }).click();
 
   await expect(page.getByRole("button", { name: "查看已归档" })).toBeVisible();
   await openTaskCard(page, "任务生命周期新名称");
-  page.once("dialog", (dialog) => void dialog.accept());
+  await openTaskActions(page);
   await page.getByRole("button", { name: "删除", exact: true }).click();
+  await expect(
+    page.getByRole("heading", { name: "永久删除这个任务？" }),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "永久删除" }).click();
   await expect(
     page.locator(".task-grid .task-card").filter({
       hasText: "任务生命周期新名称",
     }),
   ).toHaveCount(0);
+});
+
+test("任务权限可连续保存，并始终显示权威结果", async ({ page }) => {
+  await openScenario(page);
+  await openTaskCard(page, "欢迎使用 CodexEverywhere");
+
+  await page.getByRole("button", { name: "任务设置" }).click();
+  const dialog = page.getByRole("dialog", { name: "任务权限与运行设置" });
+  const save = dialog.getByRole("button", { name: "保存更改" });
+  await expect(dialog).toBeVisible();
+  await expect(save).toBeDisabled();
+
+  await dialog.getByRole("radio", { name: /工作区可写/u }).click();
+  await dialog.getByRole("radio", { name: /按需询问/u }).click();
+  await expect(dialog.getByText("有未保存的更改")).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(dialog).toBeVisible();
+  await expect(save).toBeEnabled();
+  await save.click();
+
+  await expect(dialog).toBeVisible();
+  await expect(
+    dialog.getByText("设置已保存，并已应用到当前任务。"),
+  ).toBeVisible();
+  await expect(save).toBeDisabled();
+
+  await dialog.getByRole("radio", { name: /只读/u }).click();
+  await expect(save).toBeEnabled();
+  await save.click();
+  await expect(dialog.getByRole("radio", { name: /只读/u })).toBeChecked();
+  await expect(save).toBeDisabled();
 });
 
 test("工作区支持新增、默认切换和安全移除", async ({ page }) => {
@@ -151,6 +189,21 @@ test("工作区支持新增、默认切换和安全移除", async ({ page }) => 
   await expect(original.getByText("默认", { exact: true })).toBeVisible();
   await added.getByRole("button", { name: "移除" }).click();
   await expect(added).toHaveCount(0);
+});
+
+test("个人偏好保存后提供明确反馈", async ({ page }) => {
+  await openScenario(page);
+  await navigateTo(page, "/settings");
+
+  const sandbox = page.getByLabel("默认 Sandbox");
+  await sandbox.selectOption("read-only");
+  await expect(
+    page.getByText("偏好设置已保存。新任务会使用更新后的默认值。"),
+  ).toBeVisible();
+  await expect(sandbox).toHaveValue("read-only");
+
+  await sandbox.selectOption("workspace-write");
+  await expect(sandbox).toHaveValue("workspace-write");
 });
 
 test("管理端覆盖登记、停用、启用、恢复交接和审计", async ({ page }) => {
@@ -227,4 +280,8 @@ async function openTaskCard(
     .locator(".task-grid .task-card")
     .filter({ hasText: title })
     .click();
+}
+
+async function openTaskActions(page: import("@playwright/test").Page) {
+  await page.locator('summary[aria-label="更多任务操作"]').click();
 }

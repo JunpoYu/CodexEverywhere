@@ -1,6 +1,6 @@
 {
   "name": "codex-everywhere",
-  "version": "0.4.0-alpha.7",
+  "version": "0.4.0-alpha.8",
   "description": "A self-hosted Codex Web/PWA control plane for Linux and HPC.",
   "private": true,
   "license": "Apache-2.0",

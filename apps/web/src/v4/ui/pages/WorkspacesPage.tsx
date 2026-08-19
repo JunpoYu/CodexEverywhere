@@ -3,6 +3,7 @@ import type { OutputOf } from "@codex-everywhere/protocol/v2";
 
 import { durableMutation } from "../../gateway/durable-mutation.js";
 import { queryOptions } from "../../gateway/gateway-port.js";
+import { StatusMessage } from "../components/StatusMessage.js";
 import { useRuntime } from "../runtime-context.js";
 
 type Workspace = OutputOf<"workspace/list">["workspaces"][number];
@@ -15,23 +16,32 @@ export function WorkspacesPage() {
   const [busy, setBusy] = useState(false);
   const [reconciling, setReconciling] = useState(false);
   const [error, setError] = useState<string>();
-  const load = () =>
-    void runtime.gateway
-      .request("workspace/list", { version: 1 }, queryOptions())
-      .then((result) => setItems(result.workspaces))
-      .catch((reason) => setError(message(reason)));
-  useEffect(load, [runtime]);
+  const [notice, setNotice] = useState<string>();
+  const load = async () => {
+    const result = await runtime.gateway.request(
+      "workspace/list",
+      { version: 1 },
+      queryOptions(),
+    );
+    setItems(result.workspaces);
+  };
+  useEffect(() => {
+    void load().catch((reason) => setError(message(reason)));
+  }, [runtime]);
 
   const mutate = async <Result,>(
     operation: () => Promise<Result>,
+    success: string,
   ): Promise<boolean> => {
     setBusy(true);
     setReconciling(false);
     setError(undefined);
+    setNotice(undefined);
     try {
       await operation();
-      load();
+      await load();
       runtime.refreshTasks();
+      setNotice(success);
       return true;
     } catch (reason) {
       setError(message(reason));
@@ -44,18 +54,20 @@ export function WorkspacesPage() {
 
   const add = async (event: FormEvent) => {
     event.preventDefault();
-    const completed = await mutate(() =>
-      durableMutation({
-        owner: runtime.scope,
-        gateway: runtime.gateway,
-        method: "workspace/add",
-        payload: {
-          version: 1,
-          path,
-          ...(label.trim().length === 0 ? {} : { label: label.trim() }),
-        },
-        onOutcomeUnknown: () => setReconciling(true),
-      }),
+    const completed = await mutate(
+      () =>
+        durableMutation({
+          owner: runtime.scope,
+          gateway: runtime.gateway,
+          method: "workspace/add",
+          payload: {
+            version: 1,
+            path,
+            ...(label.trim().length === 0 ? {} : { label: label.trim() }),
+          },
+          onOutcomeUnknown: () => setReconciling(true),
+        }),
+      "工作区已添加。",
     );
     if (completed) {
       setPath("");
@@ -64,62 +76,73 @@ export function WorkspacesPage() {
   };
 
   const setDefault = (workspaceId: string) =>
-    mutate(() =>
-      durableMutation({
-        owner: runtime.scope,
-        gateway: runtime.gateway,
-        method: "workspace/default/update",
-        payload: { version: 1, workspaceId },
-        onOutcomeUnknown: () => setReconciling(true),
-      }),
+    mutate(
+      () =>
+        durableMutation({
+          owner: runtime.scope,
+          gateway: runtime.gateway,
+          method: "workspace/default/update",
+          payload: { version: 1, workspaceId },
+          onOutcomeUnknown: () => setReconciling(true),
+        }),
+      "默认工作区已更新。",
     );
 
   const remove = (workspace: Workspace) =>
-    mutate(() =>
-      durableMutation({
-        owner: runtime.scope,
-        gateway: runtime.gateway,
-        method: "workspace/remove",
-        payload: {
-          version: 1,
-          workspaceId: workspace.id,
-          expectedRevision: workspace.revision,
-        },
-        onOutcomeUnknown: () => setReconciling(true),
-      }),
+    mutate(
+      () =>
+        durableMutation({
+          owner: runtime.scope,
+          gateway: runtime.gateway,
+          method: "workspace/remove",
+          payload: {
+            version: 1,
+            workspaceId: workspace.id,
+            expectedRevision: workspace.revision,
+          },
+          onOutcomeUnknown: () => setReconciling(true),
+        }),
+      "工作区授权已移除，磁盘文件未被删除。",
     );
 
   return (
     <main className="page">
       <header className="page-heading">
         <div>
-          <p className="eyebrow">Authorized roots</p>
+          <p className="eyebrow">已授权目录</p>
           <h1>工作区</h1>
           <p>所有路径先 realpath，再校验是否位于授权根中。</p>
         </div>
       </header>
       <form className="inline-form" onSubmit={(event) => void add(event)}>
         <input
+          aria-label="工作区路径"
           value={path}
           onChange={(event) => setPath(event.target.value)}
           placeholder="/public/project"
           required
         />
         <input
+          aria-label="工作区显示名称"
           value={label}
           onChange={(event) => setLabel(event.target.value)}
           placeholder="显示名称（可选）"
         />
         <button className="primary" disabled={busy} type="submit">
-          添加
+          {busy ? "正在处理…" : "添加"}
         </button>
       </form>
       {reconciling ? (
-        <p className="warning mutation-outcome-pending">
+        <StatusMessage tone="warning">
           正在确认工作区操作结果；不会自动重复提交。
-        </p>
+        </StatusMessage>
       ) : null}
-      {error === undefined ? null : <p className="error">{error}</p>}
+      {error === undefined ? null : (
+        <StatusMessage tone="error">{error}</StatusMessage>
+      )}
+      {notice === undefined ? null : (
+        <StatusMessage tone="success">{notice}</StatusMessage>
+      )}
       <section className="list-panel">
         {items.map((workspace) => (
           <article className="workspace-row" key={workspace.id}>
@@ -147,6 +170,12 @@ export function WorkspacesPage() {
             </button>
           </article>
         ))}
+        {items.length === 0 ? (
+          <div className="empty-state">
+            <strong>还没有工作区</strong>
+            <span>添加一个 Codex 可以访问的绝对路径。</span>
+          </div>
+        ) : null}
       </section>
     </main>
   );

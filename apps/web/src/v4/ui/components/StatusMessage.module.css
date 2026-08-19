@@ -1,0 +1,42 @@
+.message {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin: 0;
+  padding: 11px 13px;
+  border: 1px solid var(--status-border);
+  border-radius: var(--radius-md);
+  background: var(--status-background);
+  color: var(--status-foreground);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.message svg {
+  flex: 0 0 auto;
+  margin-top: 1px;
+}
+
+.success {
+  --status-background: var(--success-soft);
+  --status-border: color-mix(in srgb, var(--success) 32%, var(--border));
+  --status-foreground: var(--success-strong);
+}
+
+.error {
+  --status-background: var(--danger-soft);
+  --status-border: color-mix(in srgb, var(--danger) 32%, var(--border));
+  --status-foreground: var(--danger);
+}
+
+.warning {
+  --status-background: var(--warning-soft);
+  --status-border: color-mix(in srgb, var(--warning) 32%, var(--border));
+  --status-foreground: var(--warning-strong);
+}
+
+.info {
+  --status-background: var(--info-soft);
+  --status-border: color-mix(in srgb, var(--info) 30%, var(--border));
+  --status-foreground: var(--info-strong);
+}

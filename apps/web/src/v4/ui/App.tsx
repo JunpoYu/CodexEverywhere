@@ -15,6 +15,7 @@ import type { GatewayPort } from "../gateway/gateway-port.js";
 import { UserWebRuntime } from "../runtime.js";
 import { AdminPage } from "./pages/AdminPage.js";
 import { HostPage } from "./pages/HostPage.js";
+import { ModalDialog } from "./components/ModalDialog.js";
 import { QueuePage } from "./pages/QueuePage.js";
 import { SettingsPage } from "./pages/SettingsPage.js";
 import { SetupPage } from "./pages/SetupPage.js";
@@ -132,7 +133,7 @@ function RecoveryCodesDialog(input: {
   readonly onClose: () => void;
 }) {
   return (
-    <dialog className="ce-dialog" open aria-labelledby="recovery-title">
+    <ModalDialog className="ce-dialog" aria-labelledby="recovery-title">
       <h2 id="recovery-title">请立即保存恢复码</h2>
       <p>恢复码只显示这一次。宿主机仅保存不可逆哈希。</p>
       <pre data-one-time-secret>{input.codes.join("\n")}</pre>
@@ -149,7 +150,7 @@ function RecoveryCodesDialog(input: {
           我已安全保存
         </button>
       </div>
-    </dialog>
+    </ModalDialog>
   );
 }
 

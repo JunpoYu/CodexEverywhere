@@ -2,6 +2,8 @@ import { useState, type FormEvent } from "react";
 import type { OutputOf } from "@codex-everywhere/protocol/v2";
 
 import { useActorState } from "../../actors/use-actor.js";
+import { Icon } from "../components/Icon.js";
+import { StatusMessage } from "../components/StatusMessage.js";
 import { useRuntime } from "../runtime-context.js";
 
 type QueueItem = OutputOf<"queue/list">["items"][number];
@@ -18,24 +20,25 @@ export function QueuePage() {
     >
       <header className="page-heading">
         <div>
-          <p className="eyebrow">At-most-once dispatcher</p>
+          <p className="eyebrow">可靠投递</p>
           <h1>Queue</h1>
           <p>待发送请求由宿主机 dispatcher 排队；结果未知不会静默重试。</p>
         </div>
         <button
+          disabled={queue.status === "loading"}
           type="button"
           onClick={() => runtime.queue.dispatch({ type: "LOAD" })}
         >
+          <Icon name="refresh" />
           刷新
         </button>
       </header>
       {queue.error === undefined ? null : (
-        <p
-          className={`warning ${queue.status === "indeterminate" ? "mutation-outcome-pending" : ""}`}
-          role="alert"
+        <StatusMessage
+          tone={queue.status === "indeterminate" ? "warning" : "error"}
         >
           {queue.error}
-        </p>
+        </StatusMessage>
       )}
       <section className="list-panel">
         {queue.items.map((item) => (
@@ -88,7 +91,7 @@ function QueueRow(input: { readonly item: QueueItem; readonly busy: boolean }) {
             type="button"
             onClick={() => setEditing((value) => !value)}
           >
-            Steer
+            调整内容
           </button>
           <button
             disabled={input.busy}
@@ -141,7 +144,7 @@ function QueueRow(input: { readonly item: QueueItem; readonly busy: boolean }) {
             onChange={(event) => setReplacement(event.target.value)}
           />
           <button className="primary" disabled={input.busy} type="submit">
-            发送到当前 turn
+            发送到当前任务
           </button>
         </form>
       ) : null}

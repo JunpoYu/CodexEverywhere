@@ -4,6 +4,8 @@ import { Link, useNavigate } from "react-router-dom";
 import { useActorState } from "../../actors/use-actor.js";
 import { durableMutation } from "../../gateway/durable-mutation.js";
 import { queryOptions } from "../../gateway/gateway-port.js";
+import { Icon } from "../components/Icon.js";
+import { StatusMessage } from "../components/StatusMessage.js";
 import { useRuntime } from "../runtime-context.js";
 
 export function TasksPage() {
@@ -64,7 +66,7 @@ export function TasksPage() {
     <main className="page tasks-page">
       <header className="page-heading">
         <div>
-          <p className="eyebrow">Codex app-server threads</p>
+          <p className="eyebrow">Codex 任务中心</p>
           <h1>任务</h1>
           <p>任务历史和执行状态直接来自 Codex app-server。</p>
         </div>
@@ -81,11 +83,13 @@ export function TasksPage() {
             {tasks.archived ? "查看当前任务" : "查看已归档"}
           </button>
           <button
+            disabled={tasks.status === "loading"}
             type="button"
             onClick={() =>
               runtime.tasks.dispatch({ type: "LOAD", archived: tasks.archived })
             }
           >
+            <Icon name="refresh" />
             刷新
           </button>
         </div>
@@ -104,6 +108,7 @@ export function TasksPage() {
           ))}
         </select>
         <textarea
+          aria-label="新任务请求"
           rows={3}
           placeholder="描述你希望 Codex 完成的工作…"
           value={prompt}
@@ -112,7 +117,11 @@ export function TasksPage() {
         <button
           className="primary"
           type="submit"
-          disabled={starting !== "idle" || workspaceId.length === 0}
+          disabled={
+            starting !== "idle" ||
+            workspaceId.length === 0 ||
+            prompt.trim().length === 0
+          }
         >
           {starting === "reconciling"
             ? "正在确认创建结果…"
@@ -122,19 +131,25 @@ export function TasksPage() {
         </button>
       </form>
       {starting === "reconciling" ? (
-        <p className="warning mutation-outcome-pending">
+        <StatusMessage tone="warning">
           连接中断，正在按 operation key 查询宿主机结果；不会重复创建任务。
-        </p>
+        </StatusMessage>
       ) : null}
-      {error === undefined ? null : <p className="error">{error}</p>}
+      {error === undefined ? null : (
+        <StatusMessage tone="error">{error}</StatusMessage>
+      )}
 
       {tasks.status === "failed" ? (
-        <p className="error" role="alert">
+        <StatusMessage tone="error">
           {tasks.error ?? "任务列表读取失败"}
-        </p>
+        </StatusMessage>
       ) : null}
 
-      <section className="task-grid" aria-busy={tasks.status === "loading"}>
+      <section
+        aria-label={tasks.archived ? "已归档任务" : "当前任务"}
+        className="task-grid"
+        aria-busy={tasks.status === "loading"}
+      >
         {tasks.tasks.map((task) => (
           <Link
             className="task-card"
@@ -167,10 +182,11 @@ export function TasksPage() {
       </section>
       {tasks.hasMore ? (
         <button
+          disabled={tasks.status === "paginating"}
           type="button"
           onClick={() => runtime.tasks.dispatch({ type: "MORE" })}
         >
-          加载更多
+          {tasks.status === "paginating" ? "正在加载…" : "加载更多"}
         </button>
       ) : null}
     </main>

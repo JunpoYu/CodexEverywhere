@@ -43,7 +43,7 @@
   place-items: center;
   border-radius: 11px;
   background: var(--accent);
-  color: white;
+  color: var(--on-accent);
   font-size: 13px;
   font-weight: 850;
 }
@@ -89,8 +89,15 @@
 }
 
 .deleteButton {
+  display: grid;
   width: 44px;
   padding: 0;
+  place-items: center;
+}
+
+.deleteButton svg {
+  width: 17px;
+  height: 17px;
 }
 
 .loginPanel {
@@ -182,6 +189,10 @@
   margin-top: 18px;
   color: var(--text-muted);
   font-size: 12px;
+}
+
+.feedback {
+  margin-top: 16px;
 }
 
 @media (max-width: 760px) {

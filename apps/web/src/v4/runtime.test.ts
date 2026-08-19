@@ -82,6 +82,28 @@ describe("UserWebRuntime task refresh", () => {
     await new Promise((resolve) => setTimeout(resolve, 150));
     expect(gateway.openCalls).toBe(2);
   });
+
+  it("does not recursively reopen a task for settings acknowledgements", async () => {
+    const gateway = new ThreadRefreshGateway();
+    const runtime = new UserWebRuntime({ gateway, host: savedHost() });
+    runtimes.push(runtime);
+
+    runtime.thread.dispatch({ type: "OPEN", threadId: "thread-1" });
+    await vi.waitFor(() =>
+      expect(runtime.thread.getSnapshot().status).toBe("idle"),
+    );
+
+    gateway.notification("thread/settings/updated");
+    await vi.waitFor(() => expect(gateway.openCalls).toBe(2));
+    gateway.notification("thread/settings/updated");
+    await new Promise((resolve) => setTimeout(resolve, 150));
+
+    expect(gateway.openCalls).toBe(2);
+    expect(runtime.thread.getSnapshot()).toMatchObject({
+      status: "idle",
+      refreshing: false,
+    });
+  });
 });
 
 class ThreadRefreshGateway implements GatewayPort {

@@ -22,6 +22,8 @@ export class UserWebRuntime {
   readonly gateway: GatewayPort;
   readonly host: SavedHost;
   #threadRefreshScope: Scope | undefined;
+  #settingsRefreshGuard:
+    { readonly threadId: string; readonly blockedUntil: number } | undefined;
 
   constructor(input: {
     readonly gateway: GatewayPort;
@@ -98,6 +100,12 @@ export class UserWebRuntime {
             notification.threadId === this.thread.getSnapshot().threadId &&
             notificationRequiresThreadSnapshot(notification.method)
           ) {
+            if (
+              notification.method === "thread/settings/updated" &&
+              this.#ignoreSettingsRefreshNotification(notification.threadId)
+            ) {
+              return;
+            }
             this.#scheduleThreadRefresh(notification.threadId);
           }
         }
@@ -146,6 +154,26 @@ export class UserWebRuntime {
       }
       void refreshScope.close("thread-refresh-complete");
     }, 100);
+  }
+
+  #ignoreSettingsRefreshNotification(threadId: string): boolean {
+    const thread = this.thread.getSnapshot();
+    if (
+      thread.status === "opening" ||
+      thread.refreshing === true ||
+      (this.#settingsRefreshGuard?.threadId === threadId &&
+        Date.now() < this.#settingsRefreshGuard.blockedUntil)
+    ) {
+      return true;
+    }
+    // app-server may emit thread/settings/updated while thread/open is
+    // synchronizing the very settings that caused the refresh. A short guard
+    // prevents that acknowledgement from recursively reopening the task.
+    this.#settingsRefreshGuard = {
+      threadId,
+      blockedUntil: Date.now() + 1_000,
+    };
+    return false;
   }
 
   #restoreAuthoritativeState(): void {
