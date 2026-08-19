@@ -117,7 +117,19 @@ export class GatewayV2Client {
       method,
       requestId,
     );
-    if (!response.ok) throw new GatewayRemoteError(response.error);
+    if (!response.ok) {
+      const remoteError = new GatewayRemoteError(response.error);
+      if (
+        definition.kind === "mutation" &&
+        (remoteError.code === "MUTATION_OUTCOME_UNKNOWN" ||
+          remoteError.code === "MUTATION_PENDING")
+      ) {
+        throw new MutationOutcomeUnknownError(method, operationKey!, {
+          cause: remoteError,
+        });
+      }
+      throw remoteError;
+    }
     return response.result;
   }
 }

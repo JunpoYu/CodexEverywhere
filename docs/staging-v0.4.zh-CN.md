@@ -1,6 +1,6 @@
 # CodexEverywhere v0.4 staging 验收手册
 
-本文把 `v0.4.0-alpha.5` 上线前仍需真实基础设施的门槛转换为可执行流程和严格 receipt。v0.4 采用全新初始化，不进行 v0.3 数据库正向或反向迁移。
+本文把 `v0.4.0-alpha.6` 上线前仍需真实基础设施的门槛转换为可执行流程和严格 receipt。v0.4 采用全新初始化，不进行 v0.3 数据库正向或反向迁移。
 
 ## 1. 安全边界
 
@@ -31,7 +31,7 @@
 ```bash
 corepack enable
 pnpm install --frozen-lockfile
-pnpm exec playwright install chromium
+pnpm exec playwright install --only-shell chromium
 umask 077
 CE_STAGING_EVIDENCE_DIR="${XDG_STATE_HOME:-${HOME}/.local/state}/codex-everywhere-staging"
 mkdir -p "${CE_STAGING_EVIDENCE_DIR}"

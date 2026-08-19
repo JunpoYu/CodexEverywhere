@@ -2,7 +2,11 @@ import type {
   CodexNotification,
   CodexServerRequest,
 } from "../../runtime/codex-app-server-client.js";
-import { CodexAppServerClient } from "../../runtime/codex-app-server-client.js";
+import {
+  CodexAppServerClient,
+  CodexRpcError,
+} from "../../runtime/codex-app-server-client.js";
+import { GatewayV2Error } from "@codex-everywhere/protocol/v2";
 
 export interface CodexClient {
   request<Result = unknown>(
@@ -25,12 +29,26 @@ export class CodexClientAdapter implements CodexClient {
     this.#client = client;
   }
 
-  request<Result = unknown>(
+  async request<Result = unknown>(
     method: string,
     params?: unknown,
     options: { readonly timeoutMs?: number } = {},
   ): Promise<Result> {
-    return this.#client.request(method, params, options);
+    try {
+      return await this.#client.request(method, params, options);
+    } catch (error) {
+      if (error instanceof CodexRpcError) {
+        // A JSON-RPC error response proves that app-server rejected the
+        // request. Keep transport loss distinct so durable mutations only
+        // become indeterminate when their side effect really is ambiguous.
+        throw new GatewayV2Error(
+          "CODEX_REQUEST_REJECTED",
+          "Codex app-server rejected the request",
+          { cause: error },
+        );
+      }
+      throw error;
+    }
   }
 
   onNotification(

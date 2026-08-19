@@ -21,7 +21,7 @@ CodexEverywhere（CE）是面向 Linux/HPC 的自托管 Codex Web/PWA 控制平�
 CE 不重新实现 AgentLoop。thread、turn、工具活动、审批请求和执行状态始终以官方 [Codex app-server](https://developers.openai.com/codex/app-server) 为唯一事实源；CE 只负责安全连接、Web 身份、移动端产品体验、持久 Queue 和 HPC 生命周期。
 
 > [!WARNING]
-> 当前代码线为 `v0.4.0-alpha.5` 架构重建版。Gateway API v2 和新状态库不兼容 v0.3；v0.4 采用全新初始化，不迁移 v0.3 CE 状态。`~/.codex`、Codex 登录和 app-server 任务不属于清理范围。`v0.3.0-alpha.14` 是已完成实机验证的最后维护基线，只用于观察窗内恢复已保留的旧 CE 目录。v0.4 Alpha tag/Prerelease 冻结待验收制品；同一制品必须先完成多用户全新安装 staging，才能批准 production 部署。
+> 当前代码线为 `v0.4.0-alpha.6` 架构重建版。Gateway API v2 和新状态库不兼容 v0.3；v0.4 采用全新初始化，不迁移 v0.3 CE 状态。`~/.codex`、Codex 登录和 app-server 任务不属于清理范围。`v0.3.0-alpha.14` 是已完成实机验证的最后维护基线，只用于观察窗内恢复已保留的旧 CE 目录。v0.4 Alpha tag/Prerelease 冻结待验收制品；同一制品必须先完成多用户全新安装 staging，才能批准 production 部署。
 
 > [!NOTE]
 > 这是独立的非官方开源项目，与 OpenAI 没有关联或背书。Codex 是 OpenAI 的产品。
@@ -48,7 +48,7 @@ CE 不重新实现 AgentLoop。thread、turn、工具活动、审批请求和执
 ### 断线恢复与副作用安全
 
 - 断线后重新认证或使用仅驻当前页面内存的恢复票据，然后重新 `thread/open` 获取权威快照和未解决 interaction。
-- mutation 使用 UUID operation key。durable mutation 在宿主机记录 claim/result；Web 通过 `mutation/status` 对账 `missing | pending | completed | indeterminate`，不靠历史猜测自动重发。
+- mutation 使用 UUID operation key。durable mutation 在宿主机记录 claim/result；transport 丢失以及 Agent 返回的 pending/unknown 状态都会使用原 operation key 查询 `mutation/status`，按 `missing | pending | completed | indeterminate` 对账，不靠历史猜测自动重发。
 - 一次性恢复码、恢复交接码和 resume token 永不进入 durable receipt；只在 Agent 的有界内存窗口中允许同 operation key 重放。
 - Queue 使用持久 claim 和 at-most-once 边界；跨越 app-server 副作用窗口后无法证明结果时显式进入 `indeterminate`，必须由用户确认重试或放弃。
 

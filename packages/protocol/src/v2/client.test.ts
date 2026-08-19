@@ -99,6 +99,34 @@ describe("GatewayV2Client", () => {
     expect(error).toMatchObject({ method: "queue/remove", operationKey });
   });
 
+  it.each(["MUTATION_OUTCOME_UNKNOWN", "MUTATION_PENDING"])(
+    "reconciles the remote %s mutation state with the caller operation key",
+    async (code) => {
+      const client = createClient({
+        exchange: async () => ({
+          version: 2,
+          requestId,
+          ok: false,
+          error: { code, message: "Query mutation/status" },
+        }),
+      });
+
+      const error = await client
+        .request(
+          "queue/remove",
+          { version: 1, itemId: "item-1" },
+          { operationKey },
+        )
+        .catch((caught: unknown) => caught);
+
+      expect(error).toBeInstanceOf(MutationOutcomeUnknownError);
+      expect(error).toMatchObject({ method: "queue/remove", operationKey });
+      expect((error as MutationOutcomeUnknownError).cause).toMatchObject({
+        code,
+      });
+    },
+  );
+
   it("surfaces structured remote errors", async () => {
     const client = createClient({
       exchange: async () => ({

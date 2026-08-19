@@ -120,6 +120,91 @@ describe("ThreadService", () => {
     expect(factory.client.methods).toEqual(["thread/resume", "thread/read"]);
   });
 
+  it("updates task settings under the persisted permission boundary", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "ce-thread-service-"));
+    directories.push(directory);
+    const workspacePath = join(directory, "workspace");
+    await mkdir(workspacePath);
+    const state = await UserStateDatabase.open(
+      join(directory, "state.sqlite"),
+      { create: true },
+    );
+    const scope = new Scope("thread-settings-test");
+    scopes.push(scope);
+    scope.defer(() => state.close());
+    const factory = new ThreadSettingsFactory(workspacePath);
+    const leases = new ThreadLeaseManager({ scope, clientFactory: factory });
+    const workspaces = new WorkspaceService(state.workspaces, {
+      home: directory,
+    });
+    await workspaces.add(workspacePath, "Workspace");
+    const service = new ThreadService({
+      scope,
+      clients: factory,
+      leases,
+      workspaces,
+      preferences: new PreferencesService(state.preferences),
+      settings: state.threadSettings,
+    });
+    const handle = await leases.acquire("thread-1", {
+      kind: "viewer",
+      id: "viewer-1",
+    });
+
+    try {
+      const opened = await service.open(handle, { historyLimit: 100 });
+      const updated = await service.updateSettings(handle, {
+        version: 1,
+        threadId: "thread-1",
+        expectedRevision: opened.settings.revision,
+        patch: { sandbox: "danger-full-access", approvalPolicy: "never" },
+      });
+
+      expect(updated).toMatchObject({
+        revision: 1,
+        model: "gpt-5.6-sol",
+        effort: "max",
+        sandbox: "danger-full-access",
+        approvalPolicy: "never",
+      });
+      expect(factory.client.requests).toEqual([
+        expect.objectContaining({ method: "thread/resume" }),
+        expect.objectContaining({ method: "thread/read" }),
+        {
+          method: "thread/settings/update",
+          params: {
+            threadId: "thread-1",
+            approvalPolicy: "never",
+            sandboxPolicy: { type: "dangerFullAccess" },
+          },
+        },
+      ]);
+      await expect(
+        state.threadSettings.read("thread-1"),
+      ).resolves.toMatchObject({
+        revision: 1,
+        sandbox: "danger-full-access",
+        approvalPolicy: "never",
+      });
+
+      await state.threadSettings.save("thread-1", 1, {
+        sandbox: "read-only",
+        approvalPolicy: "on-request",
+      });
+      await expect(
+        service.open(handle, { historyLimit: 100 }),
+      ).resolves.toMatchObject({
+        settings: {
+          revision: 2,
+          sandbox: "read-only",
+          approvalPolicy: "on-request",
+        },
+      });
+    } finally {
+      await handle.release();
+    }
+  });
+
   it("owns the first turn with a lease before an interaction can arrive", async () => {
     const directory = await mkdtemp(join(tmpdir(), "ce-thread-service-"));
     directories.push(directory);
@@ -231,6 +316,61 @@ class ThreadOpenClient implements CodexClient {
 
   close(): Promise<void> {
     this.closed = true;
+    return Promise.resolve();
+  }
+}
+
+class ThreadSettingsFactory implements CodexClientFactoryPort {
+  readonly client: ThreadSettingsClient;
+
+  constructor(workspacePath: string) {
+    this.client = new ThreadSettingsClient(workspacePath);
+  }
+
+  create(scope: Scope): Promise<CodexClient> {
+    scope.defer(() => this.client.close());
+    return Promise.resolve(this.client);
+  }
+}
+
+class ThreadSettingsClient implements CodexClient {
+  readonly requests: Array<{ method: string; params?: unknown }> = [];
+
+  constructor(private readonly workspacePath: string) {}
+
+  request<Result = unknown>(method: string, params?: unknown): Promise<Result> {
+    this.requests.push({ method, ...(params === undefined ? {} : { params }) });
+    if (method === "thread/resume") {
+      return Promise.resolve({
+        thread: thread(this.workspacePath),
+        model: "gpt-5.6-sol",
+        reasoningEffort: "max",
+        approvalPolicy: "on-request",
+        sandbox: workspaceWriteSandbox(),
+      } as Result);
+    }
+    if (method === "thread/read") {
+      return Promise.resolve({ thread: thread(this.workspacePath) } as Result);
+    }
+    if (method === "thread/settings/update") {
+      return Promise.resolve({} as Result);
+    }
+    return Promise.reject(new Error(`Unexpected request: ${method}`));
+  }
+
+  onNotification(): () => void {
+    return () => undefined;
+  }
+
+  onServerRequest(): () => void {
+    return () => undefined;
+  }
+
+  onClose(): () => void {
+    return () => undefined;
+  }
+
+  close(): Promise<void> {
     return Promise.resolve();
   }
 }

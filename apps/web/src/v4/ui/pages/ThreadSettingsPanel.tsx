@@ -1,10 +1,18 @@
 import { useState, type FormEvent } from "react";
-import type { OutputOf } from "@codex-everywhere/protocol/v2";
+import {
+  GatewayRemoteError,
+  type InputOf,
+  type OutputOf,
+} from "@codex-everywhere/protocol/v2";
 
-import { durableMutation } from "../../gateway/durable-mutation.js";
+import {
+  durableMutation,
+  MutationNeedsReviewError,
+} from "../../gateway/durable-mutation.js";
 import { useRuntime } from "../runtime-context.js";
 
 type ThreadSettings = OutputOf<"thread/open">["settings"];
+type ThreadSettingsPatch = InputOf<"thread/settings/update">["patch"];
 
 export function ThreadSettingsPanel(input: {
   readonly threadId: string;
@@ -25,6 +33,13 @@ export function ThreadSettingsPanel(input: {
     setBusy(true);
     setError(undefined);
     try {
+      const patch = changedSettings(input.settings, {
+        model,
+        effort,
+        sandbox,
+        approvalPolicy,
+      });
+      if (Object.keys(patch).length === 0) return;
       await durableMutation({
         owner: runtime.scope,
         gateway: runtime.gateway,
@@ -33,27 +48,13 @@ export function ThreadSettingsPanel(input: {
           version: 1,
           threadId: input.threadId,
           expectedRevision: input.settings.revision,
-          patch: {
-            ...(model.trim().length === 0 ? {} : { model: model.trim() }),
-            ...(effort.length === 0 ? {} : { effort }),
-            ...(sandbox.length === 0
-              ? {}
-              : {
-                  sandbox: sandbox as
-                    "read-only" | "workspace-write" | "danger-full-access",
-                }),
-            ...(approvalPolicy.length === 0
-              ? {}
-              : {
-                  approvalPolicy: approvalPolicy as
-                    "untrusted" | "on-request" | "never",
-                }),
-          },
+          patch,
         },
       });
       runtime.thread.dispatch({ type: "OPEN", threadId: input.threadId });
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "任务设置保存失败");
+      runtime.thread.dispatch({ type: "OPEN", threadId: input.threadId });
+      setError(settingsError(reason));
     } finally {
       setBusy(false);
     }
@@ -82,6 +83,8 @@ export function ThreadSettingsPanel(input: {
             <option value="medium">medium</option>
             <option value="high">high</option>
             <option value="xhigh">xhigh</option>
+            <option value="max">max</option>
+            <option value="ultra">ultra</option>
           </select>
         </label>
         <label>
@@ -111,8 +114,66 @@ export function ThreadSettingsPanel(input: {
         <button className="primary" disabled={busy} type="submit">
           保存
         </button>
-        {error === undefined ? null : <p className="error">{error}</p>}
+        {error === undefined ? null : (
+          <p className="error" role="alert">
+            {error}
+          </p>
+        )}
       </form>
     </details>
   );
+}
+
+export function changedSettings(
+  current: ThreadSettings,
+  draft: {
+    readonly model: string;
+    readonly effort: string;
+    readonly sandbox: string;
+    readonly approvalPolicy: string;
+  },
+): ThreadSettingsPatch {
+  const model = draft.model.trim();
+  return {
+    ...(model.length > 0 && model !== current.model ? { model } : {}),
+    ...(draft.effort.length > 0 && draft.effort !== current.effort
+      ? { effort: draft.effort }
+      : {}),
+    ...(isSandbox(draft.sandbox) && draft.sandbox !== current.sandbox
+      ? { sandbox: draft.sandbox }
+      : {}),
+    ...(isApprovalPolicy(draft.approvalPolicy) &&
+    draft.approvalPolicy !== current.approvalPolicy
+      ? { approvalPolicy: draft.approvalPolicy }
+      : {}),
+  };
+}
+
+function settingsError(reason: unknown): string {
+  if (reason instanceof MutationNeedsReviewError) {
+    return `${reason.message} 已重新同步当前设置，请核对后再操作。`;
+  }
+  if (
+    reason instanceof GatewayRemoteError &&
+    reason.code === "CODEX_REQUEST_REJECTED"
+  ) {
+    return "Codex 拒绝了本次设置更新；当前设置已重新同步。";
+  }
+  return reason instanceof Error ? reason.message : "任务设置保存失败";
+}
+
+function isSandbox(
+  value: string,
+): value is "read-only" | "workspace-write" | "danger-full-access" {
+  return (
+    value === "read-only" ||
+    value === "workspace-write" ||
+    value === "danger-full-access"
+  );
+}
+
+function isApprovalPolicy(
+  value: string,
+): value is "untrusted" | "on-request" | "never" {
+  return value === "untrusted" || value === "on-request" || value === "never";
 }

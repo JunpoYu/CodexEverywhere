@@ -147,10 +147,15 @@ export class ThreadService {
       );
       thread = requiredObject(response.thread, "resumed thread");
       state = handle.lease.adoptAuthoritativeThread(thread);
-      runtime = runtimeSettings(response, stored);
+      runtime = mergeStoredPermissions(
+        runtimeSettings(response, stored),
+        stored,
+      );
       this.#runtimeSettings.set(handle.threadId, runtime);
       this.#resumedLeases.add(handle.lease);
     } else {
+      runtime = mergeStoredPermissions(runtime, stored);
+      this.#runtimeSettings.set(handle.threadId, runtime);
       state = await handle.lease.synchronize(true);
       thread = requiredObject(state.thread, "thread");
     }
@@ -420,69 +425,83 @@ export class ThreadService {
     handle: ThreadLeaseHandle,
     input: InputOf<"thread/settings/update">,
   ): Promise<ThreadSettingsView> {
-    const stored = await this.#settings.read(handle.threadId);
-    if (stored.revision !== input.expectedRevision) {
-      throw revisionConflict();
-    }
-    const state = await handle.lease.synchronize(false);
-    await this.#workspaces.resolve(state.workspacePath);
-    let runtime = this.#runtimeSettings.get(handle.threadId);
-    if (runtime === undefined) {
-      const resumed = jsonObject(
-        await handle.lease.request("thread/resume", {
-          threadId: handle.threadId,
-          ...(stored.approvalPolicy === undefined
-            ? {}
-            : { approvalPolicy: stored.approvalPolicy }),
-          ...(stored.sandbox === undefined ? {} : { sandbox: stored.sandbox }),
-        }),
-        "thread/resume response",
-      );
-      runtime = runtimeSettings(resumed, stored);
-      this.#resumedLeases.add(handle.lease);
-    }
-    const next: RuntimeThreadSettings = {
-      ...runtime,
-      ...(input.patch.model === undefined ? {} : { model: input.patch.model }),
-      ...(input.patch.effort === undefined
-        ? {}
-        : { effort: input.patch.effort }),
-      ...(input.patch.sandbox === undefined
-        ? {}
-        : { sandbox: input.patch.sandbox }),
-      ...(input.patch.approvalPolicy === undefined
-        ? {}
-        : { approvalPolicy: input.patch.approvalPolicy }),
-    };
-    await handle.lease.request("thread/settings/update", {
-      threadId: handle.threadId,
-      ...(input.patch.model === undefined ? {} : { model: input.patch.model }),
-      ...(input.patch.effort === undefined
-        ? {}
-        : { effort: input.patch.effort }),
-      ...(input.patch.approvalPolicy === undefined
-        ? {}
-        : { approvalPolicy: input.patch.approvalPolicy }),
-      ...(input.patch.sandbox === undefined
-        ? {}
-        : { sandboxPolicy: sandboxPolicy(input.patch.sandbox) }),
+    const mutation = await this.#settings.acquireMutation(handle.threadId, {
+      signal: this.#scope.signal,
     });
-    let saved: StoredThreadSettings;
     try {
-      saved = await this.#settings.save(handle.threadId, stored.revision, {
-        ...(next.sandbox === undefined ? {} : { sandbox: next.sandbox }),
-        ...(next.approvalPolicy === undefined
-          ? {}
-          : { approvalPolicy: next.approvalPolicy }),
-      });
-    } catch (error) {
-      if (error instanceof ThreadSettingsRevisionConflictError) {
+      const stored = await this.#settings.read(handle.threadId);
+      if (stored.revision !== input.expectedRevision) {
         throw revisionConflict();
       }
-      throw error;
+      const state = await handle.lease.synchronize(false);
+      await this.#workspaces.resolve(state.workspacePath);
+      let runtime = this.#runtimeSettings.get(handle.threadId);
+      if (runtime === undefined) {
+        const resumed = jsonObject(
+          await handle.lease.request("thread/resume", {
+            threadId: handle.threadId,
+            ...(stored.approvalPolicy === undefined
+              ? {}
+              : { approvalPolicy: stored.approvalPolicy }),
+            ...(stored.sandbox === undefined
+              ? {}
+              : { sandbox: stored.sandbox }),
+          }),
+          "thread/resume response",
+        );
+        runtime = runtimeSettings(resumed, stored);
+        this.#resumedLeases.add(handle.lease);
+      }
+      runtime = mergeStoredPermissions(runtime, stored);
+      const next: RuntimeThreadSettings = {
+        ...runtime,
+        ...(input.patch.model === undefined
+          ? {}
+          : { model: input.patch.model }),
+        ...(input.patch.effort === undefined
+          ? {}
+          : { effort: input.patch.effort }),
+        ...(input.patch.sandbox === undefined
+          ? {}
+          : { sandbox: input.patch.sandbox }),
+        ...(input.patch.approvalPolicy === undefined
+          ? {}
+          : { approvalPolicy: input.patch.approvalPolicy }),
+      };
+      await handle.lease.request("thread/settings/update", {
+        threadId: handle.threadId,
+        ...(input.patch.model === undefined
+          ? {}
+          : { model: input.patch.model }),
+        ...(input.patch.effort === undefined
+          ? {}
+          : { effort: input.patch.effort }),
+        ...(input.patch.approvalPolicy === undefined
+          ? {}
+          : { approvalPolicy: input.patch.approvalPolicy }),
+        ...(input.patch.sandbox === undefined
+          ? {}
+          : { sandboxPolicy: sandboxPolicy(input.patch.sandbox) }),
+      });
+      let saved: StoredThreadSettings;
+      try {
+        saved = await this.#settings.save(handle.threadId, stored.revision, {
+          ...(next.sandbox === undefined ? {} : { sandbox: next.sandbox }),
+          ...(next.approvalPolicy === undefined
+            ? {}
+            : { approvalPolicy: next.approvalPolicy }),
+        });
+      } catch (error) {
+        if (error instanceof ThreadSettingsRevisionConflictError) {
+          throw revisionConflict();
+        }
+        throw error;
+      }
+      this.#runtimeSettings.set(handle.threadId, next);
+      return settingsView(saved.revision, next);
+    } finally {
+      await mutation.release();
     }
-    this.#runtimeSettings.set(handle.threadId, next);
-    return settingsView(saved.revision, next);
   }
 
   async tuiHandoff(threadId: string): Promise<OutputOf<"thread/tui/handoff">> {
@@ -729,6 +748,19 @@ function runtimeSettings(
     ...(effort === undefined ? {} : { effort }),
     ...(sandbox === undefined ? {} : { sandbox }),
     ...(approvalPolicy === undefined ? {} : { approvalPolicy }),
+  };
+}
+
+function mergeStoredPermissions(
+  runtime: RuntimeThreadSettings,
+  stored: StoredThreadSettings,
+): RuntimeThreadSettings {
+  return {
+    ...runtime,
+    ...(stored.sandbox === undefined ? {} : { sandbox: stored.sandbox }),
+    ...(stored.approvalPolicy === undefined
+      ? {}
+      : { approvalPolicy: stored.approvalPolicy }),
   };
 }
 
