@@ -11,7 +11,7 @@
 - 修复 Agent 已返回 `MUTATION_OUTCOME_UNKNOWN` 或 `MUTATION_PENDING` 时，Web 把英文错误直接显示而未按原 operation key 查询 `mutation/status` 的问题；明确的 Codex JSON-RPC 拒绝现在记录为确定失败，transport 丢失仍保持结果未知保护。
 - 任务设置只发送实际变化字段，不再因仅修改 sandbox/审批策略而顺带重写模型与推理强度；补齐 `max`、`ultra` 显示，并在结果无法证明时刷新权威设置后给出中文人工核对提示。
 - Web 与 `ce tui` 的同任务权限更新共用持久 coordination fence，任务刷新会合并 repository 中较新的 sandbox/approval 权限，避免并发或跨进程更新被旧运行时快照覆盖。
-- CI 与 Release 仅安装无 channel 的 headless Chromium shell，避免为当前纯 headless Playwright 项目下载未使用的完整 Chromium。
+- CI 与 Release 使用 GitHub Ubuntu runner 预装的 Google Chrome 和 Playwright `chrome` channel，避免外部浏览器下载卡住发布；本地与 staging 仍可按需安装无 channel 的 headless Chromium shell。
 - 推进 PWA 缓存代次，确保已安装的 alpha.5 页面能够发现并安全激活 alpha.6 Web 版本。
 
 ## [0.4.0-alpha.5] - 2026-08-19

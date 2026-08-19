@@ -51,11 +51,13 @@ jobs:
       - name: Run tests
         run: pnpm test
 
-      - name: Install Playwright Chromium
-        run: pnpm exec playwright install --with-deps --only-shell chromium
+      - name: Check preinstalled Google Chrome
+        run: google-chrome --version
 
       - name: Run Web end-to-end tests
         run: pnpm test:e2e
+        env:
+          CE_PLAYWRIGHT_BROWSER_CHANNEL: chrome
 
       - name: Install the latest stable Codex CLI
         run: |
