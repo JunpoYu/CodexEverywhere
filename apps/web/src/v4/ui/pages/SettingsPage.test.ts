@@ -5,6 +5,7 @@ import {
   changedPreferences,
   preferenceDraftFrom,
   rebasePreferenceDraft,
+  resolvePreferenceConflict,
 } from "./SettingsPage.js";
 
 type Preferences = OutputOf<"preferences/read">;
@@ -48,5 +49,40 @@ describe("SettingsPage preferences", () => {
       sandbox: "read-only",
       approvalPolicy: "never",
     });
+  });
+
+  it("recognizes when another device already applied the submitted values", () => {
+    const latest: Preferences = {
+      ...current,
+      revision: 4,
+      theme: "dark",
+      sandbox: "read-only",
+    };
+
+    expect(
+      resolvePreferenceConflict(latest, {
+        theme: "dark",
+        sandbox: "read-only",
+      }),
+    ).toEqual({
+      draft: preferenceDraftFrom(latest),
+      remainingPatch: {},
+    });
+  });
+
+  it("keeps only values that are still different after a partial conflict", () => {
+    const latest: Preferences = {
+      ...current,
+      revision: 4,
+      theme: "dark",
+      sandbox: "read-only",
+    };
+
+    expect(
+      resolvePreferenceConflict(latest, {
+        theme: "dark",
+        sandbox: "danger-full-access",
+      }).remainingPatch,
+    ).toEqual({ sandbox: "danger-full-access" });
   });
 });

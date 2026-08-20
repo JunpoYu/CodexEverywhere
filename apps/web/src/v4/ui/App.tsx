@@ -60,8 +60,12 @@ export function App() {
     const search = new URLSearchParams(window.location.search);
     activate(
       new ScenarioGateway({
+        changePreferencesAfterInitialRead: search.has("scenarioDefaultsChange"),
         failWorkspaceListAfterMutationOnce: search.has(
           "scenarioWorkspaceRefreshFailure",
+        ),
+        preferencesAlreadyAppliedConflictOnce: search.has(
+          "scenarioPreferencesAlreadyApplied",
         ),
         threadSettingsConflictOnce: search.has("scenarioSettingsConflict"),
       }),

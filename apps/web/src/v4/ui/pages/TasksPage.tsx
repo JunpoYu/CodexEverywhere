@@ -1,6 +1,9 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import type { OutputOf } from "@codex-everywhere/protocol/v2";
+import {
+  GatewayRemoteError,
+  type OutputOf,
+} from "@codex-everywhere/protocol/v2";
 
 import { useActorState } from "../../actors/use-actor.js";
 import { durableMutation } from "../../gateway/durable-mutation.js";
@@ -23,10 +26,12 @@ export function TasksPage() {
   const [sandbox, setSandbox] = useState<Preferences["sandbox"]>();
   const [approvalPolicy, setApprovalPolicy] =
     useState<Preferences["approvalPolicy"]>();
+  const [permissionsOverridden, setPermissionsOverridden] = useState(false);
   const [starting, setStarting] = useState<
-    "idle" | "submitting" | "reconciling"
+    "idle" | "validating" | "submitting" | "reconciling"
   >("idle");
   const [error, setError] = useState<string>();
+  const [warning, setWarning] = useState<string>();
   const navigate = useNavigate();
 
   useEffect(() => {
@@ -53,6 +58,7 @@ export function TasksPage() {
         setDefaults(preferences);
         setSandbox(preferences.sandbox);
         setApprovalPolicy(preferences.approvalPolicy);
+        setPermissionsOverridden(false);
       })
       .catch((reason) => {
         if (active) {
@@ -72,17 +78,39 @@ export function TasksPage() {
     event.preventDefault();
     const selectedSandbox = sandbox;
     const selectedApprovalPolicy = approvalPolicy;
+    const displayedDefaults = defaults;
+    const usesDefaults = !permissionsOverridden;
     if (
       workspaceId.length === 0 ||
       prompt.trim().length === 0 ||
+      displayedDefaults === undefined ||
       selectedSandbox === undefined ||
       selectedApprovalPolicy === undefined
     ) {
       return;
     }
-    setStarting("submitting");
     setError(undefined);
+    setWarning(undefined);
+    let effectiveSandbox = selectedSandbox;
+    let effectiveApprovalPolicy = selectedApprovalPolicy;
+    let expectedPreferencesRevision: number | undefined;
     try {
+      if (usesDefaults) {
+        setStarting("validating");
+        const latest = await loadPreferences(runtime.gateway);
+        const changed = defaultPermissionsChanged(displayedDefaults, latest);
+        adoptDefaultPermissions(latest);
+        if (changed) {
+          setWarning(
+            "全局默认权限刚刚发生变化，已更新本表单。请确认新的权限后再次创建任务。",
+          );
+          return;
+        }
+        effectiveSandbox = latest.sandbox;
+        effectiveApprovalPolicy = latest.approvalPolicy;
+        expectedPreferencesRevision = latest.revision;
+      }
+      setStarting("submitting");
       const result = await durableMutation({
         owner: runtime.scope,
         gateway: runtime.gateway,
@@ -91,9 +119,12 @@ export function TasksPage() {
           version: 1,
           workspaceId,
           prompt: prompt.trim(),
+          ...(expectedPreferencesRevision === undefined
+            ? {}
+            : { expectedPreferencesRevision }),
           settings: {
-            sandbox: selectedSandbox,
-            approvalPolicy: selectedApprovalPolicy,
+            sandbox: effectiveSandbox,
+            approvalPolicy: effectiveApprovalPolicy,
           },
         },
         onOutcomeUnknown: () => setStarting("reconciling"),
@@ -101,16 +132,60 @@ export function TasksPage() {
       runtime.tasks.dispatch({ type: "LOAD" });
       navigate(`/tasks/${encodeURIComponent(result.thread.id)}`);
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "任务创建失败");
+      if (
+        usesDefaults &&
+        reason instanceof GatewayRemoteError &&
+        reason.code === "REVISION_CONFLICT"
+      ) {
+        setStarting("validating");
+        try {
+          const latest = await loadPreferences(runtime.gateway);
+          const changed =
+            latest.sandbox !== effectiveSandbox ||
+            latest.approvalPolicy !== effectiveApprovalPolicy;
+          adoptDefaultPermissions(latest);
+          setWarning(
+            changed
+              ? "创建前全局默认权限再次发生变化，任务尚未创建。请确认新的权限后重试。"
+              : "创建前全局设置发生了并发更新，任务尚未创建；当前权限未变化，可以安全重试。",
+          );
+        } catch (refreshReason) {
+          setError(
+            `创建前检测到全局设置冲突，但同步失败：${errorMessage(refreshReason)}`,
+          );
+        }
+      } else {
+        setError(errorMessage(reason));
+      }
     } finally {
       setStarting("idle");
     }
   };
 
-  const permissionsOverrideDefaults =
-    defaults !== undefined &&
-    (sandbox !== defaults.sandbox ||
-      approvalPolicy !== defaults.approvalPolicy);
+  const adoptDefaultPermissions = (latest: Preferences) => {
+    setDefaults(latest);
+    setSandbox(latest.sandbox);
+    setApprovalPolicy(latest.approvalPolicy);
+    setPermissionsOverridden(false);
+  };
+  const updateSandbox = (next: Preferences["sandbox"]) => {
+    setSandbox(next);
+    setPermissionsOverridden(
+      defaults !== undefined &&
+        (next !== defaults.sandbox ||
+          approvalPolicy !== defaults.approvalPolicy),
+    );
+    setWarning(undefined);
+  };
+  const updateApprovalPolicy = (next: Preferences["approvalPolicy"]) => {
+    setApprovalPolicy(next);
+    setPermissionsOverridden(
+      defaults !== undefined &&
+        (sandbox !== defaults.sandbox || next !== defaults.approvalPolicy),
+    );
+    setWarning(undefined);
+  };
+  const permissionsOverrideDefaults = permissionsOverridden;
   const permissionsReady =
     defaults !== undefined &&
     sandbox !== undefined &&
@@ -184,7 +259,7 @@ export function TasksPage() {
                 aria-label="本次任务 Sandbox"
                 value={sandbox ?? ""}
                 onChange={(event) =>
-                  setSandbox(event.target.value as Preferences["sandbox"])
+                  updateSandbox(event.target.value as Preferences["sandbox"])
                 }
               >
                 <option value="read-only">只读</option>
@@ -198,7 +273,7 @@ export function TasksPage() {
                 aria-label="本次任务审批策略"
                 value={approvalPolicy ?? ""}
                 onChange={(event) =>
-                  setApprovalPolicy(
+                  updateApprovalPolicy(
                     event.target.value as Preferences["approvalPolicy"],
                   )
                 }
@@ -227,8 +302,8 @@ export function TasksPage() {
                   type="button"
                   onClick={() => {
                     if (defaults === undefined) return;
-                    setSandbox(defaults.sandbox);
-                    setApprovalPolicy(defaults.approvalPolicy);
+                    adoptDefaultPermissions(defaults);
+                    setWarning(undefined);
                   }}
                 >
                   恢复全局默认
@@ -257,7 +332,9 @@ export function TasksPage() {
             ? "正在确认创建结果…"
             : starting === "submitting"
               ? "正在创建…"
-              : "新建任务"}
+              : starting === "validating"
+                ? "正在确认默认权限…"
+                : "新建任务"}
         </button>
       </form>
       {starting === "reconciling" ? (
@@ -265,6 +342,9 @@ export function TasksPage() {
           连接中断，正在按 operation key 查询宿主机结果；不会重复创建任务。
         </StatusMessage>
       ) : null}
+      {warning === undefined ? null : (
+        <StatusMessage tone="warning">{warning}</StatusMessage>
+      )}
       {error === undefined ? null : (
         <StatusMessage tone="error">{error}</StatusMessage>
       )}
@@ -335,6 +415,20 @@ async function loadPreferences(
   gateway: import("../../gateway/gateway-port.js").GatewayPort,
 ) {
   return gateway.request("preferences/read", { version: 1 }, queryOptions());
+}
+
+export function defaultPermissionsChanged(
+  displayed: Pick<Preferences, "sandbox" | "approvalPolicy">,
+  latest: Pick<Preferences, "sandbox" | "approvalPolicy">,
+): boolean {
+  return (
+    displayed.sandbox !== latest.sandbox ||
+    displayed.approvalPolicy !== latest.approvalPolicy
+  );
+}
+
+function errorMessage(reason: unknown): string {
+  return reason instanceof Error ? reason.message : "任务创建失败";
 }
 
 function sandboxLabel(value: Preferences["sandbox"]): string {

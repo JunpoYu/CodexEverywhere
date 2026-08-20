@@ -32,7 +32,9 @@ interface ScenarioThread {
 }
 
 export interface ScenarioGatewayOptions {
+  readonly changePreferencesAfterInitialRead?: boolean;
   readonly failWorkspaceListAfterMutationOnce?: boolean;
+  readonly preferencesAlreadyAppliedConflictOnce?: boolean;
   readonly threadSettingsConflictOnce?: boolean;
 }
 
@@ -56,6 +58,8 @@ export class ScenarioGateway implements GatewayPort {
   readonly #mutationStatuses = new Map<string, MutationStatus>();
   #failWorkspaceListAfterMutationOnce: boolean;
   #workspaceListFailureArmed = false;
+  #changePreferencesAfterInitialRead: boolean;
+  #preferencesAlreadyAppliedConflictOnce: boolean;
   #threadSettingsConflictOnce: boolean;
   #networkMode: "direct" | "proxy" = "direct";
   #codexInstalled = true;
@@ -71,8 +75,12 @@ export class ScenarioGateway implements GatewayPort {
   };
 
   constructor(options: ScenarioGatewayOptions = {}) {
+    this.#changePreferencesAfterInitialRead =
+      options.changePreferencesAfterInitialRead ?? false;
     this.#failWorkspaceListAfterMutationOnce =
       options.failWorkspaceListAfterMutationOnce ?? false;
+    this.#preferencesAlreadyAppliedConflictOnce =
+      options.preferencesAlreadyAppliedConflictOnce ?? false;
     this.#threadSettingsConflictOnce =
       options.threadSettingsConflictOnce ?? false;
     const now = new Date().toISOString();
@@ -400,6 +408,16 @@ export class ScenarioGateway implements GatewayPort {
         };
       }
       case "thread/start":
+        if (
+          record.expectedPreferencesRevision !== undefined &&
+          Number(record.expectedPreferencesRevision) !==
+            this.#preferences.revision
+        ) {
+          throw new GatewayRemoteError({
+            code: "REVISION_CONFLICT",
+            message: "Scenario default preferences changed before start",
+          });
+        }
         return this.#startThread(record);
       case "thread/open":
         return this.#openThread(String(record.threadId));
@@ -573,12 +591,34 @@ export class ScenarioGateway implements GatewayPort {
           }
         );
       case "preferences/read":
+        if (this.#changePreferencesAfterInitialRead) {
+          this.#changePreferencesAfterInitialRead = false;
+          this.#scope.setTimeout(() => {
+            this.#preferences = {
+              ...this.#preferences,
+              revision: this.#preferences.revision + 1,
+              sandbox: "read-only",
+            };
+          }, 0);
+        }
         return this.#preferences;
       case "preferences/update":
         if (Number(record.expectedRevision) !== this.#preferences.revision) {
           throw new GatewayRemoteError({
             code: "REVISION_CONFLICT",
             message: "Scenario preferences changed externally",
+          });
+        }
+        if (this.#preferencesAlreadyAppliedConflictOnce) {
+          this.#preferencesAlreadyAppliedConflictOnce = false;
+          this.#preferences = {
+            ...this.#preferences,
+            ...(record.patch as Partial<Preferences>),
+            revision: this.#preferences.revision + 1,
+          };
+          throw new GatewayRemoteError({
+            code: "REVISION_CONFLICT",
+            message: "Scenario preferences were applied by another device",
           });
         }
         this.#preferences = {

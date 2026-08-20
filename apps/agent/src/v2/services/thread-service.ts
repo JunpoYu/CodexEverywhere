@@ -206,6 +206,15 @@ export class ThreadService {
     const workspace = await this.#workspaces.get(input.workspaceId);
     const path = await this.#workspaces.resolve(workspace.path);
     const preferences = await this.#preferences.read();
+    if (
+      input.expectedPreferencesRevision !== undefined &&
+      input.expectedPreferencesRevision !== preferences.revision
+    ) {
+      throw new GatewayV2Error(
+        "REVISION_CONFLICT",
+        "Default preferences changed; refresh before starting the task",
+      );
+    }
     const requested = input.settings ?? {};
     const sandbox = requested.sandbox ?? preferences.sandbox;
     const approvalPolicy =

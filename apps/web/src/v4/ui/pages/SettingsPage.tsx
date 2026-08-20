@@ -116,13 +116,25 @@ export function SettingsPage() {
             { version: 1 },
             queryOptions(),
           );
+          const resolution = resolvePreferenceConflict(latest, patch);
           setPreferences(latest);
-          setPreferenceDraft(rebasePreferenceDraft(latest, patch));
-          setPreferenceFeedback({
-            tone: "warning",
-            message:
-              "其他设备修改了全局设置。已同步最新版本并保留你的改动，请确认后再次保存。",
-          });
+          setPreferenceDraft(resolution.draft);
+          if (resolution.remainingPatch.theme === undefined) {
+            applyTheme(latest.theme);
+          }
+          setPreferenceFeedback(
+            hasPreferenceChanges(resolution.remainingPatch)
+              ? {
+                  tone: "warning",
+                  message:
+                    "其他设备修改了全局设置。已同步最新版本并保留你的改动，请确认后再次保存。",
+                }
+              : {
+                  tone: "success",
+                  message:
+                    "其他设备已应用相同设置；已同步宿主机最新版本，无需再次保存。",
+                },
+          );
         } catch (refreshReason) {
           setPreferenceFeedback({
             tone: "error",
@@ -565,6 +577,17 @@ export function rebasePreferenceDraft(
   patch: PreferencePatch,
 ): PreferenceDraft {
   return { ...preferenceDraftFrom(latest), ...patch };
+}
+
+export function resolvePreferenceConflict(
+  latest: Preferences,
+  submittedPatch: PreferencePatch,
+): {
+  readonly draft: PreferenceDraft;
+  readonly remainingPatch: PreferencePatch;
+} {
+  const draft = rebasePreferenceDraft(latest, submittedPatch);
+  return { draft, remainingPatch: changedPreferences(latest, draft) };
 }
 
 function hasPreferenceChanges(patch: PreferencePatch): boolean {

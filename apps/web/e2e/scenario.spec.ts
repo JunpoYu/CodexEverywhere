@@ -192,6 +192,27 @@ test("新任务展示全局默认权限，并允许仅覆盖本次任务", async
   await expect(dialog.getByRole("radio", { name: /从不询问/u })).toBeChecked();
 });
 
+test("采用全局默认时会在创建前复核最新权限", async ({ page }) => {
+  await openScenario(page, "&scenarioDefaultsChange=1");
+
+  const sandbox = page.getByLabel("本次任务 Sandbox");
+  const prompt = "验证创建前默认权限复核";
+  await expect(sandbox).toHaveValue("workspace-write");
+  await page.getByPlaceholder("描述你希望 Codex 完成的工作…").fill(prompt);
+  await page.getByRole("button", { name: "新建任务" }).click();
+
+  await expect(page.getByText(/全局默认权限刚刚发生变化/u)).toBeVisible();
+  await expect(sandbox).toHaveValue("read-only");
+  await expect(page.getByText("采用全局默认", { exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { name: prompt })).toHaveCount(0);
+
+  await page.getByRole("button", { name: "新建任务" }).click();
+  await expect(page.getByRole("heading", { name: prompt })).toBeVisible();
+  await page.getByRole("button", { name: "任务设置" }).click();
+  const dialog = page.getByRole("dialog", { name: "任务权限与运行设置" });
+  await expect(dialog.getByRole("radio", { name: /只读/u })).toBeChecked();
+});
+
 test("任务权限冲突后同步新 revision 并保留用户更改", async ({ page }) => {
   await openScenario(page, "&scenarioSettingsConflict=1");
   await openTaskCard(page, "欢迎使用 CodexEverywhere");
@@ -287,6 +308,25 @@ test("全局设置显式保存，并成为新任务显示的默认权限", async
   await navigateTo(page, "/tasks");
   await expect(page.getByLabel("本次任务 Sandbox")).toHaveValue("read-only");
   await expect(page.getByText("采用全局默认", { exact: true })).toBeVisible();
+});
+
+test("全局设置已由其他设备应用时直接收口为成功", async ({ page }) => {
+  await openScenario(page, "&scenarioPreferencesAlreadyApplied=1");
+  await navigateTo(page, "/settings");
+
+  const theme = page.getByLabel("主题");
+  const sandbox = page.getByLabel("默认 Sandbox");
+  const save = page.getByRole("button", { name: "保存全局设置" });
+  await theme.selectOption("dark");
+  await sandbox.selectOption("read-only");
+  await save.click();
+
+  await expect(
+    page.getByText(/其他设备已应用相同设置.*无需再次保存/u),
+  ).toBeVisible();
+  await expect(save).toBeDisabled();
+  await expect(page.getByText(/已保存 · revision 1/u)).toBeVisible();
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
 });
 
 test("管理端覆盖登记、停用、启用、恢复交接和审计", async ({ page }) => {

@@ -399,6 +399,7 @@ export const gatewayMethodDefinitions = {
     versionedResult({
       workspaceId: identifierSchema,
       prompt: z.string().min(1).max(1_000_000),
+      expectedPreferencesRevision: z.number().int().nonnegative().optional(),
       settings: threadSettingsSchema.partial().optional(),
     }),
     versionedResult({ thread: threadSummarySchema, turnId: identifierSchema }),

@@ -266,6 +266,52 @@ describe("ThreadService", () => {
     });
     await eventually(() => leases.size === 0 && factory.clients[1]!.closed);
   });
+
+  it("rejects a stale default-permission revision before starting Codex", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "ce-thread-service-"));
+    directories.push(directory);
+    const workspacePath = join(directory, "workspace");
+    await mkdir(workspacePath);
+    const state = await UserStateDatabase.open(
+      join(directory, "state.sqlite"),
+      { create: true },
+    );
+    const scope = new Scope("thread-default-revision-test");
+    scopes.push(scope);
+    scope.defer(() => state.close());
+    const factory = new FirstTurnFactory(workspacePath);
+    const leases = new ThreadLeaseManager({ scope, clientFactory: factory });
+    const workspaces = new WorkspaceService(state.workspaces, {
+      home: directory,
+    });
+    const workspace = await workspaces.add(workspacePath, "Workspace");
+    const preferences = new PreferencesService(state.preferences);
+    await preferences.update(0, { sandbox: "read-only" });
+    const service = new ThreadService({
+      scope,
+      clients: factory,
+      leases,
+      workspaces,
+      preferences,
+      settings: state.threadSettings,
+    });
+
+    const start = service.start({
+      version: 1,
+      workspaceId: workspace.id,
+      prompt: "must not start",
+      expectedPreferencesRevision: 0,
+      settings: {
+        sandbox: "workspace-write",
+        approvalPolicy: "on-request",
+      },
+    });
+
+    await expect(start).rejects.toMatchObject({
+      code: "REVISION_CONFLICT",
+    });
+    expect(factory.clients).toHaveLength(0);
+  });
 });
 
 class ThreadOpenFactory implements CodexClientFactoryPort {

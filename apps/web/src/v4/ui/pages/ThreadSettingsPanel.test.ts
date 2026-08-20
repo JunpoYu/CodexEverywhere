@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   changedSettings,
+  resolveThreadSettingsConflict,
   settingsFailureRecovery,
   threadSettingsDraft,
 } from "./ThreadSettingsPanel.js";
@@ -63,6 +64,39 @@ describe("ThreadSettingsPanel", () => {
       sandbox: "workspace-write",
       approvalPolicy: "on-request",
     });
+  });
+
+  it("keeps the conflict patch across consecutive authoritative refreshes", () => {
+    const submitted = {
+      sandbox: "danger-full-access" as const,
+      approvalPolicy: "never" as const,
+    };
+    const first = resolveThreadSettingsConflict(
+      { ...current, revision: 5, model: "gpt-5.6-terra" },
+      submitted,
+    );
+    const second = resolveThreadSettingsConflict(
+      { ...current, revision: 6, effort: "ultra" },
+      first.remainingPatch,
+    );
+
+    expect(first.remainingPatch).toEqual(submitted);
+    expect(second.draft).toMatchObject(submitted);
+    expect(second.remainingPatch).toEqual(submitted);
+  });
+
+  it("clears a conflict patch once the authoritative settings contain it", () => {
+    const resolution = resolveThreadSettingsConflict(
+      {
+        ...current,
+        revision: 5,
+        sandbox: "danger-full-access",
+        approvalPolicy: "never",
+      },
+      { sandbox: "danger-full-access", approvalPolicy: "never" },
+    );
+
+    expect(resolution.remainingPatch).toBeUndefined();
   });
 
   it("requires an authoritative rebase after a revision conflict", () => {

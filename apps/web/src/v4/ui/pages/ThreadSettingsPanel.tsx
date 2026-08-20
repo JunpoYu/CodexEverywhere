@@ -55,20 +55,21 @@ export function ThreadSettingsPanel(input: {
 
   useEffect(() => {
     const pendingPatch = conflictPatch.current;
-    const next = threadSettingsDraft(input.settings, pendingPatch);
+    const resolution = resolveThreadSettingsConflict(
+      input.settings,
+      pendingPatch,
+    );
+    const next = resolution.draft;
     setModel(next.model);
     setEffort(next.effort);
     setSandbox(next.sandbox);
     setApprovalPolicy(next.approvalPolicy);
     if (pendingPatch !== undefined) {
-      conflictPatch.current = undefined;
-      const stillDirty = Object.keys(
-        changedSettings(input.settings, next),
-      ).length;
+      conflictPatch.current = resolution.remainingPatch;
       setSaveState("conflict");
       setError(undefined);
       setWarning(
-        stillDirty > 0
+        resolution.remainingPatch !== undefined
           ? "其他设备或 TUI 已修改设置。CE 已读取最新 revision，并在其上保留你的更改；请确认后再次保存。"
           : "其他设备或 TUI 已应用相同设置。CE 已同步宿主机最新值，无需再次保存。",
       );
@@ -104,9 +105,17 @@ export function ThreadSettingsPanel(input: {
     saveState === "refreshing-conflict";
   const locked = busy || saveState === "refresh-failed";
 
-  const updateDraft = (change: () => void) => {
+  const updateDraft = (change: Partial<ThreadSettingsDraft>) => {
     if (locked) return;
-    change();
+    const next = { ...draft, ...change };
+    setModel(next.model);
+    setEffort(next.effort);
+    setSandbox(next.sandbox);
+    setApprovalPolicy(next.approvalPolicy);
+    const nextPatch = changedSettings(input.settings, next);
+    conflictPatch.current = hasSettingsChanges(nextPatch)
+      ? nextPatch
+      : undefined;
     setSaveState("idle");
     setError(undefined);
     setWarning(undefined);
@@ -140,6 +149,7 @@ export function ThreadSettingsPanel(input: {
       setEffort(settings.effort ?? "");
       setSandbox(settings.sandbox ?? "");
       setApprovalPolicy(settings.approvalPolicy ?? "");
+      conflictPatch.current = undefined;
       setSaveState("saved");
     } catch (reason) {
       const recovery = settingsFailureRecovery(reason);
@@ -207,7 +217,7 @@ export function ThreadSettingsPanel(input: {
                 label="保持当前"
                 name="sandbox"
                 value=""
-                onChange={(value) => updateDraft(() => setSandbox(value))}
+                onChange={(value) => updateDraft({ sandbox: value })}
               />
             ) : null}
             <Choice
@@ -216,7 +226,7 @@ export function ThreadSettingsPanel(input: {
               label="只读"
               name="sandbox"
               value="read-only"
-              onChange={(value) => updateDraft(() => setSandbox(value))}
+              onChange={(value) => updateDraft({ sandbox: value })}
             />
             <Choice
               checked={sandbox === "workspace-write"}
@@ -224,7 +234,7 @@ export function ThreadSettingsPanel(input: {
               label="工作区可写"
               name="sandbox"
               value="workspace-write"
-              onChange={(value) => updateDraft(() => setSandbox(value))}
+              onChange={(value) => updateDraft({ sandbox: value })}
             />
             <Choice
               checked={sandbox === "danger-full-access"}
@@ -233,7 +243,7 @@ export function ThreadSettingsPanel(input: {
               name="sandbox"
               tone="danger"
               value="danger-full-access"
-              onChange={(value) => updateDraft(() => setSandbox(value))}
+              onChange={(value) => updateDraft({ sandbox: value })}
             />
           </div>
         </fieldset>
@@ -249,9 +259,7 @@ export function ThreadSettingsPanel(input: {
                 label="保持当前"
                 name="approval"
                 value=""
-                onChange={(value) =>
-                  updateDraft(() => setApprovalPolicy(value))
-                }
+                onChange={(value) => updateDraft({ approvalPolicy: value })}
               />
             ) : null}
             <Choice
@@ -260,7 +268,7 @@ export function ThreadSettingsPanel(input: {
               label="严格审批"
               name="approval"
               value="untrusted"
-              onChange={(value) => updateDraft(() => setApprovalPolicy(value))}
+              onChange={(value) => updateDraft({ approvalPolicy: value })}
             />
             <Choice
               checked={approvalPolicy === "on-request"}
@@ -268,7 +276,7 @@ export function ThreadSettingsPanel(input: {
               label="按需询问"
               name="approval"
               value="on-request"
-              onChange={(value) => updateDraft(() => setApprovalPolicy(value))}
+              onChange={(value) => updateDraft({ approvalPolicy: value })}
             />
             <Choice
               checked={approvalPolicy === "never"}
@@ -277,7 +285,7 @@ export function ThreadSettingsPanel(input: {
               name="approval"
               tone="danger"
               value="never"
-              onChange={(value) => updateDraft(() => setApprovalPolicy(value))}
+              onChange={(value) => updateDraft({ approvalPolicy: value })}
             />
           </div>
         </fieldset>
@@ -294,9 +302,7 @@ export function ThreadSettingsPanel(input: {
                 disabled={locked}
                 placeholder={input.settings.model ?? "保持当前模型"}
                 value={model}
-                onChange={(event) =>
-                  updateDraft(() => setModel(event.target.value))
-                }
+                onChange={(event) => updateDraft({ model: event.target.value })}
               />
             </label>
             <label>
@@ -306,7 +312,7 @@ export function ThreadSettingsPanel(input: {
                 disabled={locked}
                 value={effort}
                 onChange={(event) =>
-                  updateDraft(() => setEffort(event.target.value))
+                  updateDraft({ effort: event.target.value })
                 }
               >
                 {input.settings.effort === undefined ? (
@@ -448,6 +454,24 @@ export function threadSettingsDraft(
   };
 }
 
+export function resolveThreadSettingsConflict(
+  current: ThreadSettings,
+  patch: ThreadSettingsPatch | undefined,
+): {
+  readonly draft: ThreadSettingsDraft;
+  readonly remainingPatch: ThreadSettingsPatch | undefined;
+} {
+  const draft = threadSettingsDraft(current, patch);
+  if (patch === undefined) return { draft, remainingPatch: undefined };
+  const remainingPatch = changedSettings(current, draft);
+  return {
+    draft,
+    remainingPatch: hasSettingsChanges(remainingPatch)
+      ? remainingPatch
+      : undefined,
+  };
+}
+
 export function settingsFailureRecovery(
   reason: unknown,
 ): "none" | "refresh" | "rebase" {
@@ -478,6 +502,10 @@ function settingsError(reason: unknown): string {
     return "Codex 未接受这组设置。CE 已重新读取当前值；请调整组合后重试。";
   }
   return reason instanceof Error ? reason.message : "任务设置保存失败";
+}
+
+function hasSettingsChanges(patch: ThreadSettingsPatch): boolean {
+  return Object.keys(patch).length > 0;
 }
 
 function isSandbox(

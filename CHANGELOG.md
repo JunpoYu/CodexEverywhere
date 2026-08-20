@@ -11,6 +11,9 @@
 
 ### Fixed
 
+- 采用全局默认权限创建任务时，Web 会在提交边界重读偏好，Agent 在调用 Codex 前再校验 `expectedPreferencesRevision`；其他设备刚修改默认权限时先更新表单并要求确认，不再静默提交旧值，也未引入偏好轮询或全局订阅。
+- 任务设置发生 revision 冲突后，尚未保存的最小 patch 会跨连续尾随 `thread/open` 刷新持续重放，直到保存、放弃或权威设置已经包含相同值，不再在第一次刷新后静默丢失草稿。
+- 全局设置冲突若是另一设备已经应用了相同值，会直接同步最新 revision、应用权威主题并明确报告无需重试，不再留下无改动却要求再次保存的死状态。
 - `thread/settings/updated` 在任务打开或刷新期间到达时不再被时间窗口直接丢弃；Web 会把同步窗口内的通知合并成一次尾随权威刷新，既避免递归 `thread/open`，也不会漏掉其他 Web 设备或 TUI 的真实权限更新。
 - 任务设置遇到 `REVISION_CONFLICT` 后会锁定旧 revision 的重复提交，读取宿主机最新设置，并把用户尚未保存的 patch 重放到新 revision；刷新失败时必须先显式重新同步。
 - Workspace durable mutation 与后续 `workspace/list` 查询分别呈现结果；mutation 已完成而列表刷新失败时仍明确报告成功、清理已提交表单，并单独提示当前列表可能过期，避免诱导使用新 operation key 重复副作用。

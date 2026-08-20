@@ -196,6 +196,10 @@ request fingerprint 是完整、已验证 input 的 canonical SHA-256；数据�
 
 任务设置只把用户实际修改的字段发送给 app-server。Web 设置面板以 Gateway 返回的 `ThreadSettings` 和新 revision 直接更新 Thread actor，不能通过盲目重开任务伪造成功；面板在保存期间保持打开，明确区分 dirty、saving、reconciling、saved 和 error，并在新改动出现前保持成功反馈。结果未知或确定拒绝时才重新读取权威设置。`thread/open` 同步期间收到的 `thread/settings/updated` acknowledgement 必须抑制递归刷新，避免页面持续显示同步并反复切换 Composer 可用状态。
 
+新任务若明确采用全局默认权限，Web 只在提交边界重读一次 `preferences/read`，并把该次读取的 `expectedPreferencesRevision` 交给 `thread/start`；Agent 必须在创建 app-server thread 前校验 revision。用户明确覆盖本次任务时提交完整 sandbox/approval 值，不依赖默认 revision。这里不引入偏好轮询、全局事件订阅或浏览器影子事实源。
+
+revision 冲突只保留仍与权威状态不同的最小 patch。尾随 `thread/open` 刷新必须继续在新 revision 上重放该 patch，直到权威值已经包含它、用户放弃或保存成功；若其他设备已经应用相同偏好，Web 直接同步并报告完成，不要求提交空 patch。
+
 CE 的 lease-owned app-server client 在 `initialize` 时显式声明 `capabilities.experimentalApi: true`，因为 `thread/settings/update` 属于实验 API；未完成该能力协商时必须把 Codex 的拒绝当作确定失败，不得伪造本地设置成功。Web 与 `ce tui` 的同任务权限写入共用持久 coordination fence；每次打开任务还会把 repository 中较新的 sandbox/approval 权限合并回运行视图，避免旧内存快照覆盖跨进程更新。
 
 包含恢复码、handoff code 或 resume token 的方法只能使用有界内存 `ephemeral` 重放；协议测试和 middleware metadata 校验共同阻止它们进入 SQLite。
@@ -220,6 +224,8 @@ Queue item 和 delivery claim 在同一用户库中。dispatcher 在 app-server 
 ## 7. React PWA
 
 依赖边界：React、React DOM、React Router、内核 Actor、CSS Modules、原生语义控件和 `<dialog>`。不使用 Redux、XState、Tailwind 或大型 UI 框架。
+
+页面组件只持有局部表单草稿和就近交互反馈；跨路由连接与执行生命周期继续由既有 actor/Scope 管理，一致性由 Gateway/service/repository 边界承担。新增 bug 修复不得通过页面轮询、全局业务 store、第二套会话状态机或无真实复用方的通用框架扩张 Web composition root。
 
 主要 actor：
 
