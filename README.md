@@ -21,7 +21,7 @@ CodexEverywhere（CE）是面向 Linux/HPC 的自托管 Codex Web/PWA 控制平�
 CE 不重新实现 AgentLoop。thread、turn、工具活动、审批请求和执行状态始终以官方 [Codex app-server](https://developers.openai.com/codex/app-server) 为唯一事实源；CE 只负责安全连接、Web 身份、移动端产品体验、持久 Queue 和 HPC 生命周期。
 
 > [!WARNING]
-> 当前代码线为 `v0.4.0-alpha.8` 架构重建版。Gateway API v2 和新状态库不兼容 v0.3；v0.4 采用全新初始化，不迁移 v0.3 CE 状态。`~/.codex`、Codex 登录和 app-server 任务不属于清理范围。`v0.3.0-alpha.14` 是已完成实机验证的最后维护基线，只用于观察窗内恢复已保留的旧 CE 目录。v0.4 Alpha tag/Prerelease 冻结待验收制品；同一制品必须先完成多用户全新安装 staging，才能批准 production 部署。
+> 当前代码线为 `v0.4.0-alpha.8` 架构重建版。Gateway API v2 和新状态库不兼容 v0.3；v0.4 采用全新初始化，不迁移 v0.3 CE 状态。`~/.codex`、Codex 登录和 app-server 任务不属于清理范围。`v0.3.0-alpha.14` 是已完成实机验证的最后维护基线，只用于观察窗内恢复已保留的旧 CE 目录。v0.4 Alpha tag/Prerelease 冻结待验收制品；当前 production 门槛先要求一个真实用户完成全新安装 staging。多用户并发、跨用户隔离和管理员控制面的实机验收延后，不阻塞当前单用户版本。
 
 > [!NOTE]
 > 这是独立的非官方开源项目，与 OpenAI 没有关联或背书。Codex 是 OpenAI 的产品。
@@ -204,7 +204,7 @@ pnpm build
 pnpm test:app-server
 ```
 
-干净候选提交可使用 `pnpm verify:v0.4 -- --receipt <仓库外路径>` 一次运行完整门禁并生成只含版本、commit、状态和耗时的 0600 receipt。添加 `--with-model` 才会启用真实订阅模型调用；未启用时 receipt 会明确保留该外部门槛。多用户升级与回滚见 [v0.4 staging 验收手册](docs/staging-v0.4.zh-CN.md)。
+干净候选提交可使用 `pnpm verify:v0.4 -- --receipt <仓库外路径>` 一次运行完整门禁并生成只含版本、commit、状态和耗时的 0600 receipt。添加 `--with-model` 才会启用真实订阅模型调用；未启用时 receipt 会明确保留该外部门槛。单用户发布验收与回滚见 [v0.4 staging 验收手册](docs/staging-v0.4.zh-CN.md)。
 
 协议、安全、路径、生命周期、数据库或 Queue 变更必须同步测试和中文文档。贡献流程见 [CONTRIBUTING.md](CONTRIBUTING.md)，发布流程见[发布文档](docs/releasing.zh-CN.md)，版本变化见 [CHANGELOG.md](CHANGELOG.md)。
 

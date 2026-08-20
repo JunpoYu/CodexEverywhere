@@ -53,7 +53,7 @@ git diff --check
 pnpm verify:v0.4 -- --with-model --receipt /absolute/private/path/candidate.json
 ```
 
-不带 `--with-model` 的运行会明确保留订阅模型门槛；`--allow-dirty` 只允许本地开发核对，其 receipt 不能作为发布证据。完整多用户证据必须另行通过 `pnpm staging:receipt -- validate <receipt>`，流程见 [v0.4 staging 验收手册](staging-v0.4.zh-CN.md)。
+不带 `--with-model` 的运行会明确保留订阅模型门槛；`--allow-dirty` 只允许本地开发核对，其 receipt 不能作为发布证据。完整单用户实机证据必须另行通过 `pnpm staging:receipt -- validate <receipt>`，流程见 [v0.4 staging 验收手册](staging-v0.4.zh-CN.md)。多用户并发、跨用户隔离和管理员控制面的实机验收属于后续里程碑，不阻塞当前 production 批准。
 
 `test:app-server` 需要本机安装发布时的 npm 最新稳定版 Codex；不得用跳过集成测试的方式发布 Codex 适配层变更。若项目声明额外的兼容版本，也应分别运行，但运行时不得仅按版本号拒绝用户已有的 Codex。
 
@@ -70,7 +70,7 @@ pnpm verify:v0.4 -- --with-model --receipt /absolute/private/path/candidate.json
 - Direct 与 Relay 使用同一 Gateway v2 合同测试，未知方法、错误身份、缺失 operation key 和版本不匹配均失败关闭；
 - 390px 手机与桌面 Playwright 核心流程通过，PWA 更新不会刷新 outcome-unknown mutation；
 - Web 首始用户路由 JS gzip 不超过 250 KiB、CSS gzip 不超过 40 KiB；Markdown、KaTeX 与代码高亮保持独立懒加载；
-- candidate receipt 已通过，目标 commit 与 CI commit 相同；staging 使用的 alpha.14 保留 release、两个非生产用户和管理员控制面已经准备好。多用户 staging 必须消费尚待创建的不可变 Prerelease 制品，因此不是创建候选 tag 的前置条件，而是 production 批准的前置条件。
+- candidate receipt 已通过，目标 commit 与 CI commit 相同；staging 使用的 alpha.14 保留 release 和一个非生产用户已经准备好。单用户 staging 必须消费尚待创建的不可变 Prerelease 制品，因此不是创建候选 tag 的前置条件，而是 production 批准的前置条件；Administrator Controller 可选。
 
 ## 候选 Prerelease 与 staging
 
@@ -134,7 +134,7 @@ SHA256SUMS
 5. 创建并推送 annotated tag；
 6. 检查自动生成的 GitHub Release、安装文档和源代码归档；
 7. 检查 manifest、SHA-256、provenance attestation 的 workflow/tag/commit 身份约束，以及 Release 摘要中记录的 Codex app-server contract 基线；
-8. 由独立 staging 运维环境消费 Prerelease，完成全新安装、重复安装恢复、安装内容漂移拒绝、升级和严格 inventory 回滚演练，并记录获批 `manifest.json` SHA-256；
+8. 由独立 staging 运维环境消费 Prerelease，以一个真实测试用户完成全新安装、重复安装恢复、安装内容漂移拒绝、升级和严格 inventory 回滚演练，并记录获批 `manifest.json` SHA-256；
 9. staging receipt 验证通过并人工批准后，由 production 安装器以该获批摘要为信任根部署同一组制品，不重新构建。
 
 不要把 GitHub Actions 的生产 SSH 私钥放进公开源码仓库。个人或单集群部署推荐由服务器上的无特权专用账号主动下载 Release，并把真实配置保留在服务器本地；多环境团队才需要私有 ops 仓库或带 Environment 审批的独立部署工作流。公开仓库的 CI 只构建和发布，绝不 SSH 到生产环境。架构边界见[部署与升级](deployment.zh-CN.md)，逐项命令见[操作手册](operator-runbook.zh-CN.md)。

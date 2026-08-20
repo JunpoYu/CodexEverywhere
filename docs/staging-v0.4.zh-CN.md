@@ -1,10 +1,10 @@
 # CodexEverywhere v0.4 staging 验收手册
 
-本文把 `v0.4.0-alpha.8` 上线前仍需真实基础设施的门槛转换为可执行流程和严格 receipt。v0.4 采用全新初始化，不进行 v0.3 数据库正向或反向迁移。
+本文把 `v0.4.0-alpha.8` 上线前仍需真实基础设施的单用户门槛转换为可执行流程和严格 receipt。v0.4 采用全新初始化，不进行 v0.3 数据库正向或反向迁移。多用户并发、跨用户隔离和 Administrator Controller 的实机验收延后，不阻塞当前单用户版本。
 
 ## 1. 安全边界
 
-- 使用至少两个非生产测试用户和 staging 专用 Codex 登录，不复制生产数据库。
+- 使用一个非生产测试用户和 staging 专用 Codex 登录，不复制生产数据库。
 - candidate receipt 与 staging receipt 位于源码仓库、Issue、CI artifact 和公开日志之外，权限为 0600。
 - receipt 只保存版本、commit、受限 operator alias、布尔结果和 SHA-256；不保存主机名、Unix 用户名、真实路径、prompt、Queue 文本、恢复码或日志正文。
 - 旧 CE 目录只在对应宿主机改名保留，不导入 v0.4，也不写入 receipt。
@@ -15,8 +15,8 @@
 开始前需要：
 
 1. CentOS 7、glibc 2.17、Node.js 20 staging 宿主机；
-2. 至少两个符合 NSS/SSH 策略的非生产 Unix 用户；
-3. 隔离的 Administrator Controller 与管理员 Web 身份；
+2. 一个符合 NSS/SSH 策略的非生产 Unix 用户；
+3. Administrator Controller 可选，不属于当前 staging 硬门槛；
 4. Direct HTTPS/WSS 入口和无状态 Relay；
 5. 桌面与 390px 移动端浏览器；
 6. staging 专用 Codex 订阅登录；
@@ -53,14 +53,14 @@ pnpm staging:receipt -- init "${CE_STAGING_EVIDENCE_DIR}/staging.json"
 填写规则：
 
 - `operatorAlias` 使用不指向真实身份的短 alias；
-- `testUserCount` 至少为 2，`adminControlPlane` 必须为 `true`；
+- `testUserCount` 至少为 1；`adminControlPlane` 必须是布尔值，但允许为 `false`；
 - `manifestSha256` 来自实际消费的 Release；
 - `candidateReceiptSha256` 来自上一节 candidate receipt；
 - 只有完成对应步骤后才把 `checks` 设为 `true`，不得新增自由文本字段。
 
 ## 5. 全新切换演练
 
-对每个测试用户：
+对测试用户：
 
 1. 在 alpha.14 记录 app-server PID 和健康状态；
 2. 确认 turn、interaction、Queue delivery、mutation 与登录流程静止；
@@ -72,7 +72,7 @@ pnpm staging:receipt -- init "${CE_STAGING_EVIDENCE_DIR}/staging.json"
 8. 确认 app-server PID 未变化，已有任务可从 app-server 重新打开；
 9. 确认旧 CE 目录未被读取、写入或部分导入。
 
-Controller 使用独立 `CE_ADMIN_HOME` 执行同样的整目录隔离与全新安装。旧 CE 数据库、配置或 capability 不得复制进 v0.4 状态。
+如果本次环境已经启用 Controller，使用独立 `CE_ADMIN_HOME` 执行同样的整目录隔离与全新安装；未启用时跳过。旧 CE 数据库、配置或 capability 不得复制进 v0.4 状态。
 
 完成后将以下检查设为 `true`：
 
@@ -82,15 +82,16 @@ Controller 使用独立 `CE_ADMIN_HOME` 执行同样的整目录隔离与全新�
 
 ## 6. 产品与故障场景
 
-两个用户分别覆盖 Direct/Relay、桌面/390px 移动端，并完成：
+同一测试用户依次覆盖 Direct/Relay、桌面/390px 移动端，并完成：
 
 - 首次设备、已保存设备、临时设备；Passkey、CE 密码和恢复码；
 - onboarding、任务 idle/streaming/waiting-input、审批竞争、用户问答、MCP、interrupt 和 TUI 接力；
 - 浏览器断线、Agent 重启和 app-server 重启后的权威 `thread/open` 恢复；
 - Queue add/remove/Steer 与结果未知 acknowledge；
 - outcome-unknown 时 PWA 更新保护和 Gateway 版本不匹配提示；
-- 管理端 inspect、disable/enable、恢复交接、移除与审计；
-- 两个用户之间的任务、Workspace、Queue、身份和运行状态不可互见；管理员看不到用户业务数据。
+- 授权 Workspace 内的正常访问，以及路径穿越、未授权 sibling root 和符号链接逃逸拒绝。
+
+如果环境已经启用 Controller，可以额外观察 inspect、disable/enable、恢复交接、移除与审计，但这些结果不进入当前必填 receipt。多用户之间的业务隔离留到后续里程碑。
 
 Queue crash window 由同 commit 的确定性测试覆盖；staging 还要在 Queue 工作存在时重启一次 Agent，确认没有静默重复。日志检查只记录“未发现敏感字段”的布尔结论。
 
@@ -118,6 +119,6 @@ pnpm staging:receipt -- validate "${CE_STAGING_EVIDENCE_DIR}/staging.json"
 sha256sum "${CE_STAGING_EVIDENCE_DIR}/staging.json"
 ```
 
-校验器拒绝检查项缺失、少于两个用户、缺少管理员、错误的目标 OS/Node/glibc、非法 hash、未知字段、非规范时间、符号链接和非 0600 文件。
+校验器拒绝检查项缺失、没有真实测试用户、`adminControlPlane` 非布尔值、错误的目标 OS/Node/glibc、非法 hash、未知字段、非规范时间、符号链接和非 0600 文件。
 
 candidate receipt 与 GitHub CI 对同一 commit 为绿色后，才创建 alpha tag/Prerelease 冻结制品。staging 必须消费该 Release 原始制品；只有 staging receipt 通过后，才批准 production 使用同一 manifest。观察窗口结束前保留旧 CE 目录；只有操作者再次批准精确删除目标后才能清理。

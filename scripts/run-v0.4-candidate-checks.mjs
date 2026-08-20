@@ -77,7 +77,7 @@ const receipt = {
   checks: [],
   remainingExternalGates: [
     ...(options.withModel ? [] : ["subscription-model-integration"]),
-    "multi-user-fresh-install-staging",
+    "single-user-fresh-install-staging",
   ],
 };
 let receiptCreated = false;

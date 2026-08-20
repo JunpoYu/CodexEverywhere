@@ -39,14 +39,7 @@ const REQUIRED_CHECKS = [
   "queue.crash-indeterminate-acknowledge",
   "pwa.outcome-unknown-update-guard",
   "protocol.version-mismatch",
-  "admin.inspect",
-  "admin.disable-enable",
-  "admin.recovery-handoff",
-  "admin.removal",
-  "admin.audit",
-  "isolation.two-users",
   "isolation.workspace",
-  "isolation.admin-user-runtime",
   "cutover.v0.3-state-retained",
   "cutover.v0.4-state-fresh",
   "cutover.codex-home-untouched",
@@ -207,12 +200,12 @@ function validateEnvironment(environment) {
   }
   if (
     !Number.isInteger(environment.testUserCount) ||
-    environment.testUserCount < 2
+    environment.testUserCount < 1
   ) {
-    throw new Error("staging requires at least two test users");
+    throw new Error("staging requires at least one test user");
   }
-  if (environment.adminControlPlane !== true) {
-    throw new Error("staging requires the admin control plane");
+  if (typeof environment.adminControlPlane !== "boolean") {
+    throw new Error("adminControlPlane must be a boolean");
   }
 }
 
