@@ -28,6 +28,7 @@ type Preferences = OutputOf<"preferences/read">;
 
 export function TasksPage() {
   const runtime = useRuntime();
+  const connection = useActorState(runtime.connection);
   const tasks = useActorState(runtime.tasks);
   const [workspaces, setWorkspaces] = useState<
     Awaited<ReturnType<typeof loadWorkspaces>>
@@ -40,6 +41,11 @@ export function TasksPage() {
   const [starting, setStarting] = useState<
     "idle" | "validating" | "submitting" | "reconciling"
   >("idle");
+  const [prerequisiteState, setPrerequisiteState] = useState<
+    "loading" | "ready" | "failed"
+  >("loading");
+  const [prerequisiteAttempt, setPrerequisiteAttempt] = useState(0);
+  const [prerequisiteError, setPrerequisiteError] = useState<string>();
   const [error, setError] = useState<string>();
   const [warning, setWarning] = useState<string>();
   const navigate = useNavigate();
@@ -52,7 +58,13 @@ export function TasksPage() {
     ) {
       runtime.refreshTasks();
     }
+  }, [runtime]);
+
+  useEffect(() => {
+    if (connection.status !== "online") return;
     let active = true;
+    setPrerequisiteState("loading");
+    setPrerequisiteError(undefined);
     void Promise.all([
       loadWorkspaces(runtime.gateway),
       loadPreferences(runtime.gateway),
@@ -60,17 +72,25 @@ export function TasksPage() {
       .then(([items, preferences]) => {
         if (!active) return;
         setWorkspaces(items);
-        setWorkspaceId(
-          items.find((workspace) => workspace.isDefault)?.id ??
-            items[0]?.id ??
-            "",
+        setWorkspaceId((current) =>
+          items.some((workspace) => workspace.id === current)
+            ? current
+            : (items.find((workspace) => workspace.isDefault)?.id ??
+              items[0]?.id ??
+              ""),
         );
         setDefaults(preferences);
-        setPermissionDraft(defaultPermissionDraft(preferences));
+        setPermissionDraft((current) =>
+          current === undefined
+            ? defaultPermissionDraft(preferences)
+            : rebaseInheritedPermissions(current, preferences),
+        );
+        setPrerequisiteState("ready");
       })
       .catch((reason) => {
         if (active) {
-          setError(
+          setPrerequisiteState("failed");
+          setPrerequisiteError(
             reason instanceof Error
               ? reason.message
               : "无法读取新任务所需的工作区和默认权限",
@@ -80,15 +100,17 @@ export function TasksPage() {
     return () => {
       active = false;
     };
-  }, [runtime]);
+  }, [connection.status, prerequisiteAttempt, runtime]);
 
   const start = async (event: FormEvent) => {
     event.preventDefault();
+    const submittedWorkspaceId = workspaceId;
+    const submittedPrompt = prompt.trim();
     const submittedDraft = permissionDraft;
     const displayedDefaults = defaults;
     if (
-      workspaceId.length === 0 ||
-      prompt.trim().length === 0 ||
+      submittedWorkspaceId.length === 0 ||
+      submittedPrompt.length === 0 ||
       displayedDefaults === undefined ||
       submittedDraft === undefined
     ) {
@@ -123,8 +145,8 @@ export function TasksPage() {
         method: "thread/start",
         payload: {
           version: THREAD_START_INPUT_VERSION,
-          workspaceId,
-          prompt: prompt.trim(),
+          workspaceId: submittedWorkspaceId,
+          prompt: submittedPrompt,
           expectedPreferencesRevision: validatedDefaults.revision,
           settings: threadStartPermissionOverrides(submittedDraft),
         },
@@ -197,7 +219,10 @@ export function TasksPage() {
       : permissionOverrideCount(permissionDraft);
   const permissionsOverrideDefaults = overrideCount > 0;
   const permissionsReady =
-    defaults !== undefined && permissionDraft !== undefined;
+    prerequisiteState === "ready" &&
+    defaults !== undefined &&
+    permissionDraft !== undefined;
+  const submissionLocked = starting !== "idle";
 
   return (
     <main className="page tasks-page">
@@ -240,6 +265,7 @@ export function TasksPage() {
         <label className="new-task-field">
           <span>工作区</span>
           <select
+            disabled={submissionLocked || !permissionsReady}
             value={workspaceId}
             onChange={(event) => setWorkspaceId(event.target.value)}
           >
@@ -253,6 +279,7 @@ export function TasksPage() {
         <label className="new-task-field">
           <span>新任务请求</span>
           <textarea
+            disabled={submissionLocked}
             rows={3}
             placeholder="描述你希望 Codex 完成的工作…"
             value={prompt}
@@ -261,7 +288,7 @@ export function TasksPage() {
         </label>
         <fieldset
           className="new-task-permissions"
-          disabled={starting !== "idle" || !permissionsReady}
+          disabled={submissionLocked || !permissionsReady}
         >
           <legend>本次任务权限</legend>
           <div className="new-task-permission-grid">
@@ -336,7 +363,8 @@ export function TasksPage() {
           className="primary new-task-submit"
           type="submit"
           disabled={
-            starting !== "idle" ||
+            submissionLocked ||
+            connection.status !== "online" ||
             workspaceId.length === 0 ||
             prompt.trim().length === 0 ||
             !permissionsReady
@@ -358,6 +386,23 @@ export function TasksPage() {
       ) : null}
       {warning === undefined ? null : (
         <StatusMessage tone="warning">{warning}</StatusMessage>
+      )}
+      {prerequisiteError === undefined ? null : (
+        <>
+          <StatusMessage tone="error">{prerequisiteError}</StatusMessage>
+          <div className="page-actions">
+            <button
+              disabled={
+                prerequisiteState === "loading" ||
+                connection.status !== "online"
+              }
+              type="button"
+              onClick={() => setPrerequisiteAttempt((current) => current + 1)}
+            >
+              重新读取工作区和默认权限
+            </button>
+          </div>
+        </>
       )}
       {error === undefined ? null : (
         <StatusMessage tone="error">{error}</StatusMessage>

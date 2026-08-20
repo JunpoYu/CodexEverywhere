@@ -241,6 +241,44 @@ test("采用全局默认时会在创建前复核最新权限", async ({ page }) 
   await expect(dialog.getByRole("radio", { name: /只读/u })).toBeChecked();
 });
 
+test("新任务校验期间锁定请求快照中的全部输入", async ({ page }) => {
+  await openScenario(page, "&scenarioPreferenceValidationDelay=1");
+
+  const workspace = page.getByLabel("工作区");
+  const prompt = page.getByPlaceholder("描述你希望 Codex 完成的工作…");
+  const sandbox = page.getByLabel("本次任务 Sandbox");
+  const title = "验证新任务输入快照";
+  await prompt.fill(title);
+  await page.getByRole("button", { name: "新建任务" }).click();
+
+  await expect(workspace).toBeDisabled();
+  await expect(prompt).toBeDisabled();
+  await expect(sandbox).toBeDisabled();
+  await expect(
+    page.getByRole("button", { name: "正在确认默认权限…" }),
+  ).toBeDisabled();
+  await expect(page.getByRole("heading", { name: title })).toBeVisible();
+});
+
+test("新任务前置读取失败后可显式恢复且保留已输入请求", async ({ page }) => {
+  await openScenario(page, "&scenarioTaskPrerequisiteFailure=1");
+
+  const prompt = page.getByPlaceholder("描述你希望 Codex 完成的工作…");
+  await prompt.fill("保留这条尚未提交的请求");
+  await expect(
+    page.getByText("Scenario preferences are temporarily unavailable"),
+  ).toBeVisible();
+  await expect(page.getByLabel("工作区")).toBeDisabled();
+
+  await page.getByRole("button", { name: "重新读取工作区和默认权限" }).click();
+  await expect(page.getByLabel("本次任务 Sandbox")).toHaveValue(
+    "workspace-write",
+  );
+  await expect(page.getByLabel("工作区")).toBeEnabled();
+  await expect(prompt).toHaveValue("保留这条尚未提交的请求");
+  await expect(page.getByRole("button", { name: "新建任务" })).toBeEnabled();
+});
+
 test("任务权限冲突后同步新 revision 并保留用户更改", async ({ page }) => {
   await openScenario(page, "&scenarioSettingsConflict=1");
   await openTaskCard(page, "欢迎使用 CodexEverywhere");
@@ -363,6 +401,33 @@ test("全局设置已由其他设备应用时直接收口为成功", async ({ pa
   await expect(save).toBeDisabled();
   await expect(page.getByText(/已保存 · revision 1/u)).toBeVisible();
   await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
+});
+
+test("全局设置冲突同步失败后锁定旧 revision 并只允许重读", async ({ page }) => {
+  await openScenario(page, "&scenarioPreferenceConflictRefreshFailure=1");
+  await navigateTo(page, "/settings");
+
+  const sandbox = page.getByLabel("默认 Sandbox");
+  await sandbox.selectOption("read-only");
+  await page.getByRole("button", { name: "保存全局设置" }).click();
+
+  await expect(page.getByText("同步失败 · 尚未再次提交")).toBeVisible();
+  await expect(page.getByText(/设置版本发生冲突.*尚未再次提交/u)).toBeVisible();
+  await expect(sandbox).toBeDisabled();
+  const retry = page.getByRole("button", { name: "重新同步宿主机设置" });
+  await expect(retry).toBeEnabled();
+
+  await retry.click();
+  await expect(page.getByText(/已同步最新版本并保留你的改动/u)).toBeVisible();
+  await expect(sandbox).toBeEnabled();
+  await expect(sandbox).toHaveValue("read-only");
+  const save = page.getByRole("button", { name: "保存全局设置" });
+  await expect(save).toBeEnabled();
+
+  await save.click();
+  await expect(
+    page.getByText("全局设置已保存；新任务将使用这些默认权限。"),
+  ).toBeVisible();
 });
 
 test("管理端覆盖登记、停用、启用、恢复交接和审计", async ({ page }) => {

@@ -11,11 +11,20 @@ export function createScenarioConnection(kind: "user" | "admin"): {
   return {
     gateway: new ScenarioGateway({
       changePreferencesAfterInitialRead: search.has("scenarioDefaultsChange"),
+      delaySecondPreferencesReadOnce: search.has(
+        "scenarioPreferenceValidationDelay",
+      ),
+      failFirstPreferencesReadOnce: search.has(
+        "scenarioTaskPrerequisiteFailure",
+      ),
       failWorkspaceListAfterMutationOnce: search.has(
         "scenarioWorkspaceRefreshFailure",
       ),
       preferencesAlreadyAppliedConflictOnce: search.has(
         "scenarioPreferencesAlreadyApplied",
+      ),
+      preferencesConflictRefreshFailureOnce: search.has(
+        "scenarioPreferenceConflictRefreshFailure",
       ),
       threadSettingsConflictOnce: search.has("scenarioSettingsConflict"),
     }),
