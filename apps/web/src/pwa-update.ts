@@ -62,6 +62,9 @@ export function readPwaUpdateSafetyState(
   );
   const adminSecret = root.querySelector<HTMLElement>("#admin-secret-value");
   const v4Secret = root.querySelector<HTMLElement>("[data-one-time-secret]");
+  const explicitDraft = root.querySelector<HTMLElement>(
+    '[data-pwa-draft="true"]',
+  );
   const draftFields = root.querySelectorAll<
     HTMLTextAreaElement | HTMLInputElement
   >(
@@ -79,14 +82,16 @@ export function readPwaUpdateSafetyState(
       (adminSecretDialog?.open && adminSecret?.textContent?.trim()) ||
       v4Secret?.textContent?.trim(),
     ),
-    draftPresent: [...draftFields].some((field) => {
-      if (field.closest("[hidden]")) return false;
-      const dialog = field.closest<HTMLDialogElement>("dialog");
-      if (dialog && !dialog.open) return false;
-      if (field instanceof HTMLInputElement && field.type === "file")
-        return Boolean(field.files?.length);
-      return Boolean(field.value.trim());
-    }),
+    draftPresent:
+      explicitDraft !== null ||
+      [...draftFields].some((field) => {
+        if (field.closest("[hidden]")) return false;
+        const dialog = field.closest<HTMLDialogElement>("dialog");
+        if (dialog && !dialog.open) return false;
+        if (field instanceof HTMLInputElement && field.type === "file")
+          return Boolean(field.files?.length);
+        return Boolean(field.value.trim());
+      }),
     operationPending: Boolean(
       root.querySelector(
         '.mutation-outcome-pending, [aria-busy="true"], .timeline-entry.outcome-unknown, .composer-queue-item.confirming',

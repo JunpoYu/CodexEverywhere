@@ -407,9 +407,11 @@ export class ScenarioGateway implements GatewayPort {
           hasMore: false,
         };
       }
-      case "thread/start":
+      case "thread/start": {
+        const requested = (record.settings ?? {}) as Partial<ThreadSettings>;
         if (
-          record.expectedPreferencesRevision !== undefined &&
+          (requested.sandbox === undefined ||
+            requested.approvalPolicy === undefined) &&
           Number(record.expectedPreferencesRevision) !==
             this.#preferences.revision
         ) {
@@ -419,6 +421,7 @@ export class ScenarioGateway implements GatewayPort {
           });
         }
         return this.#startThread(record);
+      }
       case "thread/open":
         return this.#openThread(String(record.threadId));
       case "thread/history": {
@@ -746,10 +749,15 @@ export class ScenarioGateway implements GatewayPort {
       items: [messageItem("user", prompt, turnId)],
     };
     this.#threads.set(id, thread);
+    const requested = (record.settings ?? {}) as Partial<ThreadSettings>;
     this.#threadSettings.set(id, {
       version: 1,
       revision: 0,
-      ...(record.settings as Partial<ThreadSettings> | undefined),
+      ...(requested.model === undefined ? {} : { model: requested.model }),
+      ...(requested.effort === undefined ? {} : { effort: requested.effort }),
+      sandbox: requested.sandbox ?? this.#preferences.sandbox,
+      approvalPolicy:
+        requested.approvalPolicy ?? this.#preferences.approvalPolicy,
     });
     const interactionKind = scenarioInteractionKind(prompt);
     if (interactionKind !== undefined) {

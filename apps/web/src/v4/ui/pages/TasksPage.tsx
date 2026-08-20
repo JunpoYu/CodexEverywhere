@@ -2,6 +2,7 @@ import { useEffect, useState, type FormEvent } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import {
   GatewayRemoteError,
+  THREAD_START_INPUT_VERSION,
   type OutputOf,
 } from "@codex-everywhere/protocol/v2";
 
@@ -11,6 +12,17 @@ import { queryOptions } from "../../gateway/gateway-port.js";
 import { Icon } from "../components/Icon.js";
 import { StatusMessage } from "../components/StatusMessage.js";
 import { useRuntime } from "../runtime-context.js";
+import {
+  defaultPermissionDraft,
+  inheritedPermissionsChanged,
+  inheritsAnyPermission,
+  overrideApprovalPolicy,
+  overrideSandbox,
+  permissionOverrideCount,
+  rebaseInheritedPermissions,
+  threadStartPermissionOverrides,
+  type NewTaskPermissionDraft,
+} from "./new-task-permissions.js";
 
 type Preferences = OutputOf<"preferences/read">;
 
@@ -23,10 +35,8 @@ export function TasksPage() {
   const [workspaceId, setWorkspaceId] = useState("");
   const [prompt, setPrompt] = useState("");
   const [defaults, setDefaults] = useState<Preferences>();
-  const [sandbox, setSandbox] = useState<Preferences["sandbox"]>();
-  const [approvalPolicy, setApprovalPolicy] =
-    useState<Preferences["approvalPolicy"]>();
-  const [permissionsOverridden, setPermissionsOverridden] = useState(false);
+  const [permissionDraft, setPermissionDraft] =
+    useState<NewTaskPermissionDraft>();
   const [starting, setStarting] = useState<
     "idle" | "validating" | "submitting" | "reconciling"
   >("idle");
@@ -56,9 +66,7 @@ export function TasksPage() {
             "",
         );
         setDefaults(preferences);
-        setSandbox(preferences.sandbox);
-        setApprovalPolicy(preferences.approvalPolicy);
-        setPermissionsOverridden(false);
+        setPermissionDraft(defaultPermissionDraft(preferences));
       })
       .catch((reason) => {
         if (active) {
@@ -76,39 +84,37 @@ export function TasksPage() {
 
   const start = async (event: FormEvent) => {
     event.preventDefault();
-    const selectedSandbox = sandbox;
-    const selectedApprovalPolicy = approvalPolicy;
+    const submittedDraft = permissionDraft;
     const displayedDefaults = defaults;
-    const usesDefaults = !permissionsOverridden;
     if (
       workspaceId.length === 0 ||
       prompt.trim().length === 0 ||
       displayedDefaults === undefined ||
-      selectedSandbox === undefined ||
-      selectedApprovalPolicy === undefined
+      submittedDraft === undefined
     ) {
       return;
     }
+    const inheritsPermissions = inheritsAnyPermission(submittedDraft);
     setError(undefined);
     setWarning(undefined);
-    let effectiveSandbox = selectedSandbox;
-    let effectiveApprovalPolicy = selectedApprovalPolicy;
-    let expectedPreferencesRevision: number | undefined;
+    let validatedDefaults = displayedDefaults;
     try {
-      if (usesDefaults) {
+      if (inheritsPermissions) {
         setStarting("validating");
         const latest = await loadPreferences(runtime.gateway);
-        const changed = defaultPermissionsChanged(displayedDefaults, latest);
-        adoptDefaultPermissions(latest);
+        const changed = inheritedPermissionsChanged(
+          displayedDefaults,
+          latest,
+          submittedDraft,
+        );
+        adoptLatestDefaults(latest, submittedDraft);
         if (changed) {
           setWarning(
-            "全局默认权限刚刚发生变化，已更新本表单。请确认新的权限后再次创建任务。",
+            "本次任务仍继承的全局权限刚刚发生变化，已更新表单；你的单次覆盖保持不变。请确认后再次创建。",
           );
           return;
         }
-        effectiveSandbox = latest.sandbox;
-        effectiveApprovalPolicy = latest.approvalPolicy;
-        expectedPreferencesRevision = latest.revision;
+        validatedDefaults = latest;
       }
       setStarting("submitting");
       const result = await durableMutation({
@@ -116,16 +122,11 @@ export function TasksPage() {
         gateway: runtime.gateway,
         method: "thread/start",
         payload: {
-          version: 1,
+          version: THREAD_START_INPUT_VERSION,
           workspaceId,
           prompt: prompt.trim(),
-          ...(expectedPreferencesRevision === undefined
-            ? {}
-            : { expectedPreferencesRevision }),
-          settings: {
-            sandbox: effectiveSandbox,
-            approvalPolicy: effectiveApprovalPolicy,
-          },
+          expectedPreferencesRevision: validatedDefaults.revision,
+          settings: threadStartPermissionOverrides(submittedDraft),
         },
         onOutcomeUnknown: () => setStarting("reconciling"),
       });
@@ -133,20 +134,22 @@ export function TasksPage() {
       navigate(`/tasks/${encodeURIComponent(result.thread.id)}`);
     } catch (reason) {
       if (
-        usesDefaults &&
+        inheritsPermissions &&
         reason instanceof GatewayRemoteError &&
         reason.code === "REVISION_CONFLICT"
       ) {
         setStarting("validating");
         try {
           const latest = await loadPreferences(runtime.gateway);
-          const changed =
-            latest.sandbox !== effectiveSandbox ||
-            latest.approvalPolicy !== effectiveApprovalPolicy;
-          adoptDefaultPermissions(latest);
+          const changed = inheritedPermissionsChanged(
+            validatedDefaults,
+            latest,
+            submittedDraft,
+          );
+          adoptLatestDefaults(latest, submittedDraft);
           setWarning(
             changed
-              ? "创建前全局默认权限再次发生变化，任务尚未创建。请确认新的权限后重试。"
+              ? "创建前仍继承的全局权限再次发生变化，任务尚未创建；单次覆盖已保留，请确认后重试。"
               : "创建前全局设置发生了并发更新，任务尚未创建；当前权限未变化，可以安全重试。",
           );
         } catch (refreshReason) {
@@ -154,6 +157,11 @@ export function TasksPage() {
             `创建前检测到全局设置冲突，但同步失败：${errorMessage(refreshReason)}`,
           );
         }
+      } else if (
+        reason instanceof GatewayRemoteError &&
+        reason.code === "INVALID_INPUT"
+      ) {
+        setError("宿主机 Agent 不支持新版任务创建协议，请先升级 Agent。");
       } else {
         setError(errorMessage(reason));
       }
@@ -162,34 +170,34 @@ export function TasksPage() {
     }
   };
 
-  const adoptDefaultPermissions = (latest: Preferences) => {
+  const adoptLatestDefaults = (
+    latest: Preferences,
+    draft: NewTaskPermissionDraft,
+  ) => {
     setDefaults(latest);
-    setSandbox(latest.sandbox);
-    setApprovalPolicy(latest.approvalPolicy);
-    setPermissionsOverridden(false);
+    setPermissionDraft(rebaseInheritedPermissions(draft, latest));
   };
   const updateSandbox = (next: Preferences["sandbox"]) => {
-    setSandbox(next);
-    setPermissionsOverridden(
-      defaults !== undefined &&
-        (next !== defaults.sandbox ||
-          approvalPolicy !== defaults.approvalPolicy),
+    setPermissionDraft((current) =>
+      current === undefined ? current : overrideSandbox(current, next),
     );
     setWarning(undefined);
   };
   const updateApprovalPolicy = (next: Preferences["approvalPolicy"]) => {
-    setApprovalPolicy(next);
-    setPermissionsOverridden(
-      defaults !== undefined &&
-        (sandbox !== defaults.sandbox || next !== defaults.approvalPolicy),
+    setPermissionDraft((current) =>
+      current === undefined ? current : overrideApprovalPolicy(current, next),
     );
     setWarning(undefined);
   };
-  const permissionsOverrideDefaults = permissionsOverridden;
+  const sandbox = permissionDraft?.sandbox.value;
+  const approvalPolicy = permissionDraft?.approvalPolicy.value;
+  const overrideCount =
+    permissionDraft === undefined
+      ? 0
+      : permissionOverrideCount(permissionDraft);
+  const permissionsOverrideDefaults = overrideCount > 0;
   const permissionsReady =
-    defaults !== undefined &&
-    sandbox !== undefined &&
-    approvalPolicy !== undefined;
+    defaults !== undefined && permissionDraft !== undefined;
 
   return (
     <main className="page tasks-page">
@@ -224,7 +232,11 @@ export function TasksPage() {
         </div>
       </header>
 
-      <form className="new-task-card" onSubmit={(event) => void start(event)}>
+      <form
+        className="new-task-card"
+        data-pwa-draft={overrideCount > 0 ? "true" : undefined}
+        onSubmit={(event) => void start(event)}
+      >
         <label className="new-task-field">
           <span>工作区</span>
           <select
@@ -288,12 +300,14 @@ export function TasksPage() {
                 className={`state-pill ${permissionsOverrideDefaults ? "waiting-input" : ""}`}
               >
                 {permissionsOverrideDefaults
-                  ? "仅覆盖本次任务"
+                  ? overrideCount === 2
+                    ? "全部覆盖本次任务"
+                    : "部分覆盖本次任务"
                   : "采用全局默认"}
               </span>
               <small>
-                {permissionsReady
-                  ? `${sandboxLabel(sandbox)} · ${approvalPolicyLabel(approvalPolicy)}`
+                {permissionDraft !== undefined
+                  ? `${sandboxLabel(permissionDraft.sandbox.value)}${permissionSourceLabel(permissionDraft.sandbox.source)} · ${approvalPolicyLabel(permissionDraft.approvalPolicy.value)}${permissionSourceLabel(permissionDraft.approvalPolicy.source)}`
                   : "正在读取全局默认权限…"}
               </small>
               <div>
@@ -302,7 +316,7 @@ export function TasksPage() {
                   type="button"
                   onClick={() => {
                     if (defaults === undefined) return;
-                    adoptDefaultPermissions(defaults);
+                    setPermissionDraft(defaultPermissionDraft(defaults));
                     setWarning(undefined);
                   }}
                 >
@@ -417,18 +431,12 @@ async function loadPreferences(
   return gateway.request("preferences/read", { version: 1 }, queryOptions());
 }
 
-export function defaultPermissionsChanged(
-  displayed: Pick<Preferences, "sandbox" | "approvalPolicy">,
-  latest: Pick<Preferences, "sandbox" | "approvalPolicy">,
-): boolean {
-  return (
-    displayed.sandbox !== latest.sandbox ||
-    displayed.approvalPolicy !== latest.approvalPolicy
-  );
-}
-
 function errorMessage(reason: unknown): string {
   return reason instanceof Error ? reason.message : "任务创建失败";
+}
+
+function permissionSourceLabel(source: "default" | "override"): string {
+  return source === "default" ? "（默认）" : "（本次）";
 }
 
 function sandboxLabel(value: Preferences["sandbox"]): string {

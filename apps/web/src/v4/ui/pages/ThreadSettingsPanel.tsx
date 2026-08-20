@@ -205,7 +205,11 @@ export function ThreadSettingsPanel(input: {
         </button>
       </header>
 
-      <form className={styles.form} onSubmit={(event) => void save(event)}>
+      <form
+        className={styles.form}
+        data-pwa-draft={dirty ? "true" : undefined}
+        onSubmit={(event) => void save(event)}
+      >
         <fieldset className={styles.group} disabled={locked}>
           <legend>文件访问范围</legend>
           <p>决定 Codex 能够读取或修改哪些文件。</p>

@@ -51,6 +51,18 @@ describe("Gateway API v2 method registry", () => {
   });
 
   it("derives precise inputs, outputs, and request options", () => {
+    expectTypeOf<InputOf<"thread/start">>().toEqualTypeOf<{
+      version: 2;
+      workspaceId: string;
+      prompt: string;
+      expectedPreferencesRevision: number;
+      settings?: {
+        model?: string;
+        effort?: string;
+        sandbox?: "read-only" | "workspace-write" | "danger-full-access";
+        approvalPolicy?: "untrusted" | "on-request" | "never";
+      };
+    }>();
     expectTypeOf<InputOf<"turn/start">>().toEqualTypeOf<{
       version: 1;
       threadId: string;
@@ -67,5 +79,24 @@ describe("Gateway API v2 method registry", () => {
     expectTypeOf<RequestOptionsOf<"thread/open">>().toEqualTypeOf<{
       readonly signal?: AbortSignal;
     }>();
+  });
+
+  it("fails closed for cached thread/start payloads without the revision guard", () => {
+    const schema = gatewayMethodDefinitions["thread/start"].input;
+
+    expect(
+      schema.safeParse({
+        version: 1,
+        workspaceId: "workspace-1",
+        prompt: "stale cached client",
+      }).success,
+    ).toBe(false);
+    expect(
+      schema.safeParse({
+        version: 2,
+        workspaceId: "workspace-1",
+        prompt: "missing guard",
+      }).success,
+    ).toBe(false);
   });
 });

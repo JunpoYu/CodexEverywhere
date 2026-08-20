@@ -244,6 +244,7 @@ export function SettingsPage() {
       ) : (
         <form
           className="preference-form"
+          data-pwa-draft={preferencesDirty ? "true" : undefined}
           onSubmit={(event) => void savePreferences(event)}
         >
           <section className="settings-list" aria-busy={preferenceBusy}>

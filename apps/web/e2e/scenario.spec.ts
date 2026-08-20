@@ -178,7 +178,9 @@ test("新任务展示全局默认权限，并允许仅覆盖本次任务", async
 
   await sandbox.selectOption("danger-full-access");
   await approval.selectOption("never");
-  await expect(page.getByText("仅覆盖本次任务", { exact: true })).toBeVisible();
+  await expect(
+    page.getByText("全部覆盖本次任务", { exact: true }),
+  ).toBeVisible();
   await expect(page.getByText(/减少隔离或审批保护/u)).toBeVisible();
 
   const prompt = "验证新任务权限覆盖";
@@ -192,6 +194,32 @@ test("新任务展示全局默认权限，并允许仅覆盖本次任务", async
   await expect(dialog.getByRole("radio", { name: /从不询问/u })).toBeChecked();
 });
 
+test("新任务的单字段覆盖不会冻结另一项全局默认权限", async ({ page }) => {
+  await openScenario(page, "&scenarioDefaultsChange=1");
+
+  const sandbox = page.getByLabel("本次任务 Sandbox");
+  const approval = page.getByLabel("本次任务审批策略");
+  await approval.selectOption("never");
+  await expect(
+    page.getByText("部分覆盖本次任务", { exact: true }),
+  ).toBeVisible();
+  const prompt = "验证按字段继承默认权限";
+  await page.getByPlaceholder("描述你希望 Codex 完成的工作…").fill(prompt);
+  await page.getByRole("button", { name: "新建任务" }).click();
+
+  await expect(page.getByText(/仍继承的全局权限刚刚发生变化/u)).toBeVisible();
+  await expect(sandbox).toHaveValue("read-only");
+  await expect(approval).toHaveValue("never");
+  await expect(page.getByRole("heading", { name: prompt })).toHaveCount(0);
+
+  await page.getByRole("button", { name: "新建任务" }).click();
+  await expect(page.getByRole("heading", { name: prompt })).toBeVisible();
+  await page.getByRole("button", { name: "任务设置" }).click();
+  const dialog = page.getByRole("dialog", { name: "任务权限与运行设置" });
+  await expect(dialog.getByRole("radio", { name: /只读/u })).toBeChecked();
+  await expect(dialog.getByRole("radio", { name: /从不询问/u })).toBeChecked();
+});
+
 test("采用全局默认时会在创建前复核最新权限", async ({ page }) => {
   await openScenario(page, "&scenarioDefaultsChange=1");
 
@@ -201,7 +229,7 @@ test("采用全局默认时会在创建前复核最新权限", async ({ page }) 
   await page.getByPlaceholder("描述你希望 Codex 完成的工作…").fill(prompt);
   await page.getByRole("button", { name: "新建任务" }).click();
 
-  await expect(page.getByText(/全局默认权限刚刚发生变化/u)).toBeVisible();
+  await expect(page.getByText(/仍继承的全局权限刚刚发生变化/u)).toBeVisible();
   await expect(sandbox).toHaveValue("read-only");
   await expect(page.getByText("采用全局默认", { exact: true })).toBeVisible();
   await expect(page.getByRole("heading", { name: prompt })).toHaveCount(0);
@@ -295,6 +323,10 @@ test("全局设置显式保存，并成为新任务显示的默认权限", async
   const save = page.getByRole("button", { name: "保存全局设置" });
   await expect(save).toBeDisabled();
   await sandbox.selectOption("read-only");
+  await expect(page.locator("form.preference-form")).toHaveAttribute(
+    "data-pwa-draft",
+    "true",
+  );
   await expect(page.getByText("有未保存的更改")).toBeVisible();
   await expect(save).toBeEnabled();
   await save.click();
@@ -303,6 +335,10 @@ test("全局设置显式保存，并成为新任务显示的默认权限", async
   ).toBeVisible();
   await expect(sandbox).toHaveValue("read-only");
   await expect(save).toBeDisabled();
+  await expect(page.locator("form.preference-form")).not.toHaveAttribute(
+    "data-pwa-draft",
+    "true",
+  );
   await expect(page.getByText(/已保存 · revision 1/u)).toBeVisible();
 
   await navigateTo(page, "/tasks");

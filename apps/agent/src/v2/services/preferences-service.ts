@@ -1,6 +1,7 @@
 import { GatewayV2Error } from "@codex-everywhere/protocol/v2";
 
 import {
+  type PreferencesMutationLease,
   type PreferencesPatch,
   type PreferencesRecord,
   type PreferencesRepository,
@@ -28,10 +29,17 @@ export class PreferencesService {
     return preferencesView(await this.#repository.read());
   }
 
+  acquireMutation(
+    options: { readonly signal?: AbortSignal } = {},
+  ): Promise<PreferencesMutationLease> {
+    return this.#repository.acquireMutation(options);
+  }
+
   async update(
     expectedRevision: number,
     patch: PreferencesPatch,
   ): Promise<PreferencesView> {
+    const mutation = await this.#repository.acquireMutation();
     try {
       return preferencesView(
         await this.#repository.update(expectedRevision, patch),
@@ -44,6 +52,8 @@ export class PreferencesService {
         );
       }
       throw error;
+    } finally {
+      await mutation.release();
     }
   }
 }

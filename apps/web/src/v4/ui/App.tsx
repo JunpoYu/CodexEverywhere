@@ -10,7 +10,6 @@ import {
 
 import type { SavedHost } from "../../storage.js";
 import { AdminWebRuntime } from "../admin-runtime.js";
-import { ScenarioGateway } from "../gateway/scenario-gateway.js";
 import type { GatewayPort } from "../gateway/gateway-port.js";
 import { UserWebRuntime } from "../runtime.js";
 import { AdminPage } from "./pages/AdminPage.js";
@@ -55,23 +54,14 @@ export function App() {
     setRecoveryCodes(codes);
   };
 
-  const scenario = (kind: "user" | "admin") => {
-    const host = scenarioHost(kind);
-    const search = new URLSearchParams(window.location.search);
-    activate(
-      new ScenarioGateway({
-        changePreferencesAfterInitialRead: search.has("scenarioDefaultsChange"),
-        failWorkspaceListAfterMutationOnce: search.has(
-          "scenarioWorkspaceRefreshFailure",
-        ),
-        preferencesAlreadyAppliedConflictOnce: search.has(
-          "scenarioPreferencesAlreadyApplied",
-        ),
-        threadSettingsConflictOnce: search.has("scenarioSettingsConflict"),
-      }),
-      host,
-    );
-  };
+  const scenario = import.meta.env.DEV
+    ? async (kind: "user" | "admin") => {
+        const { createScenarioConnection } =
+          await import("../gateway/scenario-entry.js");
+        const connection = createScenarioConnection(kind);
+        activate(connection.gateway, connection.host);
+      }
+    : undefined;
 
   return (
     <BrowserRouter>
@@ -165,22 +155,4 @@ function RecoveryCodesDialog(input: {
       </div>
     </ModalDialog>
   );
-}
-
-function scenarioHost(kind: "user" | "admin"): SavedHost {
-  return {
-    id: `scenario-${kind}`,
-    kind,
-    name: kind === "admin" ? "Scenario 管理端" : "Scenario HPC",
-    endpoint: "ws://scenario.invalid",
-    transport: "direct",
-    nodeId: `scenario-${kind}`,
-    userId: kind === "admin" ? "admin:scenario" : "unix:scenario",
-    hostPublicKey: "A".repeat(43),
-    hostFingerprint: "scenario",
-    deviceId: `scenario-${kind}`,
-    deviceName: "Scenario",
-    devicePublicKey: "A".repeat(43),
-    deviceSecretKey: "A".repeat(43),
-  };
 }

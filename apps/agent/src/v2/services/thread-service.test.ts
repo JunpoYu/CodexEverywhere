@@ -225,19 +225,23 @@ describe("ThreadService", () => {
       home: directory,
     });
     const workspace = await workspaces.add(workspacePath, "Workspace");
+    const preferences = new PreferencesService(state.preferences);
+    await preferences.update(0, { approvalPolicy: "never" });
     const service = new ThreadService({
       scope,
       clients: factory,
       leases,
       workspaces,
-      preferences: new PreferencesService(state.preferences),
+      preferences,
       settings: state.threadSettings,
     });
 
     const result = await service.start({
-      version: 1,
+      version: 2,
       workspaceId: workspace.id,
       prompt: "run a command",
+      expectedPreferencesRevision: 1,
+      settings: { sandbox: "danger-full-access" },
     });
 
     expect(result).toMatchObject({
@@ -245,6 +249,17 @@ describe("ThreadService", () => {
       turnId: "turn-1",
     });
     expect(factory.clients).toHaveLength(2);
+    expect(factory.clients[0]?.requests[0]).toEqual({
+      method: "thread/start",
+      params: expect.objectContaining({
+        sandbox: "danger-full-access",
+        approvalPolicy: "never",
+      }),
+    });
+    await expect(state.threadSettings.read("thread-1")).resolves.toMatchObject({
+      sandbox: "danger-full-access",
+      approvalPolicy: "never",
+    });
     expect(factory.clients[0]?.closed).toBe(true);
     expect(factory.clients[1]?.closed).toBe(false);
     expect(factory.clients[1]?.methods).toEqual([
@@ -297,13 +312,12 @@ describe("ThreadService", () => {
     });
 
     const start = service.start({
-      version: 1,
+      version: 2,
       workspaceId: workspace.id,
       prompt: "must not start",
       expectedPreferencesRevision: 0,
       settings: {
         sandbox: "workspace-write",
-        approvalPolicy: "on-request",
       },
     });
 
@@ -311,6 +325,70 @@ describe("ThreadService", () => {
       code: "REVISION_CONFLICT",
     });
     expect(factory.clients).toHaveLength(0);
+  });
+
+  it("keeps inherited permissions stable until Codex accepts thread/start", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "ce-thread-service-"));
+    directories.push(directory);
+    const workspacePath = join(directory, "workspace");
+    await mkdir(workspacePath);
+    const state = await UserStateDatabase.open(
+      join(directory, "state.sqlite"),
+      { create: true },
+    );
+    const scope = new Scope("thread-default-fence-test");
+    scopes.push(scope);
+    scope.defer(() => state.close());
+    let acceptThreadStart: (() => void) | undefined;
+    const threadStartGate = new Promise<void>((resolve) => {
+      acceptThreadStart = resolve;
+    });
+    const factory = new FirstTurnFactory(workspacePath, threadStartGate);
+    const leases = new ThreadLeaseManager({ scope, clientFactory: factory });
+    const workspaces = new WorkspaceService(state.workspaces, {
+      home: directory,
+    });
+    const workspace = await workspaces.add(workspacePath, "Workspace");
+    const preferences = new PreferencesService(state.preferences);
+    const service = new ThreadService({
+      scope,
+      clients: factory,
+      leases,
+      workspaces,
+      preferences,
+      settings: state.threadSettings,
+    });
+
+    const start = service.start({
+      version: 2,
+      workspaceId: workspace.id,
+      prompt: "hold defaults stable",
+      expectedPreferencesRevision: 0,
+    });
+    await factory.threadStartRequested;
+    let preferencesUpdated = false;
+    const update = preferences
+      .update(0, { approvalPolicy: "never" })
+      .then((result) => {
+        preferencesUpdated = true;
+        return result;
+      });
+
+    const updateBeforeAcceptance = await Promise.race([
+      update.then(() => "updated" as const),
+      new Promise<"blocked">((resolve) =>
+        setTimeout(() => resolve("blocked"), 25),
+      ),
+    ]);
+    acceptThreadStart?.();
+    expect(updateBeforeAcceptance).toBe("blocked");
+    await expect(start).resolves.toMatchObject({
+      thread: { id: "thread-1" },
+    });
+    await expect(update).resolves.toMatchObject({
+      revision: 1,
+      approvalPolicy: "never",
+    });
   });
 });
 
@@ -478,13 +556,26 @@ class ThreadListClient implements CodexClient {
 
 class FirstTurnFactory implements CodexClientFactoryPort {
   readonly clients: FirstTurnClient[] = [];
+  readonly threadStartRequested: Promise<void>;
+  readonly #markThreadStartRequested: () => void;
 
-  constructor(private readonly workspacePath: string) {}
+  constructor(
+    private readonly workspacePath: string,
+    private readonly threadStartGate: Promise<void> = Promise.resolve(),
+  ) {
+    let markThreadStartRequested: (() => void) | undefined;
+    this.threadStartRequested = new Promise<void>((resolve) => {
+      markThreadStartRequested = resolve;
+    });
+    this.#markThreadStartRequested = () => markThreadStartRequested?.();
+  }
 
   create(scope: Scope): Promise<CodexClient> {
     const client = new FirstTurnClient(
       this.clients.length === 0 ? "bootstrap" : "lease",
       this.workspacePath,
+      this.threadStartGate,
+      this.#markThreadStartRequested,
     );
     this.clients.push(client);
     scope.defer(() => client.close());
@@ -494,6 +585,7 @@ class FirstTurnFactory implements CodexClientFactoryPort {
 
 class FirstTurnClient implements CodexClient {
   readonly methods: string[] = [];
+  readonly requests: Array<{ method: string; params?: unknown }> = [];
   readonly #notifications = new Set<
     (notification: CodexNotification) => void
   >();
@@ -504,25 +596,36 @@ class FirstTurnClient implements CodexClient {
   constructor(
     private readonly role: "bootstrap" | "lease",
     private readonly workspacePath: string,
+    private readonly threadStartGate: Promise<void>,
+    private readonly markThreadStartRequested: () => void,
   ) {}
 
-  request<Result = unknown>(method: string): Promise<Result> {
+  async request<Result = unknown>(
+    method: string,
+    params?: unknown,
+  ): Promise<Result> {
     this.methods.push(method);
+    this.requests.push({
+      method,
+      ...(params === undefined ? {} : { params }),
+    });
     if (this.role === "bootstrap" && method === "thread/start") {
-      return Promise.resolve({
+      this.markThreadStartRequested();
+      await this.threadStartGate;
+      return {
         thread: thread(this.workspacePath),
         approvalPolicy: "on-request",
         approvalsReviewer: "user",
         sandbox: workspaceWriteSandbox(),
-      } as Result);
+      } as Result;
     }
     if (this.role === "lease" && method === "thread/resume") {
-      return Promise.resolve({
+      return {
         thread: thread(this.workspacePath),
         approvalPolicy: "on-request",
         approvalsReviewer: "user",
         sandbox: workspaceWriteSandbox(),
-      } as Result);
+      } as Result;
     }
     if (this.role === "lease" && method === "turn/start") {
       for (const listener of [...this.#serverRequests]) {
@@ -539,11 +642,9 @@ class FirstTurnClient implements CodexClient {
           reject: vi.fn(),
         });
       }
-      return Promise.resolve({ turn: { id: "turn-1" } } as Result);
+      return { turn: { id: "turn-1" } } as Result;
     }
-    return Promise.reject(
-      new Error(`Unexpected ${this.role} request: ${method}`),
-    );
+    throw new Error(`Unexpected ${this.role} request: ${method}`);
   }
 
   onNotification(

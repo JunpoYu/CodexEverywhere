@@ -41,7 +41,7 @@ CE 不重新实现 AgentLoop。thread、turn、工具活动、审批请求和执
 
 - 在 UI 中把 app-server `thread` 称为“任务”，协议和代码继续使用 `thread`。
 - 创建、打开、分页、重命名、归档、恢复和删除任务；按稳定 item/turn ID 合并权威历史与实时状态。
-- 新建任务会明确显示当前全局 Sandbox 与审批默认值，并允许只覆盖本次任务；采用默认值时会在创建前按需重读并由 Agent 校验偏好 revision，避免其他设备的并发修改被旧页面覆盖。全局默认设置使用显式保存和就近成功/失败反馈，修改不会追溯影响已有任务。
+- 新建任务会明确显示当前全局 Sandbox 与审批默认值，并允许按字段只覆盖本次任务；未覆盖的字段由 Agent 在 Codex 接受创建时从同一 revision 的全局偏好解析。全局偏好更新与该创建边界共用短期协调锁，避免其他设备的并发修改被旧页面冻结或覆盖。全局默认设置使用显式保存和就近成功/失败反馈，修改不会追溯影响已有任务。
 - 结构化呈现消息、计划、命令、文件修改、MCP、subagent、错误和未知的 generic event。
 - 审批、用户问题和 MCP elicitation 固定显示在 composer 上方；多个设备同时回答时只接受第一个合法响应。
 - 任务权限使用独立设置面板，按“有未保存更改、保存中、结果对账、已保存、失败”显示明确状态；只有宿主机返回新 revision 后才提示生效，并允许在同一面板连续修改。
@@ -85,7 +85,7 @@ v0.4 借鉴通用 Harness 的 service seam、scope、registry 和事件驱动思
 - `Actor<State, Event, Effect>`：纯 reducer 产生 effect，旧 generation 的异步结果不能覆盖新状态；
 - Agent 使用单一 composition root；Web 在身份边界只装配互斥的 User 或 Admin composition root，管理端不会实例化任务、Workspace 或 Queue actor。所有模块均为静态装配，不扫描目录、不动态执行第三方代码。
 
-Noise handshake 与 Relay wire protocol 保持 version 1；加密后的 Gateway API 为 version 2；自定义 payload 内部为 `version: 1`。Host Profile、设备密钥和 pairing document 格式不变，因此升级不要求重新配对。新旧 Web/Agent 不匹配时明确返回升级错误，不静默降级。
+Noise handshake 与 Relay wire protocol 保持 version 1；加密后的 Gateway API 为 version 2；自定义 payload 通常为 `version: 1`。需要 fail-closed 演进的单个方法可提升自己的 payload version；当前 `thread/start` 使用 version 2，并强制携带偏好 revision，使缓存旧页面无法绕过创建权限保护。Host Profile、设备密钥和 pairing document 格式不变，因此升级不要求重新配对。新旧 Web/Agent 不匹配时明确返回升级错误，不静默降级。
 
 完整服务边界、方法表、Actor、数据库和安全约束见 [v0.4 架构](docs/architecture.zh-CN.md)。
 冻结的 P0/P1、探索性场景和合成协议样本见 [v0.4 回归基线](docs/v0.4-bug-baseline.zh-CN.md)。

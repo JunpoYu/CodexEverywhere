@@ -2,7 +2,11 @@ import { readFileSync } from "node:fs";
 
 import { describe, expect, it, vi } from "vitest";
 
-import { forcePwaUpdateCheck, pwaUpdateBlockedReason } from "./pwa-update.js";
+import {
+  forcePwaUpdateCheck,
+  pwaUpdateBlockedReason,
+  readPwaUpdateSafetyState,
+} from "./pwa-update.js";
 
 describe("safe PWA updates", () => {
   it("blocks refresh while a one-time secret is visible", () => {
@@ -33,6 +37,17 @@ describe("safe PWA updates", () => {
         operationPending: false,
       }),
     ).toBeUndefined();
+  });
+
+  it("detects select-only drafts through the explicit form marker", () => {
+    const root = {
+      querySelector: vi.fn((selector: string) =>
+        selector === '[data-pwa-draft="true"]' ? {} : null,
+      ),
+      querySelectorAll: vi.fn(() => []),
+    } as unknown as Document;
+
+    expect(readPwaUpdateSafetyState(root).draftPresent).toBe(true);
   });
 
   it("forces an update check but keeps worker activation explicit", async () => {
