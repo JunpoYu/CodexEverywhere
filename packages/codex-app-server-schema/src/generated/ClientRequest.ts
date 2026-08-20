@@ -35,6 +35,7 @@ import type { FsUnwatchParams } from "./v2/FsUnwatchParams";
 import type { FsWatchParams } from "./v2/FsWatchParams";
 import type { FsWriteFileParams } from "./v2/FsWriteFileParams";
 import type { GetAccountParams } from "./v2/GetAccountParams";
+import type { GetAccountTokenUsageParams } from "./v2/GetAccountTokenUsageParams";
 import type { HooksListParams } from "./v2/HooksListParams";
 import type { ListMcpServerStatusParams } from "./v2/ListMcpServerStatusParams";
 import type { LoginAccountParams } from "./v2/LoginAccountParams";
@@ -314,7 +315,11 @@ export type ClientRequest =
       id: RequestId;
       params: ConsumeAccountRateLimitResetCreditParams;
     }
-  | { method: "account/usage/read"; id: RequestId; params: undefined }
+  | {
+      method: "account/usage/read";
+      id: RequestId;
+      params?: GetAccountTokenUsageParams | undefined;
+    }
   | {
       method: "account/workspaceMessages/read";
       id: RequestId;

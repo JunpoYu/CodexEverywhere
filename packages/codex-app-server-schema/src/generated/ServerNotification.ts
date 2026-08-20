@@ -51,6 +51,7 @@ import type { ThreadDeletedNotification } from "./v2/ThreadDeletedNotification";
 import type { ThreadGoalClearedNotification } from "./v2/ThreadGoalClearedNotification";
 import type { ThreadGoalUpdatedNotification } from "./v2/ThreadGoalUpdatedNotification";
 import type { ThreadNameUpdatedNotification } from "./v2/ThreadNameUpdatedNotification";
+import type { ThreadQueueChangedNotification } from "./v2/ThreadQueueChangedNotification";
 import type { ThreadRealtimeClosedNotification } from "./v2/ThreadRealtimeClosedNotification";
 import type { ThreadRealtimeErrorNotification } from "./v2/ThreadRealtimeErrorNotification";
 import type { ThreadRealtimeItemAddedNotification } from "./v2/ThreadRealtimeItemAddedNotification";
@@ -59,6 +60,7 @@ import type { ThreadRealtimeSdpNotification } from "./v2/ThreadRealtimeSdpNotifi
 import type { ThreadRealtimeStartedNotification } from "./v2/ThreadRealtimeStartedNotification";
 import type { ThreadRealtimeTranscriptDeltaNotification } from "./v2/ThreadRealtimeTranscriptDeltaNotification";
 import type { ThreadRealtimeTranscriptDoneNotification } from "./v2/ThreadRealtimeTranscriptDoneNotification";
+import type { ThreadRevertedNotification } from "./v2/ThreadRevertedNotification";
 import type { ThreadSettingsUpdatedNotification } from "./v2/ThreadSettingsUpdatedNotification";
 import type { ThreadStartedNotification } from "./v2/ThreadStartedNotification";
 import type { ThreadStatusChangedNotification } from "./v2/ThreadStatusChangedNotification";
@@ -84,10 +86,12 @@ export type ServerNotification =
   | { method: "thread/deleted"; params: ThreadDeletedNotification }
   | { method: "thread/unarchived"; params: ThreadUnarchivedNotification }
   | { method: "thread/closed"; params: ThreadClosedNotification }
+  | { method: "thread/reverted"; params: ThreadRevertedNotification }
   | { method: "skills/changed"; params: SkillsChangedNotification }
   | { method: "thread/name/updated"; params: ThreadNameUpdatedNotification }
   | { method: "thread/goal/updated"; params: ThreadGoalUpdatedNotification }
   | { method: "thread/goal/cleared"; params: ThreadGoalClearedNotification }
+  | { method: "thread/queue/changed"; params: ThreadQueueChangedNotification }
   | {
       method: "thread/environment/connected";
       params: EnvironmentConnectionNotification;

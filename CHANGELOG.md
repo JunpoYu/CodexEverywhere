@@ -4,14 +4,19 @@
 
 ## [Unreleased]
 
+## [0.4.0-alpha.9] - 2026-08-20
+
 ### Changed
 
+- 使用 npm 最新稳定版 Codex CLI `0.148.0` 重新生成完整 app-server TypeScript 与 notification schema，使编译基线和真实发布工具保持一致。
+- Release 制品构建现在也校验 Kernel package 版本，确保文档声明的所有 CE 组件与根项目版本完全一致。
 - v0.4 production 的实机 staging 门槛聚焦一个真实用户的完整链路；多用户并发、跨用户隔离与管理员控制面保留为后续里程碑，不再阻塞当前单用户版本发布。
 - 新建任务表单会显示实际采用的全局 Sandbox 与审批默认值，允许在发送第一条消息前仅覆盖本次任务，并对降低隔离或审批保护的组合给出风险提示。
 - Web 全局设置从不明显的选择即保存改为显式“保存全局设置”，就近显示未保存、保存中、结果对账、成功和失败状态；修改只影响后续新任务。
 
 ### Fixed
 
+- 推进 PWA 缓存代次，确保已安装的 alpha.8 页面能够发现并安全激活 alpha.9 Web 版本。
 - 新任务权限覆盖改为 Sandbox 与审批策略分别记录来源；只覆盖一项时，另一项仍继承创建时的权威全局值，不再把页面加载时的旧默认值伪装成显式覆盖。
 - `thread/start` 输入提升为 fail-closed payload version 2，并强制携带 `expectedPreferencesRevision`；缓存旧 PWA 缺少 revision 时会在 schema 边界被拒绝。采用任何继承字段创建任务时，Agent 使用现有状态协调锁把 revision 读取稳定到 Codex 接受 `thread/start`，关闭偏好更新的 TOCTOU 窗口，且未引入偏好轮询、全局订阅或第二套状态机。
 - ScenarioGateway 与故障注入参数移入开发态动态入口，生产构建门禁会拒绝任何 Scenario 源码进入制品；生产 Host 页面不能再用查询参数开启测试后端。

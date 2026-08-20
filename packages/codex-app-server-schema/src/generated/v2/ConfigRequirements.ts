@@ -4,6 +4,7 @@
 import type { PathUri } from "../PathUri";
 import type { WebSearchMode } from "../WebSearchMode";
 import type { AskForApproval } from "./AskForApproval";
+import type { AutoReviewRequirements } from "./AutoReviewRequirements";
 import type { BrowserUseRequirements } from "./BrowserUseRequirements";
 import type { ComputerUseRequirements } from "./ComputerUseRequirements";
 import type { FeedbackRequirements } from "./FeedbackRequirements";
@@ -26,6 +27,7 @@ export type ConfigRequirements = {
   browserUse: BrowserUseRequirements | null;
   featureRequirements: { [key in string]?: boolean } | null;
   enforceResidency: ResidencyRequirement | null;
+  autoReview: AutoReviewRequirements | null;
   models: ModelsRequirements | null;
   sqliteHome: PathUri | null;
   logDir: PathUri | null;

@@ -15,6 +15,7 @@ export type ReviewDecision =
       };
     }
   | "approved_for_session"
+  | "approved_mcp_policy_amendment"
   | {
       network_policy_amendment: {
         network_policy_amendment: NetworkPolicyAmendment;

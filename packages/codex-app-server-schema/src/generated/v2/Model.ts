@@ -6,6 +6,7 @@ import type { ReasoningEffort } from "../ReasoningEffort";
 import type { ModelAvailabilityNux } from "./ModelAvailabilityNux";
 import type { ModelServiceTier } from "./ModelServiceTier";
 import type { ModelUpgradeInfo } from "./ModelUpgradeInfo";
+import type { MultiAgentVersion } from "./MultiAgentVersion";
 import type { ReasoningEffortOption } from "./ReasoningEffortOption";
 
 export type Model = {
@@ -22,6 +23,10 @@ export type Model = {
   defaultReasoningEffort: ReasoningEffort;
   inputModalities: Array<InputModality>;
   supportsPersonality: boolean;
+  /**
+   * Multi-agent runtime declared by this model, when available.
+   */
+  multiAgentVersion: MultiAgentVersion | null;
   /**
    * Deprecated: use `serviceTiers` instead.
    */
