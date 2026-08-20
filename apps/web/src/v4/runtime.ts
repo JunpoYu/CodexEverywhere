@@ -22,8 +22,7 @@ export class UserWebRuntime {
   readonly gateway: GatewayPort;
   readonly host: SavedHost;
   #threadRefreshScope: Scope | undefined;
-  #settingsRefreshGuard:
-    { readonly threadId: string; readonly blockedUntil: number } | undefined;
+  #pendingSettingsRefreshThreadId: string | undefined;
 
   constructor(input: {
     readonly gateway: GatewayPort;
@@ -39,6 +38,9 @@ export class UserWebRuntime {
     this.thread = createThreadActor(this.scope, input.gateway);
     this.composer = createComposerActor(this.scope, input.gateway);
     this.queue = createQueueActor(this.scope, input.gateway);
+    this.scope.defer(
+      this.thread.subscribe(() => this.#flushPendingSettingsRefresh()),
+    );
     this.scope.defer(
       input.gateway.onConnectionLost((error) => {
         this.connection.dispatch({ type: "LOST", message: error.message });
@@ -100,10 +102,8 @@ export class UserWebRuntime {
             notification.threadId === this.thread.getSnapshot().threadId &&
             notificationRequiresThreadSnapshot(notification.method)
           ) {
-            if (
-              notification.method === "thread/settings/updated" &&
-              this.#ignoreSettingsRefreshNotification(notification.threadId)
-            ) {
+            if (notification.method === "thread/settings/updated") {
+              this.#scheduleSettingsRefresh(notification.threadId);
               return;
             }
             this.#scheduleThreadRefresh(notification.threadId);
@@ -156,24 +156,30 @@ export class UserWebRuntime {
     }, 100);
   }
 
-  #ignoreSettingsRefreshNotification(threadId: string): boolean {
+  #scheduleSettingsRefresh(threadId: string): void {
     const thread = this.thread.getSnapshot();
-    if (
-      thread.status === "opening" ||
-      thread.refreshing === true ||
-      (this.#settingsRefreshGuard?.threadId === threadId &&
-        Date.now() < this.#settingsRefreshGuard.blockedUntil)
-    ) {
-      return true;
+    if (thread.status === "opening" || thread.refreshing === true) {
+      // The in-flight snapshot may have been captured before this notification.
+      // Coalesce every update in the synchronization window into one trailing
+      // authoritative read instead of either cancelling the current read or
+      // dropping a genuine update from another Web client or the TUI.
+      this.#pendingSettingsRefreshThreadId = threadId;
+      return;
     }
-    // app-server may emit thread/settings/updated while thread/open is
-    // synchronizing the very settings that caused the refresh. A short guard
-    // prevents that acknowledgement from recursively reopening the task.
-    this.#settingsRefreshGuard = {
-      threadId,
-      blockedUntil: Date.now() + 1_000,
-    };
-    return false;
+    this.#scheduleThreadRefresh(threadId);
+  }
+
+  #flushPendingSettingsRefresh(): void {
+    const threadId = this.#pendingSettingsRefreshThreadId;
+    if (threadId === undefined) return;
+    const thread = this.thread.getSnapshot();
+    if (thread.threadId !== threadId) {
+      this.#pendingSettingsRefreshThreadId = undefined;
+      return;
+    }
+    if (thread.status === "opening" || thread.refreshing === true) return;
+    this.#pendingSettingsRefreshThreadId = undefined;
+    this.#scheduleThreadRefresh(threadId);
   }
 
   #restoreAuthoritativeState(): void {

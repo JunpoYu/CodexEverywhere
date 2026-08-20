@@ -16,6 +16,7 @@ export function WorkspacesPage() {
   const [busy, setBusy] = useState(false);
   const [reconciling, setReconciling] = useState(false);
   const [error, setError] = useState<string>();
+  const [refreshWarning, setRefreshWarning] = useState<string>();
   const [notice, setNotice] = useState<string>();
   const load = async () => {
     const result = await runtime.gateway.request(
@@ -36,16 +37,22 @@ export function WorkspacesPage() {
     setBusy(true);
     setReconciling(false);
     setError(undefined);
+    setRefreshWarning(undefined);
     setNotice(undefined);
+    const outcome = await completeWorkspaceMutation(operation, load);
     try {
-      await operation();
-      await load();
+      if (outcome.status === "failed") {
+        setError(message(outcome.error));
+        return false;
+      }
       runtime.refreshTasks();
       setNotice(success);
+      if (outcome.refreshError !== undefined) {
+        setRefreshWarning(
+          `操作已完成，但工作区列表刷新失败。当前列表可能不是最新状态；请重新进入此页面后核对。刷新错误：${message(outcome.refreshError)}`,
+        );
+      }
       return true;
-    } catch (reason) {
-      setError(message(reason));
-      return false;
     } finally {
       setBusy(false);
       setReconciling(false);
@@ -143,6 +150,9 @@ export function WorkspacesPage() {
       {notice === undefined ? null : (
         <StatusMessage tone="success">{notice}</StatusMessage>
       )}
+      {refreshWarning === undefined ? null : (
+        <StatusMessage tone="warning">{refreshWarning}</StatusMessage>
+      )}
       <section className="list-panel">
         {items.map((workspace) => (
           <article className="workspace-row" key={workspace.id}>
@@ -179,6 +189,26 @@ export function WorkspacesPage() {
       </section>
     </main>
   );
+}
+
+export async function completeWorkspaceMutation<Result>(
+  operation: () => Promise<Result>,
+  refresh: () => Promise<void>,
+): Promise<
+  | { readonly status: "failed"; readonly error: unknown }
+  | { readonly status: "completed"; readonly refreshError?: unknown }
+> {
+  try {
+    await operation();
+  } catch (error) {
+    return { status: "failed", error };
+  }
+  try {
+    await refresh();
+    return { status: "completed" };
+  } catch (refreshError) {
+    return { status: "completed", refreshError };
+  }
 }
 
 function message(error: unknown): string {

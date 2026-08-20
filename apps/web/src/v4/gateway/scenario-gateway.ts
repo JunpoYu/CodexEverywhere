@@ -1,5 +1,6 @@
 import { Scope } from "@codex-everywhere/kernel";
 import {
+  GatewayRemoteError,
   gatewayEventEnvelopeV2,
   gatewayMethodDefinitions,
   type GatewayEventEnvelopeV2,
@@ -30,6 +31,11 @@ interface ScenarioThread {
   items: TimelineItem[];
 }
 
+export interface ScenarioGatewayOptions {
+  readonly failWorkspaceListAfterMutationOnce?: boolean;
+  readonly threadSettingsConflictOnce?: boolean;
+}
+
 /** Deterministic no-model backend for actor, Storybook-like and Playwright flows. */
 export class ScenarioGateway implements GatewayPort {
   readonly #scope = new Scope("scenario-gateway");
@@ -48,6 +54,9 @@ export class ScenarioGateway implements GatewayPort {
   readonly #adminUsers = new Map<string, AdminUser>();
   readonly #adminAudit: AdminAudit[] = [];
   readonly #mutationStatuses = new Map<string, MutationStatus>();
+  #failWorkspaceListAfterMutationOnce: boolean;
+  #workspaceListFailureArmed = false;
+  #threadSettingsConflictOnce: boolean;
   #networkMode: "direct" | "proxy" = "direct";
   #codexInstalled = true;
   #codexAuthenticated = true;
@@ -61,7 +70,11 @@ export class ScenarioGateway implements GatewayPort {
     approvalPolicy: "on-request",
   };
 
-  constructor() {
+  constructor(options: ScenarioGatewayOptions = {}) {
+    this.#failWorkspaceListAfterMutationOnce =
+      options.failWorkspaceListAfterMutationOnce ?? false;
+    this.#threadSettingsConflictOnce =
+      options.threadSettingsConflictOnce ?? false;
     const now = new Date().toISOString();
     this.#workspaces.set("workspace-demo", {
       version: 1,
@@ -316,6 +329,10 @@ export class ScenarioGateway implements GatewayPort {
       case "setup/app-server/restart":
         return { version: 1, restarted: true };
       case "workspace/list":
+        if (this.#workspaceListFailureArmed) {
+          this.#workspaceListFailureArmed = false;
+          throw new Error("Scenario 工作区列表暂时不可用");
+        }
         return { version: 1, workspaces: [...this.#workspaces.values()] };
       case "workspace/browse":
         return {
@@ -338,10 +355,12 @@ export class ScenarioGateway implements GatewayPort {
           revision: 1,
         };
         this.#workspaces.set(id, workspace);
+        this.#armWorkspaceListFailure();
         return { version: 1, workspace };
       }
       case "workspace/remove":
         this.#removeWorkspace(String(record.workspaceId));
+        this.#armWorkspaceListFailure();
         return { version: 1, removed: true };
       case "workspace/default/read":
         return {
@@ -358,6 +377,7 @@ export class ScenarioGateway implements GatewayPort {
             isDefault: id === workspaceId,
           });
         }
+        this.#armWorkspaceListFailure();
         return { version: 1, workspaceId };
       }
       case "thread/list": {
@@ -418,6 +438,19 @@ export class ScenarioGateway implements GatewayPort {
         };
         if (current.revision !== Number(record.expectedRevision)) {
           throw new Error("Scenario thread settings revision changed");
+        }
+        if (this.#threadSettingsConflictOnce) {
+          this.#threadSettingsConflictOnce = false;
+          this.#threadSettings.set(threadId, {
+            ...current,
+            revision: current.revision + 1,
+            sandbox: "read-only",
+            approvalPolicy: "never",
+          });
+          throw new GatewayRemoteError({
+            code: "REVISION_CONFLICT",
+            message: "Scenario thread settings changed externally",
+          });
         }
         const updated = {
           ...current,
@@ -542,6 +575,12 @@ export class ScenarioGateway implements GatewayPort {
       case "preferences/read":
         return this.#preferences;
       case "preferences/update":
+        if (Number(record.expectedRevision) !== this.#preferences.revision) {
+          throw new GatewayRemoteError({
+            code: "REVISION_CONFLICT",
+            message: "Scenario preferences changed externally",
+          });
+        }
         this.#preferences = {
           ...this.#preferences,
           ...(record.patch as Partial<Preferences>),
@@ -796,6 +835,12 @@ export class ScenarioGateway implements GatewayPort {
       throw new Error("Scenario workspace still owns tasks");
     }
     this.#workspaces.delete(workspaceId);
+  }
+
+  #armWorkspaceListFailure(): void {
+    if (!this.#failWorkspaceListAfterMutationOnce) return;
+    this.#failWorkspaceListAfterMutationOnce = false;
+    this.#workspaceListFailureArmed = true;
   }
 
   #countAdminUsers(status: AdminUser["status"]): number {

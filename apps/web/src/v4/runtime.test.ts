@@ -83,7 +83,7 @@ describe("UserWebRuntime task refresh", () => {
     expect(gateway.openCalls).toBe(2);
   });
 
-  it("does not recursively reopen a task for settings acknowledgements", async () => {
+  it("coalesces duplicate settings acknowledgements into one refresh", async () => {
     const gateway = new ThreadRefreshGateway();
     const runtime = new UserWebRuntime({ gateway, host: savedHost() });
     runtimes.push(runtime);
@@ -94,8 +94,8 @@ describe("UserWebRuntime task refresh", () => {
     );
 
     gateway.notification("thread/settings/updated");
-    await vi.waitFor(() => expect(gateway.openCalls).toBe(2));
     gateway.notification("thread/settings/updated");
+    await vi.waitFor(() => expect(gateway.openCalls).toBe(2));
     await new Promise((resolve) => setTimeout(resolve, 150));
 
     expect(gateway.openCalls).toBe(2);
@@ -104,11 +104,49 @@ describe("UserWebRuntime task refresh", () => {
       refreshing: false,
     });
   });
+
+  it("runs a trailing refresh for a settings update received during refresh", async () => {
+    const gateway = new ThreadRefreshGateway();
+    const runtime = new UserWebRuntime({ gateway, host: savedHost() });
+    runtimes.push(runtime);
+
+    runtime.thread.dispatch({ type: "OPEN", threadId: "thread-1" });
+    await vi.waitFor(() =>
+      expect(runtime.thread.getSnapshot().status).toBe("idle"),
+    );
+
+    const refresh = gateway.deferNextOpen();
+    gateway.notification("thread/settings/updated");
+    await vi.waitFor(() => expect(gateway.openCalls).toBe(2));
+    expect(runtime.thread.getSnapshot().refreshing).toBe(true);
+
+    gateway.notification("thread/settings/updated");
+    gateway.settingsRevision = 1;
+    refresh.resolve(threadSnapshot("thread-1", 0));
+
+    await vi.waitFor(() => expect(gateway.openCalls).toBe(3));
+    await vi.waitFor(() =>
+      expect(runtime.thread.getSnapshot()).toMatchObject({
+        status: "idle",
+        refreshing: false,
+        snapshot: { settings: { revision: 1 } },
+      }),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    expect(gateway.openCalls).toBe(3);
+  });
 });
 
 class ThreadRefreshGateway implements GatewayPort {
   readonly #listeners = new Set<(event: GatewayEventEnvelopeV2) => void>();
+  #nextOpen:
+    | {
+        readonly promise: Promise<OutputOf<"thread/open">>;
+        readonly resolve: (snapshot: OutputOf<"thread/open">) => void;
+      }
+    | undefined;
   openCalls = 0;
+  settingsRevision = 0;
 
   request<Method extends GatewayMethodName>(
     method: Method,
@@ -120,9 +158,26 @@ class ThreadRefreshGateway implements GatewayPort {
     }
     this.openCalls += 1;
     const threadId = (input as InputOf<"thread/open">).threadId;
-    return Promise.resolve(threadSnapshot(threadId)) as Promise<
-      OutputOf<Method>
-    >;
+    const deferred = this.#nextOpen;
+    this.#nextOpen = undefined;
+    return (deferred?.promise ??
+      Promise.resolve(
+        threadSnapshot(threadId, this.settingsRevision),
+      )) as Promise<OutputOf<Method>>;
+  }
+
+  deferNextOpen(): {
+    readonly resolve: (snapshot: OutputOf<"thread/open">) => void;
+  } {
+    if (this.#nextOpen !== undefined) {
+      throw new Error("A deferred thread/open already exists");
+    }
+    let resolve!: (snapshot: OutputOf<"thread/open">) => void;
+    const promise = new Promise<OutputOf<"thread/open">>((complete) => {
+      resolve = complete;
+    });
+    this.#nextOpen = { promise, resolve };
+    return { resolve };
   }
 
   notification(method: string): void {
@@ -218,7 +273,10 @@ function savedHost(): SavedHost {
   };
 }
 
-function threadSnapshot(threadId: string): OutputOf<"thread/open"> {
+function threadSnapshot(
+  threadId: string,
+  settingsRevision = 0,
+): OutputOf<"thread/open"> {
   const now = "2026-08-19T00:00:00.000Z";
   return {
     version: 1,
@@ -236,6 +294,6 @@ function threadSnapshot(threadId: string): OutputOf<"thread/open"> {
     items: [],
     interactions: [],
     hasEarlierHistory: false,
-    settings: { version: 1, revision: 0 },
+    settings: { version: 1, revision: settingsRevision },
   };
 }

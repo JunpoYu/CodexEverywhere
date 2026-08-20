@@ -1,4 +1,4 @@
-import { useEffect, useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
 import {
   GatewayRemoteError,
   type InputOf,
@@ -9,6 +9,7 @@ import {
   durableMutation,
   MutationNeedsReviewError,
 } from "../../gateway/durable-mutation.js";
+import { useActorState } from "../../actors/use-actor.js";
 import { Icon } from "../components/Icon.js";
 import { ModalDialog } from "../components/ModalDialog.js";
 import { StatusMessage } from "../components/StatusMessage.js";
@@ -17,7 +18,22 @@ import styles from "./ThreadSettingsPanel.module.css";
 
 type ThreadSettings = OutputOf<"thread/open">["settings"];
 type ThreadSettingsPatch = InputOf<"thread/settings/update">["patch"];
-type SaveState = "idle" | "saving" | "reconciling" | "saved" | "error";
+type SaveState =
+  | "idle"
+  | "saving"
+  | "reconciling"
+  | "saved"
+  | "conflict"
+  | "refreshing-conflict"
+  | "refresh-failed"
+  | "error";
+
+export interface ThreadSettingsDraft {
+  readonly model: string;
+  readonly effort: string;
+  readonly sandbox: string;
+  readonly approvalPolicy: string;
+}
 
 export function ThreadSettingsPanel(input: {
   readonly onClose: () => void;
@@ -25,6 +41,7 @@ export function ThreadSettingsPanel(input: {
   readonly settings: ThreadSettings;
 }) {
   const runtime = useRuntime();
+  const thread = useActorState(runtime.thread);
   const [model, setModel] = useState(input.settings.model ?? "");
   const [effort, setEffort] = useState(input.settings.effort ?? "");
   const [sandbox, setSandbox] = useState(input.settings.sandbox ?? "");
@@ -33,23 +50,66 @@ export function ThreadSettingsPanel(input: {
   );
   const [saveState, setSaveState] = useState<SaveState>("idle");
   const [error, setError] = useState<string>();
+  const [warning, setWarning] = useState<string>();
+  const conflictPatch = useRef<ThreadSettingsPatch | undefined>(undefined);
 
   useEffect(() => {
-    setModel(input.settings.model ?? "");
-    setEffort(input.settings.effort ?? "");
-    setSandbox(input.settings.sandbox ?? "");
-    setApprovalPolicy(input.settings.approvalPolicy ?? "");
+    const pendingPatch = conflictPatch.current;
+    const next = threadSettingsDraft(input.settings, pendingPatch);
+    setModel(next.model);
+    setEffort(next.effort);
+    setSandbox(next.sandbox);
+    setApprovalPolicy(next.approvalPolicy);
+    if (pendingPatch !== undefined) {
+      conflictPatch.current = undefined;
+      const stillDirty = Object.keys(
+        changedSettings(input.settings, next),
+      ).length;
+      setSaveState("conflict");
+      setError(undefined);
+      setWarning(
+        stillDirty > 0
+          ? "其他设备或 TUI 已修改设置。CE 已读取最新 revision，并在其上保留你的更改；请确认后再次保存。"
+          : "其他设备或 TUI 已应用相同设置。CE 已同步宿主机最新值，无需再次保存。",
+      );
+    }
   }, [input.settings.revision]);
+
+  useEffect(() => {
+    if (
+      saveState === "refreshing-conflict" &&
+      thread.threadId === input.threadId &&
+      thread.refreshing !== true &&
+      thread.error !== undefined
+    ) {
+      setSaveState("refresh-failed");
+      setError(
+        "检测到设置版本冲突，但读取宿主机最新值失败。请先重新同步，不要重复提交。",
+      );
+    }
+  }, [
+    input.threadId,
+    saveState,
+    thread.error,
+    thread.refreshing,
+    thread.threadId,
+  ]);
 
   const draft = { model, effort, sandbox, approvalPolicy };
   const patch = changedSettings(input.settings, draft);
   const dirty = Object.keys(patch).length > 0;
-  const busy = saveState === "saving" || saveState === "reconciling";
+  const busy =
+    saveState === "saving" ||
+    saveState === "reconciling" ||
+    saveState === "refreshing-conflict";
+  const locked = busy || saveState === "refresh-failed";
 
   const updateDraft = (change: () => void) => {
+    if (locked) return;
     change();
     setSaveState("idle");
     setError(undefined);
+    setWarning(undefined);
   };
 
   const save = async (event: FormEvent) => {
@@ -57,6 +117,7 @@ export function ThreadSettingsPanel(input: {
     if (!dirty || busy) return;
     setSaveState("saving");
     setError(undefined);
+    setWarning(undefined);
     try {
       const settings = await durableMutation({
         owner: runtime.scope,
@@ -81,16 +142,26 @@ export function ThreadSettingsPanel(input: {
       setApprovalPolicy(settings.approvalPolicy ?? "");
       setSaveState("saved");
     } catch (reason) {
+      const recovery = settingsFailureRecovery(reason);
+      if (recovery === "rebase") {
+        conflictPatch.current = patch;
+        setSaveState("refreshing-conflict");
+        runtime.thread.dispatch({ type: "OPEN", threadId: input.threadId });
+        return;
+      }
       setSaveState("error");
       setError(settingsError(reason));
-      if (
-        reason instanceof MutationNeedsReviewError ||
-        (reason instanceof GatewayRemoteError &&
-          reason.code === "CODEX_REQUEST_REJECTED")
-      ) {
+      if (recovery === "refresh") {
         runtime.thread.dispatch({ type: "OPEN", threadId: input.threadId });
       }
     }
+  };
+
+  const retryConflictRefresh = () => {
+    if (conflictPatch.current === undefined) return;
+    setSaveState("refreshing-conflict");
+    setError(undefined);
+    runtime.thread.dispatch({ type: "OPEN", threadId: input.threadId });
   };
 
   const close = () => {
@@ -125,7 +196,7 @@ export function ThreadSettingsPanel(input: {
       </header>
 
       <form className={styles.form} onSubmit={(event) => void save(event)}>
-        <fieldset className={styles.group}>
+        <fieldset className={styles.group} disabled={locked}>
           <legend>文件访问范围</legend>
           <p>决定 Codex 能够读取或修改哪些文件。</p>
           <div className={styles.options}>
@@ -167,7 +238,7 @@ export function ThreadSettingsPanel(input: {
           </div>
         </fieldset>
 
-        <fieldset className={styles.group}>
+        <fieldset className={styles.group} disabled={locked}>
           <legend>审批策略</legend>
           <p>决定 Codex 在执行可能产生副作用的操作前何时询问你。</p>
           <div className={styles.options}>
@@ -220,6 +291,7 @@ export function ThreadSettingsPanel(input: {
               <span>模型</span>
               <small>留空会保持当前模型。</small>
               <input
+                disabled={locked}
                 placeholder={input.settings.model ?? "保持当前模型"}
                 value={model}
                 onChange={(event) =>
@@ -231,6 +303,7 @@ export function ThreadSettingsPanel(input: {
               <span>推理强度</span>
               <small>较高强度通常更慢，并消耗更多 token。</small>
               <select
+                disabled={locked}
                 value={effort}
                 onChange={(event) =>
                   updateDraft(() => setEffort(event.target.value))
@@ -260,6 +333,9 @@ export function ThreadSettingsPanel(input: {
             设置已保存，并已应用到当前任务。
           </StatusMessage>
         ) : null}
+        {warning === undefined ? null : (
+          <StatusMessage tone="warning">{warning}</StatusMessage>
+        )}
         {error === undefined ? null : (
           <StatusMessage tone="error">{error}</StatusMessage>
         )}
@@ -269,23 +345,43 @@ export function ThreadSettingsPanel(input: {
             {busy
               ? saveState === "reconciling"
                 ? "正在确认宿主机结果…"
-                : "正在保存…"
-              : dirty
-                ? "有未保存的更改"
-                : saveState === "saved"
-                  ? "已保存到宿主机"
-                  : "没有未保存的更改"}
+                : saveState === "refreshing-conflict"
+                  ? "正在读取最新设置…"
+                  : "正在保存…"
+              : saveState === "refresh-failed"
+                ? "需要重新同步后才能保存"
+                : saveState === "conflict"
+                  ? dirty
+                    ? "已基于最新 revision 保留更改"
+                    : "已同步宿主机最新设置"
+                  : dirty
+                    ? "有未保存的更改"
+                    : saveState === "saved"
+                      ? "已保存到宿主机"
+                      : "没有未保存的更改"}
           </span>
           <button disabled={busy} type="button" onClick={close}>
             {dirty ? "放弃更改" : "关闭"}
           </button>
-          <button className="primary" disabled={!dirty || busy} type="submit">
-            {saveState === "saving"
-              ? "正在保存…"
-              : saveState === "reconciling"
-                ? "正在确认…"
-                : "保存更改"}
-          </button>
+          {saveState === "refresh-failed" ? (
+            <button
+              className="primary"
+              type="button"
+              onClick={retryConflictRefresh}
+            >
+              重新同步
+            </button>
+          ) : (
+            <button className="primary" disabled={!dirty || busy} type="submit">
+              {saveState === "saving"
+                ? "正在保存…"
+                : saveState === "reconciling"
+                  ? "正在确认…"
+                  : saveState === "refreshing-conflict"
+                    ? "正在同步…"
+                    : "保存更改"}
+            </button>
+          )}
         </footer>
       </form>
     </ModalDialog>
@@ -322,12 +418,7 @@ function Choice(input: {
 
 export function changedSettings(
   current: ThreadSettings,
-  draft: {
-    readonly model: string;
-    readonly effort: string;
-    readonly sandbox: string;
-    readonly approvalPolicy: string;
-  },
+  draft: ThreadSettingsDraft,
 ): ThreadSettingsPatch {
   const model = draft.model.trim();
   return {
@@ -343,6 +434,37 @@ export function changedSettings(
       ? { approvalPolicy: draft.approvalPolicy }
       : {}),
   };
+}
+
+export function threadSettingsDraft(
+  current: ThreadSettings,
+  patch: ThreadSettingsPatch = {},
+): ThreadSettingsDraft {
+  return {
+    model: patch.model ?? current.model ?? "",
+    effort: patch.effort ?? current.effort ?? "",
+    sandbox: patch.sandbox ?? current.sandbox ?? "",
+    approvalPolicy: patch.approvalPolicy ?? current.approvalPolicy ?? "",
+  };
+}
+
+export function settingsFailureRecovery(
+  reason: unknown,
+): "none" | "refresh" | "rebase" {
+  if (
+    reason instanceof GatewayRemoteError &&
+    reason.code === "REVISION_CONFLICT"
+  ) {
+    return "rebase";
+  }
+  if (
+    reason instanceof MutationNeedsReviewError ||
+    (reason instanceof GatewayRemoteError &&
+      reason.code === "CODEX_REQUEST_REJECTED")
+  ) {
+    return "refresh";
+  }
+  return "none";
 }
 
 function settingsError(reason: unknown): string {

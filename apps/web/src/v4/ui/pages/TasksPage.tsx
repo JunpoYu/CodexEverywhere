@@ -1,5 +1,6 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { Link, useNavigate } from "react-router-dom";
+import type { OutputOf } from "@codex-everywhere/protocol/v2";
 
 import { useActorState } from "../../actors/use-actor.js";
 import { durableMutation } from "../../gateway/durable-mutation.js";
@@ -7,6 +8,8 @@ import { queryOptions } from "../../gateway/gateway-port.js";
 import { Icon } from "../components/Icon.js";
 import { StatusMessage } from "../components/StatusMessage.js";
 import { useRuntime } from "../runtime-context.js";
+
+type Preferences = OutputOf<"preferences/read">;
 
 export function TasksPage() {
   const runtime = useRuntime();
@@ -16,6 +19,10 @@ export function TasksPage() {
   >([]);
   const [workspaceId, setWorkspaceId] = useState("");
   const [prompt, setPrompt] = useState("");
+  const [defaults, setDefaults] = useState<Preferences>();
+  const [sandbox, setSandbox] = useState<Preferences["sandbox"]>();
+  const [approvalPolicy, setApprovalPolicy] =
+    useState<Preferences["approvalPolicy"]>();
   const [starting, setStarting] = useState<
     "idle" | "submitting" | "reconciling"
   >("idle");
@@ -30,19 +37,49 @@ export function TasksPage() {
     ) {
       runtime.refreshTasks();
     }
-    void loadWorkspaces(runtime.gateway).then((items) => {
-      setWorkspaces(items);
-      setWorkspaceId(
-        items.find((workspace) => workspace.isDefault)?.id ??
-          items[0]?.id ??
-          "",
-      );
-    });
+    let active = true;
+    void Promise.all([
+      loadWorkspaces(runtime.gateway),
+      loadPreferences(runtime.gateway),
+    ])
+      .then(([items, preferences]) => {
+        if (!active) return;
+        setWorkspaces(items);
+        setWorkspaceId(
+          items.find((workspace) => workspace.isDefault)?.id ??
+            items[0]?.id ??
+            "",
+        );
+        setDefaults(preferences);
+        setSandbox(preferences.sandbox);
+        setApprovalPolicy(preferences.approvalPolicy);
+      })
+      .catch((reason) => {
+        if (active) {
+          setError(
+            reason instanceof Error
+              ? reason.message
+              : "无法读取新任务所需的工作区和默认权限",
+          );
+        }
+      });
+    return () => {
+      active = false;
+    };
   }, [runtime]);
 
   const start = async (event: FormEvent) => {
     event.preventDefault();
-    if (workspaceId.length === 0 || prompt.trim().length === 0) return;
+    const selectedSandbox = sandbox;
+    const selectedApprovalPolicy = approvalPolicy;
+    if (
+      workspaceId.length === 0 ||
+      prompt.trim().length === 0 ||
+      selectedSandbox === undefined ||
+      selectedApprovalPolicy === undefined
+    ) {
+      return;
+    }
     setStarting("submitting");
     setError(undefined);
     try {
@@ -50,7 +87,15 @@ export function TasksPage() {
         owner: runtime.scope,
         gateway: runtime.gateway,
         method: "thread/start",
-        payload: { version: 1, workspaceId, prompt: prompt.trim() },
+        payload: {
+          version: 1,
+          workspaceId,
+          prompt: prompt.trim(),
+          settings: {
+            sandbox: selectedSandbox,
+            approvalPolicy: selectedApprovalPolicy,
+          },
+        },
         onOutcomeUnknown: () => setStarting("reconciling"),
       });
       runtime.tasks.dispatch({ type: "LOAD" });
@@ -61,6 +106,15 @@ export function TasksPage() {
       setStarting("idle");
     }
   };
+
+  const permissionsOverrideDefaults =
+    defaults !== undefined &&
+    (sandbox !== defaults.sandbox ||
+      approvalPolicy !== defaults.approvalPolicy);
+  const permissionsReady =
+    defaults !== undefined &&
+    sandbox !== undefined &&
+    approvalPolicy !== undefined;
 
   return (
     <main className="page tasks-page">
@@ -96,31 +150,107 @@ export function TasksPage() {
       </header>
 
       <form className="new-task-card" onSubmit={(event) => void start(event)}>
-        <select
-          aria-label="工作区"
-          value={workspaceId}
-          onChange={(event) => setWorkspaceId(event.target.value)}
+        <label className="new-task-field">
+          <span>工作区</span>
+          <select
+            value={workspaceId}
+            onChange={(event) => setWorkspaceId(event.target.value)}
+          >
+            {workspaces.map((workspace) => (
+              <option key={workspace.id} value={workspace.id}>
+                {workspace.label}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="new-task-field">
+          <span>新任务请求</span>
+          <textarea
+            rows={3}
+            placeholder="描述你希望 Codex 完成的工作…"
+            value={prompt}
+            onChange={(event) => setPrompt(event.target.value)}
+          />
+        </label>
+        <fieldset
+          className="new-task-permissions"
+          disabled={starting !== "idle" || !permissionsReady}
         >
-          {workspaces.map((workspace) => (
-            <option key={workspace.id} value={workspace.id}>
-              {workspace.label}
-            </option>
-          ))}
-        </select>
-        <textarea
-          aria-label="新任务请求"
-          rows={3}
-          placeholder="描述你希望 Codex 完成的工作…"
-          value={prompt}
-          onChange={(event) => setPrompt(event.target.value)}
-        />
+          <legend>本次任务权限</legend>
+          <div className="new-task-permission-grid">
+            <label>
+              <span>Sandbox</span>
+              <select
+                aria-label="本次任务 Sandbox"
+                value={sandbox ?? ""}
+                onChange={(event) =>
+                  setSandbox(event.target.value as Preferences["sandbox"])
+                }
+              >
+                <option value="read-only">只读</option>
+                <option value="workspace-write">工作区可写</option>
+                <option value="danger-full-access">完全访问</option>
+              </select>
+            </label>
+            <label>
+              <span>审批策略</span>
+              <select
+                aria-label="本次任务审批策略"
+                value={approvalPolicy ?? ""}
+                onChange={(event) =>
+                  setApprovalPolicy(
+                    event.target.value as Preferences["approvalPolicy"],
+                  )
+                }
+              >
+                <option value="untrusted">不信任</option>
+                <option value="on-request">按需询问</option>
+                <option value="never">从不询问</option>
+              </select>
+            </label>
+            <div className="new-task-permission-summary" role="status">
+              <span
+                className={`state-pill ${permissionsOverrideDefaults ? "waiting-input" : ""}`}
+              >
+                {permissionsOverrideDefaults
+                  ? "仅覆盖本次任务"
+                  : "采用全局默认"}
+              </span>
+              <small>
+                {permissionsReady
+                  ? `${sandboxLabel(sandbox)} · ${approvalPolicyLabel(approvalPolicy)}`
+                  : "正在读取全局默认权限…"}
+              </small>
+              <div>
+                <button
+                  disabled={!permissionsOverrideDefaults}
+                  type="button"
+                  onClick={() => {
+                    if (defaults === undefined) return;
+                    setSandbox(defaults.sandbox);
+                    setApprovalPolicy(defaults.approvalPolicy);
+                  }}
+                >
+                  恢复全局默认
+                </button>
+                <Link to="/settings">修改全局默认</Link>
+              </div>
+            </div>
+          </div>
+          {sandbox === "danger-full-access" || approvalPolicy === "never" ? (
+            <p className="new-task-permission-warning">
+              当前组合会减少隔离或审批保护，请确认这是本次任务需要的权限。
+            </p>
+          ) : null}
+        </fieldset>
         <button
-          className="primary"
+          className="primary new-task-submit"
           type="submit"
           disabled={
             starting !== "idle" ||
             workspaceId.length === 0 ||
-            prompt.trim().length === 0
+            prompt.trim().length === 0 ||
+            !permissionsReady
           }
         >
           {starting === "reconciling"
@@ -199,6 +329,28 @@ async function loadWorkspaces(
   return (
     await gateway.request("workspace/list", { version: 1 }, queryOptions())
   ).workspaces;
+}
+
+async function loadPreferences(
+  gateway: import("../../gateway/gateway-port.js").GatewayPort,
+) {
+  return gateway.request("preferences/read", { version: 1 }, queryOptions());
+}
+
+function sandboxLabel(value: Preferences["sandbox"]): string {
+  return value === "read-only"
+    ? "只读"
+    : value === "danger-full-access"
+      ? "完全访问"
+      : "工作区可写";
+}
+
+function approvalPolicyLabel(value: Preferences["approvalPolicy"]): string {
+  return value === "untrusted"
+    ? "不信任"
+    : value === "never"
+      ? "从不询问"
+      : "按需询问";
 }
 
 function stateLabel(state: string): string {

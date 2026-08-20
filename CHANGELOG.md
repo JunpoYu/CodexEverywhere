@@ -4,6 +4,17 @@
 
 ## [Unreleased]
 
+### Changed
+
+- 新建任务表单会显示实际采用的全局 Sandbox 与审批默认值，允许在发送第一条消息前仅覆盖本次任务，并对降低隔离或审批保护的组合给出风险提示。
+- Web 全局设置从不明显的选择即保存改为显式“保存全局设置”，就近显示未保存、保存中、结果对账、成功和失败状态；修改只影响后续新任务。
+
+### Fixed
+
+- `thread/settings/updated` 在任务打开或刷新期间到达时不再被时间窗口直接丢弃；Web 会把同步窗口内的通知合并成一次尾随权威刷新，既避免递归 `thread/open`，也不会漏掉其他 Web 设备或 TUI 的真实权限更新。
+- 任务设置遇到 `REVISION_CONFLICT` 后会锁定旧 revision 的重复提交，读取宿主机最新设置，并把用户尚未保存的 patch 重放到新 revision；刷新失败时必须先显式重新同步。
+- Workspace durable mutation 与后续 `workspace/list` 查询分别呈现结果；mutation 已完成而列表刷新失败时仍明确报告成功、清理已提交表单，并单独提示当前列表可能过期，避免诱导使用新 operation key 重复副作用。
+
 ## [0.4.0-alpha.8] - 2026-08-19
 
 ### Changed

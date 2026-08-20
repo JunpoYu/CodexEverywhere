@@ -57,7 +57,16 @@ export function App() {
 
   const scenario = (kind: "user" | "admin") => {
     const host = scenarioHost(kind);
-    activate(new ScenarioGateway(), host);
+    const search = new URLSearchParams(window.location.search);
+    activate(
+      new ScenarioGateway({
+        failWorkspaceListAfterMutationOnce: search.has(
+          "scenarioWorkspaceRefreshFailure",
+        ),
+        threadSettingsConflictOnce: search.has("scenarioSettingsConflict"),
+      }),
+      host,
+    );
   };
 
   return (

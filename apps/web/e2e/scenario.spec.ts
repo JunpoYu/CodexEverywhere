@@ -167,6 +167,58 @@ test("任务权限可连续保存，并始终显示权威结果", async ({ page 
   await expect(save).toBeDisabled();
 });
 
+test("新任务展示全局默认权限，并允许仅覆盖本次任务", async ({ page }) => {
+  await openScenario(page);
+
+  const sandbox = page.getByLabel("本次任务 Sandbox");
+  const approval = page.getByLabel("本次任务审批策略");
+  await expect(sandbox).toHaveValue("workspace-write");
+  await expect(approval).toHaveValue("on-request");
+  await expect(page.getByText("采用全局默认", { exact: true })).toBeVisible();
+
+  await sandbox.selectOption("danger-full-access");
+  await approval.selectOption("never");
+  await expect(page.getByText("仅覆盖本次任务", { exact: true })).toBeVisible();
+  await expect(page.getByText(/减少隔离或审批保护/u)).toBeVisible();
+
+  const prompt = "验证新任务权限覆盖";
+  await page.getByPlaceholder("描述你希望 Codex 完成的工作…").fill(prompt);
+  await page.getByRole("button", { name: "新建任务" }).click();
+  await expect(page.getByRole("heading", { name: prompt })).toBeVisible();
+
+  await page.getByRole("button", { name: "任务设置" }).click();
+  const dialog = page.getByRole("dialog", { name: "任务权限与运行设置" });
+  await expect(dialog.getByRole("radio", { name: /完全访问/u })).toBeChecked();
+  await expect(dialog.getByRole("radio", { name: /从不询问/u })).toBeChecked();
+});
+
+test("任务权限冲突后同步新 revision 并保留用户更改", async ({ page }) => {
+  await openScenario(page, "&scenarioSettingsConflict=1");
+  await openTaskCard(page, "欢迎使用 CodexEverywhere");
+
+  await page.getByRole("button", { name: "任务设置" }).click();
+  const dialog = page.getByRole("dialog", { name: "任务权限与运行设置" });
+  const save = dialog.getByRole("button", { name: "保存更改" });
+  await dialog.getByRole("radio", { name: /工作区可写/u }).click();
+  await dialog.getByRole("radio", { name: /按需询问/u }).click();
+  await save.click();
+
+  await expect(
+    dialog.getByText(/已读取最新 revision，并在其上保留你的更改/u),
+  ).toBeVisible();
+  await expect(
+    dialog.getByRole("radio", { name: /工作区可写/u }),
+  ).toBeChecked();
+  await expect(dialog.getByRole("radio", { name: /按需询问/u })).toBeChecked();
+  await expect(save).toBeEnabled();
+
+  await save.click();
+  await expect(
+    dialog.getByText("设置已保存，并已应用到当前任务。"),
+  ).toBeVisible();
+  await expect(save).toBeDisabled();
+});
+
 test("工作区支持新增、默认切换和安全移除", async ({ page }) => {
   await openScenario(page);
   await page
@@ -191,19 +243,50 @@ test("工作区支持新增、默认切换和安全移除", async ({ page }) => 
   await expect(added).toHaveCount(0);
 });
 
-test("个人偏好保存后提供明确反馈", async ({ page }) => {
+test("工作区 mutation 成功后列表刷新失败不会被误报为操作失败", async ({
+  page,
+}) => {
+  await openScenario(page, "&scenarioWorkspaceRefreshFailure=1");
+  await navigateTo(page, "/workspaces");
+
+  await page.getByPlaceholder("/public/project").fill("/public/recovered");
+  await page.getByPlaceholder("显示名称（可选）").fill("Recovered");
+  await page.getByRole("button", { name: "添加" }).click();
+
+  await expect(page.getByText("工作区已添加。")).toBeVisible();
+  await expect(
+    page.getByText(/操作已完成，但工作区列表刷新失败/u),
+  ).toBeVisible();
+  await expect(page.getByPlaceholder("/public/project")).toHaveValue("");
+
+  await navigateTo(page, "/tasks");
+  await navigateTo(page, "/workspaces");
+  await expect(
+    page.locator(".workspace-row").filter({ hasText: "Recovered" }),
+  ).toBeVisible();
+});
+
+test("全局设置显式保存，并成为新任务显示的默认权限", async ({ page }) => {
   await openScenario(page);
   await navigateTo(page, "/settings");
 
   const sandbox = page.getByLabel("默认 Sandbox");
+  const save = page.getByRole("button", { name: "保存全局设置" });
+  await expect(save).toBeDisabled();
   await sandbox.selectOption("read-only");
+  await expect(page.getByText("有未保存的更改")).toBeVisible();
+  await expect(save).toBeEnabled();
+  await save.click();
   await expect(
-    page.getByText("偏好设置已保存。新任务会使用更新后的默认值。"),
+    page.getByText("全局设置已保存；新任务将使用这些默认权限。"),
   ).toBeVisible();
   await expect(sandbox).toHaveValue("read-only");
+  await expect(save).toBeDisabled();
+  await expect(page.getByText(/已保存 · revision 1/u)).toBeVisible();
 
-  await sandbox.selectOption("workspace-write");
-  await expect(sandbox).toHaveValue("workspace-write");
+  await navigateTo(page, "/tasks");
+  await expect(page.getByLabel("本次任务 Sandbox")).toHaveValue("read-only");
+  await expect(page.getByText("采用全局默认", { exact: true })).toBeVisible();
 });
 
 test("管理端覆盖登记、停用、启用、恢复交接和审计", async ({ page }) => {
@@ -242,8 +325,11 @@ test("390px 视口显示移动端主导航", async ({ page }, testInfo) => {
   await expect(navigation.getByRole("link", { name: "设置" })).toBeVisible();
 });
 
-async function openScenario(page: import("@playwright/test").Page) {
-  await page.goto("/?scenario=1");
+async function openScenario(
+  page: import("@playwright/test").Page,
+  extraQuery = "",
+) {
+  await page.goto(`/?scenario=1${extraQuery}`);
   await page.getByRole("button", { name: "打开 ScenarioGateway" }).click();
   await expect(
     page.getByRole("heading", { name: "任务", exact: true }),

@@ -65,6 +65,7 @@ pnpm verify:v0.4 -- --with-model --receipt /absolute/private/path/candidate.json
 - 依赖许可证仍与 Apache-2.0 兼容；
 - 当前变更不新增部署域名或秘密；提交 author 邮箱不在此限制内。已有公开提交即使改写也不能视为完成秘密撤回，发现凭据时必须先轮换；
 - GitHub CI 在目标 commit 上通过。
+- GitHub Codex review 已针对 PR 的最新 head commit 返回；所有 P0/P1 行内线程已修复或有明确的阻断结论。Codex review 尚在异步运行时不得先合并、打 tag 或发布；CI 通过不能替代 review 完成。
 - v0.4 全新初始化、旧 CE 目录隔离、`~/.codex`/app-server 保留和观察窗制品恢复测试通过；
 - Direct 与 Relay 使用同一 Gateway v2 合同测试，未知方法、错误身份、缺失 operation key 和版本不匹配均失败关闭；
 - 390px 手机与桌面 Playwright 核心流程通过，PWA 更新不会刷新 outcome-unknown mutation；
@@ -128,7 +129,7 @@ SHA256SUMS
 
 1. 从公开 `main` 创建发布准备分支；
 2. 更新版本、CHANGELOG 和文档；
-3. 通过 Pull Request 完成 CI 和审阅；
+3. 通过 Pull Request 完成 CI、人工审阅和针对最新 head commit 的 GitHub Codex review，关闭全部 P0/P1；
 4. 合并后在本地同步公开 `main`；
 5. 创建并推送 annotated tag；
 6. 检查自动生成的 GitHub Release、安装文档和源代码归档；
