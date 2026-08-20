@@ -52,6 +52,7 @@ export {
 } from "./errors.js";
 export {
   GATEWAY_CAPABILITIES_V2,
+  THREAD_START_INPUT_VERSION,
   gatewayMethodDefinitions,
   gatewayMethodNames,
   isGatewayMethodName,

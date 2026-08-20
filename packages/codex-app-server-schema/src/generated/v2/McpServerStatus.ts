@@ -9,6 +9,7 @@ import type { McpAuthStatus } from "./McpAuthStatus";
 
 export type McpServerStatus = {
   name: string;
+  pluginId: string | null;
   serverInfo: McpServerInfo | null;
   tools: { [key in string]?: Tool };
   resources: Array<Resource>;

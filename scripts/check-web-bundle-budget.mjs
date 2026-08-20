@@ -9,6 +9,10 @@ const DEFAULT_JS_BUDGET_KIB = 250;
 const DEFAULT_CSS_BUDGET_KIB = 40;
 const MARKDOWN_SOURCE = "src/v4/ui/timeline/MarkdownContent.tsx";
 const CODE_RENDERER_SOURCE = "src/code-renderer.ts";
+const DEVELOPMENT_ONLY_SOURCES = [
+  "src/v4/gateway/scenario-entry.ts",
+  "src/v4/gateway/scenario-gateway.ts",
+];
 
 const options = parseArguments(
   process.argv.slice(2).filter((argument) => argument !== "--"),
@@ -40,6 +44,15 @@ async function inspectBundle({ dist, jsBudgetKib, cssBudgetKib }) {
   const manifestPath = await realpath(resolve(realDist, "asset-manifest.json"));
   assertWithinDist(realDist, manifestPath);
   const manifest = parseManifest(await readFile(manifestPath, "utf8"));
+  for (const source of DEVELOPMENT_ONLY_SOURCES) {
+    if (
+      Object.entries(manifest).some(
+        ([key, item]) => key === source || item.src === source,
+      )
+    ) {
+      throw new Error(`${source} entered the production Web bundle`);
+    }
+  }
   const entryKeys = Object.entries(manifest)
     .filter(([, item]) => item.isEntry === true)
     .map(([key]) => key);

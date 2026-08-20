@@ -21,9 +21,10 @@ describe("ScenarioGateway", () => {
     const started = await gateway.request(
       "thread/start",
       {
-        version: 1,
+        version: 2,
         workspaceId: "workspace-demo",
         prompt: "[approval] 执行合成命令",
+        expectedPreferencesRevision: 0,
       },
       mutationOptions(operationKey),
     );

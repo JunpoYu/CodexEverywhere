@@ -34,7 +34,7 @@ schemaVersion: 1
 operation: inspect | fresh-install | patch-upgrade | clean-v0.4-cutover | rollback
 environment: staging | production
 repository: example/CodexEverywhere
-targetTag: v0.4.0-alpha.8
+targetTag: v0.4.0-alpha.9
 rollbackTag: v0.3.0-alpha.14
 approvedManifestSha256: <64 个小写十六进制字符>
 pwaOrigin: https://codex.example.com
@@ -53,14 +53,13 @@ webRoot: /srv/codex-everywhere-web
 relayRoot: /opt/codex-everywhere-relay
 affectedUsers:
   - alice
-  - bob
 ```
 
-这份交接记录不能包含密码、私钥、capability、配对 JSON、恢复码或 Codex token。Secret 只能通过受限的 `0600` 文件、secret manager 或命令的标准输入传递。
+当前 staging 和 production 验收允许 `affectedUsers` 只包含一个真实用户；扩展到多用户时再追加条目。Administrator Controller 仍是可选组件，不是当前单用户发布门槛。这份交接记录不能包含密码、私钥、capability、配对 JSON、恢复码或 Codex token。Secret 只能通过受限的 `0600` 文件、secret manager 或命令的标准输入传递。
 
 ## 3. 角色和安装树
 
-多用户 HPC 使用两个彼此分离的 Agent 程序副本：
+HPC 安装始终使用 rootless release；只有启用 Administrator Controller 时才增加彼此分离的 root-owned release：
 
 | 副本               | 所有者             | 用途                                                                    |
 | ------------------ | ------------------ | ----------------------------------------------------------------------- |
@@ -229,7 +228,7 @@ ssh -R 127.0.0.1:<remoteProxyPort>:127.0.0.1:<localProxyPort> <host> \
 
 该代理不得写入 CE、用户 home、Relay 或浏览器配置；SSH 会话结束即撤销监听。若本地代理、远端端口或站点策略不明确，停止并由管理员提供批准的传输方式。
 
-## 6. 首次安装多用户 HPC
+## 6. 首次安装 HPC
 
 ### 6.1 准备运行时和 rootless release
 
@@ -357,7 +356,7 @@ sudo -iu <deployUser> /usr/local/bin/ce provisioner status
 
 credential 到期前至少 30 天按相同 `installationId` 续签并重新执行 `provisioner install`；不得借此更换 installation 或用户 route。
 
-### 6.4 Administrator Controller
+### 6.4 Administrator Controller（可选）
 
 Controller 运行账号必须是现有非 root Unix 账号。root 执行安装，root-owned CLI 会创建受限 helper、sudoers 和 cron：
 
@@ -380,7 +379,7 @@ sudo -iu <controllerUser> env CE_ADMIN_HOME=<controller-home> \
   /usr/local/bin/ce admin web status
 ```
 
-### 6.5 普通用户初始化
+### 6.5 用户初始化
 
 CE 只接受已有、符合站点 SSH 策略的 NSS 用户；不得由 CE 创建、修改或复用系统账号。管理员可只读检查：
 

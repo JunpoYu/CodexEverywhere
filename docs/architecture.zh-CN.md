@@ -117,10 +117,12 @@ v2 registry 永久排除 `thread/fork`、全部 `side/*` 和 `setup/codex/auth/i
 - Noise handshake：version 1；
 - Relay wire protocol：version 1；
 - 加密 Gateway envelope：version 2；
-- CE 自有 payload：内部 `version: 1`；
+- CE 自有 payload：默认内部 `version: 1`；单个方法发生不兼容安全演进时提升自己的 payload version，当前 `thread/start` 为 version 2，并要求 `expectedPreferencesRevision`；
 - Host Profile、pairing document 和设备密钥：现有 version 1 格式。
 
 Agent 不接受 v1 业务 envelope，返回 `CLIENT_UPGRADE_REQUIRED`；v2 Web 连接旧 Agent 时显示 `AGENT_UPGRADE_REQUIRED`。不允许静默降级。PWA Service Worker 等待用户确认，并在一次性秘密、草稿或 outcome-unknown mutation 存在时阻止刷新。
+
+ScenarioGateway 是开发和 Playwright fixture，只能从 `import.meta.env.DEV` 分支动态装配；生产 Host 页面不解析 Scenario 故障参数，bundle manifest 门禁还会拒绝 Scenario 入口或实现进入生产制品。
 
 ### 4.3 Codex 事件
 
@@ -196,6 +198,10 @@ request fingerprint 是完整、已验证 input 的 canonical SHA-256；数据�
 
 任务设置只把用户实际修改的字段发送给 app-server。Web 设置面板以 Gateway 返回的 `ThreadSettings` 和新 revision 直接更新 Thread actor，不能通过盲目重开任务伪造成功；面板在保存期间保持打开，明确区分 dirty、saving、reconciling、saved 和 error，并在新改动出现前保持成功反馈。结果未知或确定拒绝时才重新读取权威设置。`thread/open` 同步期间收到的 `thread/settings/updated` acknowledgement 必须抑制递归刷新，避免页面持续显示同步并反复切换 Composer 可用状态。
 
+新任务的 sandbox 与 approval 分别记录为“继承全局”或“本次覆盖”。Web 只在至少一个字段继承时于提交边界重读一次 `preferences/read`，把该次读取的 `expectedPreferencesRevision` 和仅含显式覆盖字段的 settings 交给 `thread/start`。Agent 使用状态库现有的跨进程 coordination lock，在锁内读取并校验 revision、解析所有继承字段，并一直持有到 app-server 接受 `thread/start`；`preferences/update` 使用同一把锁，因此不能插入读取与 Codex 接受之间。两个字段都显式覆盖时不读取或锁定默认偏好。这里不引入偏好轮询、全局事件订阅、通用协调框架或浏览器影子事实源。
+
+revision 冲突只保留仍与权威状态不同的最小 patch。尾随 `thread/open` 刷新必须继续在新 revision 上重放该 patch，直到权威值已经包含它、用户放弃或保存成功；若其他设备已经应用相同偏好，Web 直接同步并报告完成，不要求提交空 patch。
+
 CE 的 lease-owned app-server client 在 `initialize` 时显式声明 `capabilities.experimentalApi: true`，因为 `thread/settings/update` 属于实验 API；未完成该能力协商时必须把 Codex 的拒绝当作确定失败，不得伪造本地设置成功。Web 与 `ce tui` 的同任务权限写入共用持久 coordination fence；每次打开任务还会把 repository 中较新的 sandbox/approval 权限合并回运行视图，避免旧内存快照覆盖跨进程更新。
 
 包含恢复码、handoff code 或 resume token 的方法只能使用有界内存 `ephemeral` 重放；协议测试和 middleware metadata 校验共同阻止它们进入 SQLite。
@@ -221,6 +227,8 @@ Queue item 和 delivery claim 在同一用户库中。dispatcher 在 app-server 
 
 依赖边界：React、React DOM、React Router、内核 Actor、CSS Modules、原生语义控件和 `<dialog>`。不使用 Redux、XState、Tailwind 或大型 UI 框架。
 
+页面组件只持有局部表单草稿和就近交互反馈；跨路由连接与执行生命周期继续由既有 actor/Scope 管理，一致性由 Gateway/service/repository 边界承担。新增 bug 修复不得通过页面轮询、全局业务 store、第二套会话状态机或无真实复用方的通用框架扩张 Web composition root。
+
 主要 actor：
 
 | Actor      | 关键状态                                                                         |
@@ -237,7 +245,7 @@ Queue item 和 delivery claim 在同一用户库中。dispatcher 在 app-server 
 
 桌面使用左侧导航/任务列表、中间任务内容和按需操作区；390px 移动端使用任务、Queue、工作区、设置四项底部导航。Markdown、KaTeX 和代码呈现只在任务页懒加载，并继续经 DOMPurify 清洗。
 
-交互状态使用统一的成功、警告、错误和信息反馈组件；异步按钮必须在请求期间锁定并显示进行中语义，表单提交按钮还要由 dirty/valid 状态控制。常用触控目标不小于 44px，移动端主要操作不依赖 hover；任务删除使用可访问的应用内确认对话框，不依赖浏览器原生 confirm。状态名称面向用户本地化，内部 actor 状态不得直接显示为英文枚举。
+交互状态使用统一的成功、警告、错误和信息反馈组件；异步按钮必须在请求期间锁定并显示进行中语义，表单提交按钮还要由 dirty/valid 状态控制。只由 select/radio 产生且无法从文本字段推断的局部草稿，必须在所属表单设置 `data-pwa-draft="true"`，让 Service Worker 安全刷新门槛在保存或放弃前阻止刷新。常用触控目标不小于 44px，移动端主要操作不依赖 hover；任务删除使用可访问的应用内确认对话框，不依赖浏览器原生 confirm。状态名称面向用户本地化，内部 actor 状态不得直接显示为英文枚举。
 
 `GatewayPort` 是 React 唯一远端边界。顶层身份边界只创建一个 runtime：普通用户进入 `UserWebRuntime`，管理员进入 `AdminWebRuntime`。两者使用独立 context、actor 和路由；Admin runtime 不导入或实例化 thread、workspace、Queue 等用户业务 actor。`ReconnectingGatewayPort` 热切换 Direct/Relay transport，actor 和组件不会持有 WebSocket。恢复后用户 runtime 重新读取 onboarding、任务、Queue、当前 `thread/open`，并对账 composer operation key。
 
@@ -274,5 +282,6 @@ v0.3 切换采用整目录隔离和全新初始化，不导入旧数据库。规
 - v2 非 repository 不直接 import `sql.js`；
 - raw Gateway envelope 只存在于 gateway adapter；
 - v2/v4 活跃源码不出现 Side、`thread/fork` 或 `auth/import` 方法。
+- 生产 Web manifest 不包含 ScenarioGateway 或故障注入入口。
 
 发布前必须通过 format、architecture、typecheck、unit/protocol、build、Direct/Relay integration 和真实 app-server contract。模型调用测试使用显式环境开关。用户路由初始 JS gzip 上限 250 KiB，CSS gzip 上限 40 KiB；Markdown/KaTeX 必须保持独立懒加载。

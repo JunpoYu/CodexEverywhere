@@ -20,6 +20,10 @@ export type PreferencesPatch = Partial<
   >
 >;
 
+export interface PreferencesMutationLease {
+  release(): Promise<void>;
+}
+
 export class PreferencesRevisionConflictError extends Error {
   constructor() {
     super("Preferences revision changed");
@@ -36,6 +40,12 @@ export class PreferencesRepository {
 
   read(): Promise<PreferencesRecord> {
     return this.#file.read(readPreferences);
+  }
+
+  acquireMutation(
+    options: { readonly signal?: AbortSignal } = {},
+  ): Promise<PreferencesMutationLease> {
+    return this.#file.acquireCoordinationLock("preferences-mutation", options);
   }
 
   update(

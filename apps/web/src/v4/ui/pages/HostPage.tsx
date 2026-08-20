@@ -21,7 +21,7 @@ export function HostPage(input: {
     host: SavedHost,
     recoveryCodes?: readonly string[],
   ) => void;
-  readonly onScenario: (kind: "user" | "admin") => void;
+  readonly onScenario: ((kind: "user" | "admin") => void) | undefined;
 }) {
   const admin = location.pathname.startsWith("/admin");
   const [hosts, setHosts] = useState<readonly SavedHost[]>([]);
@@ -324,17 +324,17 @@ export function HostPage(input: {
           </form>
         </details>
 
-        {import.meta.env.DEV || location.search.includes("scenario=1") ? (
+        {input.onScenario === undefined ? null : (
           <div className={styles.scenarioActions}>
             <span>开发与测试</span>
             <button
               type="button"
-              onClick={() => input.onScenario(admin ? "admin" : "user")}
+              onClick={() => input.onScenario?.(admin ? "admin" : "user")}
             >
               打开 ScenarioGateway
             </button>
           </div>
-        ) : null}
+        )}
         {error === undefined ? null : (
           <div className={styles.feedback}>
             <StatusMessage tone="error">{error}</StatusMessage>

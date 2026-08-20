@@ -104,6 +104,7 @@ describe("rootless release activation", () => {
     ]) {
       expect(assets).toContain(`deploy/hpc/${requiredTool}`);
     }
+    expect(assets).toContain("packages/kernel/package.json");
   });
 
   it("records and verifies every installed release entry", async () => {

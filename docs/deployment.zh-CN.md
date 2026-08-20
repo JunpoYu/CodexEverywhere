@@ -12,7 +12,7 @@
          → staging → 人工批准 → production
 ```
 
-生产部署只接受语义版本 tag，例如 `v0.4.0-alpha.8`。禁止从功能分支、PR head、本地路径、未提交工作区或服务器上的 Git checkout 构建生产文件。生产服务器不需要 clone 本项目，也不得通过 `git pull`、`pnpm install` 或 `pnpm build` 完成升级。
+生产部署只接受语义版本 tag，例如 `v0.4.0-alpha.9`。禁止从功能分支、PR head、本地路径、未提交工作区或服务器上的 Git checkout 构建生产文件。生产服务器不需要 clone 本项目，也不得通过 `git pull`、`pnpm install` 或 `pnpm build` 完成升级。
 
 公开仓库保存通用代码、模板和安装器。个人与单集群部署默认把真实配置保存在对应服务器的本地受限目录；只有多环境、多人运维或需要配置审阅时，才需要额外建立私有 ops 仓库。两种方式都不得把生产配置复制回公开开发仓库。
 
@@ -48,7 +48,7 @@ v0.4 是协议不兼容的全新初始化，不提供 v0.3 数据库转换或反
 
 切换时必须停止旧 Agent/Controller，但保持健康的 Codex app-server；完整改名保留旧 `~/.codex-everywhere` 与 `CE_ADMIN_HOME`。宿主级 rootless provisioner 也有独立的 admin 状态库：必须在任何 v0.4 用户配对前停止 provisioner，将旧 `admin-state.sqlite` 改名保留，再用 v0.4 创建新库；root-owned fallback 的同名库若存在也按相同规则处理。provisioner 的 `config.json`、credential 和身份密钥必须保留。Passkey、CE 密码、恢复码、Host Profile、Relay route、Workspace、偏好和 Queue 都重新初始化。`~/.codex`、Codex 登录和 app-server 任务不属于清理范围。
 
-多用户 staging 仍要验证隔离、Direct/Relay、Controller、新设备配对和制品指针回滚，但不再执行正反数据迁移。观察窗内可通过停止 v0.4、将新 CE 目录留存、原子恢复旧目录并切回 alpha.14 来恢复；两份状态不得合并。
+当前 staging 先以一个真实用户验证 Direct/Relay、新设备配对、任务主链路和制品指针回滚，不再执行正反数据迁移。Administrator Controller、多用户并发和跨用户隔离的实机验收延后，不阻塞当前单用户 production 批准。观察窗内可通过停止 v0.4、将新 CE 目录留存、原子恢复旧目录并切回 alpha.14 来恢复；两份状态不得合并。
 
 完整步骤见 [v0.4 全新初始化与切换手册](migration-v0.4.zh-CN.md)。Service Worker 更新期间，如果页面存在 outcome-unknown mutation、未保存秘密或草稿，只提示新版本，不自动刷新。
 

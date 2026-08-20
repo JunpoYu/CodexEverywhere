@@ -15,6 +15,7 @@ export type CodexErrorInfo =
   | "usageLimitExceeded"
   | "serverOverloaded"
   | "cyberPolicy"
+  | "misalignmentPolicyViolation"
   | { httpConnectionFailed: { httpStatusCode: number | null } }
   | { responseStreamConnectionFailed: { httpStatusCode: number | null } }
   | "internalServerError"

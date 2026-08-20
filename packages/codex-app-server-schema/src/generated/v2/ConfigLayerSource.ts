@@ -4,6 +4,13 @@
 import type { AbsolutePathBuf } from "../AbsolutePathBuf";
 
 export type ConfigLayerSource =
+  | {
+      type: "packagedDefaults";
+      /**
+       * Path to the packaged default configuration file.
+       */
+      file: AbsolutePathBuf;
+    }
   | { type: "mdm"; domain: string; key: string }
   | {
       type: "system";

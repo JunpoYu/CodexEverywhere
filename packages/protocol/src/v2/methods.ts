@@ -79,6 +79,8 @@ export const GATEWAY_CAPABILITIES_V2 = {
   tuiHandoff: "tui-handoff-v1",
 } as const;
 
+export const THREAD_START_INPUT_VERSION = 2 as const;
+
 const query = <InputSchema extends ZodType, OutputSchema extends ZodType>(
   access: GatewayAccess,
   input: InputSchema,
@@ -138,6 +140,12 @@ const operationAcceptedSchema = versionedResult({
 });
 
 const threadIdInputSchema = versionedResult({ threadId: identifierSchema });
+const threadStartSettingsSchema = threadSettingsSchema.pick({
+  model: true,
+  effort: true,
+  sandbox: true,
+  approvalPolicy: true,
+});
 const queueItemIdInputSchema = versionedResult({ itemId: identifierSchema });
 const adminMutationBase = {
   username: identifierSchema,
@@ -396,11 +404,15 @@ export const gatewayMethodDefinitions = {
   "thread/start": mutation(
     "user",
     "durable",
-    versionedResult({
-      workspaceId: identifierSchema,
-      prompt: z.string().min(1).max(1_000_000),
-      settings: threadSettingsSchema.partial().optional(),
-    }),
+    z
+      .object({
+        version: z.literal(THREAD_START_INPUT_VERSION),
+        workspaceId: identifierSchema,
+        prompt: z.string().min(1).max(1_000_000),
+        expectedPreferencesRevision: z.number().int().nonnegative(),
+        settings: threadStartSettingsSchema.optional(),
+      })
+      .strict(),
     versionedResult({ thread: threadSummarySchema, turnId: identifierSchema }),
   ),
   "thread/close": mutation(

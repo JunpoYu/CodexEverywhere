@@ -1,5 +1,6 @@
 import { Scope } from "@codex-everywhere/kernel";
 import {
+  GatewayRemoteError,
   gatewayEventEnvelopeV2,
   gatewayMethodDefinitions,
   type GatewayEventEnvelopeV2,
@@ -30,6 +31,16 @@ interface ScenarioThread {
   items: TimelineItem[];
 }
 
+export interface ScenarioGatewayOptions {
+  readonly changePreferencesAfterInitialRead?: boolean;
+  readonly delaySecondPreferencesReadOnce?: boolean;
+  readonly failFirstPreferencesReadOnce?: boolean;
+  readonly failWorkspaceListAfterMutationOnce?: boolean;
+  readonly preferencesAlreadyAppliedConflictOnce?: boolean;
+  readonly preferencesConflictRefreshFailureOnce?: boolean;
+  readonly threadSettingsConflictOnce?: boolean;
+}
+
 /** Deterministic no-model backend for actor, Storybook-like and Playwright flows. */
 export class ScenarioGateway implements GatewayPort {
   readonly #scope = new Scope("scenario-gateway");
@@ -48,6 +59,18 @@ export class ScenarioGateway implements GatewayPort {
   readonly #adminUsers = new Map<string, AdminUser>();
   readonly #adminAudit: AdminAudit[] = [];
   readonly #mutationStatuses = new Map<string, MutationStatus>();
+  #failWorkspaceListAfterMutationOnce: boolean;
+  #workspaceListFailureArmed = false;
+  #changePreferencesAfterInitialRead: boolean;
+  #delaySecondPreferencesReadOnce: boolean;
+  #failFirstPreferencesReadOnce: boolean;
+  #taskPrerequisiteFailureDisarmScheduled = false;
+  #unmatchedWorkspaceReads = 0;
+  #workspaceReadResetScheduled = false;
+  #preferencesAlreadyAppliedConflictOnce: boolean;
+  #preferencesConflictRefreshFailureOnce: boolean;
+  #preferencesReadFailureArmed = false;
+  #threadSettingsConflictOnce: boolean;
   #networkMode: "direct" | "proxy" = "direct";
   #codexInstalled = true;
   #codexAuthenticated = true;
@@ -61,7 +84,21 @@ export class ScenarioGateway implements GatewayPort {
     approvalPolicy: "on-request",
   };
 
-  constructor() {
+  constructor(options: ScenarioGatewayOptions = {}) {
+    this.#changePreferencesAfterInitialRead =
+      options.changePreferencesAfterInitialRead ?? false;
+    this.#delaySecondPreferencesReadOnce =
+      options.delaySecondPreferencesReadOnce ?? false;
+    this.#failFirstPreferencesReadOnce =
+      options.failFirstPreferencesReadOnce ?? false;
+    this.#failWorkspaceListAfterMutationOnce =
+      options.failWorkspaceListAfterMutationOnce ?? false;
+    this.#preferencesAlreadyAppliedConflictOnce =
+      options.preferencesAlreadyAppliedConflictOnce ?? false;
+    this.#preferencesConflictRefreshFailureOnce =
+      options.preferencesConflictRefreshFailureOnce ?? false;
+    this.#threadSettingsConflictOnce =
+      options.threadSettingsConflictOnce ?? false;
     const now = new Date().toISOString();
     this.#workspaces.set("workspace-demo", {
       version: 1,
@@ -316,6 +353,18 @@ export class ScenarioGateway implements GatewayPort {
       case "setup/app-server/restart":
         return { version: 1, restarted: true };
       case "workspace/list":
+        if (this.#workspaceListFailureArmed) {
+          this.#workspaceListFailureArmed = false;
+          throw new Error("Scenario 工作区列表暂时不可用");
+        }
+        this.#unmatchedWorkspaceReads += 1;
+        if (!this.#workspaceReadResetScheduled) {
+          this.#workspaceReadResetScheduled = true;
+          this.#scope.setTimeout(() => {
+            this.#unmatchedWorkspaceReads = 0;
+            this.#workspaceReadResetScheduled = false;
+          }, 0);
+        }
         return { version: 1, workspaces: [...this.#workspaces.values()] };
       case "workspace/browse":
         return {
@@ -338,10 +387,12 @@ export class ScenarioGateway implements GatewayPort {
           revision: 1,
         };
         this.#workspaces.set(id, workspace);
+        this.#armWorkspaceListFailure();
         return { version: 1, workspace };
       }
       case "workspace/remove":
         this.#removeWorkspace(String(record.workspaceId));
+        this.#armWorkspaceListFailure();
         return { version: 1, removed: true };
       case "workspace/default/read":
         return {
@@ -358,6 +409,7 @@ export class ScenarioGateway implements GatewayPort {
             isDefault: id === workspaceId,
           });
         }
+        this.#armWorkspaceListFailure();
         return { version: 1, workspaceId };
       }
       case "thread/list": {
@@ -379,8 +431,21 @@ export class ScenarioGateway implements GatewayPort {
           hasMore: false,
         };
       }
-      case "thread/start":
+      case "thread/start": {
+        const requested = (record.settings ?? {}) as Partial<ThreadSettings>;
+        if (
+          (requested.sandbox === undefined ||
+            requested.approvalPolicy === undefined) &&
+          Number(record.expectedPreferencesRevision) !==
+            this.#preferences.revision
+        ) {
+          throw new GatewayRemoteError({
+            code: "REVISION_CONFLICT",
+            message: "Scenario default preferences changed before start",
+          });
+        }
         return this.#startThread(record);
+      }
       case "thread/open":
         return this.#openThread(String(record.threadId));
       case "thread/history": {
@@ -418,6 +483,19 @@ export class ScenarioGateway implements GatewayPort {
         };
         if (current.revision !== Number(record.expectedRevision)) {
           throw new Error("Scenario thread settings revision changed");
+        }
+        if (this.#threadSettingsConflictOnce) {
+          this.#threadSettingsConflictOnce = false;
+          this.#threadSettings.set(threadId, {
+            ...current,
+            revision: current.revision + 1,
+            sandbox: "read-only",
+            approvalPolicy: "never",
+          });
+          throw new GatewayRemoteError({
+            code: "REVISION_CONFLICT",
+            message: "Scenario thread settings changed externally",
+          });
         }
         const updated = {
           ...current,
@@ -540,8 +618,68 @@ export class ScenarioGateway implements GatewayPort {
           }
         );
       case "preferences/read":
+        const taskPrerequisiteRead = this.#unmatchedWorkspaceReads > 0;
+        if (taskPrerequisiteRead) this.#unmatchedWorkspaceReads -= 1;
+        if (this.#failFirstPreferencesReadOnce && taskPrerequisiteRead) {
+          if (!this.#taskPrerequisiteFailureDisarmScheduled) {
+            this.#taskPrerequisiteFailureDisarmScheduled = true;
+            this.#scope.setTimeout(() => {
+              this.#failFirstPreferencesReadOnce = false;
+              this.#taskPrerequisiteFailureDisarmScheduled = false;
+            }, 0);
+          }
+          throw new Error("Scenario preferences are temporarily unavailable");
+        }
+        if (this.#preferencesReadFailureArmed) {
+          this.#preferencesReadFailureArmed = false;
+          throw new Error("Scenario conflict refresh failed");
+        }
+        if (this.#delaySecondPreferencesReadOnce && !taskPrerequisiteRead) {
+          this.#delaySecondPreferencesReadOnce = false;
+          await this.#waitFor(400);
+        }
+        if (this.#changePreferencesAfterInitialRead) {
+          this.#changePreferencesAfterInitialRead = false;
+          this.#scope.setTimeout(() => {
+            this.#preferences = {
+              ...this.#preferences,
+              revision: this.#preferences.revision + 1,
+              sandbox: "read-only",
+            };
+          }, 0);
+        }
         return this.#preferences;
       case "preferences/update":
+        if (Number(record.expectedRevision) !== this.#preferences.revision) {
+          throw new GatewayRemoteError({
+            code: "REVISION_CONFLICT",
+            message: "Scenario preferences changed externally",
+          });
+        }
+        if (this.#preferencesAlreadyAppliedConflictOnce) {
+          this.#preferencesAlreadyAppliedConflictOnce = false;
+          this.#preferences = {
+            ...this.#preferences,
+            ...(record.patch as Partial<Preferences>),
+            revision: this.#preferences.revision + 1,
+          };
+          throw new GatewayRemoteError({
+            code: "REVISION_CONFLICT",
+            message: "Scenario preferences were applied by another device",
+          });
+        }
+        if (this.#preferencesConflictRefreshFailureOnce) {
+          this.#preferencesConflictRefreshFailureOnce = false;
+          this.#preferencesReadFailureArmed = true;
+          this.#preferences = {
+            ...this.#preferences,
+            revision: this.#preferences.revision + 1,
+          };
+          throw new GatewayRemoteError({
+            code: "REVISION_CONFLICT",
+            message: "Scenario preferences changed externally",
+          });
+        }
         this.#preferences = {
           ...this.#preferences,
           ...(record.patch as Partial<Preferences>),
@@ -667,10 +805,15 @@ export class ScenarioGateway implements GatewayPort {
       items: [messageItem("user", prompt, turnId)],
     };
     this.#threads.set(id, thread);
+    const requested = (record.settings ?? {}) as Partial<ThreadSettings>;
     this.#threadSettings.set(id, {
       version: 1,
       revision: 0,
-      ...(record.settings as Partial<ThreadSettings> | undefined),
+      ...(requested.model === undefined ? {} : { model: requested.model }),
+      ...(requested.effort === undefined ? {} : { effort: requested.effort }),
+      sandbox: requested.sandbox ?? this.#preferences.sandbox,
+      approvalPolicy:
+        requested.approvalPolicy ?? this.#preferences.approvalPolicy,
     });
     const interactionKind = scenarioInteractionKind(prompt);
     if (interactionKind !== undefined) {
@@ -798,6 +941,12 @@ export class ScenarioGateway implements GatewayPort {
     this.#workspaces.delete(workspaceId);
   }
 
+  #armWorkspaceListFailure(): void {
+    if (!this.#failWorkspaceListAfterMutationOnce) return;
+    this.#failWorkspaceListAfterMutationOnce = false;
+    this.#workspaceListFailureArmed = true;
+  }
+
   #countAdminUsers(status: AdminUser["status"]): number {
     return [...this.#adminUsers.values()].filter(
       (user) => user.status === status,
@@ -882,6 +1031,20 @@ export class ScenarioGateway implements GatewayPort {
     if (item === undefined)
       throw new Error("Scenario Queue item does not exist");
     return item;
+  }
+
+  #waitFor(delayMs: number): Promise<void> {
+    return new Promise((resolve, reject) => {
+      const onAbort = () => {
+        const reason = this.#scope.signal.reason;
+        reject(reason instanceof Error ? reason : new Error("Scenario closed"));
+      };
+      this.#scope.signal.addEventListener("abort", onAbort, { once: true });
+      this.#scope.setTimeout(() => {
+        this.#scope.signal.removeEventListener("abort", onAbort);
+        resolve();
+      }, delayMs);
+    });
   }
 
   #emit<Name extends GatewayEventName>(

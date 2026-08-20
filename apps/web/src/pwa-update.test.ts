@@ -2,7 +2,11 @@ import { readFileSync } from "node:fs";
 
 import { describe, expect, it, vi } from "vitest";
 
-import { forcePwaUpdateCheck, pwaUpdateBlockedReason } from "./pwa-update.js";
+import {
+  forcePwaUpdateCheck,
+  pwaUpdateBlockedReason,
+  readPwaUpdateSafetyState,
+} from "./pwa-update.js";
 
 describe("safe PWA updates", () => {
   it("blocks refresh while a one-time secret is visible", () => {
@@ -33,6 +37,17 @@ describe("safe PWA updates", () => {
         operationPending: false,
       }),
     ).toBeUndefined();
+  });
+
+  it("detects select-only drafts through the explicit form marker", () => {
+    const root = {
+      querySelector: vi.fn((selector: string) =>
+        selector === '[data-pwa-draft="true"]' ? {} : null,
+      ),
+      querySelectorAll: vi.fn(() => []),
+    } as unknown as Document;
+
+    expect(readPwaUpdateSafetyState(root).draftPresent).toBe(true);
   });
 
   it("forces an update check but keeps worker activation explicit", async () => {
@@ -90,8 +105,8 @@ describe("safe PWA updates", () => {
     );
     expect(activation).toContain("!retained.has(key)");
     expect(activation).not.toContain("key !== CACHE");
-    expect(entry).toContain('const PWA_ASSET_CACHE = "codex-everywhere-v50"');
+    expect(entry).toContain('const PWA_ASSET_CACHE = "codex-everywhere-v51"');
     expect(entry).toContain("event.ports[0]?.postMessage");
-    expect(worker).toContain('const CACHE = "codex-everywhere-v50"');
+    expect(worker).toContain('const CACHE = "codex-everywhere-v51"');
   });
 });

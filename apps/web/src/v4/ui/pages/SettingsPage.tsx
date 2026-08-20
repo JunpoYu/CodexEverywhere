@@ -1,6 +1,15 @@
-import { useEffect, useState, type FormEvent } from "react";
+import {
+  useEffect,
+  useRef,
+  useState,
+  type FormEvent,
+  type MouseEvent,
+} from "react";
 import { useNavigate } from "react-router-dom";
-import type { OutputOf } from "@codex-everywhere/protocol/v2";
+import {
+  GatewayRemoteError,
+  type OutputOf,
+} from "@codex-everywhere/protocol/v2";
 
 import {
   registerPasskey,
@@ -14,12 +23,23 @@ import { StatusMessage } from "../components/StatusMessage.js";
 import { ModalDialog } from "../components/ModalDialog.js";
 import { useRuntime } from "../runtime-context.js";
 
+type Preferences = OutputOf<"preferences/read">;
+export type PreferenceDraft = Pick<
+  Preferences,
+  "theme" | "sandbox" | "approvalPolicy"
+>;
+type PreferencePatch = Partial<PreferenceDraft>;
+type PreferenceFeedback = {
+  readonly tone: "success" | "error" | "warning";
+  readonly message: string;
+};
+
 export function SettingsPage() {
   const runtime = useRuntime();
   const onboarding = useActorState(runtime.onboarding);
   const navigate = useNavigate();
-  const [preferences, setPreferences] =
-    useState<OutputOf<"preferences/read">>();
+  const [preferences, setPreferences] = useState<Preferences>();
+  const [preferenceDraft, setPreferenceDraft] = useState<PreferenceDraft>();
   const [auth, setAuth] = useState<OutputOf<"auth/status">>();
   const [password, setPassword] = useState("");
   const [confirmation, setConfirmation] = useState("");
@@ -27,9 +47,19 @@ export function SettingsPage() {
   const [codexVersion, setCodexVersion] =
     useState<OutputOf<"setup/codex/version">>();
   const [busy, setBusy] = useState(false);
-  const [preferenceBusy, setPreferenceBusy] = useState(false);
+  const [preferenceSaveState, setPreferenceSaveState] = useState<
+    "idle" | "saving" | "reconciling" | "refresh-failed"
+  >("idle");
+  const pendingPreferenceConflictPatch = useRef<PreferencePatch | undefined>(
+    undefined,
+  );
+  const [preferenceFeedback, setPreferenceFeedback] =
+    useState<PreferenceFeedback>();
   const [error, setError] = useState<string>();
   const [notice, setNotice] = useState<string>();
+  const preferenceInFlight =
+    preferenceSaveState === "saving" || preferenceSaveState === "reconciling";
+  const preferenceLocked = preferenceSaveState !== "idle";
 
   useEffect(() => {
     void Promise.all([
@@ -47,44 +77,114 @@ export function SettingsPage() {
     ])
       .then(([nextPreferences, nextAuth, nextVersion]) => {
         setPreferences(nextPreferences);
+        setPreferenceDraft(preferenceDraftFrom(nextPreferences));
         setAuth(nextAuth);
         setCodexVersion(nextVersion);
       })
       .catch((reason) => setError(message(reason)));
   }, [runtime]);
 
-  const update = async (
-    patch: Partial<
-      Pick<
-        NonNullable<typeof preferences>,
-        "theme" | "sandbox" | "approvalPolicy"
-      >
-    >,
-  ) => {
-    if (preferences === undefined) return;
-    setPreferenceBusy(true);
-    setError(undefined);
-    setNotice(undefined);
+  const editPreferences = (patch: PreferencePatch) => {
+    setPreferenceDraft((current) =>
+      current === undefined ? current : { ...current, ...patch },
+    );
+    setPreferenceFeedback(undefined);
+  };
+
+  const refreshPreferenceConflict = async (patch: PreferencePatch) => {
+    setPreferenceSaveState("reconciling");
+    try {
+      const latest = await runtime.gateway.request(
+        "preferences/read",
+        { version: 1 },
+        queryOptions(),
+      );
+      const resolution = resolvePreferenceConflict(latest, patch);
+      setPreferences(latest);
+      setPreferenceDraft(resolution.draft);
+      if (resolution.remainingPatch.theme === undefined) {
+        applyTheme(latest.theme);
+      }
+      pendingPreferenceConflictPatch.current = undefined;
+      setPreferenceFeedback(
+        hasPreferenceChanges(resolution.remainingPatch)
+          ? {
+              tone: "warning",
+              message:
+                "其他设备修改了全局设置。已同步最新版本并保留你的改动，请确认后再次保存。",
+            }
+          : {
+              tone: "success",
+              message:
+                "其他设备已应用相同设置；已同步宿主机最新版本，无需再次保存。",
+            },
+      );
+      setPreferenceSaveState("idle");
+    } catch (refreshReason) {
+      setPreferenceSaveState("refresh-failed");
+      setPreferenceFeedback({
+        tone: "error",
+        message: `设置版本发生冲突，且重新同步失败：${message(refreshReason)}。尚未再次提交，请重新同步宿主机设置。`,
+      });
+    }
+  };
+
+  const savePreferences = async (event: FormEvent) => {
+    event.preventDefault();
+    const current = preferences;
+    const draft = preferenceDraft;
+    if (current === undefined || draft === undefined) return;
+    const patch = changedPreferences(current, draft);
+    if (!hasPreferenceChanges(patch)) return;
+    setPreferenceSaveState("saving");
+    setPreferenceFeedback(undefined);
+    let resetSaveState = true;
     try {
       const result = await durableMutation({
         owner: runtime.scope,
         gateway: runtime.gateway,
         method: "preferences/update",
-        payload: { version: 1, expectedRevision: preferences.revision, patch },
+        payload: { version: 1, expectedRevision: current.revision, patch },
+        onOutcomeUnknown: () => setPreferenceSaveState("reconciling"),
       });
       setPreferences(result);
-      if (patch.theme !== undefined) {
-        if (patch.theme === "system")
-          delete document.documentElement.dataset.theme;
-        else document.documentElement.dataset.theme = patch.theme;
-      }
-      setNotice("偏好设置已保存。新任务会使用更新后的默认值。");
+      setPreferenceDraft(preferenceDraftFrom(result));
+      pendingPreferenceConflictPatch.current = undefined;
+      if (patch.theme !== undefined) applyTheme(patch.theme);
+      setPreferenceFeedback({
+        tone: "success",
+        message: "全局设置已保存；新任务将使用这些默认权限。",
+      });
     } catch (reason) {
-      setError(message(reason));
+      if (
+        reason instanceof GatewayRemoteError &&
+        reason.code === "REVISION_CONFLICT"
+      ) {
+        resetSaveState = false;
+        pendingPreferenceConflictPatch.current = patch;
+        await refreshPreferenceConflict(patch);
+      } else {
+        setPreferenceFeedback({ tone: "error", message: message(reason) });
+      }
     } finally {
-      setPreferenceBusy(false);
+      if (resetSaveState) setPreferenceSaveState("idle");
     }
   };
+
+  const retryPreferenceConflict = (event: MouseEvent<HTMLButtonElement>) => {
+    // React flushes the reconciling state during this click, which changes the
+    // button back to type=submit before the browser runs its default action.
+    // Prevent that default so a recovery read can never become a stale retry.
+    event.preventDefault();
+    const patch = pendingPreferenceConflictPatch.current;
+    if (patch !== undefined) void refreshPreferenceConflict(patch);
+  };
+
+  const preferencePatch =
+    preferences === undefined || preferenceDraft === undefined
+      ? {}
+      : changedPreferences(preferences, preferenceDraft);
+  const preferencesDirty = hasPreferenceChanges(preferencePatch);
 
   const identityAction = async (
     action: () => Promise<readonly string[]>,
@@ -157,7 +257,7 @@ export function SettingsPage() {
   };
 
   return (
-    <main aria-busy={busy || preferenceBusy} className="page narrow-page">
+    <main aria-busy={busy || preferenceInFlight} className="page narrow-page">
       <header className="page-heading">
         <div>
           <p className="eyebrow">个人偏好</p>
@@ -170,69 +270,134 @@ export function SettingsPage() {
           当前为临时登录；CE 不会把设备密钥、会话票据或业务缓存写入浏览器存储。
         </StatusMessage>
       ) : null}
-      {preferences === undefined ? (
+      {preferences === undefined || preferenceDraft === undefined ? (
         <span className="spinner" />
       ) : (
-        <section className="settings-list" aria-busy={preferenceBusy}>
-          <label>
-            <span>
-              <strong>主题</strong>
-              <small>跟随系统、浅色或深色</small>
+        <form
+          className="preference-form"
+          data-pwa-draft={preferencesDirty ? "true" : undefined}
+          onSubmit={(event) => void savePreferences(event)}
+        >
+          <section className="settings-list" aria-busy={preferenceInFlight}>
+            <label>
+              <span>
+                <strong>主题</strong>
+                <small>保存后应用跟随系统、浅色或深色主题</small>
+              </span>
+              <select
+                disabled={preferenceLocked || busy}
+                value={preferenceDraft.theme}
+                onChange={(event) =>
+                  editPreferences({
+                    theme: event.target.value as PreferenceDraft["theme"],
+                  })
+                }
+              >
+                <option value="system">跟随系统</option>
+                <option value="light">浅色</option>
+                <option value="dark">深色</option>
+              </select>
+            </label>
+            <label>
+              <span>
+                <strong>默认 Sandbox</strong>
+                <small>新任务的文件访问边界，不影响已有任务</small>
+              </span>
+              <select
+                disabled={preferenceLocked || busy}
+                value={preferenceDraft.sandbox}
+                onChange={(event) =>
+                  editPreferences({
+                    sandbox: event.target.value as PreferenceDraft["sandbox"],
+                  })
+                }
+              >
+                <option value="read-only">只读</option>
+                <option value="workspace-write">工作区可写</option>
+                <option value="danger-full-access">完全访问</option>
+              </select>
+            </label>
+            <label>
+              <span>
+                <strong>默认审批策略</strong>
+                <small>新任务请求外部副作用时的策略，不影响已有任务</small>
+              </span>
+              <select
+                disabled={preferenceLocked || busy}
+                value={preferenceDraft.approvalPolicy}
+                onChange={(event) =>
+                  editPreferences({
+                    approvalPolicy: event.target
+                      .value as PreferenceDraft["approvalPolicy"],
+                  })
+                }
+              >
+                <option value="untrusted">不信任</option>
+                <option value="on-request">按需询问</option>
+                <option value="never">从不询问</option>
+              </select>
+            </label>
+          </section>
+          <div className="settings-save-bar">
+            <span role="status">
+              {preferenceInFlight ? (
+                preferenceSaveState === "reconciling" ? (
+                  "正在确认宿主机保存结果…"
+                ) : (
+                  "正在保存全局设置…"
+                )
+              ) : preferenceSaveState === "refresh-failed" ? (
+                <strong>同步失败 · 尚未再次提交</strong>
+              ) : preferencesDirty ? (
+                <strong>有未保存的更改</strong>
+              ) : (
+                `已保存 · revision ${preferences.revision}`
+              )}
             </span>
-            <select
-              disabled={preferenceBusy || busy}
-              value={preferences.theme}
-              onChange={(event) =>
-                void update({
-                  theme: event.target.value as typeof preferences.theme,
-                })
-              }
-            >
-              <option value="system">跟随系统</option>
-              <option value="light">浅色</option>
-              <option value="dark">深色</option>
-            </select>
-          </label>
-          <label>
-            <span>
-              <strong>默认 Sandbox</strong>
-              <small>新任务的文件访问边界</small>
-            </span>
-            <select
-              disabled={preferenceBusy || busy}
-              value={preferences.sandbox}
-              onChange={(event) =>
-                void update({
-                  sandbox: event.target.value as typeof preferences.sandbox,
-                })
-              }
-            >
-              <option value="read-only">只读</option>
-              <option value="workspace-write">工作区可写</option>
-              <option value="danger-full-access">完全访问</option>
-            </select>
-          </label>
-          <label>
-            <span>
-              <strong>默认审批策略</strong>
-              <small>Codex 请求外部副作用时的策略</small>
-            </span>
-            <select
-              disabled={preferenceBusy || busy}
-              value={preferences.approvalPolicy}
-              onChange={(event) =>
-                void update({
-                  approvalPolicy: event.target
-                    .value as typeof preferences.approvalPolicy,
-                })
-              }
-            >
-              <option value="untrusted">不信任</option>
-              <option value="on-request">按需询问</option>
-              <option value="never">从不询问</option>
-            </select>
-          </label>
-        </section>
+            <div className="settings-save-actions">
+              <button
+                disabled={preferenceLocked || busy || !preferencesDirty}
+                type="button"
+                onClick={() => {
+                  setPreferenceDraft(preferenceDraftFrom(preferences));
+                  setPreferenceFeedback(undefined);
+                }}
+              >
+                撤销更改
+              </button>
+              <button
+                className="primary"
+                disabled={
+                  busy ||
+                  (preferenceSaveState === "refresh-failed"
+                    ? pendingPreferenceConflictPatch.current === undefined
+                    : preferenceLocked || !preferencesDirty)
+                }
+                type={
+                  preferenceSaveState === "refresh-failed" ? "button" : "submit"
+                }
+                onClick={
+                  preferenceSaveState === "refresh-failed"
+                    ? retryPreferenceConflict
+                    : undefined
+                }
+              >
+                {preferenceSaveState === "refresh-failed"
+                  ? "重新同步宿主机设置"
+                  : preferenceSaveState === "reconciling"
+                    ? "正在确认…"
+                    : preferenceSaveState === "saving"
+                      ? "正在保存…"
+                      : "保存全局设置"}
+              </button>
+            </div>
+          </div>
+          {preferenceFeedback === undefined ? null : (
+            <StatusMessage tone={preferenceFeedback.tone}>
+              {preferenceFeedback.message}
+            </StatusMessage>
+          )}
+        </form>
       )}
 
       <section className="settings-security">
@@ -243,7 +408,7 @@ export function SettingsPage() {
         </div>
         <div className="identity-actions">
           <button
-            disabled={busy || preferenceBusy}
+            disabled={busy || preferenceLocked}
             type="button"
             onClick={() =>
               void identityAction(
@@ -260,7 +425,7 @@ export function SettingsPage() {
             添加 Passkey
           </button>
           <button
-            disabled={busy || preferenceBusy}
+            disabled={busy || preferenceLocked}
             type="button"
             onClick={() =>
               void identityAction(
@@ -297,7 +462,7 @@ export function SettingsPage() {
           </label>
           <button
             className="primary"
-            disabled={busy || preferenceBusy}
+            disabled={busy || preferenceLocked}
             type="submit"
           >
             {auth?.passwordAvailable ? "更改 CE 密码" : "设置 CE 密码"}
@@ -323,7 +488,7 @@ export function SettingsPage() {
         )}
         <div className="identity-actions">
           <button
-            disabled={busy || preferenceBusy}
+            disabled={busy || preferenceLocked}
             type="button"
             onClick={() =>
               void runLifecycle(
@@ -341,7 +506,7 @@ export function SettingsPage() {
             检查并更新 Codex
           </button>
           <button
-            disabled={busy || preferenceBusy}
+            disabled={busy || preferenceLocked}
             type="button"
             onClick={() =>
               void runLifecycle(
@@ -364,7 +529,7 @@ export function SettingsPage() {
           </button>
           <button
             disabled={
-              busy || preferenceBusy || !onboarding.status?.codexAuthenticated
+              busy || preferenceLocked || !onboarding.status?.codexAuthenticated
             }
             type="button"
             onClick={() => {
@@ -432,6 +597,54 @@ export function SettingsPage() {
 
 function message(error: unknown): string {
   return error instanceof Error ? error.message : "设置保存失败";
+}
+
+export function preferenceDraftFrom(preferences: Preferences): PreferenceDraft {
+  return {
+    theme: preferences.theme,
+    sandbox: preferences.sandbox,
+    approvalPolicy: preferences.approvalPolicy,
+  };
+}
+
+export function changedPreferences(
+  current: Preferences,
+  draft: PreferenceDraft,
+): PreferencePatch {
+  return {
+    ...(draft.theme === current.theme ? {} : { theme: draft.theme }),
+    ...(draft.sandbox === current.sandbox ? {} : { sandbox: draft.sandbox }),
+    ...(draft.approvalPolicy === current.approvalPolicy
+      ? {}
+      : { approvalPolicy: draft.approvalPolicy }),
+  };
+}
+
+export function rebasePreferenceDraft(
+  latest: Preferences,
+  patch: PreferencePatch,
+): PreferenceDraft {
+  return { ...preferenceDraftFrom(latest), ...patch };
+}
+
+export function resolvePreferenceConflict(
+  latest: Preferences,
+  submittedPatch: PreferencePatch,
+): {
+  readonly draft: PreferenceDraft;
+  readonly remainingPatch: PreferencePatch;
+} {
+  const draft = rebasePreferenceDraft(latest, submittedPatch);
+  return { draft, remainingPatch: changedPreferences(latest, draft) };
+}
+
+function hasPreferenceChanges(patch: PreferencePatch): boolean {
+  return Object.keys(patch).length > 0;
+}
+
+function applyTheme(theme: Preferences["theme"]): void {
+  if (theme === "system") delete document.documentElement.dataset.theme;
+  else document.documentElement.dataset.theme = theme;
 }
 
 function installPhaseLabel(phase: string): string {

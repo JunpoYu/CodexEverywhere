@@ -38,6 +38,9 @@
 
 - 文档以中文为主，代码、schema、协议字段和标识符使用英文。
 - 实现前阅读 `README.md`；产品、协议、安全或架构决定变化时同步更新它。
+- 修复并发与恢复问题时优先使用 app-server 权威读取、Gateway revision、operation key 和 repository 原子边界；不得用 Web 轮询、跨页面全局订阅或浏览器影子状态重新实现事实源。
+- React 页面只持有表单草稿、展示反馈等局部状态；跨路由生命周期放入既有 actor/Scope，业务规则放入既有 service/repository。不得以临时修复为由复建全局可变 monolith 或第二套 AgentLoop。
+- 新增运行依赖、通用抽象或长期后台协调器前，必须证明既有边界无法表达需求且有多个真实调用方；Scenario fixture 和测试辅助代码不得进入生产 composition root。
 - 使用严格 TypeScript，并为所有跨组件协议消息设置版本。
 - 所有路径先解析真实路径，再校验 workspace root；拒绝路径穿越和符号链接逃逸。
 - 禁止记录提示词、文件内容、凭据、恢复码、配对秘密或已解密的 Relay payload。

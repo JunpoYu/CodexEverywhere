@@ -45,22 +45,7 @@ describe("v0.4 staging receipt", () => {
 
   it("accepts a complete receipt containing only hashes and bounded metadata", async () => {
     const path = await initializeReceipt();
-    const receipt = JSON.parse(await readFile(path, "utf8"));
-    receipt.operatorAlias = "operator-a";
-    receipt.completedAt = new Date(
-      Date.parse(receipt.startedAt) + 1_000,
-    ).toISOString();
-    receipt.status = "passed";
-    receipt.environment.testUserCount = 2;
-    receipt.environment.adminControlPlane = true;
-    receipt.evidence = {
-      manifestSha256: hash("1"),
-      candidateReceiptSha256: hash("2"),
-    };
-    for (const check of Object.keys(receipt.checks))
-      receipt.checks[check] = true;
-    await writeFile(path, `${JSON.stringify(receipt, null, 2)}\n`);
-    await chmod(path, 0o600);
+    await writePassingReceipt(path);
 
     const { stdout } = await execFileAsync(process.execPath, [
       manager,
@@ -68,6 +53,28 @@ describe("v0.4 staging receipt", () => {
       path,
     ]);
     expect(stdout).toContain("Staging receipt passed");
+  });
+
+  it("rejects a receipt without a real staging user", async () => {
+    const path = await initializeReceipt();
+    await writePassingReceipt(path, { testUserCount: 0 });
+
+    await expect(
+      execFileAsync(process.execPath, [manager, "validate", path]),
+    ).rejects.toMatchObject({
+      stderr: expect.stringContaining("at least one test user"),
+    });
+  });
+
+  it("rejects an ambiguous admin control-plane flag", async () => {
+    const path = await initializeReceipt();
+    await writePassingReceipt(path, { adminControlPlane: "false" });
+
+    await expect(
+      execFileAsync(process.execPath, [manager, "validate", path]),
+    ).rejects.toMatchObject({
+      stderr: expect.stringContaining("adminControlPlane must be a boolean"),
+    });
   });
 
   it("rejects incomplete or extensible receipts", async () => {
@@ -114,6 +121,31 @@ async function initializeReceipt(): Promise<string> {
   const path = join(directory, "receipt.json");
   await execFileAsync(process.execPath, [manager, "--", "init", path]);
   return path;
+}
+
+async function writePassingReceipt(
+  path: string,
+  environment: Record<string, unknown> = {},
+): Promise<void> {
+  const receipt = JSON.parse(await readFile(path, "utf8"));
+  receipt.operatorAlias = "operator-a";
+  receipt.completedAt = new Date(
+    Date.parse(receipt.startedAt) + 1_000,
+  ).toISOString();
+  receipt.status = "passed";
+  receipt.environment = {
+    ...receipt.environment,
+    testUserCount: 1,
+    adminControlPlane: false,
+    ...environment,
+  };
+  receipt.evidence = {
+    manifestSha256: hash("1"),
+    candidateReceiptSha256: hash("2"),
+  };
+  for (const check of Object.keys(receipt.checks)) receipt.checks[check] = true;
+  await writeFile(path, `${JSON.stringify(receipt, null, 2)}\n`);
+  await chmod(path, 0o600);
 }
 
 function hash(character: string): string {

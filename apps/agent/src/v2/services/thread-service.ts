@@ -205,27 +205,61 @@ export class ThreadService {
   ): Promise<OutputOf<"thread/start">> {
     const workspace = await this.#workspaces.get(input.workspaceId);
     const path = await this.#workspaces.resolve(workspace.path);
-    const preferences = await this.#preferences.read();
     const requested = input.settings ?? {};
-    const sandbox = requested.sandbox ?? preferences.sandbox;
-    const approvalPolicy =
-      requested.approvalPolicy ?? preferences.approvalPolicy;
-
-    const started = await this.#withClient("thread-start", async (client) =>
-      jsonObject(
-        await client.request("thread/start", {
-          cwd: path,
-          ...(requested.model === undefined ? {} : { model: requested.model }),
-          approvalPolicy,
-          approvalsReviewer: "user",
-          sandbox,
-          ...(requested.effort === undefined
-            ? {}
-            : { config: { model_reasoning_effort: requested.effort } }),
-        }),
-        "thread/start response",
+    const startWithPermissions = async (
+      sandbox: NonNullable<RuntimeThreadSettings["sandbox"]>,
+      approvalPolicy: NonNullable<RuntimeThreadSettings["approvalPolicy"]>,
+    ) => ({
+      sandbox,
+      approvalPolicy,
+      started: await this.#withClient("thread-start", async (client) =>
+        jsonObject(
+          await client.request("thread/start", {
+            cwd: path,
+            ...(requested.model === undefined
+              ? {}
+              : { model: requested.model }),
+            approvalPolicy,
+            approvalsReviewer: "user",
+            sandbox,
+            ...(requested.effort === undefined
+              ? {}
+              : { config: { model_reasoning_effort: requested.effort } }),
+          }),
+          "thread/start response",
+        ),
       ),
-    );
+    });
+    let accepted: Awaited<ReturnType<typeof startWithPermissions>>;
+    if (
+      requested.sandbox === undefined ||
+      requested.approvalPolicy === undefined
+    ) {
+      const mutation = await this.#preferences.acquireMutation({
+        signal: this.#scope.signal,
+      });
+      try {
+        const preferences = await this.#preferences.read();
+        if (input.expectedPreferencesRevision !== preferences.revision) {
+          throw new GatewayV2Error(
+            "REVISION_CONFLICT",
+            "Default preferences changed; refresh before starting the task",
+          );
+        }
+        accepted = await startWithPermissions(
+          requested.sandbox ?? preferences.sandbox,
+          requested.approvalPolicy ?? preferences.approvalPolicy,
+        );
+      } finally {
+        await mutation.release();
+      }
+    } else {
+      accepted = await startWithPermissions(
+        requested.sandbox,
+        requested.approvalPolicy,
+      );
+    }
+    const { approvalPolicy, sandbox, started } = accepted;
     const thread = requiredObject(started.thread, "started thread");
     const threadId = requiredString(thread.id, "thread id");
     const currentWorkspace = await this.#workspaces.workspaceForPath(

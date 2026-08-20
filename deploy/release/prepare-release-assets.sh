@@ -67,6 +67,7 @@ for package_file in \
   apps/relay/package.json \
   apps/web/package.json \
   packages/crypto/package.json \
+  packages/kernel/package.json \
   packages/protocol/package.json \
   packages/testing/package.json
 do
