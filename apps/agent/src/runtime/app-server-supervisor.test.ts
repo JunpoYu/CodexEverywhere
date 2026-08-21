@@ -247,27 +247,33 @@ server.listen(${JSON.stringify(paths.appServerSocket)});
       CE_RUNTIME_DIR: join(directory, "run"),
     });
     await mkdir(paths.runtimeDir, { recursive: true });
-    const fakeCodex = join(directory, "timed-out-codex");
+    const exitMarker = join(directory, "exit-failed-codex");
+    const fakeCodex = join(directory, "failed-codex");
     await writeFile(
       fakeCodex,
-      "#!/bin/sh\ntrap 'exit 0' TERM INT\nwhile :; do sleep 1; done\n",
+      `#!/bin/sh\ntrap 'exit 0' TERM INT\nwhile [ ! -f ${JSON.stringify(
+        exitMarker,
+      )} ]; do sleep 0.1; done\nexit 1\n`,
       { mode: 0o700 },
     );
     await chmod(fakeCodex, 0o700);
 
     const starting = ensureAppServer(paths, {
       codexBinary: fakeCodex,
-      timeoutMs: 500,
+      timeoutMs: 10_000,
     });
     const outcome = starting.then(
       () => undefined,
       (error: unknown) => error,
     );
-    await vi.waitFor(async () => {
-      const record = await readProcessRecord(paths.appServerPidFile);
-      expect(record).toBeDefined();
-      expect(record?.pid).not.toBe(process.pid);
-    });
+    await vi.waitFor(
+      async () => {
+        const record = await readProcessRecord(paths.appServerPidFile);
+        expect(record).toBeDefined();
+        expect(record?.pid).not.toBe(process.pid);
+      },
+      { timeout: 8_000 },
+    );
 
     const successorRecord = await writeProcessRecord(
       paths.appServerPidFile,
@@ -276,9 +282,10 @@ server.listen(${JSON.stringify(paths.appServerSocket)});
     await writeFile(paths.appServerSocket, "successor-socket", {
       mode: 0o600,
     });
+    await writeFile(exitMarker, "exit", { mode: 0o600 });
 
     expect(await outcome).toMatchObject({
-      message: expect.stringMatching(/Timed out/u),
+      message: expect.stringMatching(/exited before becoming ready/u),
     });
     await expect(readProcessRecord(paths.appServerPidFile)).resolves.toEqual(
       successorRecord,
@@ -286,7 +293,7 @@ server.listen(${JSON.stringify(paths.appServerSocket)});
     await expect(readFile(paths.appServerSocket, "utf8")).resolves.toBe(
       "successor-socket",
     );
-  }, 10_000);
+  }, 15_000);
 
   it("refuses a second spawn when the supervisor crashes before owner publication", async () => {
     const directory = await temporaryDirectory();
