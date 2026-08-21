@@ -43,7 +43,9 @@ export function QueuePage() {
       <section className="list-panel">
         {queue.items.map((item) => (
           <QueueRow
-            busy={queue.status === "mutating"}
+            busy={
+              queue.status === "mutating" || queue.status === "indeterminate"
+            }
             item={item}
             key={item.id}
           />

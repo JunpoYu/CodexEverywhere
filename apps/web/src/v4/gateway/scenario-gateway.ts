@@ -34,8 +34,10 @@ interface ScenarioThread {
 export interface ScenarioGatewayOptions {
   readonly changePreferencesAfterInitialRead?: boolean;
   readonly delaySecondPreferencesReadOnce?: boolean;
+  readonly failSecondCodexVersionReadOnce?: boolean;
   readonly failFirstPreferencesReadOnce?: boolean;
   readonly failWorkspaceListAfterMutationOnce?: boolean;
+  readonly longConversation?: boolean;
   readonly preferencesAlreadyAppliedConflictOnce?: boolean;
   readonly preferencesConflictRefreshFailureOnce?: boolean;
   readonly threadSettingsConflictOnce?: boolean;
@@ -63,6 +65,8 @@ export class ScenarioGateway implements GatewayPort {
   #workspaceListFailureArmed = false;
   #changePreferencesAfterInitialRead: boolean;
   #delaySecondPreferencesReadOnce: boolean;
+  #failSecondCodexVersionReadOnce: boolean;
+  #codexVersionReads = 0;
   #failFirstPreferencesReadOnce: boolean;
   #taskPrerequisiteFailureDisarmScheduled = false;
   #unmatchedWorkspaceReads = 0;
@@ -89,6 +93,8 @@ export class ScenarioGateway implements GatewayPort {
       options.changePreferencesAfterInitialRead ?? false;
     this.#delaySecondPreferencesReadOnce =
       options.delaySecondPreferencesReadOnce ?? false;
+    this.#failSecondCodexVersionReadOnce =
+      options.failSecondCodexVersionReadOnce ?? false;
     this.#failFirstPreferencesReadOnce =
       options.failFirstPreferencesReadOnce ?? false;
     this.#failWorkspaceListAfterMutationOnce =
@@ -136,6 +142,14 @@ export class ScenarioGateway implements GatewayPort {
       version: 1,
       revision: 0,
     });
+    if (options.longConversation === true) {
+      const longThread = longConversationThread(now);
+      this.#threads.set(longThread.summary.id, longThread);
+      this.#threadSettings.set(longThread.summary.id, {
+        version: 1,
+        revision: 0,
+      });
+    }
   }
 
   async request<Method extends GatewayMethodName>(
@@ -319,6 +333,14 @@ export class ScenarioGateway implements GatewayPort {
         return { version: 1, operationId, accepted: true };
       }
       case "setup/codex/version":
+        this.#codexVersionReads += 1;
+        if (
+          this.#failSecondCodexVersionReadOnce &&
+          this.#codexVersionReads === 2
+        ) {
+          this.#failSecondCodexVersionReadOnce = false;
+          throw new Error("Scenario Codex version is temporarily unavailable");
+        }
         return {
           version: 1,
           installed: this.#codexInstalled,
@@ -447,10 +469,28 @@ export class ScenarioGateway implements GatewayPort {
         return this.#startThread(record);
       }
       case "thread/open":
-        return this.#openThread(String(record.threadId));
+        return this.#openThread(
+          String(record.threadId),
+          typeof record.historyCursor === "string"
+            ? record.historyCursor
+            : undefined,
+          Number(record.historyLimit),
+        );
       case "thread/history": {
         const thread = this.#requiredThread(String(record.threadId));
-        return { version: 1, items: thread.items, hasMore: false };
+        const page = scenarioHistoryPage(
+          thread.items,
+          typeof record.cursor === "string" ? record.cursor : undefined,
+          Number(record.limit),
+        );
+        return {
+          version: 1,
+          items: page.items,
+          ...(page.nextCursor === undefined
+            ? {}
+            : { nextCursor: page.nextCursor }),
+          hasMore: page.hasMore,
+        };
       }
       case "thread/close":
         return { version: 1, closed: true };
@@ -891,15 +931,23 @@ export class ScenarioGateway implements GatewayPort {
     }, 250);
   }
 
-  #openThread(threadId: string) {
+  #openThread(
+    threadId: string,
+    historyCursor: string | undefined,
+    historyLimit: number,
+  ) {
     const thread = this.#requiredThread(threadId);
+    const page = scenarioHistoryPage(thread.items, historyCursor, historyLimit);
     return {
       version: 1,
       thread: thread.summary,
       state: thread.summary.state,
-      items: thread.items,
+      items: page.items,
       interactions: this.#threadInteractions(threadId),
-      hasEarlierHistory: false,
+      ...(page.nextCursor === undefined
+        ? {}
+        : { historyCursor: page.nextCursor }),
+      hasEarlierHistory: page.hasMore,
       settings: this.#threadSettings.get(threadId) ?? {
         version: 1,
         revision: 0,
@@ -1068,6 +1116,84 @@ function messageItem(
     type: "message",
     createdAt: new Date().toISOString(),
     data: { role, text },
+  };
+}
+
+function longConversationThread(now: string): ScenarioThread {
+  const items: TimelineItem[] = [];
+  const baseTime = new Date(now).getTime() - 70 * 60_000;
+  for (let index = 1; index <= 70; index += 1) {
+    const suffix = String(index).padStart(2, "0");
+    const turnId = `long-turn-${suffix}`;
+    const createdAt = new Date(baseTime + index * 60_000).toISOString();
+    items.push(
+      {
+        version: 1,
+        id: `long-user-${suffix}`,
+        turnId,
+        type: "message",
+        createdAt,
+        data: { type: "userMessage", text: `历史请求 ${suffix}` },
+      },
+      {
+        version: 1,
+        id: `long-assistant-${suffix}`,
+        turnId,
+        type: "message",
+        createdAt,
+        data: { type: "agentMessage", text: `历史回复 ${suffix}` },
+      },
+    );
+  }
+  items.push({
+    version: 1,
+    id: "long-command-output",
+    turnId: "long-turn-70",
+    type: "command",
+    createdAt: now,
+    data: {
+      type: "commandExecution",
+      command: "scenario-long-output",
+      status: "completed",
+      aggregatedOutput: "SCENARIO_LARGE_OUTPUT_SENTINEL",
+    },
+  });
+  return {
+    summary: {
+      version: 1,
+      id: "thread-long-conversation",
+      workspaceId: "workspace-demo",
+      title: "长会话分页与大纲",
+      state: "idle",
+      archived: false,
+      createdAt: new Date(baseTime).toISOString(),
+      updatedAt: now,
+    },
+    items,
+  };
+}
+
+function scenarioHistoryPage(
+  items: readonly TimelineItem[],
+  cursor: string | undefined,
+  limit: number,
+): {
+  readonly items: TimelineItem[];
+  readonly nextCursor?: string;
+  readonly hasMore: boolean;
+} {
+  let end = items.length;
+  if (cursor !== undefined) {
+    const boundary = items.findIndex((item) => item.id === cursor);
+    if (boundary < 0) throw new Error("Scenario history cursor is stale");
+    end = boundary;
+  }
+  const start = Math.max(0, end - limit);
+  const page = items.slice(start, end);
+  return {
+    items: page,
+    ...(start === 0 || page.length === 0 ? {} : { nextCursor: page[0]!.id }),
+    hasMore: start > 0,
   };
 }
 

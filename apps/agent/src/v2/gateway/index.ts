@@ -51,6 +51,8 @@ export { AdminTransportSession } from "./admin-transport-session.js";
 export { IdentityDeviceRegistryAdapter } from "./identity-device-registry-adapter.js";
 export type {
   GatewayDeviceRegistry,
+  GatewayTransportAuthenticationContext,
   GatewayTrustedDevice,
+  GatewayV2SessionFactory,
   GatewayV2Session,
 } from "./transport-contract.js";

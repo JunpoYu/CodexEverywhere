@@ -1,0 +1,73 @@
+.frame {
+  position: relative;
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  flex: 1 1 auto;
+}
+
+.viewport {
+  min-width: 0;
+  min-height: 0;
+  flex: 1 1 auto;
+}
+
+.content {
+  min-height: 100%;
+}
+
+.loadEarlier {
+  display: block;
+  min-height: 32px;
+  margin: 0 auto 20px;
+}
+
+.historyError {
+  width: min(100%, 760px);
+  margin: -10px auto 18px;
+  color: var(--danger);
+  font-size: 11px;
+  text-align: center;
+}
+
+.item {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 120px;
+}
+
+.jumpTarget {
+  animation: jump-highlight 1.4s ease-out;
+}
+
+.latest {
+  position: absolute;
+  z-index: 4;
+  right: max(14px, calc((100% - 760px) / 2));
+  bottom: 12px;
+  min-height: 32px;
+  border-color: color-mix(in srgb, var(--accent) 35%, var(--border));
+  border-radius: 999px;
+  background: var(--surface-raised);
+  box-shadow: var(--shadow-sm);
+  color: var(--accent-strong);
+  font-size: 10px;
+  font-weight: 680;
+}
+
+@keyframes jump-highlight {
+  0%,
+  28% {
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent);
+  }
+
+  100% {
+    box-shadow: 0 0 0 0 transparent;
+  }
+}
+
+@media (max-width: 760px) {
+  .latest {
+    right: 12px;
+    bottom: 9px;
+  }
+}

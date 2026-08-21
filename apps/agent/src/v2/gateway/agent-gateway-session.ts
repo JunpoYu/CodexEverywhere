@@ -46,6 +46,8 @@ export class AgentGatewaySession implements IdentityGatewaySession {
     string,
     { readonly handle: ThreadLeaseHandle; readonly scope: Scope }
   >();
+  readonly #opening = new Map<string, Promise<ThreadLeaseHandle>>();
+  readonly #closing = new Map<string, Promise<void>>();
   readonly #events = new TypedEventBus<{
     readonly event: GatewayEventEnvelopeV2;
   }>();
@@ -71,7 +73,11 @@ export class AgentGatewaySession implements IdentityGatewaySession {
         }),
       );
     }
-    this.scope.defer(() => this.#threads.clear());
+    this.scope.defer(() => {
+      this.#closing.clear();
+      this.#opening.clear();
+      this.#threads.clear();
+    });
   }
 
   get access(): GatewayAccess {
@@ -108,8 +114,37 @@ export class AgentGatewaySession implements IdentityGatewaySession {
   }
 
   async openThread(threadId: string): Promise<ThreadLeaseHandle> {
+    const closing = this.#closing.get(threadId);
+    if (closing !== undefined) {
+      await closing;
+      return this.openThread(threadId);
+    }
+    const pending = this.#opening.get(threadId);
+    if (pending !== undefined) return pending;
     const existing = this.#threads.get(threadId);
-    if (existing !== undefined) return existing.handle;
+    if (existing !== undefined && !existing.handle.lease.closed) {
+      return existing.handle;
+    }
+    const opening = this.#openThread(threadId, existing).finally(() => {
+      if (this.#opening.get(threadId) === opening) {
+        this.#opening.delete(threadId);
+      }
+    });
+    this.#opening.set(threadId, opening);
+    return opening;
+  }
+
+  async #openThread(
+    threadId: string,
+    stale:
+      { readonly handle: ThreadLeaseHandle; readonly scope: Scope } | undefined,
+  ): Promise<ThreadLeaseHandle> {
+    if (stale !== undefined) {
+      if (this.#threads.get(threadId) === stale) {
+        this.#threads.delete(threadId);
+      }
+      await stale.scope.close("thread-lease-disposed");
+    }
     const threadScope = this.scope.fork(`thread-view-${threadId}`);
     try {
       const handle = await this.#leases.acquire(
@@ -151,6 +186,26 @@ export class AgentGatewaySession implements IdentityGatewaySession {
   }
 
   async closeThread(threadId: string): Promise<void> {
+    const current = this.#closing.get(threadId);
+    if (current !== undefined) return current;
+    const closing = this.#closeThread(threadId).finally(() => {
+      if (this.#closing.get(threadId) === closing) {
+        this.#closing.delete(threadId);
+      }
+    });
+    this.#closing.set(threadId, closing);
+    return closing;
+  }
+
+  async #closeThread(threadId: string): Promise<void> {
+    const pending = this.#opening.get(threadId);
+    if (pending !== undefined) {
+      try {
+        await pending;
+      } catch {
+        return;
+      }
+    }
     const opened = this.#threads.get(threadId);
     if (opened === undefined) return;
     this.#threads.delete(threadId);

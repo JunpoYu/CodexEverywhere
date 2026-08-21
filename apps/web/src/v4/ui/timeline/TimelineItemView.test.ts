@@ -44,9 +44,28 @@ describe("TimelineItemView", () => {
     expect(html).toContain("/public/demo");
     expect(html).toContain("已完成");
     expect(html).toContain("查看命令输出");
+    expect(html).not.toContain("82 files passed");
   });
 
-  it("keeps unknown items inspectable without assuming their shape", () => {
+  it("keeps the complete file path in a keyboard-scrollable code region", () => {
+    const path =
+      "/public/demo/a/very/long/path/that/must/remain/available/result.ts";
+    const html = render(
+      item({
+        type: "file-change",
+        data: {
+          type: "fileChange",
+          status: "completed",
+          changes: [{ path, kind: "update", diff: "+changed" }],
+        },
+      }),
+    );
+
+    expect(html).toContain(`<code tabindex="0" title="${path}">${path}</code>`);
+    expect(html).toContain("查看差异");
+  });
+
+  it("keeps unknown items inspectable without mounting closed payloads", () => {
     const html = render(
       item({
         type: "generic",
@@ -55,7 +74,7 @@ describe("TimelineItemView", () => {
     );
 
     expect(html).toContain("futureCodexEvent");
-    expect(html).toContain("enabled");
+    expect(html).not.toContain("enabled");
   });
 });
 

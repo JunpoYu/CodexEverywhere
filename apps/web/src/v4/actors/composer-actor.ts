@@ -10,7 +10,7 @@ import {
 export interface ComposerState {
   readonly status:
     "idle" | "submitting" | "outcome-unknown" | "reconciling" | "manual-review";
-  readonly draft: string;
+  readonly drafts: Readonly<Record<string, string>>;
   readonly threadId?: string;
   readonly operationKey?: string;
   readonly submittedText?: string;
@@ -19,7 +19,11 @@ export interface ComposerState {
 }
 
 type Event =
-  | { readonly type: "DRAFT"; readonly value: string }
+  | {
+      readonly type: "DRAFT";
+      readonly threadId: string;
+      readonly value: string;
+    }
   | { readonly type: "SUBMIT"; readonly threadId: string }
   | { readonly type: "QUEUE"; readonly threadId: string }
   | { readonly type: "SENT" }
@@ -49,25 +53,38 @@ export function createComposerActor(scope: Scope, gateway: GatewayPort) {
   return new Actor<ComposerState, Event, Effect>({
     name: "composer",
     scope,
-    initialState: { status: "idle", draft: "" },
+    initialState: { status: "idle", drafts: {} },
     reducer: (state, event) => {
       switch (event.type) {
         case "DRAFT": {
-          const { error: _error, ...withoutError } = state;
+          const nextDrafts = { ...state.drafts, [event.threadId]: event.value };
+          if (state.status === "idle" && state.threadId === event.threadId) {
+            const {
+              error: _error,
+              threadId: _feedbackThreadId,
+              ...withoutFeedback
+            } = state;
+            return {
+              state: { ...withoutFeedback, drafts: nextDrafts },
+              preserveEffects: true,
+            };
+          }
           return {
-            state: { ...withoutError, draft: event.value },
+            state: { ...state, drafts: nextDrafts },
             preserveEffects: true,
           };
         }
         case "SUBMIT":
         case "QUEUE": {
-          const text = state.draft.trim();
-          if (state.status !== "idle" || text.length === 0) return { state };
+          const text = composerDraftFor(state, event.threadId).trim();
+          if (state.status !== "idle" || text.length === 0) {
+            return { state, preserveEffects: true };
+          }
           const operationKey = crypto.randomUUID();
           return {
             state: {
               status: "submitting",
-              draft: "",
+              drafts: { ...state.drafts, [event.threadId]: "" },
               threadId: event.threadId,
               operationKey,
               submittedText: text,
@@ -84,8 +101,9 @@ export function createComposerActor(scope: Scope, gateway: GatewayPort) {
           };
         }
         case "SENT":
-        case "RESOLVED":
-          return { state: { status: "idle", draft: state.draft } };
+        case "RESOLVED": {
+          return { state: { status: "idle", drafts: state.drafts } };
+        }
         case "UNKNOWN":
           return {
             state: {
@@ -109,18 +127,23 @@ export function createComposerActor(scope: Scope, gateway: GatewayPort) {
             state: { ...state, status: "manual-review", error: event.message },
           };
         case "ACKNOWLEDGE_MANUAL":
-          if (state.status !== "manual-review") return { state };
+          if (state.status !== "manual-review") {
+            return { state, preserveEffects: true };
+          }
           return {
             state: {
               status: "idle",
-              draft: restoreSubmittedText(state),
+              drafts: restoreSubmittedDraft(state),
             },
           };
         case "FAILED":
           return {
             state: {
               status: "idle",
-              draft: restoreSubmittedText(state),
+              drafts: restoreSubmittedDraft(state),
+              ...(state.threadId === undefined
+                ? {}
+                : { threadId: state.threadId }),
               error: event.message,
             },
           };
@@ -220,6 +243,21 @@ function message(error: unknown): string {
   return error instanceof Error ? error.message : "消息发送失败";
 }
 
-function restoreSubmittedText(state: ComposerState): string {
-  return state.draft.length > 0 ? state.draft : (state.submittedText ?? "");
+export function composerDraftFor(
+  state: ComposerState,
+  threadId: string,
+): string {
+  return state.drafts[threadId] ?? "";
+}
+
+function restoreSubmittedDraft(
+  state: ComposerState,
+): Readonly<Record<string, string>> {
+  if (state.threadId === undefined || state.submittedText === undefined) {
+    return state.drafts;
+  }
+  const current = composerDraftFor(state, state.threadId);
+  return current.length > 0
+    ? state.drafts
+    : { ...state.drafts, [state.threadId]: state.submittedText };
 }

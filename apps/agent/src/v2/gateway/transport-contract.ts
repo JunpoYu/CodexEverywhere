@@ -1,3 +1,4 @@
+import type { GatewayAuthenticationPayload } from "@codex-everywhere/protocol";
 import type {
   GATEWAY_API_VERSION,
   GatewayEventEnvelopeV2,
@@ -46,3 +47,13 @@ export interface GatewayV2Session {
   onEvent?(listener: (event: GatewayEventEnvelopeV2) => void): () => void;
   close?(): Promise<void> | void;
 }
+
+export interface GatewayTransportAuthenticationContext {
+  readonly authenticationMode: GatewayAuthenticationPayload["mode"];
+  readonly resumeToken?: string;
+}
+
+export type GatewayV2SessionFactory = (
+  device: GatewayTrustedDevice,
+  context: GatewayTransportAuthenticationContext,
+) => GatewayV2Session | Promise<GatewayV2Session>;

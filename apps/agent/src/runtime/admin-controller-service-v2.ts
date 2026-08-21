@@ -11,9 +11,9 @@ import { loadOrCreateHostIdentity } from "../host/identity.js";
 import { loadOrCreateOpaqueServerSetup } from "../host/passwords.js";
 import { ProcessLock, writeProcessRecord } from "../host/process-files.js";
 import {
-  DirectTransportV2,
   acceptGatewayV2Socket,
-} from "../v2/adapters/direct-transport.js";
+  type GatewaySocketConnectionOptions,
+} from "../v2/adapters/gateway-socket-connection.js";
 import { AdminHelperV2Client } from "../v2/admin/helper-protocol.js";
 import {
   createAdminControllerCompositionRoot,
@@ -93,30 +93,14 @@ export async function runAdminControllerServiceV2(): Promise<void> {
     const deviceRegistry = new IdentityDeviceRegistryAdapter(
       identityRepository,
     );
-    const gatewayOptions = {
-      parentScope: runtimeScope,
-      host: "127.0.0.1",
-      port: 0,
+    const gatewayConnectionOptions: GatewaySocketConnectionOptions = {
       nodeId: config.nodeId,
       userId: `admin:${config.installationId}`,
       principal: "host-admin" as const,
       loginName: config.adminHandle,
       identity: identity.keyPair,
-      hostFingerprint: identity.fingerprint,
       deviceRegistry,
-      allowedOrigin: config.origin,
-      relayEndpoint: config.relayEndpoint,
-      relayRouteId: config.routeId,
-      createSession: (
-        device: Parameters<
-          AdminControllerCompositionRoot["createTransportSession"]
-        >[0],
-        context: Parameters<
-          NonNullable<
-            Parameters<typeof DirectTransportV2.start>[0]["createSession"]
-          >
-        >[1],
-      ) =>
+      createSession: (device, context) =>
         root!.createTransportSession(device, {
           authenticationMode: context.authenticationMode,
           ...(context.resumeToken === undefined
@@ -125,12 +109,16 @@ export async function runAdminControllerServiceV2(): Promise<void> {
         }),
     };
     relay = await RelayConnector.start({
-      ...gatewayOptions,
       endpoint: config.relayEndpoint,
       routeId: config.routeId,
       routeCapability: config.routeCapability,
+      nodeId: config.nodeId,
+      userId: `admin:${config.installationId}`,
+      principal: "host-admin",
+      identity: { publicKey: identity.keyPair.publicKey },
+      hostFingerprint: identity.fingerprint,
       acceptGatewaySocket: (socket) =>
-        acceptGatewayV2Socket(socket, gatewayOptions, runtimeScope),
+        acceptGatewayV2Socket(socket, gatewayConnectionOptions, runtimeScope),
     });
     let activeCapability = config.routeCapability;
     renewal = startAdminRelayCapabilityRenewalLoop(paths.configFile, {

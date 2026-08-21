@@ -12,6 +12,7 @@ export interface TaskListState {
   readonly hasMore: boolean;
   readonly archived: boolean;
   readonly workspaceId?: string;
+  readonly workspaceLabel?: string;
   readonly error?: string;
 }
 
@@ -19,6 +20,7 @@ type Event =
   | {
       readonly type: "LOAD";
       readonly workspaceId?: string;
+      readonly workspaceLabel?: string;
       readonly archived?: boolean;
     }
   | { readonly type: "MORE" }
@@ -59,6 +61,9 @@ export function createTaskListActor(scope: Scope, gateway: GatewayPort) {
               ...(event.workspaceId === undefined
                 ? {}
                 : { workspaceId: event.workspaceId }),
+              ...(event.workspaceLabel === undefined
+                ? {}
+                : { workspaceLabel: event.workspaceLabel }),
             },
             effects: [
               {
@@ -73,7 +78,7 @@ export function createTaskListActor(scope: Scope, gateway: GatewayPort) {
           };
         case "MORE":
           if (!state.hasMore || state.nextCursor === undefined) {
-            return { state };
+            return { state, preserveEffects: true };
           }
           return {
             state: { ...state, status: "paginating" },

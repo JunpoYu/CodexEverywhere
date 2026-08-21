@@ -8,6 +8,7 @@ export type IconName =
   | "connection"
   | "danger"
   | "more"
+  | "outline"
   | "queue"
   | "refresh"
   | "send"
@@ -50,6 +51,7 @@ const paths: Record<IconName, string> = {
   connection: "M8.5 15.5a5 5 0 0 1 7 0M5.5 12.5a9 9 0 0 1 13 0M12 19h.01",
   danger: "M12 3 2.8 20h18.4L12 3Zm0 6v5m0 3h.01",
   more: "M5 12h.01M12 12h.01M19 12h.01",
+  outline: "M4 6h.01M8 6h12M4 12h.01M8 12h12M4 18h.01M8 18h12",
   queue: "M5 6h14M5 12h14M5 18h9",
   refresh:
     "M20 7v5h-5M4 17v-5h5M6.1 9A7 7 0 0 1 18 6l2 6M18 15a7 7 0 0 1-11.9 3L4 12",

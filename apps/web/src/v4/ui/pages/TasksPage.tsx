@@ -10,6 +10,10 @@ import { useActorState } from "../../actors/use-actor.js";
 import { durableMutation } from "../../gateway/durable-mutation.js";
 import { queryOptions } from "../../gateway/gateway-port.js";
 import { Icon } from "../components/Icon.js";
+import {
+  approvalSettingLabel,
+  sandboxSettingLabel,
+} from "../formatters/thread-settings.js";
 import { StatusMessage } from "../components/StatusMessage.js";
 import { useRuntime } from "../runtime-context.js";
 import {
@@ -23,6 +27,7 @@ import {
   threadStartPermissionOverrides,
   type NewTaskPermissionDraft,
 } from "./new-task-permissions.js";
+import { TaskListSection } from "./TaskListSection.js";
 
 type Preferences = OutputOf<"preferences/read">;
 
@@ -72,10 +77,27 @@ export function TasksPage() {
       .then(([items, preferences]) => {
         if (!active) return;
         setWorkspaces(items);
+        const currentTaskList = runtime.tasks.getSnapshot();
+        const activeWorkspaceId = items.some(
+          (workspace) => workspace.id === currentTaskList.workspaceId,
+        )
+          ? currentTaskList.workspaceId
+          : undefined;
+        if (
+          currentTaskList.workspaceId !== undefined &&
+          activeWorkspaceId === undefined
+        ) {
+          runtime.tasks.dispatch({
+            type: "LOAD",
+            archived: currentTaskList.archived,
+          });
+        }
         setWorkspaceId((current) =>
           items.some((workspace) => workspace.id === current)
             ? current
-            : (items.find((workspace) => workspace.isDefault)?.id ??
+            : (items.find((workspace) => workspace.id === activeWorkspaceId)
+                ?.id ??
+              items.find((workspace) => workspace.isDefault)?.id ??
               items[0]?.id ??
               ""),
         );
@@ -152,7 +174,7 @@ export function TasksPage() {
         },
         onOutcomeUnknown: () => setStarting("reconciling"),
       });
-      runtime.tasks.dispatch({ type: "LOAD" });
+      runtime.refreshTasks();
       navigate(`/tasks/${encodeURIComponent(result.thread.id)}`);
     } catch (reason) {
       if (
@@ -239,6 +261,12 @@ export function TasksPage() {
               runtime.tasks.dispatch({
                 type: "LOAD",
                 archived: !tasks.archived,
+                ...(tasks.workspaceId === undefined
+                  ? {}
+                  : { workspaceId: tasks.workspaceId }),
+                ...(tasks.workspaceLabel === undefined
+                  ? {}
+                  : { workspaceLabel: tasks.workspaceLabel }),
               })
             }
           >
@@ -247,9 +275,7 @@ export function TasksPage() {
           <button
             disabled={tasks.status === "loading"}
             type="button"
-            onClick={() =>
-              runtime.tasks.dispatch({ type: "LOAD", archived: tasks.archived })
-            }
+            onClick={() => runtime.refreshTasks()}
           >
             <Icon name="refresh" />
             刷新
@@ -263,8 +289,9 @@ export function TasksPage() {
         onSubmit={(event) => void start(event)}
       >
         <label className="new-task-field">
-          <span>工作区</span>
+          <span>新任务工作区</span>
           <select
+            aria-label="新任务工作区"
             disabled={submissionLocked || !permissionsReady}
             value={workspaceId}
             onChange={(event) => setWorkspaceId(event.target.value)}
@@ -317,7 +344,7 @@ export function TasksPage() {
                   )
                 }
               >
-                <option value="untrusted">不信任</option>
+                <option value="untrusted">严格审批</option>
                 <option value="on-request">按需询问</option>
                 <option value="never">从不询问</option>
               </select>
@@ -334,7 +361,7 @@ export function TasksPage() {
               </span>
               <small>
                 {permissionDraft !== undefined
-                  ? `${sandboxLabel(permissionDraft.sandbox.value)}${permissionSourceLabel(permissionDraft.sandbox.source)} · ${approvalPolicyLabel(permissionDraft.approvalPolicy.value)}${permissionSourceLabel(permissionDraft.approvalPolicy.source)}`
+                  ? `${sandboxSettingLabel(permissionDraft.sandbox.value)}${permissionSourceLabel(permissionDraft.sandbox.source)} · ${approvalSettingLabel(permissionDraft.approvalPolicy.value)}${permissionSourceLabel(permissionDraft.approvalPolicy.source)}`
                   : "正在读取全局默认权限…"}
               </small>
               <div>
@@ -414,50 +441,24 @@ export function TasksPage() {
         </StatusMessage>
       ) : null}
 
-      <section
-        aria-label={tasks.archived ? "已归档任务" : "当前任务"}
-        className="task-grid"
-        aria-busy={tasks.status === "loading"}
-      >
-        {tasks.tasks.map((task) => (
-          <Link
-            className="task-card"
-            key={task.id}
-            to={`/tasks/${encodeURIComponent(task.id)}`}
-          >
-            <div>
-              <i className={`task-dot ${task.state}`} />
-              <span>{stateLabel(task.state)}</span>
-            </div>
-            <h2>{task.title || "未命名任务"}</h2>
-            <p>{new Date(task.updatedAt).toLocaleString("zh-CN")}</p>
-          </Link>
-        ))}
-        {tasks.status === "loading" && tasks.tasks.length === 0 ? (
-          <div className="empty-state">
-            <strong>正在读取任务…</strong>
-            <span>历史较多时，Codex app-server 首次索引可能需要片刻。</span>
-          </div>
-        ) : tasks.status === "ready" && tasks.tasks.length === 0 ? (
-          <div className="empty-state">
-            <strong>{tasks.archived ? "没有已归档任务" : "还没有任务"}</strong>
-            <span>
-              {tasks.archived
-                ? "归档后的任务会显示在这里。"
-                : "从上方输入第一条请求。"}
-            </span>
-          </div>
-        ) : null}
-      </section>
-      {tasks.hasMore ? (
-        <button
-          disabled={tasks.status === "paginating"}
-          type="button"
-          onClick={() => runtime.tasks.dispatch({ type: "MORE" })}
-        >
-          {tasks.status === "paginating" ? "正在加载…" : "加载更多"}
-        </button>
-      ) : null}
+      <TaskListSection
+        state={tasks}
+        workspaces={workspaces}
+        onLoadMore={() => runtime.tasks.dispatch({ type: "MORE" })}
+        onWorkspaceChange={(workspace) => {
+          runtime.tasks.dispatch({
+            type: "LOAD",
+            archived: tasks.archived,
+            ...(workspace === undefined
+              ? {}
+              : {
+                  workspaceId: workspace.id,
+                  workspaceLabel: workspace.label,
+                }),
+          });
+          if (workspace !== undefined) setWorkspaceId(workspace.id);
+        }}
+      />
     </main>
   );
 }
@@ -482,30 +483,4 @@ function errorMessage(reason: unknown): string {
 
 function permissionSourceLabel(source: "default" | "override"): string {
   return source === "default" ? "（默认）" : "（本次）";
-}
-
-function sandboxLabel(value: Preferences["sandbox"]): string {
-  return value === "read-only"
-    ? "只读"
-    : value === "danger-full-access"
-      ? "完全访问"
-      : "工作区可写";
-}
-
-function approvalPolicyLabel(value: Preferences["approvalPolicy"]): string {
-  return value === "untrusted"
-    ? "不信任"
-    : value === "never"
-      ? "从不询问"
-      : "按需询问";
-}
-
-function stateLabel(state: string): string {
-  return state === "running"
-    ? "运行中"
-    : state === "waiting-input"
-      ? "等待操作"
-      : state === "failed"
-        ? "失败"
-        : "空闲";
 }

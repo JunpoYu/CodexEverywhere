@@ -3,7 +3,6 @@ import {
   Scope,
   createServiceToken,
 } from "@codex-everywhere/kernel";
-import type { GatewayAuthenticationPayload } from "@codex-everywhere/protocol";
 import {
   GatewayV2Error,
   GatewayV2Router,
@@ -30,6 +29,7 @@ import {
 } from "./admin-gateway-session.js";
 import { AdminTransportSession } from "./admin-transport-session.js";
 import type {
+  GatewayTransportAuthenticationContext,
   GatewayTrustedDevice,
   GatewayV2Session,
 } from "./transport-contract.js";
@@ -63,10 +63,7 @@ export interface AdminCompositionRoot {
   ): AdminGatewaySession;
   createTransportSession(
     device: GatewayTrustedDevice,
-    context: {
-      readonly authenticationMode: GatewayAuthenticationPayload["mode"];
-      readonly resumeToken?: string;
-    },
+    context: GatewayTransportAuthenticationContext,
   ): GatewayV2Session;
   close(): Promise<void>;
 }

@@ -32,6 +32,7 @@ const files = [
     ...architectureEntrypoints,
   ]),
 ].sort();
+const uiStyleFiles = collectStyleFiles("apps/web/src/v4/ui");
 const fileSet = new Set(files);
 const graph = new Map(files.map((file) => [file, []]));
 const failures = [];
@@ -76,6 +77,24 @@ for (const file of files) {
         failures.push(`${file}: Web crossed the Agent or repository boundary`);
       }
     }
+    for (const specifier of imports) {
+      if (
+        file.startsWith("apps/web/src/v4/ui/") &&
+        specifier.startsWith(".") &&
+        specifier.endsWith(".css") &&
+        !specifier.endsWith(".module.css")
+      ) {
+        failures.push(
+          `${file}: feature styles must use a colocated CSS Module`,
+        );
+      }
+      if (
+        file !== "apps/web/src/v4/bootstrap.tsx" &&
+        specifier.endsWith("styles/global.css")
+      ) {
+        failures.push(`${file}: only the Web bootstrap may import global.css`);
+      }
+    }
     if (
       file !== "apps/web/src/v4/gateway/gateway-port.ts" &&
       /\bGatewayV2Client\b/u.test(content)
@@ -105,6 +124,148 @@ for (const file of files) {
         `${file}: user Web runtime imported the administrator actor`,
       );
     }
+  }
+
+  if (
+    file === "apps/agent/src/v2/gateway/agent-composition-root.ts" &&
+    /\brouter\.register\s*\(/u.test(content)
+  ) {
+    failures.push(
+      `${file}: composition root must delegate business handler registration`,
+    );
+  }
+
+  if (
+    file === "apps/agent/src/v2/services/thread-service.ts" &&
+    (/#runtimeSettings|#resumedLeases|#settings\b/u.test(content) ||
+      !imports.some((specifier) =>
+        specifier.endsWith("/thread-session-coordinator.js"),
+      ))
+  ) {
+    failures.push(
+      `${file}: per-thread resume and permission consistency must stay in ThreadSessionCoordinator`,
+    );
+  }
+
+  if (
+    file === "apps/agent/src/v2/services/thread-session-coordinator.ts" &&
+    (imports.some((specifier) =>
+      /(?:client-factory|thread-projection|interaction-broker|gateway\/|queue-service)/u.test(
+        specifier,
+      ),
+    ) ||
+      /new Map\s*<\s*string\s*,\s*RuntimeThreadSettings/u.test(content))
+  ) {
+    failures.push(
+      `${file}: thread session consistency crossed into transport, presentation, or Queue orchestration`,
+    );
+  }
+
+  if (
+    file === "apps/web/src/v4/actors/thread-actor.ts" &&
+    /\bopenedThreadId\b/u.test(content)
+  ) {
+    failures.push(
+      `${file}: server-side thread ownership must be carried by generation-bound effects, not mutable shadow state`,
+    );
+  }
+
+  if (
+    file === "apps/web/src/v4/ui/pages/thread-settings-model.ts" &&
+    imports.some(
+      (specifier) =>
+        specifier === "react" ||
+        specifier.includes("runtime-context") ||
+        specifier.includes("ThreadSettingsPanel"),
+    )
+  ) {
+    failures.push(
+      `${file}: task settings conflict model must remain independent of React and page runtime state`,
+    );
+  }
+
+  if (
+    file === "apps/web/src/v4/ui/timeline/conversation-outline-model.ts" &&
+    imports.some(
+      (specifier) =>
+        specifier === "react" ||
+        /(?:gateway|runtime|actors\/thread-actor)/u.test(specifier),
+    )
+  ) {
+    failures.push(
+      `${file}: conversation outline must remain a pure projection of typed timeline items`,
+    );
+  }
+
+  if (
+    file.startsWith("apps/web/src/v4/ui/timeline/") &&
+    /\bMutationObserver\b/u.test(content)
+  ) {
+    failures.push(
+      `${file}: timeline navigation must derive entries from actor data, not DOM mutations`,
+    );
+  }
+
+  if (
+    file === "apps/agent/src/v2/adapters/direct-discovery.ts" &&
+    imports.some(
+      (specifier) =>
+        specifier === "@codex-everywhere/crypto" ||
+        /(?:gateway\/transport-contract|services\/|repositories\/|protocol\/v2)/u.test(
+          specifier,
+        ),
+    )
+  ) {
+    failures.push(
+      `${file}: public Host Discovery crossed into authenticated business state`,
+    );
+  }
+
+  if (
+    file === "apps/agent/src/v2/adapters/direct-transport.ts" &&
+    imports.some(
+      (specifier) =>
+        specifier.startsWith("@codex-everywhere/protocol") ||
+        specifier === "@codex-everywhere/crypto" ||
+        /(?:gateway\/transport-contract|services\/|repositories\/)/u.test(
+          specifier,
+        ),
+    )
+  ) {
+    failures.push(
+      `${file}: Direct listener crossed into Noise protocol or business state`,
+    );
+  }
+
+  if (
+    file === "apps/agent/src/v2/adapters/gateway-socket-connection.ts" &&
+    imports.some(
+      (specifier) =>
+        specifier === "node:http" ||
+        /(?:direct-discovery|services\/|repositories\/|composition-root)/u.test(
+          specifier,
+        ),
+    )
+  ) {
+    failures.push(
+      `${file}: encrypted socket lifecycle crossed into listener, discovery, or business state`,
+    );
+  }
+
+  if (
+    file === "apps/agent/src/v2/adapters/gateway-peer-authentication.ts" &&
+    imports.some(
+      (specifier) =>
+        specifier === "@codex-everywhere/crypto" ||
+        specifier.startsWith("@codex-everywhere/protocol/v2") ||
+        /(?:direct-discovery|gateway-socket-connection|services\/|repositories\/|composition-root)/u.test(
+          specifier,
+        ),
+    )
+  ) {
+    failures.push(
+      `${file}: peer authentication policy crossed into Noise, listener, or business state`,
+    );
   }
 
   if (file.startsWith("apps/agent/src/runtime/") && file.endsWith("-v2.ts")) {
@@ -165,6 +326,36 @@ for (const file of files) {
     )
   ) {
     failures.push(`${file}: removed Gateway v1 method leaked into v0.4 source`);
+  }
+}
+
+for (const file of uiStyleFiles) {
+  if (!file.endsWith(".module.css")) {
+    failures.push(`${file}: feature styles must use a colocated CSS Module`);
+  }
+}
+
+const globalStylePath = "apps/web/src/v4/styles/global.css";
+const globalStyles = readFileSync(
+  join(repositoryRoot, globalStylePath),
+  "utf8",
+);
+for (const selector of [
+  ".task-context-",
+  ".task-list-",
+  ".task-grid",
+  ".task-card",
+  ".task-dot",
+  ".task-workspace-",
+  ".settings-",
+  ".preference-form",
+  ".identity-actions",
+  ".password-form",
+]) {
+  if (globalStyles.includes(selector)) {
+    failures.push(
+      `${globalStylePath}: ${selector} is owned by a task feature CSS Module`,
+    );
   }
 }
 
@@ -269,6 +460,29 @@ function collectSourceFiles(root) {
         sourceExtensions.has(extname(entry.name)) &&
         !entry.name.includes(".test.")
       ) {
+        result.push(relative(repositoryRoot, absolute));
+      }
+    }
+  };
+  visit(absoluteRoot);
+  return result.sort();
+}
+
+function collectStyleFiles(root) {
+  const absoluteRoot = join(repositoryRoot, root);
+  try {
+    if (!statSync(absoluteRoot).isDirectory()) return [];
+  } catch {
+    return [];
+  }
+
+  const result = [];
+  const visit = (directory) => {
+    for (const entry of readdirSync(directory, { withFileTypes: true })) {
+      const absolute = join(directory, entry.name);
+      if (entry.isDirectory()) {
+        visit(absolute);
+      } else if (entry.isFile() && entry.name.endsWith(".css")) {
         result.push(relative(repositoryRoot, absolute));
       }
     }

@@ -105,8 +105,8 @@ describe("safe PWA updates", () => {
     );
     expect(activation).toContain("!retained.has(key)");
     expect(activation).not.toContain("key !== CACHE");
-    expect(entry).toContain('const PWA_ASSET_CACHE = "codex-everywhere-v52"');
+    expect(entry).toContain('const PWA_ASSET_CACHE = "codex-everywhere-v53"');
     expect(entry).toContain("event.ports[0]?.postMessage");
-    expect(worker).toContain('const CACHE = "codex-everywhere-v52"');
+    expect(worker).toContain('const CACHE = "codex-everywhere-v53"');
   });
 });

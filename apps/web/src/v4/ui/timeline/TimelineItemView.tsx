@@ -1,19 +1,37 @@
-import { lazy, Suspense } from "react";
-import type { OutputOf } from "@codex-everywhere/protocol/v2";
+import {
+  lazy,
+  Suspense,
+  useState,
+  type AnimationEventHandler,
+  type Ref,
+  type ReactNode,
+} from "react";
 
 import { Icon, type IconName } from "../components/Icon.js";
+import {
+  timelineItemText,
+  timelineMessageRole,
+  type TimelineData,
+  type TimelineItem,
+} from "./timeline-item-model.js";
 
 const MarkdownContent = lazy(() => import("./MarkdownContent.js"));
 
-type TimelineItem = OutputOf<"thread/open">["items"][number];
-type TimelineData = TimelineItem["data"];
-
-export function TimelineItemView(input: { readonly item: TimelineItem }) {
+export function TimelineItemView(input: {
+  readonly item: TimelineItem;
+  readonly className?: string | undefined;
+  readonly elementRef?: Ref<HTMLElement> | undefined;
+  readonly onAnimationEnd?: AnimationEventHandler<HTMLElement> | undefined;
+}) {
   const { item } = input;
-  const role = messageRole(item);
+  const role = timelineMessageRole(item);
   return (
     <article
-      className={`timeline-item type-${item.type} ${role === "user" ? "role-user" : item.type === "message" ? "role-assistant" : ""}`}
+      className={`timeline-item type-${item.type} ${role === "user" ? "role-user" : item.type === "message" ? "role-assistant" : ""}${input.className === undefined ? "" : ` ${input.className}`}`}
+      data-timeline-item-id={item.id}
+      ref={input.elementRef}
+      tabIndex={-1}
+      onAnimationEnd={input.onAnimationEnd}
     >
       <header>
         <span className="timeline-author">
@@ -37,7 +55,7 @@ export function TimelineItemView(input: { readonly item: TimelineItem }) {
 function TimelineItemContent(input: { readonly item: TimelineItem }) {
   const { item } = input;
   if (item.type === "message" || item.type === "plan") {
-    const text = timelineText(item.data);
+    const text = timelineItemText(item.data);
     return text === undefined ? (
       <GenericEvent data={item.data} />
     ) : (
@@ -68,10 +86,9 @@ function CommandEvent(input: { readonly data: TimelineData }) {
         title={command}
       />
       {output === undefined || output.length === 0 ? null : (
-        <details className="timeline-details">
-          <summary>查看命令输出</summary>
+        <DeferredDetails summary="查看命令输出">
           <pre>{output}</pre>
-        </details>
+        </DeferredDetails>
       )}
     </>
   );
@@ -97,14 +114,15 @@ function FileChangeEvent(input: { readonly data: TimelineData }) {
             return (
               <li key={`${path}:${index}`}>
                 <div>
-                  <code>{path}</code>
+                  <code tabIndex={0} title={path}>
+                    {path}
+                  </code>
                   <span>{fileChangeKind(change.kind)}</span>
                 </div>
                 {diff === undefined || diff.length === 0 ? null : (
-                  <details className="timeline-details">
-                    <summary>查看差异</summary>
+                  <DeferredDetails summary="查看差异">
                     <pre>{diff}</pre>
-                  </details>
+                  </DeferredDetails>
                 )}
               </li>
             );
@@ -136,12 +154,11 @@ function McpEvent(input: { readonly data: TimelineData }) {
         title={tool}
       />
       {detail === undefined || detail === null ? null : (
-        <details className="timeline-details">
-          <summary>
-            {error === undefined ? "查看调用详情" : "查看错误详情"}
-          </summary>
+        <DeferredDetails
+          summary={error === undefined ? "查看调用详情" : "查看错误详情"}
+        >
           <pre>{formatJson(detail)}</pre>
-        </details>
+        </DeferredDetails>
       )}
     </>
   );
@@ -182,9 +199,28 @@ function ErrorEvent(input: { readonly data: TimelineData }) {
 
 function GenericEvent(input: { readonly data: TimelineData }) {
   return (
-    <details className="timeline-details generic-event">
-      <summary>{genericEventLabel(input.data)}</summary>
+    <DeferredDetails
+      className="generic-event"
+      summary={genericEventLabel(input.data)}
+    >
       <pre>{formatJson(input.data)}</pre>
+    </DeferredDetails>
+  );
+}
+
+function DeferredDetails(input: {
+  readonly children: ReactNode;
+  readonly className?: string | undefined;
+  readonly summary: string;
+}) {
+  const [open, setOpen] = useState(false);
+  return (
+    <details
+      className={`timeline-details${input.className === undefined ? "" : ` ${input.className}`}`}
+      onToggle={(event) => setOpen(event.currentTarget.open)}
+    >
+      <summary>{input.summary}</summary>
+      {open ? input.children : null}
     </details>
   );
 }
@@ -218,7 +254,7 @@ function itemLabel(item: TimelineItem): string {
     const sourceType = stringValue(item.data.type);
     if (sourceType === "reasoning") return "推理摘要";
     if (sourceType === "hookPrompt") return "Hook";
-    return messageRole(item) === "user" ? "你" : "Codex";
+    return timelineMessageRole(item) === "user" ? "你" : "Codex";
   }
   const labels: Record<TimelineItem["type"], string> = {
     message: "Codex",
@@ -231,38 +267,6 @@ function itemLabel(item: TimelineItem): string {
     generic: "事件",
   };
   return labels[item.type];
-}
-
-function messageRole(item: TimelineItem): "user" | "assistant" {
-  return item.data.role === "user" || item.data.type === "userMessage"
-    ? "user"
-    : "assistant";
-}
-
-function timelineText(data: TimelineData): string | undefined {
-  const direct = stringValue(data.text);
-  if (direct !== undefined) return direct;
-  const content = objectArray(data.content);
-  const contentText = content
-    .map(
-      (part) =>
-        stringValue(part.text) ??
-        (part.type === "image" || part.type === "localImage"
-          ? "[图片]"
-          : part.type === "audio" || part.type === "localAudio"
-            ? "[音频]"
-            : part.type === "skill"
-              ? `[Skill: ${stringValue(part.name) ?? "未知"}]`
-              : undefined),
-    )
-    .filter((value): value is string => value !== undefined);
-  if (contentText.length > 0) return contentText.join("\n\n");
-  const summary = stringArray(data.summary);
-  if (summary.length > 0) return summary.join("\n\n");
-  const fragments = objectArray(data.fragments)
-    .map((fragment) => stringValue(fragment.text))
-    .filter((value): value is string => value !== undefined);
-  return fragments.length > 0 ? fragments.join("\n\n") : undefined;
 }
 
 function genericEventLabel(data: TimelineData): string {

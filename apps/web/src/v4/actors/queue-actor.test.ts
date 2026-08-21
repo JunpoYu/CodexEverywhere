@@ -26,6 +26,7 @@ describe("v0.4 queue actor", () => {
     scopes.push(scope);
     const actor = createQueueActor(scope, gateway);
 
+    actor.dispatch({ type: "LOADED", items: [] });
     actor.dispatch({ type: "ADD", threadId: "thread-1", text: "next task" });
     actor.dispatch({ type: "CHANGED", item: queueItem() });
 
@@ -34,10 +35,27 @@ describe("v0.4 queue actor", () => {
     await vi.waitFor(() => expect(actor.getSnapshot().status).toBe("ready"));
     expect(actor.getSnapshot().items).toEqual([queueItem()]);
   });
+
+  it("does not cancel an in-flight mutation when refresh is requested", async () => {
+    const gateway = new DelayedQueueGateway();
+    const scope = new Scope("queue-refresh-race-test");
+    scopes.push(scope);
+    const actor = createQueueActor(scope, gateway);
+
+    actor.dispatch({ type: "LOADED", items: [] });
+    actor.dispatch({ type: "ADD", threadId: "thread-1", text: "next task" });
+    actor.dispatch({ type: "LOAD" });
+
+    expect(gateway.signal?.aborted).toBe(false);
+    expect(gateway.methods).toEqual(["queue/add"]);
+    gateway.resolve();
+    await vi.waitFor(() => expect(actor.getSnapshot().status).toBe("ready"));
+  });
 });
 
 class DelayedQueueGateway implements GatewayPort {
   signal: AbortSignal | undefined;
+  readonly methods: string[] = [];
   #resolve: (() => void) | undefined;
 
   request<Method extends GatewayMethodName>(
@@ -45,6 +63,7 @@ class DelayedQueueGateway implements GatewayPort {
     _input: InputOf<Method>,
     options: RequestOptionsOf<Method>,
   ): Promise<OutputOf<Method>> {
+    this.methods.push(method);
     if (method !== "queue/add") {
       return Promise.reject(new Error(`Unexpected method: ${method}`));
     }

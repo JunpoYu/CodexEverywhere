@@ -21,7 +21,7 @@ CodexEverywhere（CE）是面向 Linux/HPC 的自托管 Codex Web/PWA 控制平�
 CE 不重新实现 AgentLoop。thread、turn、工具活动、审批请求和执行状态始终以官方 [Codex app-server](https://developers.openai.com/codex/app-server) 为唯一事实源；CE 只负责安全连接、Web 身份、移动端产品体验、持久 Queue 和 HPC 生命周期。
 
 > [!WARNING]
-> 当前代码线为 `v0.4.0-alpha.10` 架构重建版。Gateway API v2 和新状态库不兼容 v0.3；v0.4 采用全新初始化，不迁移 v0.3 CE 状态。`~/.codex`、Codex 登录和 app-server 任务不属于清理范围。`v0.3.0-alpha.14` 是已完成实机验证的最后维护基线，只用于观察窗内恢复已保留的旧 CE 目录。v0.4 Alpha tag/Prerelease 冻结待验收制品；当前 production 门槛先要求一个真实用户完成全新安装 staging。多用户并发、跨用户隔离和管理员控制面的实机验收延后，不阻塞当前单用户版本。
+> 当前代码线为 `v0.4.0-alpha.11` 架构重建版。Gateway API v2 和新状态库不兼容 v0.3；v0.4 采用全新初始化，不迁移 v0.3 CE 状态。`~/.codex`、Codex 登录和 app-server 任务不属于清理范围。`v0.3.0-alpha.14` 是已完成实机验证的最后维护基线，只用于观察窗内恢复已保留的旧 CE 目录。v0.4 Alpha tag/Prerelease 冻结待验收制品；当前 production 门槛先要求一个真实用户完成全新安装 staging。多用户并发、跨用户隔离和管理员控制面的实机验收延后，不阻塞当前单用户版本。
 
 > [!NOTE]
 > 这是独立的非官方开源项目，与 OpenAI 没有关联或背书。Codex 是 OpenAI 的产品。
@@ -41,10 +41,15 @@ CE 不重新实现 AgentLoop。thread、turn、工具活动、审批请求和执
 
 - 在 UI 中把 app-server `thread` 称为“任务”，协议和代码继续使用 `thread`。
 - 创建、打开、分页、重命名、归档、恢复和删除任务；按稳定 item/turn ID 合并权威历史与实时状态。
+- 进入任务只加载最近 50 个时间线 item 并自动定位到最新消息；更早历史由用户按 50 项显式加载，插入旧页时保持当前阅读锚点。同任务权威刷新会按稳定 item ID 更新最新窗口而不丢失已加载旧页。
+- 任务中心默认按更新时间汇总全部已授权工作区的任务，每张任务卡明确显示所属工作区，并可按工作区筛选；筛选范围同时作用于桌面端最近任务，但不会改变全局默认工作区。
 - 新建任务会明确显示当前全局 Sandbox 与审批默认值，并允许按字段只覆盖本次任务；未覆盖的字段由 Agent 在 Codex 接受创建时从同一 revision 的全局偏好解析。全局偏好更新与该创建边界共用短期协调锁，避免其他设备的并发修改被旧页面冻结或覆盖。全局默认设置使用显式保存和就近成功/失败反馈，修改不会追溯影响已有任务。
 - 结构化呈现消息、计划、命令、文件修改、MCP、subagent、错误和未知的 generic event。
 - 审批、用户问题和 MCP elicitation 固定显示在 composer 上方；多个设备同时回答时只接受第一个合法响应。
+- Composer 草稿按任务隔离并只保存在当前 Web 运行时内存；快速切换任务不会把 A 的未发送内容带到 B，发送失败或结果未知反馈也只显示在原任务。
 - 任务权限使用独立设置面板，按“有未保存更改、保存中、结果对账、已保存、失败”显示明确状态；只有宿主机返回新 revision 后才提示生效，并允许在同一面板连续修改。
+- 对话页不使用常驻右侧属性栏；模型、推理强度与权限在页头下方紧凑呈现，待处理交互就近显示在输入区上方，当前任务的 Queue 数量显示在输入区下方并可直接进入 Queue。
+- 对话大纲只从当前已加载的权威用户消息派生，桌面端使用覆盖式侧边抽屉、移动端使用底部 Sheet；大纲可继续加载更早历史并按稳定 item ID 跳转，不会为了生成目录自动读取完整任务。用户向上阅读时实时更新不会强制滚底，可通过“回到最新”恢复跟随。
 - 可中断 turn，也可复制 `ce tui` 接力命令；关闭浏览器不会停止活动 turn。
 
 ### 断线恢复与副作用安全
@@ -53,6 +58,7 @@ CE 不重新实现 AgentLoop。thread、turn、工具活动、审批请求和执
 - mutation 使用 UUID operation key。durable mutation 在宿主机记录 claim/result；transport 丢失以及 Agent 返回的 pending/unknown 状态都会使用原 operation key 查询 `mutation/status`，按 `missing | pending | completed | indeterminate` 对账，不靠历史猜测自动重发。
 - 一次性恢复码、恢复交接码和 resume token 永不进入 durable receipt；只在 Agent 的有界内存窗口中允许同 operation key 重放。
 - Queue 使用持久 claim 和 at-most-once 边界；跨越 app-server 副作用窗口后无法证明结果时显式进入 `indeterminate`，必须由用户确认重试或放弃。
+- Queue actor 在 mutation 与 `mutation/status` 对账期间保持单飞；通知和误触刷新不得取消正在跟踪的 operation key。结果未知时可显式刷新权威 Queue，之后再处理具体的 indeterminate item。
 
 ### 身份、初始化和临时模式
 
@@ -83,7 +89,8 @@ v0.4 借鉴通用 Harness 的 service seam、scope、registry 和事件驱动思
 - `Scope`：统一拥有子作用域、AbortSignal、timer、listener 和异步 disposer；
 - `TypedEventBus<EventMap>`：只传递 CE 控制面的瞬时事件；
 - `Actor<State, Event, Effect>`：纯 reducer 产生 effect，旧 generation 的异步结果不能覆盖新状态；
-- Agent 使用单一 composition root；Web 在身份边界只装配互斥的 User 或 Admin composition root，管理端不会实例化任务、Workspace 或 Queue actor。所有模块均为静态装配，不扫描目录、不动态执行第三方代码。
+- Agent 使用单一 composition root，但 composition root 只负责服务构造、生命周期和静态装配；Gateway 业务方法由独立 handler registry 按领域注册，`ThreadService` 只保留用例编排，`ThreadSessionCoordinator` 独占每任务 resume/权限一致性边界，Codex JSON 投影和设置转换分别维护；Direct listener、Relay connector、公开 Host Discovery 与单个 Noise Socket 生命周期采用独立 adapter seam，Relay 注册边界只接收 Host 公钥；
+- Web 在身份边界只装配互斥的 User 或 Admin composition root，管理端不会实例化任务、Workspace 或 Queue actor；任务 actor 的 open/close 目标由 generation-bound effect 显式携带，不保存浏览器影子 thread 所有权；功能组件使用就近 CSS Modules，全局样式只承载 design token、reset 和共享原语。所有模块均为静态装配，不扫描目录、不动态执行第三方代码。
 
 Noise handshake 与 Relay wire protocol 保持 version 1；加密后的 Gateway API 为 version 2；自定义 payload 通常为 `version: 1`。需要 fail-closed 演进的单个方法可提升自己的 payload version；当前 `thread/start` 使用 version 2，并强制携带偏好 revision，使缓存旧页面无法绕过创建权限保护。Host Profile、设备密钥和 pairing document 格式不变，因此升级不要求重新配对。新旧 Web/Agent 不匹配时明确返回升级错误，不静默降级。
 
@@ -164,7 +171,7 @@ ce tui /absolute/path/to/project --new
 | React PWA、移动/桌面响应式 Shell              | 已实现     |
 | Passkey、CE 密码、恢复码与临时登录            | 已实现     |
 | Codex 安装、更新和设备码登录                  | 已实现     |
-| 任务、历史分页、流式事件、审批和中断          | 已实现     |
+| 任务、增量历史、大纲、流式事件、审批和中断    | 已实现     |
 | Queue、Steer、结果未知保护                    | 已实现     |
 | Workspace、任务设置和 TUI 接力                | 已实现     |
 | Direct、无状态 E2EE Relay、多用户管理员控制面 | 已实现     |

@@ -3,11 +3,11 @@ import { GatewayRemoteError } from "@codex-everywhere/protocol/v2";
 import { describe, expect, it } from "vitest";
 
 import {
-  changedSettings,
+  changedThreadSettings,
   resolveThreadSettingsConflict,
   settingsFailureRecovery,
   threadSettingsDraft,
-} from "./ThreadSettingsPanel.js";
+} from "./thread-settings-model.js";
 
 type ThreadSettings = OutputOf<"thread/open">["settings"];
 
@@ -23,7 +23,7 @@ const current: ThreadSettings = {
 describe("ThreadSettingsPanel", () => {
   it("does not resend unchanged model and effort with a permission update", () => {
     expect(
-      changedSettings(current, {
+      changedThreadSettings(current, {
         model: "gpt-5.6-sol",
         effort: "max",
         sandbox: "danger-full-access",
@@ -37,7 +37,7 @@ describe("ThreadSettingsPanel", () => {
 
   it("returns an empty patch when the form has no changes", () => {
     expect(
-      changedSettings(current, {
+      changedThreadSettings(current, {
         model: " gpt-5.6-sol ",
         effort: "max",
         sandbox: "workspace-write",
@@ -60,7 +60,7 @@ describe("ThreadSettingsPanel", () => {
     });
 
     expect(draft.model).toBe("gpt-5.6-terra");
-    expect(changedSettings(latest, draft)).toEqual({
+    expect(changedThreadSettings(latest, draft)).toEqual({
       sandbox: "workspace-write",
       approvalPolicy: "on-request",
     });

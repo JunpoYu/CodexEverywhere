@@ -14,12 +14,14 @@ export function createScenarioConnection(kind: "user" | "admin"): {
       delaySecondPreferencesReadOnce: search.has(
         "scenarioPreferenceValidationDelay",
       ),
+      failSecondCodexVersionReadOnce: search.has("scenarioCodexVersionFailure"),
       failFirstPreferencesReadOnce: search.has(
         "scenarioTaskPrerequisiteFailure",
       ),
       failWorkspaceListAfterMutationOnce: search.has(
         "scenarioWorkspaceRefreshFailure",
       ),
+      longConversation: search.has("scenarioLongConversation"),
       preferencesAlreadyAppliedConflictOnce: search.has(
         "scenarioPreferencesAlreadyApplied",
       ),

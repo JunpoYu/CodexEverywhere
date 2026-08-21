@@ -78,6 +78,9 @@ export function createQueueActor(scope: Scope, gateway: GatewayPort) {
     reducer: (state, event) => {
       switch (event.type) {
         case "LOAD":
+          if (state.status === "mutating") {
+            return { state, preserveEffects: true };
+          }
           return {
             state: { ...state, status: "loading" },
             effects: [
@@ -92,6 +95,9 @@ export function createQueueActor(scope: Scope, gateway: GatewayPort) {
         case "LOADED":
           return { state: { status: "ready", items: event.items } };
         case "ADD": {
+          if (state.status !== "ready") {
+            return { state, preserveEffects: true };
+          }
           const operationKey = crypto.randomUUID();
           return {
             state: { ...state, status: "mutating", operationKey },
@@ -106,6 +112,9 @@ export function createQueueActor(scope: Scope, gateway: GatewayPort) {
           };
         }
         case "REMOVE": {
+          if (state.status !== "ready") {
+            return { state, preserveEffects: true };
+          }
           const operationKey = crypto.randomUUID();
           return {
             state: { ...state, status: "mutating", operationKey },
@@ -113,6 +122,9 @@ export function createQueueActor(scope: Scope, gateway: GatewayPort) {
           };
         }
         case "STEER": {
+          if (state.status !== "ready") {
+            return { state, preserveEffects: true };
+          }
           const operationKey = crypto.randomUUID();
           return {
             state: { ...state, status: "mutating", operationKey },
@@ -127,6 +139,9 @@ export function createQueueActor(scope: Scope, gateway: GatewayPort) {
           };
         }
         case "ACKNOWLEDGE": {
+          if (state.status !== "ready") {
+            return { state, preserveEffects: true };
+          }
           const operationKey = crypto.randomUUID();
           return {
             state: { ...state, status: "mutating", operationKey },
@@ -223,13 +238,21 @@ export function createQueueActor(scope: Scope, gateway: GatewayPort) {
             effects: [{ type: "FETCH" }],
           };
         case "FAILED":
-          return {
-            state: {
-              ...state,
-              status: event.unknown ? "indeterminate" : "ready",
-              error: event.message,
-            },
-          };
+          return event.unknown
+            ? {
+                state: {
+                  ...state,
+                  status: "indeterminate",
+                  error: event.message,
+                },
+              }
+            : {
+                state: {
+                  status: "ready",
+                  items: state.items,
+                  error: event.message,
+                },
+              };
       }
     },
     runEffect: async (effect, context) => {

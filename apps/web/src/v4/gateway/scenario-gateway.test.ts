@@ -189,6 +189,42 @@ describe("ScenarioGateway", () => {
     expect(events).toContain("setup/codex/install/progress");
     expect(events).toContain("setup/codex/login/completed");
   });
+
+  it("paginates a long conversation at stable item boundaries", async () => {
+    const gateway = new ScenarioGateway({ longConversation: true });
+    gateways.push(gateway);
+
+    const latest = await gateway.request(
+      "thread/open",
+      {
+        version: 1,
+        threadId: "thread-long-conversation",
+        historyLimit: 50,
+      },
+      queryOptions(),
+    );
+
+    expect(latest.items).toHaveLength(50);
+    expect(latest.items.at(-1)?.id).toBe("long-command-output");
+    expect(latest.hasEarlierHistory).toBe(true);
+    expect(latest.historyCursor).toBe("long-assistant-46");
+
+    const earlier = await gateway.request(
+      "thread/history",
+      {
+        version: 1,
+        threadId: "thread-long-conversation",
+        cursor: latest.historyCursor!,
+        limit: 50,
+      },
+      queryOptions(),
+    );
+
+    expect(earlier.items).toHaveLength(50);
+    expect(earlier.items.at(-1)?.id).toBe("long-user-46");
+    expect(earlier.nextCursor).toBe("long-assistant-21");
+    expect(earlier.hasMore).toBe(true);
+  });
 });
 
 function createGateway(): ScenarioGateway {

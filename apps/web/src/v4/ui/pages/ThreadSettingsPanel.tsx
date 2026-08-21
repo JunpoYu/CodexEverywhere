@@ -1,23 +1,23 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
-import {
-  GatewayRemoteError,
-  type InputOf,
-  type OutputOf,
-} from "@codex-everywhere/protocol/v2";
 
-import {
-  durableMutation,
-  MutationNeedsReviewError,
-} from "../../gateway/durable-mutation.js";
+import { durableMutation } from "../../gateway/durable-mutation.js";
 import { useActorState } from "../../actors/use-actor.js";
 import { Icon } from "../components/Icon.js";
 import { ModalDialog } from "../components/ModalDialog.js";
 import { StatusMessage } from "../components/StatusMessage.js";
 import { useRuntime } from "../runtime-context.js";
+import {
+  changedThreadSettings,
+  hasThreadSettingsChanges,
+  resolveThreadSettingsConflict,
+  settingsErrorMessage,
+  settingsFailureRecovery,
+  type ThreadSettings,
+  type ThreadSettingsDraft,
+  type ThreadSettingsPatch,
+} from "./thread-settings-model.js";
 import styles from "./ThreadSettingsPanel.module.css";
 
-type ThreadSettings = OutputOf<"thread/open">["settings"];
-type ThreadSettingsPatch = InputOf<"thread/settings/update">["patch"];
 type SaveState =
   | "idle"
   | "saving"
@@ -27,13 +27,6 @@ type SaveState =
   | "refreshing-conflict"
   | "refresh-failed"
   | "error";
-
-export interface ThreadSettingsDraft {
-  readonly model: string;
-  readonly effort: string;
-  readonly sandbox: string;
-  readonly approvalPolicy: string;
-}
 
 export function ThreadSettingsPanel(input: {
   readonly onClose: () => void;
@@ -53,9 +46,18 @@ export function ThreadSettingsPanel(input: {
   const [error, setError] = useState<string>();
   const [warning, setWarning] = useState<string>();
   const conflictPatch = useRef<ThreadSettingsPatch | undefined>(undefined);
+  const draftThreadId = useRef(input.threadId);
 
   useEffect(() => {
-    const pendingPatch = conflictPatch.current;
+    const threadChanged = draftThreadId.current !== input.threadId;
+    draftThreadId.current = input.threadId;
+    const pendingPatch = threadChanged ? undefined : conflictPatch.current;
+    if (threadChanged) {
+      conflictPatch.current = undefined;
+      setSaveState("idle");
+      setError(undefined);
+      setWarning(undefined);
+    }
     const resolution = resolveThreadSettingsConflict(
       input.settings,
       pendingPatch,
@@ -75,7 +77,7 @@ export function ThreadSettingsPanel(input: {
           : "其他设备或 TUI 已应用相同设置。CE 已同步宿主机最新值，无需再次保存。",
       );
     }
-  }, [input.settings.revision]);
+  }, [input.settings.revision, input.threadId]);
 
   useEffect(() => {
     if (
@@ -98,7 +100,7 @@ export function ThreadSettingsPanel(input: {
   ]);
 
   const draft = { model, effort, sandbox, approvalPolicy };
-  const patch = changedSettings(input.settings, draft);
+  const patch = changedThreadSettings(input.settings, draft);
   const dirty = Object.keys(patch).length > 0;
   const busy =
     saveState === "saving" ||
@@ -113,8 +115,8 @@ export function ThreadSettingsPanel(input: {
     setEffort(next.effort);
     setSandbox(next.sandbox);
     setApprovalPolicy(next.approvalPolicy);
-    const nextPatch = changedSettings(input.settings, next);
-    conflictPatch.current = hasSettingsChanges(nextPatch)
+    const nextPatch = changedThreadSettings(input.settings, next);
+    conflictPatch.current = hasThreadSettingsChanges(nextPatch)
       ? nextPatch
       : undefined;
     setSaveState("idle");
@@ -162,7 +164,7 @@ export function ThreadSettingsPanel(input: {
         return;
       }
       setSaveState("error");
-      setError(settingsError(reason));
+      setError(settingsErrorMessage(reason));
       if (recovery === "refresh") {
         runtime.thread.dispatch({ type: "OPEN", threadId: input.threadId });
       }
@@ -426,106 +428,4 @@ function Choice(input: {
       </span>
     </label>
   );
-}
-
-export function changedSettings(
-  current: ThreadSettings,
-  draft: ThreadSettingsDraft,
-): ThreadSettingsPatch {
-  const model = draft.model.trim();
-  return {
-    ...(model.length > 0 && model !== current.model ? { model } : {}),
-    ...(draft.effort.length > 0 && draft.effort !== current.effort
-      ? { effort: draft.effort }
-      : {}),
-    ...(isSandbox(draft.sandbox) && draft.sandbox !== current.sandbox
-      ? { sandbox: draft.sandbox }
-      : {}),
-    ...(isApprovalPolicy(draft.approvalPolicy) &&
-    draft.approvalPolicy !== current.approvalPolicy
-      ? { approvalPolicy: draft.approvalPolicy }
-      : {}),
-  };
-}
-
-export function threadSettingsDraft(
-  current: ThreadSettings,
-  patch: ThreadSettingsPatch = {},
-): ThreadSettingsDraft {
-  return {
-    model: patch.model ?? current.model ?? "",
-    effort: patch.effort ?? current.effort ?? "",
-    sandbox: patch.sandbox ?? current.sandbox ?? "",
-    approvalPolicy: patch.approvalPolicy ?? current.approvalPolicy ?? "",
-  };
-}
-
-export function resolveThreadSettingsConflict(
-  current: ThreadSettings,
-  patch: ThreadSettingsPatch | undefined,
-): {
-  readonly draft: ThreadSettingsDraft;
-  readonly remainingPatch: ThreadSettingsPatch | undefined;
-} {
-  const draft = threadSettingsDraft(current, patch);
-  if (patch === undefined) return { draft, remainingPatch: undefined };
-  const remainingPatch = changedSettings(current, draft);
-  return {
-    draft,
-    remainingPatch: hasSettingsChanges(remainingPatch)
-      ? remainingPatch
-      : undefined,
-  };
-}
-
-export function settingsFailureRecovery(
-  reason: unknown,
-): "none" | "refresh" | "rebase" {
-  if (
-    reason instanceof GatewayRemoteError &&
-    reason.code === "REVISION_CONFLICT"
-  ) {
-    return "rebase";
-  }
-  if (
-    reason instanceof MutationNeedsReviewError ||
-    (reason instanceof GatewayRemoteError &&
-      reason.code === "CODEX_REQUEST_REJECTED")
-  ) {
-    return "refresh";
-  }
-  return "none";
-}
-
-function settingsError(reason: unknown): string {
-  if (reason instanceof MutationNeedsReviewError) {
-    return "无法自动确认本次保存结果。CE 正在重新读取任务设置，请核对后再重试。";
-  }
-  if (
-    reason instanceof GatewayRemoteError &&
-    reason.code === "CODEX_REQUEST_REJECTED"
-  ) {
-    return "Codex 未接受这组设置。CE 已重新读取当前值；请调整组合后重试。";
-  }
-  return reason instanceof Error ? reason.message : "任务设置保存失败";
-}
-
-function hasSettingsChanges(patch: ThreadSettingsPatch): boolean {
-  return Object.keys(patch).length > 0;
-}
-
-function isSandbox(
-  value: string,
-): value is "read-only" | "workspace-write" | "danger-full-access" {
-  return (
-    value === "read-only" ||
-    value === "workspace-write" ||
-    value === "danger-full-access"
-  );
-}
-
-function isApprovalPolicy(
-  value: string,
-): value is "untrusted" | "on-request" | "never" {
-  return value === "untrusted" || value === "on-request" || value === "never";
 }
