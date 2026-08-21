@@ -2,77 +2,98 @@
   display: grid;
   min-height: 100vh;
   place-items: center;
-  padding: 32px 16px;
-  background:
-    radial-gradient(circle at 10% 0%, var(--accent-soft), transparent 34%),
-    var(--bg);
+  padding: 28px 16px;
+  background: var(--bg);
 }
 
 .card {
-  width: min(620px, 100%);
-  padding: 30px;
+  position: relative;
+  width: min(560px, 100%);
+  padding: 24px;
+  overflow: hidden;
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
-  background: color-mix(in srgb, var(--surface) 94%, transparent);
-  box-shadow: var(--shadow);
+  background: var(--surface);
+  box-shadow: var(--shadow-sm);
+}
+
+.card::before {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 3px;
+  background: var(--accent);
+  content: "";
 }
 
 .brand {
   display: flex;
   align-items: center;
-  gap: 11px;
+  gap: 9px;
 }
 
 .brand > div {
   display: flex;
   flex-direction: column;
-  line-height: 1.1;
+  line-height: 1.08;
+}
+
+.brand strong {
+  font-size: 13px;
+  font-weight: 760;
 }
 
 .brand small {
-  margin-top: 4px;
-  color: var(--text-muted);
-  font-size: 9px;
-  letter-spacing: 0.12em;
+  margin-top: 3px;
+  color: var(--text-subtle);
+  font-size: 8px;
+  font-weight: 700;
+  letter-spacing: 0.11em;
 }
 
 .brandMark {
   display: grid;
-  width: 38px;
-  height: 38px;
+  width: 29px;
+  height: 29px;
   place-items: center;
-  border-radius: 11px;
+  border-radius: 7px;
   background: var(--accent);
   color: var(--on-accent);
-  font-size: 13px;
+  font-size: 9px;
   font-weight: 850;
 }
 
 .heading {
-  margin: 34px 0 28px;
+  margin: 27px 0 22px;
 }
 
 .heading h1 {
+  max-width: 440px;
   margin: 0;
-  font-size: clamp(29px, 6vw, 44px);
-  letter-spacing: -0.045em;
+  font-size: clamp(26px, 5vw, 34px);
+  font-weight: 740;
+  letter-spacing: -0.04em;
+  line-height: 1.12;
 }
 
 .heading > p:last-child {
+  max-width: 470px;
+  margin: 9px 0 0;
   color: var(--text-muted);
-  line-height: 1.65;
+  font-size: 12px;
+  line-height: 1.6;
 }
 
 .savedHosts h2,
 .loginPanel h2,
 .pairForm h2 {
-  font-size: 16px;
+  margin: 0 0 9px;
+  font-size: 13px;
 }
 
 .savedHost {
   display: flex;
-  gap: 8px;
-  margin-bottom: 8px;
+  gap: 6px;
+  margin-bottom: 6px;
 }
 
 .savedHost > button:first-child {
@@ -80,31 +101,33 @@
   flex: 1;
   align-items: center;
   justify-content: space-between;
-  min-height: 54px;
+  min-height: 44px;
+  text-align: left;
 }
 
 .savedHost span {
   color: var(--text-muted);
-  font-size: 12px;
+  font-size: 10px;
 }
 
 .deleteButton {
   display: grid;
-  width: 44px;
+  width: 40px;
   padding: 0;
   place-items: center;
+  color: var(--text-muted);
 }
 
 .deleteButton svg {
-  width: 17px;
-  height: 17px;
+  width: 15px;
+  height: 15px;
 }
 
 .loginPanel {
   display: grid;
-  gap: 13px;
-  margin-top: 26px;
-  padding-top: 24px;
+  gap: 10px;
+  margin-top: 21px;
+  padding-top: 19px;
   border-top: 1px solid var(--border);
 }
 
@@ -112,9 +135,9 @@
 .pairForm label,
 .alternatives {
   display: grid;
-  gap: 6px;
+  gap: 5px;
   color: var(--text-muted);
-  font-size: 13px;
+  font-size: 11px;
   font-weight: 650;
 }
 
@@ -129,23 +152,23 @@
 .alternatives > summary,
 .connectionDetails > summary,
 .firstUse > summary {
-  cursor: pointer;
-  padding: 13px 14px;
+  padding: 10px 11px;
   color: var(--text-muted);
-  font-size: 13px;
-  font-weight: 700;
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 680;
 }
 
 .alternatives[open],
 .connectionDetails[open] {
   display: grid;
-  gap: 12px;
-  padding: 0 14px 14px;
+  gap: 10px;
+  padding: 0 11px 11px;
 }
 
 .alternatives[open] > summary,
 .connectionDetails[open] > summary {
-  margin: 0 -14px;
+  margin: 0 -11px;
 }
 
 .checkbox {
@@ -155,30 +178,31 @@
 
 .checkbox input {
   width: auto;
+  min-height: auto;
 }
 
 .persistenceNote {
   margin: 0;
-  color: var(--text-muted);
-  font-size: 12px;
+  color: var(--text-subtle);
+  font-size: 10px;
   line-height: 1.5;
 }
 
 .firstUse {
-  margin-top: 18px;
+  margin-top: 14px;
 }
 
 .pairForm {
   display: grid;
-  gap: 13px;
+  gap: 10px;
   margin: 0;
-  padding: 0 14px 14px;
+  padding: 0 11px 11px;
 }
 
 .pairForm p {
-  margin: -5px 0 2px;
+  margin: -3px 0 1px;
   color: var(--text-muted);
-  font-size: 14px;
+  font-size: 11px;
   line-height: 1.55;
 }
 
@@ -186,17 +210,30 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  margin-top: 18px;
+  margin-top: 14px;
   color: var(--text-muted);
-  font-size: 12px;
+  font-size: 10px;
 }
 
 .feedback {
-  margin-top: 16px;
+  margin-top: 13px;
 }
 
 @media (max-width: 760px) {
+  .page {
+    align-items: start;
+    padding: 12px 9px;
+  }
+
   .card {
-    padding: 22px 17px;
+    padding: 19px 15px;
+  }
+
+  .heading {
+    margin: 23px 0 18px;
+  }
+
+  .heading h1 {
+    font-size: 27px;
   }
 }

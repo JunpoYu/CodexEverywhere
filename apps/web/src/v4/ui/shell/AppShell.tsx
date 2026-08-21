@@ -26,7 +26,7 @@ export function AppShell(input: { readonly onDisconnect: () => void }) {
   const tasks = useActorState(runtime.tasks);
 
   return (
-    <div>
+    <div className={styles.shell}>
       <header className={styles.topbar}>
         <NavLink className={styles.brand ?? ""} to="/tasks">
           <span className={styles.brandMark}>CE</span>
@@ -42,8 +42,13 @@ export function AppShell(input: { readonly onDisconnect: () => void }) {
           <i />
           {connectionLabel(connection.status)}
         </div>
-        <button className="ghost" type="button" onClick={input.onDisconnect}>
-          切换宿主机
+        <button
+          className={`${styles.hostSwitch} ghost`}
+          type="button"
+          onClick={input.onDisconnect}
+        >
+          <Icon name="connection" />
+          <span>切换宿主机</span>
         </button>
       </header>
       {connection.error === undefined ||
@@ -101,6 +106,9 @@ export function AppShell(input: { readonly onDisconnect: () => void }) {
               </span>
             </NavLink>
           ))}
+          {tasks.status === "ready" && tasks.tasks.length === 0 ? (
+            <span className={styles.noRecentTasks}>暂无任务</span>
+          ) : null}
         </div>
       </aside>
       <div className={styles.content}>

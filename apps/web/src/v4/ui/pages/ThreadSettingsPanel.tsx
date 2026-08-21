@@ -37,6 +37,7 @@ export interface ThreadSettingsDraft {
 
 export function ThreadSettingsPanel(input: {
   readonly onClose: () => void;
+  readonly onSaved: (settings: ThreadSettings) => void;
   readonly threadId: string;
   readonly settings: ThreadSettings;
 }) {
@@ -151,6 +152,7 @@ export function ThreadSettingsPanel(input: {
       setApprovalPolicy(settings.approvalPolicy ?? "");
       conflictPatch.current = undefined;
       setSaveState("saved");
+      input.onSaved(settings);
     } catch (reason) {
       const recovery = settingsFailureRecovery(reason);
       if (recovery === "rebase") {

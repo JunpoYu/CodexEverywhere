@@ -34,7 +34,7 @@ schemaVersion: 1
 operation: inspect | fresh-install | patch-upgrade | clean-v0.4-cutover | rollback
 environment: staging | production
 repository: example/CodexEverywhere
-targetTag: v0.4.0-alpha.9
+targetTag: v0.4.0-alpha.10
 rollbackTag: v0.3.0-alpha.14
 approvedManifestSha256: <64 个小写十六进制字符>
 pwaOrigin: https://codex.example.com

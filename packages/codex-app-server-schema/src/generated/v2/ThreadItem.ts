@@ -8,6 +8,7 @@ import type { ReasoningEffort } from "../ReasoningEffort";
 import type { SleepItem } from "../SleepItem";
 import type { WebSearchItem } from "../WebSearchItem";
 import type { JsonValue } from "../serde_json/JsonValue";
+import type { AgentMessageDelivery } from "./AgentMessageDelivery";
 import type { CollabAgentState } from "./CollabAgentState";
 import type { CollabAgentTool } from "./CollabAgentTool";
 import type { CollabAgentToolCallStatus } from "./CollabAgentToolCallStatus";
@@ -41,6 +42,7 @@ export type ThreadItem =
       text: string;
       phase: MessagePhase | null;
       memoryCitation: MemoryCitation | null;
+      delivery: AgentMessageDelivery | null;
     }
   | { type: "plan"; id: string; text: string }
   | {
