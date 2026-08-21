@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useState, type FormEvent } from "react";
+import { useEffect, useState, type FormEvent } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 
 import { useActorState } from "../../actors/use-actor.js";
@@ -9,9 +9,8 @@ import { ModalDialog } from "../components/ModalDialog.js";
 import { StatusMessage } from "../components/StatusMessage.js";
 import { InteractionCard } from "../interactions/InteractionCard.js";
 import { useRuntime } from "../runtime-context.js";
+import { TimelineItemView } from "../timeline/TimelineItemView.js";
 import { ThreadSettingsPanel } from "./ThreadSettingsPanel.js";
-
-const MarkdownContent = lazy(() => import("../timeline/MarkdownContent.js"));
 
 export function TaskPage() {
   const { threadId = "" } = useParams();
@@ -19,6 +18,7 @@ export function TaskPage() {
   const navigate = useNavigate();
   const thread = useActorState(runtime.thread);
   const composer = useActorState(runtime.composer);
+  const queue = useActorState(runtime.queue);
   const [handoff, setHandoff] = useState<string>();
   const [actionError, setActionError] = useState<string>();
   const [renameTitle, setRenameTitle] = useState<string>();
@@ -26,8 +26,10 @@ export function TaskPage() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [handoffCopied, setHandoffCopied] = useState(false);
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
+  const [taskNotice, setTaskNotice] = useState<string>();
 
   useEffect(() => {
+    setTaskNotice(undefined);
     if (threadId.length > 0)
       runtime.thread.dispatch({ type: "OPEN", threadId });
     return () => runtime.thread.dispatch({ type: "CLOSE" });
@@ -155,6 +157,7 @@ export function TaskPage() {
   const snapshot = thread.snapshot;
   const taskActive =
     thread.status === "running" || thread.status === "waiting-input";
+  const taskQueue = queue.items.filter((item) => item.threadId === threadId);
 
   return (
     <main
@@ -166,213 +169,281 @@ export function TaskPage() {
         composer.status === "reconciling"
       }
     >
-      <header className="conversation-header">
-        <div className="conversation-title">
-          <p className="eyebrow">任务</p>
-          <h1>{snapshot.thread.title || "未命名任务"}</h1>
-          <span className={`state-pill ${thread.status}`}>
-            <i />
-            {threadStateLabel(thread.status)}
-            {thread.refreshing ? " · 正在同步" : ""}
-          </span>
-        </div>
-        <div className="conversation-actions">
-          {thread.status === "running" ? (
-            <button type="button" onClick={() => void interrupt()}>
-              <Icon name="stop" />
-              中断
-            </button>
-          ) : null}
-          <button type="button" onClick={() => void tuiHandoff()}>
-            <Icon name="terminal" />
-            转到 TUI
-          </button>
-          <button type="button" onClick={() => setSettingsOpen(true)}>
-            <Icon name="settings" />
-            任务设置
-          </button>
-          <details className="task-action-menu">
-            <summary aria-label="更多任务操作">
-              <Icon name="more" />
-            </summary>
-            <div>
-              <button
-                disabled={taskMutating}
-                type="button"
-                onClick={(event) => {
-                  event.currentTarget
-                    .closest("details")
-                    ?.removeAttribute("open");
-                  setRenameTitle(snapshot.thread.title);
-                }}
-              >
-                重命名
-              </button>
-              <button
-                disabled={taskMutating || thread.status === "running"}
-                type="button"
-                onClick={() => void archive(snapshot.thread.archived)}
-              >
-                <Icon name="archive" />
-                {snapshot.thread.archived ? "取消归档" : "归档"}
-              </button>
-              <button
-                className="danger-action"
-                disabled={taskMutating || thread.status === "running"}
-                type="button"
-                onClick={(event) => {
-                  event.currentTarget
-                    .closest("details")
-                    ?.removeAttribute("open");
-                  setActionError(undefined);
-                  setDeleteConfirmOpen(true);
-                }}
-              >
-                <Icon name="trash" />
-                删除
-              </button>
-            </div>
-          </details>
-        </div>
-      </header>
-      {actionError === undefined || deleteConfirmOpen ? null : (
-        <div className="conversation-notice">
-          <StatusMessage tone="error">{actionError}</StatusMessage>
-        </div>
-      )}
-      {renameTitle === undefined ? null : (
-        <form className="conversation-rename" onSubmit={rename}>
-          <input
-            aria-label="任务名称"
-            value={renameTitle}
-            onChange={(event) => setRenameTitle(event.target.value)}
-          />
-          <button type="button" onClick={() => setRenameTitle(undefined)}>
-            取消
-          </button>
-          <button className="primary" disabled={taskMutating} type="submit">
-            保存
-          </button>
-        </form>
-      )}
-      <section className="timeline" aria-live="polite">
-        {snapshot.hasEarlierHistory ? (
-          <button
-            disabled={thread.status === "syncing"}
-            type="button"
-            onClick={() => runtime.thread.dispatch({ type: "LOAD_EARLIER" })}
-          >
-            {thread.status === "syncing" ? "正在加载…" : "加载更早记录"}
-          </button>
-        ) : null}
-        {snapshot.items.map((item) => (
-          <article
-            className={`timeline-item type-${item.type} ${messageRoleClass(item.type, item.data.role)}`}
-            key={item.id}
-          >
-            <header>
-              <span>{itemLabel(item.type, item.data.role)}</span>
-              {item.createdAt ? (
-                <time>
-                  {new Date(item.createdAt).toLocaleTimeString("zh-CN")}
-                </time>
-              ) : null}
-            </header>
-            {typeof item.data.text === "string" ? (
-              <Suspense fallback={<pre>{item.data.text}</pre>}>
-                <MarkdownContent text={item.data.text} />
-              </Suspense>
-            ) : (
-              <pre className="structured-event">
-                {JSON.stringify(item.data, null, 2)}
-              </pre>
-            )}
-          </article>
-        ))}
-      </section>
-      <section className="composer-dock">
-        {snapshot.interactions.map((interaction) => (
-          <InteractionCard interaction={interaction} key={interaction.id} />
-        ))}
-        {composer.status === "manual-review" ? (
-          <div
-            className="outcome-warning mutation-outcome-pending"
-            role="alert"
-          >
-            <strong>发送结果需要人工确认</strong>
-            <span>{composer.error}</span>
-            <button
-              type="button"
-              onClick={() =>
-                runtime.composer.dispatch({ type: "ACKNOWLEDGE_MANUAL" })
-              }
-            >
-              我已核对，恢复草稿
-            </button>
+      <section className="conversation-main">
+        <header className="conversation-header">
+          <div className="conversation-title">
+            <p className="eyebrow">任务</p>
+            <h1>{snapshot.thread.title || "未命名任务"}</h1>
+            <span className={`state-pill ${thread.status}`}>
+              <i />
+              {threadStateLabel(thread.status)}
+              {thread.refreshing ? " · 正在同步" : ""}
+            </span>
           </div>
-        ) : null}
-        {composer.status === "idle" && composer.error !== undefined ? (
-          <StatusMessage tone="error">{composer.error}</StatusMessage>
-        ) : null}
-        <form className="composer" onSubmit={submit}>
-          <textarea
-            aria-label="给 Codex 的消息"
-            rows={3}
-            placeholder={
-              taskActive
-                ? "任务运行中；可添加到 Queue…"
-                : "继续告诉 Codex 要做什么…"
-            }
-            value={composer.draft}
-            onChange={(event) =>
-              runtime.composer.dispatch({
-                type: "DRAFT",
-                value: event.target.value,
-              })
-            }
-            onKeyDown={(event) => {
-              if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
-                event.preventDefault();
-                event.currentTarget.form?.requestSubmit();
-              }
-            }}
-          />
-          <div>
-            {taskActive ? (
-              <button
-                disabled={
-                  composer.status !== "idle" ||
-                  composer.draft.trim().length === 0
-                }
-                type="button"
-                onClick={() =>
-                  runtime.composer.dispatch({ type: "QUEUE", threadId })
-                }
-              >
-                加入 Queue
+          <div className="conversation-actions">
+            {thread.status === "running" ? (
+              <button type="button" onClick={() => void interrupt()}>
+                <Icon name="stop" />
+                中断
               </button>
             ) : null}
             <button
-              className="primary"
-              disabled={
-                composer.status !== "idle" ||
-                thread.status !== "idle" ||
-                composer.draft.trim().length === 0
-              }
-              type="submit"
+              aria-label="转到 TUI"
+              className="conversation-secondary-action"
+              title="转到 TUI"
+              type="button"
+              onClick={() => void tuiHandoff()}
             >
-              <Icon name="send" />
-              {composer.status === "submitting" ? "发送中…" : "发送"}
+              <Icon name="terminal" />
+              <span>转到 TUI</span>
             </button>
+            <button
+              aria-label="任务设置"
+              className="conversation-secondary-action"
+              title="任务设置"
+              type="button"
+              onClick={() => setSettingsOpen(true)}
+            >
+              <Icon name="settings" />
+              <span>任务设置</span>
+            </button>
+            <details className="task-action-menu">
+              <summary aria-label="更多任务操作">
+                <Icon name="more" />
+              </summary>
+              <div>
+                <button
+                  disabled={taskMutating}
+                  type="button"
+                  onClick={(event) => {
+                    event.currentTarget
+                      .closest("details")
+                      ?.removeAttribute("open");
+                    setRenameTitle(snapshot.thread.title);
+                  }}
+                >
+                  重命名
+                </button>
+                <button
+                  disabled={taskMutating || thread.status === "running"}
+                  type="button"
+                  onClick={() => void archive(snapshot.thread.archived)}
+                >
+                  <Icon name="archive" />
+                  {snapshot.thread.archived ? "取消归档" : "归档"}
+                </button>
+                <button
+                  className="danger-action"
+                  disabled={taskMutating || thread.status === "running"}
+                  type="button"
+                  onClick={(event) => {
+                    event.currentTarget
+                      .closest("details")
+                      ?.removeAttribute("open");
+                    setActionError(undefined);
+                    setDeleteConfirmOpen(true);
+                  }}
+                >
+                  <Icon name="trash" />
+                  删除
+                </button>
+              </div>
+            </details>
           </div>
-        </form>
-        <p className="composer-hint">按 Ctrl/⌘ + Enter 发送</p>
+        </header>
+        {actionError === undefined || deleteConfirmOpen ? null : (
+          <div className="conversation-notice">
+            <StatusMessage tone="error">{actionError}</StatusMessage>
+          </div>
+        )}
+        {taskNotice === undefined ? null : (
+          <div className="conversation-notice">
+            <StatusMessage tone="success">{taskNotice}</StatusMessage>
+          </div>
+        )}
+        {renameTitle === undefined ? null : (
+          <form className="conversation-rename" onSubmit={rename}>
+            <input
+              aria-label="任务名称"
+              value={renameTitle}
+              onChange={(event) => setRenameTitle(event.target.value)}
+            />
+            <button type="button" onClick={() => setRenameTitle(undefined)}>
+              取消
+            </button>
+            <button className="primary" disabled={taskMutating} type="submit">
+              保存
+            </button>
+          </form>
+        )}
+        <section className="timeline" aria-live="polite">
+          {snapshot.hasEarlierHistory ? (
+            <button
+              disabled={thread.status === "syncing"}
+              type="button"
+              onClick={() => runtime.thread.dispatch({ type: "LOAD_EARLIER" })}
+            >
+              {thread.status === "syncing" ? "正在加载…" : "加载更早记录"}
+            </button>
+          ) : null}
+          {snapshot.items.map((item) => (
+            <TimelineItemView item={item} key={item.id} />
+          ))}
+        </section>
+        <section className="composer-dock">
+          {snapshot.interactions.map((interaction) => (
+            <InteractionCard interaction={interaction} key={interaction.id} />
+          ))}
+          {composer.status === "manual-review" ? (
+            <div
+              className="outcome-warning mutation-outcome-pending"
+              role="alert"
+            >
+              <strong>发送结果需要人工确认</strong>
+              <span>{composer.error}</span>
+              <button
+                type="button"
+                onClick={() =>
+                  runtime.composer.dispatch({ type: "ACKNOWLEDGE_MANUAL" })
+                }
+              >
+                我已核对，恢复草稿
+              </button>
+            </div>
+          ) : null}
+          {composer.status === "idle" && composer.error !== undefined ? (
+            <StatusMessage tone="error">{composer.error}</StatusMessage>
+          ) : null}
+          <form className="composer" onSubmit={submit}>
+            <textarea
+              aria-label="给 Codex 的消息"
+              rows={3}
+              placeholder={
+                taskActive
+                  ? "任务运行中；可添加到 Queue…"
+                  : "继续告诉 Codex 要做什么…"
+              }
+              value={composer.draft}
+              onChange={(event) =>
+                runtime.composer.dispatch({
+                  type: "DRAFT",
+                  value: event.target.value,
+                })
+              }
+              onKeyDown={(event) => {
+                if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
+                  event.preventDefault();
+                  event.currentTarget.form?.requestSubmit();
+                }
+              }}
+            />
+            <div>
+              {taskActive ? (
+                <button
+                  disabled={
+                    composer.status !== "idle" ||
+                    composer.draft.trim().length === 0
+                  }
+                  type="button"
+                  onClick={() =>
+                    runtime.composer.dispatch({ type: "QUEUE", threadId })
+                  }
+                >
+                  加入 Queue
+                </button>
+              ) : null}
+              <button
+                className="primary"
+                disabled={
+                  composer.status !== "idle" ||
+                  thread.status !== "idle" ||
+                  composer.draft.trim().length === 0
+                }
+                type="submit"
+              >
+                <Icon name="send" />
+                {composer.status === "submitting" ? "发送中…" : "发送"}
+              </button>
+            </div>
+          </form>
+          <p className="composer-hint">按 Ctrl/⌘ + Enter 发送</p>
+        </section>
       </section>
+      <aside className="task-context" aria-label="任务上下文">
+        <section>
+          <header>
+            <span>运行上下文</span>
+            <span className={`state-pill ${thread.status}`}>
+              <i />
+              {threadStateLabel(thread.status)}
+            </span>
+          </header>
+          <dl>
+            <div>
+              <dt>模型</dt>
+              <dd>{snapshot.settings.model ?? "Codex 当前值"}</dd>
+            </div>
+            <div>
+              <dt>推理强度</dt>
+              <dd>{effortLabel(snapshot.settings.effort)}</dd>
+            </div>
+            <div>
+              <dt>设置 revision</dt>
+              <dd>{snapshot.settings.revision}</dd>
+            </div>
+          </dl>
+        </section>
+        <section>
+          <header>
+            <span>权限</span>
+            <button
+              className="context-action"
+              type="button"
+              onClick={() => setSettingsOpen(true)}
+            >
+              修改
+            </button>
+          </header>
+          <dl>
+            <div>
+              <dt>文件访问</dt>
+              <dd>{sandboxLabel(snapshot.settings.sandbox)}</dd>
+            </div>
+            <div>
+              <dt>审批策略</dt>
+              <dd>{approvalLabel(snapshot.settings.approvalPolicy)}</dd>
+            </div>
+          </dl>
+        </section>
+        <section>
+          <header>
+            <span>待处理</span>
+          </header>
+          <dl>
+            <div>
+              <dt>需要你的操作</dt>
+              <dd>{snapshot.interactions.length}</dd>
+            </div>
+            <div>
+              <dt>Queue</dt>
+              <dd>{taskQueue.length}</dd>
+            </div>
+          </dl>
+        </section>
+        <p className="context-footnote">
+          状态来自 Codex app-server；断线重连后会按权威快照恢复。
+        </p>
+      </aside>
       {settingsOpen ? (
         <ThreadSettingsPanel
           settings={snapshot.settings}
           threadId={threadId}
           onClose={() => setSettingsOpen(false)}
+          onSaved={(settings) =>
+            setTaskNotice(
+              `任务设置已保存 · ${sandboxLabel(settings.sandbox)} · ${approvalLabel(settings.approvalPolicy)}`,
+            )
+          }
         />
       ) : null}
       {deleteConfirmOpen ? (
@@ -454,25 +525,6 @@ export function TaskPage() {
   );
 }
 
-function itemLabel(type: string, role: unknown): string {
-  if (type === "message") return role === "user" ? "你" : "Codex";
-  const labels: Record<string, string> = {
-    plan: "计划",
-    command: "命令",
-    "file-change": "文件修改",
-    mcp: "MCP",
-    subagent: "Subagent",
-    error: "错误",
-    generic: "事件",
-  };
-  return labels[type] ?? type;
-}
-
-function messageRoleClass(type: string, role: unknown): string {
-  if (type !== "message") return "";
-  return role === "user" ? "role-user" : "role-assistant";
-}
-
 function threadStateLabel(status: string): string {
   const labels: Record<string, string> = {
     closed: "已关闭",
@@ -485,4 +537,30 @@ function threadStateLabel(status: string): string {
     failed: "出现错误",
   };
   return labels[status] ?? status;
+}
+
+function sandboxLabel(value: string | undefined): string {
+  if (value === "read-only") return "只读";
+  if (value === "workspace-write") return "工作区可写";
+  if (value === "danger-full-access") return "完全访问";
+  return "Codex 当前值";
+}
+
+function approvalLabel(value: string | undefined): string {
+  if (value === "untrusted") return "严格审批";
+  if (value === "on-request") return "按需询问";
+  if (value === "never") return "从不询问";
+  return "Codex 当前值";
+}
+
+function effortLabel(value: string | undefined): string {
+  const labels: Record<string, string> = {
+    low: "低",
+    medium: "中",
+    high: "高",
+    xhigh: "很高",
+    max: "最大",
+    ultra: "Ultra",
+  };
+  return value === undefined ? "Codex 当前值" : (labels[value] ?? value);
 }

@@ -6,6 +6,7 @@ import type { WebSearchMode } from "../WebSearchMode";
 import type { AskForApproval } from "./AskForApproval";
 import type { AutoReviewRequirements } from "./AutoReviewRequirements";
 import type { BrowserUseRequirements } from "./BrowserUseRequirements";
+import type { CliAuthCredentialsStoreMode } from "./CliAuthCredentialsStoreMode";
 import type { ComputerUseRequirements } from "./ComputerUseRequirements";
 import type { FeedbackRequirements } from "./FeedbackRequirements";
 import type { ModelsRequirements } from "./ModelsRequirements";
@@ -14,6 +15,8 @@ import type { SandboxMode } from "./SandboxMode";
 import type { WindowsSandboxSetupMode } from "./WindowsSandboxSetupMode";
 
 export type ConfigRequirements = {
+  cliAuthCredentialsStore: CliAuthCredentialsStoreMode | null;
+  chatgptBaseUrl: string | null;
   allowedApprovalPolicies: Array<AskForApproval> | null;
   allowedSandboxModes: Array<SandboxMode> | null;
   allowedWindowsSandboxImplementations: Array<WindowsSandboxSetupMode> | null;

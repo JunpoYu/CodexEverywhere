@@ -36,6 +36,7 @@ import type { ModelVerificationNotification } from "./v2/ModelVerificationNotifi
 import type { PlanDeltaNotification } from "./v2/PlanDeltaNotification";
 import type { ProcessExitedNotification } from "./v2/ProcessExitedNotification";
 import type { ProcessOutputDeltaNotification } from "./v2/ProcessOutputDeltaNotification";
+import type { ProjectChangedNotification } from "./v2/ProjectChangedNotification";
 import type { RawResponseCompletedNotification } from "./v2/RawResponseCompletedNotification";
 import type { RawResponseItemCompletedNotification } from "./v2/RawResponseItemCompletedNotification";
 import type { ReasoningSummaryPartAddedNotification } from "./v2/ReasoningSummaryPartAddedNotification";
@@ -44,6 +45,7 @@ import type { ReasoningTextDeltaNotification } from "./v2/ReasoningTextDeltaNoti
 import type { RemoteControlStatusChangedNotification } from "./v2/RemoteControlStatusChangedNotification";
 import type { ServerRequestResolvedNotification } from "./v2/ServerRequestResolvedNotification";
 import type { SkillsChangedNotification } from "./v2/SkillsChangedNotification";
+import type { StrictReviewRequiredNotification } from "./v2/StrictReviewRequiredNotification";
 import type { TerminalInteractionNotification } from "./v2/TerminalInteractionNotification";
 import type { ThreadArchivedNotification } from "./v2/ThreadArchivedNotification";
 import type { ThreadClosedNotification } from "./v2/ThreadClosedNotification";
@@ -51,6 +53,7 @@ import type { ThreadDeletedNotification } from "./v2/ThreadDeletedNotification";
 import type { ThreadGoalClearedNotification } from "./v2/ThreadGoalClearedNotification";
 import type { ThreadGoalUpdatedNotification } from "./v2/ThreadGoalUpdatedNotification";
 import type { ThreadNameUpdatedNotification } from "./v2/ThreadNameUpdatedNotification";
+import type { ThreadProjectUpdatedNotification } from "./v2/ThreadProjectUpdatedNotification";
 import type { ThreadQueueChangedNotification } from "./v2/ThreadQueueChangedNotification";
 import type { ThreadRealtimeClosedNotification } from "./v2/ThreadRealtimeClosedNotification";
 import type { ThreadRealtimeErrorNotification } from "./v2/ThreadRealtimeErrorNotification";
@@ -92,6 +95,11 @@ export type ServerNotification =
   | { method: "thread/goal/updated"; params: ThreadGoalUpdatedNotification }
   | { method: "thread/goal/cleared"; params: ThreadGoalClearedNotification }
   | { method: "thread/queue/changed"; params: ThreadQueueChangedNotification }
+  | { method: "project/changed"; params: ProjectChangedNotification }
+  | {
+      method: "thread/project/updated";
+      params: ThreadProjectUpdatedNotification;
+    }
   | {
       method: "thread/environment/connected";
       params: EnvironmentConnectionNotification;
@@ -122,6 +130,10 @@ export type ServerNotification =
   | {
       method: "item/autoApprovalReview/completed";
       params: ItemGuardianApprovalReviewCompletedNotification;
+    }
+  | {
+      method: "autoApprovalReview/strictReviewRequired";
+      params: StrictReviewRequiredNotification;
     }
   | { method: "item/completed"; params: ItemCompletedNotification }
   | {
