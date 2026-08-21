@@ -48,7 +48,10 @@ describe("thread timeline window model", () => {
       "latest",
     );
 
-    const merged = mergeAuthoritativeTimelineWindow(current, authoritative);
+    const merged = mergeAuthoritativeTimelineWindow(current, authoritative, [
+      "item-1",
+      "item-2",
+    ]);
 
     expect(merged.items.map((item) => item.id)).toEqual([
       "item-1",
@@ -59,6 +62,25 @@ describe("thread timeline window model", () => {
     ]);
     expect(merged.items[2]?.data.text).toBe("latest:item-3");
     expect(merged.historyCursor).toBe("cursor-1");
+  });
+
+  it("does not turn an aging latest-window item into retained history", () => {
+    const current = snapshot(
+      Array.from({ length: 50 }, (_, index) => `item-${index + 51}`),
+      { historyCursor: "cursor-51", hasEarlierHistory: true },
+    );
+    const authoritative = snapshot(
+      Array.from({ length: 50 }, (_, index) => `item-${index + 52}`),
+      { historyCursor: "cursor-52", hasEarlierHistory: true },
+    );
+
+    const merged = mergeAuthoritativeTimelineWindow(current, authoritative);
+
+    expect(merged.items.map((item) => item.id)).toEqual(
+      authoritative.items.map((item) => item.id),
+    );
+    expect(merged.items).toHaveLength(50);
+    expect(merged.historyCursor).toBe("cursor-51");
   });
 
   it("replaces a window with no stable overlap while retaining generic events", () => {

@@ -130,7 +130,7 @@ export class ThreadLease {
           this.#state = "running";
           this.#events.emit("state", this.#state);
         }
-        void this.#disposeIfIdle();
+        this.#runBackgroundCleanup(() => this.#disposeIfIdle());
       }),
     );
     this.#scope.defer(
@@ -140,7 +140,7 @@ export class ThreadLease {
           interactionId,
           reason,
         });
-        void this.#disposeIfIdle();
+        this.#runBackgroundCleanup(() => this.#disposeIfIdle());
       }),
     );
   }
@@ -324,7 +324,7 @@ export class ThreadLease {
       type: "lease/failed",
       reason: "app-server-client-closed",
     });
-    void this.#onDisposable(this);
+    this.#runBackgroundCleanup(() => this.#onDisposable(this));
   }
 
   #updateState(method: string, params: JsonValue): void {
@@ -350,7 +350,7 @@ export class ThreadLease {
       if (status === "systemError") this.#state = "failed";
     }
     if (this.#state !== previous) this.#events.emit("state", this.#state);
-    void this.#disposeIfIdle();
+    this.#runBackgroundCleanup(() => this.#disposeIfIdle());
   }
 
   async #disposeIfIdle(): Promise<void> {
@@ -362,6 +362,28 @@ export class ThreadLease {
     ) {
       await this.#onDisposable(this);
     }
+  }
+
+  /** Observe callback-triggered disposal without leaking a rejected promise. */
+  #runBackgroundCleanup(cleanup: () => void | Promise<void>): void {
+    void Promise.resolve()
+      .then(cleanup)
+      .then(undefined, () => {
+        this.#state = "failed";
+        try {
+          this.#events.emit("state", this.#state);
+        } catch {
+          // Cleanup containment must not create another unhandled rejection.
+        }
+        try {
+          this.#events.emit("event", {
+            type: "lease/failed",
+            reason: "lease-disposal-failed",
+          });
+        } catch {
+          // Event listeners cannot make background containment reject.
+        }
+      });
   }
 
   #assertOpen(): void {

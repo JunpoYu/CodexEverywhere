@@ -171,13 +171,13 @@ Agent composition root 只构造服务、绑定 Scope、连接控制面事件并
 - 当前 turn、thread 状态与 workspace path；
 - viewer/Queue 引用计数和子 scope。
 
-浏览器断线立即释放 viewer；活动 turn、待处理 interaction 或 Queue 引用继续保留 lease。无引用且 idle 时立即关闭。Gateway session 会合并同一连接内并发的 `thread/open`，并在 close 完成后才允许同任务重新 open；viewer Scope 的异步释放必须一直等待到底层 app-server client 关闭。Manager 把正在释放的 lease 计入容量，同一任务的旧 client 未完成关闭前不得创建新 client。最多保留 128 个 lease，达到上限时拒绝创建，不驱逐活动任务。
+浏览器断线立即释放 viewer；活动 turn、待处理 interaction 或 Queue 引用继续保留 lease。无引用且 idle 时立即关闭。Gateway session 会合并同一连接内并发的 `thread/open`，并在 close 完成后才允许同任务重新 open；viewer Scope 的异步释放必须一直等待到底层 app-server client 关闭。Manager 把正在释放的 lease 计入容量，同一任务的旧 client 未完成关闭前不得创建新 client。notification、interaction 和 client-close 等同步回调触发异步释放时，必须进入同一个受观察的后台清理入口；disposer 失败只能发出不含底层异常内容的控制面失败事件，不能形成未处理 Promise rejection。最多保留 128 个 lease，达到上限时拒绝创建，不驱逐活动任务。
 
 `thread/open` 总是返回 app-server 权威快照、历史边界、当前状态、thread settings 和未解决 interaction。多个设备回答同一 interaction 时，broker 原子取出待处理项，第一个合法回答成功，其余设备收到 `interaction/resolved` 或明确失败。
 
 Web Thread actor 不维护独立的 `openedThreadId` 影子变量；切换和关闭目标由 reducer 写入 generation-bound effect。旧 `thread/open` 即使在取消后才返回，也不能改写后续 close 目标或把旧任务重新暴露为当前任务。Composer actor 只保存按 thread ID 隔离的内存草稿及 mutation 对账状态；草稿不是会话事实源，不能跨任务复用，失败反馈也必须归属到原任务。
 
-Web 首开任务和每次向前分页都只请求 50 个 timeline item。历史加载使用独立的 `historyStatus`，不能把任务运行状态改成 `syncing` 或阻断 Composer。历史请求或权威刷新期间到达的同任务刷新只合并为一次尾随读取，不能取消当前分页，也不能丢失刷新。最新窗口与已加载历史只按稳定 item ID 的重叠边界合并：重叠点之前的显式旧页保留，重叠区域以最新权威项为准；完全无重叠时视为窗口漂移并替换为最新页，不能按正文猜测。收到明确的 `thread/compacted` notification 后，即使新旧窗口仍有稳定 ID 重叠，也必须在下一次权威读取时丢弃压缩前的历史前缀。
+Web 首开任务和每次向前分页都只请求 50 个 timeline item。历史加载使用独立的 `historyStatus`，不能把任务运行状态改成 `syncing` 或阻断 Composer。历史请求或权威刷新期间到达的同任务刷新只合并为一次尾随读取，不能取消当前分页，也不能丢失刷新。Thread actor 只记录用户显式向前分页时新增的稳定 item ID，不能把最新 50 项窗口自然老化掉的头部误认为已加载历史；权威刷新只保留这组显式 ID，重叠区域以最新权威项为准，因此未分页时浏览器 DOM 保持有界。完全无重叠时视为窗口漂移并替换为最新页，不能按正文猜测。收到明确的 `thread/compacted` notification 后，即使新旧窗口仍有稳定 ID 重叠，也必须在下一次权威读取时丢弃压缩前的历史前缀。
 
 `TimelineViewport` 只拥有页面级几何状态：首次进入滚底、接近底部时跟随最新、用户上滚后的 detached 状态、旧页插入锚点和大纲跳转。它不持久化消息，不解析 Gateway，也不成为会话事实源。异步 Markdown 布局变化只在 following 状态维持底部；detached 状态显示“回到最新”且不得抢夺阅读位置。命令输出、diff、MCP 结果和 generic payload 在原生 `details` 打开前不挂载大型 DOM。
 

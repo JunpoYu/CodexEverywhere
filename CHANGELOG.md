@@ -24,9 +24,10 @@
 - 文件修改事件中的超长路径现在限制在卡片内部并可独立横向滚动，不再撑破时间线和对话页面边框；完整路径仍可通过悬停标题和键盘聚焦读取。
 - 修复并发或快速切换任务时可能重复 `thread/open`、对同一 lease 重复 `thread/resume`、旧异步结果关闭新任务，或在旧 app-server client 尚未释放时创建同任务新 client 的竞态；lease 释放现在等待底层 client 完整关闭，且正在释放的 lease 继续计入容量。
 - Composer 草稿、发送失败和结果未知状态按 thread ID 隔离；切换任务不会串用草稿，迟到的重命名、归档、删除、TUI 接力或中断结果也不会覆盖当前页面反馈。
-- Queue mutation 与 `mutation/status` 对账保持单飞，刷新和实时通知不会取消正在跟踪的 operation key；mutation 或结果未知期间禁用冲突的行级操作。
+- Queue mutation 与 `mutation/status` 对账保持单飞，并区分仍在轮询的“对账中”和需要人工确认的终态“结果未知”；刷新和实时通知不会取消正在跟踪的 operation key，只有终态才重新开放人工刷新与处置。
 - Thread actor 会显式处理 lease failure，并把 open/close 目标绑定到 effect generation；设置面板在 revision 冲突后的 patch 重放与失败恢复不再依赖页面组件中的分散分支。
-- 修复进入任务后停留在当前历史窗口顶部、加载更早记录导致 Composer 短暂不可用、同任务刷新丢失已加载旧页，以及流式更新强制打断旧消息阅读的问题；时间线现在首开自动滚底，旧页插入保持可见锚点，用户上滚后可显式“回到最新”。并发刷新会合并为一次尾随权威读取，明确的 `thread/compacted` 通知会清除压缩前历史，即使新旧窗口仍有 item ID 重叠也不会保留陈旧前缀。
+- 修复进入任务后停留在当前历史窗口顶部、加载更早记录导致 Composer 短暂不可用、同任务刷新丢失已加载旧页，以及流式更新强制打断旧消息阅读的问题；时间线现在首开自动滚底，旧页插入保持可见锚点，用户上滚后可显式“回到最新”。只有用户显式分页引入的稳定 item ID 才能跨最新窗口刷新保留，因此滑动窗口持续前进也不会让 DOM 无界增长；并发刷新会合并为一次尾随权威读取，明确的 `thread/compacted` 通知会清除压缩前历史，即使新旧窗口仍有 item ID 重叠也不会保留陈旧前缀。
+- lease 的 notification、interaction 和 client-close 回调统一通过受观察的后台清理入口释放资源；底层 disposer 即使失败也只产生去敏的 `lease-disposal-failed` 控制面事件，不再泄漏为 Node.js 未处理 Promise rejection。
 - 推进 PWA 缓存代次，确保已安装的 alpha.10 页面能够发现并安全激活 alpha.11 Web 版本。
 
 ## [0.4.0-alpha.10] - 2026-08-21

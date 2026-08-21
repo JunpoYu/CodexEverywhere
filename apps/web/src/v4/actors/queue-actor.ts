@@ -13,7 +13,8 @@ import {
 type QueueItem = OutputOf<"queue/list">["items"][number];
 
 export interface QueueActorState {
-  readonly status: "loading" | "ready" | "mutating" | "indeterminate";
+  readonly status:
+    "loading" | "ready" | "mutating" | "reconciling" | "indeterminate";
   readonly items: readonly QueueItem[];
   readonly operationKey?: string;
   readonly error?: string;
@@ -78,7 +79,7 @@ export function createQueueActor(scope: Scope, gateway: GatewayPort) {
     reducer: (state, event) => {
       switch (event.type) {
         case "LOAD":
-          if (state.status === "mutating") {
+          if (state.status === "mutating" || state.status === "reconciling") {
             return { state, preserveEffects: true };
           }
           return {
@@ -156,49 +157,21 @@ export function createQueueActor(scope: Scope, gateway: GatewayPort) {
           };
         }
         case "CHANGED":
-          return state.status === "indeterminate" &&
-            state.operationKey !== undefined
-            ? {
-                state: {
-                  ...state,
-                  items: upsert(state.items, event.item),
-                },
-                effects: [
-                  {
-                    type: "STATUS" as const,
-                    operationKey: state.operationKey,
-                  },
-                ],
-              }
-            : {
-                state: {
-                  ...state,
-                  items: upsert(state.items, event.item),
-                },
-                preserveEffects: true,
-              };
+          return {
+            state: {
+              ...state,
+              items: upsert(state.items, event.item),
+            },
+            preserveEffects: true,
+          };
         case "REMOVED":
-          return state.status === "indeterminate" &&
-            state.operationKey !== undefined
-            ? {
-                state: {
-                  ...state,
-                  items: state.items.filter((item) => item.id !== event.itemId),
-                },
-                effects: [
-                  {
-                    type: "STATUS" as const,
-                    operationKey: state.operationKey,
-                  },
-                ],
-              }
-            : {
-                state: {
-                  ...state,
-                  items: state.items.filter((item) => item.id !== event.itemId),
-                },
-                preserveEffects: true,
-              };
+          return {
+            state: {
+              ...state,
+              items: state.items.filter((item) => item.id !== event.itemId),
+            },
+            preserveEffects: true,
+          };
         case "MUTATED":
           return {
             state: {
@@ -217,7 +190,7 @@ export function createQueueActor(scope: Scope, gateway: GatewayPort) {
           return {
             state: {
               ...state,
-              status: "indeterminate",
+              status: "reconciling",
               operationKey: event.operationKey,
               error: "Queue 操作结果未知，正在向宿主机对账。",
             },
@@ -227,7 +200,7 @@ export function createQueueActor(scope: Scope, gateway: GatewayPort) {
           return {
             state: {
               ...state,
-              status: "indeterminate",
+              status: "reconciling",
               operationKey: event.operationKey,
             },
             effects: [{ type: "STATUS", operationKey: event.operationKey }],

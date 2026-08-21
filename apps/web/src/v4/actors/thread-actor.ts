@@ -32,6 +32,8 @@ export interface ThreadActorState {
     | "failed";
   readonly threadId?: string;
   readonly snapshot?: Snapshot;
+  /** Stable IDs introduced only by explicit backward pagination. */
+  readonly loadedHistoryItemIds: readonly string[];
   readonly refreshing?: boolean;
   readonly historyStatus: "idle" | "loading" | "failed";
   readonly historyError?: string | undefined;
@@ -76,7 +78,11 @@ export function createThreadActor(scope: Scope, gateway: GatewayPort) {
   return new Actor<ThreadActorState, Event, Effect>({
     name: "thread",
     scope,
-    initialState: { status: "closed", historyStatus: "idle" },
+    initialState: {
+      status: "closed",
+      historyStatus: "idle",
+      loadedHistoryItemIds: [],
+    },
     reducer: (state, event) => {
       switch (event.type) {
         case "OPEN":
@@ -110,6 +116,7 @@ export function createThreadActor(scope: Scope, gateway: GatewayPort) {
               status: "opening",
               threadId: event.threadId,
               historyStatus: "idle",
+              loadedHistoryItemIds: [],
             },
             effects: [
               {
@@ -125,18 +132,20 @@ export function createThreadActor(scope: Scope, gateway: GatewayPort) {
         case "OPENED": {
           const refreshAgain = state.refreshPending === true;
           const replaceHistory = state.replaceHistoryOnRefresh === true;
+          const snapshot = replaceHistory
+            ? replaceAuthoritativeTimelineWindow(state.snapshot, event.snapshot)
+            : mergeAuthoritativeTimelineWindow(
+                state.snapshot,
+                event.snapshot,
+                state.loadedHistoryItemIds,
+              );
           const nextState: ThreadActorState = {
             status: event.snapshot.state,
             threadId: event.snapshot.thread.id,
-            snapshot: replaceHistory
-              ? replaceAuthoritativeTimelineWindow(
-                  state.snapshot,
-                  event.snapshot,
-                )
-              : mergeAuthoritativeTimelineWindow(
-                  state.snapshot,
-                  event.snapshot,
-                ),
+            snapshot,
+            loadedHistoryItemIds: replaceHistory
+              ? []
+              : retainPresentIds(state.loadedHistoryItemIds, snapshot),
             refreshing: refreshAgain,
             historyStatus: state.historyStatus,
             refreshPending: false,
@@ -201,6 +210,11 @@ export function createThreadActor(scope: Scope, gateway: GatewayPort) {
               state.snapshot,
               event.page,
             ),
+            loadedHistoryItemIds: appendNewHistoryIds(
+              state.loadedHistoryItemIds,
+              state.snapshot,
+              event.page,
+            ),
             historyStatus: "idle",
             historyError: undefined,
             refreshPending: false,
@@ -247,7 +261,11 @@ export function createThreadActor(scope: Scope, gateway: GatewayPort) {
           };
         case "CLOSE":
           return {
-            state: { status: "closed", historyStatus: "idle" },
+            state: {
+              status: "closed",
+              historyStatus: "idle",
+              loadedHistoryItemIds: [],
+            },
             effects: [
               {
                 type: "CLOSE",
@@ -329,6 +347,31 @@ export function createThreadActor(scope: Scope, gateway: GatewayPort) {
     },
     onEffectError: () => undefined,
   });
+}
+
+function appendNewHistoryIds(
+  loadedHistoryItemIds: readonly string[],
+  current: Snapshot,
+  page: OutputOf<"thread/history">,
+): readonly string[] {
+  const currentIds = new Set(current.items.map((item) => item.id));
+  const loadedIds = new Set(loadedHistoryItemIds);
+  const result = [...loadedHistoryItemIds];
+  for (const item of page.items) {
+    if (currentIds.has(item.id) || loadedIds.has(item.id)) continue;
+    loadedIds.add(item.id);
+    result.push(item.id);
+  }
+  return result;
+}
+
+function retainPresentIds(
+  loadedHistoryItemIds: readonly string[],
+  snapshot: Snapshot,
+): readonly string[] {
+  if (loadedHistoryItemIds.length === 0) return loadedHistoryItemIds;
+  const presentIds = new Set(snapshot.items.map((item) => item.id));
+  return loadedHistoryItemIds.filter((id) => presentIds.has(id));
 }
 
 function applyGatewayEvent(

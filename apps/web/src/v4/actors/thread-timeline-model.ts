@@ -30,17 +30,20 @@ export function prependAuthoritativeHistoryPage(
 export function mergeAuthoritativeTimelineWindow(
   current: Snapshot | undefined,
   authoritative: Snapshot,
+  loadedHistoryItemIds: readonly string[] = [],
 ): Snapshot {
   if (current === undefined || current.thread.id !== authoritative.thread.id) {
     return authoritative;
   }
 
-  const overlap = firstOverlap(current.items, authoritative.items);
-  if (overlap === undefined) {
+  if (!hasOverlap(current.items, authoritative.items)) {
     return replaceAuthoritativeTimelineWindow(current, authoritative);
   }
 
-  const retainedEarlier = current.items.slice(0, overlap.currentIndex);
+  const loadedHistory = new Set(loadedHistoryItemIds);
+  const retainedEarlier = current.items.filter((item) =>
+    loadedHistory.has(item.id),
+  );
   const transient = current.items.filter(isTransientGenericItem);
   const items = mergeTimelinePages(retainedEarlier, [
     ...authoritative.items,
@@ -87,18 +90,15 @@ export function mergeTimelinePages(
   ];
 }
 
-function firstOverlap(
+function hasOverlap(
   current: readonly TimelineItem[],
   authoritative: readonly TimelineItem[],
-): { readonly currentIndex: number } | undefined {
-  const currentIndex = new Map(
-    current.map((item, index) => [item.id, index] as const),
-  );
+): boolean {
+  const currentIds = new Set(current.map((item) => item.id));
   for (const item of authoritative) {
-    const index = currentIndex.get(item.id);
-    if (index !== undefined) return { currentIndex: index };
+    if (currentIds.has(item.id)) return true;
   }
-  return undefined;
+  return false;
 }
 
 function deduplicateKeepingLast(

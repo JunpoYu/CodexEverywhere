@@ -86,6 +86,37 @@ describe("ThreadLeaseManager", () => {
     expect(client.closed).toBe(true);
   });
 
+  it("contains and reports a rejected background lease disposal", async () => {
+    const { manager, factory } = createManager();
+    const handle = await manager.acquire("thread-1", {
+      kind: "viewer",
+      id: "phone",
+    });
+    const events: ThreadLeaseEvent[] = [];
+    handle.lease.onEvent((event) => events.push(event));
+    const client = factory.clients[0]!;
+    client.notification("turn/started", {
+      threadId: "thread-1",
+      turn: { id: "turn-1", status: "inProgress" },
+    });
+    await handle.release();
+    client.rejectClose();
+
+    client.notification("turn/completed", {
+      threadId: "thread-1",
+      turn: { id: "turn-1", status: "completed" },
+    });
+
+    await eventually(() =>
+      events.some(
+        (event) =>
+          event.type === "lease/failed" &&
+          event.reason === "lease-disposal-failed",
+      ),
+    );
+    expect(manager.size).toBe(0);
+  });
+
   it("waits for an idle lease to finish closing before recreating it", async () => {
     const { manager, factory } = createManager();
     const handle = await manager.acquire("thread-1", {
@@ -336,6 +367,7 @@ class FakeCodexClient implements CodexClient {
   closed = false;
   closeRequested = false;
   #closeGate: Promise<void> = Promise.resolve();
+  #closeError: Error | undefined;
 
   request<Result = unknown>(
     _method: string,
@@ -369,9 +401,14 @@ class FakeCodexClient implements CodexClient {
     return () => allow?.();
   }
 
+  rejectClose(): void {
+    this.#closeError = new Error("synthetic client close failure");
+  }
+
   async close(): Promise<void> {
     this.closeRequested = true;
     await this.#closeGate;
+    if (this.#closeError !== undefined) throw this.#closeError;
     this.closed = true;
     for (const listener of [...this.#closeListeners]) listener();
   }
