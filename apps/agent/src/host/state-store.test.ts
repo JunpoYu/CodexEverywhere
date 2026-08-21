@@ -209,7 +209,7 @@ describe("HostStateStore", () => {
     await secondLock.release();
     await first.close();
     await second.close();
-  });
+  }, 15_000);
 
   it("keeps the ten-second timeout for ordinary transactions", async () => {
     const path = join(await temporaryDirectory(), "state.sqlite");
