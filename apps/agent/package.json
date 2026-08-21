@@ -25,11 +25,11 @@
     "@codex-everywhere/kernel": "workspace:*",
     "@codex-everywhere/protocol": "workspace:*",
     "@serenity-kit/opaque": "1.1.0",
-    "@simplewebauthn/server": "13.2.2",
-    "ajv": "8.17.1",
+    "@simplewebauthn/server": "13.3.2",
+    "ajv": "8.20.0",
     "commander": "^14.0.0",
-    "sql.js": "1.14.1",
-    "ws": "8.21.1"
+    "sql.js": "1.14.2",
+    "ws": "8.21.3"
   },
   "devDependencies": {
     "@types/sql.js": "^1.4.11",
