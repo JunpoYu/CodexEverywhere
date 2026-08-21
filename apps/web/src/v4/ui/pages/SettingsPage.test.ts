@@ -6,7 +6,7 @@ import {
   preferenceDraftFrom,
   rebasePreferenceDraft,
   resolvePreferenceConflict,
-} from "./SettingsPage.js";
+} from "./settings/preferences-model.js";
 
 type Preferences = OutputOf<"preferences/read">;
 

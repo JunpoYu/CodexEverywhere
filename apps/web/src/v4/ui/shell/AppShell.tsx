@@ -84,8 +84,23 @@ export function AppShell(input: { readonly onDisconnect: () => void }) {
         </nav>
         <div className={styles.recentTasks}>
           <div className={styles.recentHeading}>
-            <span>最近任务</span>
-            <NavLink to="/tasks">全部</NavLink>
+            <span className={styles.recentLabel}>
+              {tasks.archived ? "已归档任务" : "最近任务"}
+              {tasks.workspaceLabel === undefined ? null : (
+                <small
+                  className={styles.recentScope}
+                  title={tasks.workspaceLabel}
+                >
+                  · {tasks.workspaceLabel}
+                </small>
+              )}
+            </span>
+            <NavLink
+              to="/tasks"
+              onClick={() => runtime.tasks.dispatch({ type: "LOAD" })}
+            >
+              全部
+            </NavLink>
           </div>
           {tasks.tasks.slice(0, 12).map((task) => (
             <NavLink

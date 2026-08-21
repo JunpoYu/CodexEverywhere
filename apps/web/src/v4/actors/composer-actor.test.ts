@@ -10,7 +10,7 @@ import {
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { GatewayPort } from "../gateway/gateway-port.js";
-import { createComposerActor } from "./composer-actor.js";
+import { composerDraftFor, createComposerActor } from "./composer-actor.js";
 
 const scopes: Scope[] = [];
 
@@ -27,7 +27,11 @@ describe("v0.4 composer actor", () => {
     scopes.push(scope);
     const actor = createComposerActor(scope, gateway);
 
-    actor.dispatch({ type: "DRAFT", value: "do the work" });
+    actor.dispatch({
+      type: "DRAFT",
+      threadId: "thread-1",
+      value: "do the work",
+    });
     actor.dispatch({ type: "SUBMIT", threadId: "thread-1" });
 
     await vi.waitFor(() => expect(actor.getSnapshot().status).toBe("idle"));
@@ -43,14 +47,20 @@ describe("v0.4 composer actor", () => {
     scopes.push(scope);
     const actor = createComposerActor(scope, gateway);
 
-    actor.dispatch({ type: "DRAFT", value: "keep this prompt" });
+    actor.dispatch({
+      type: "DRAFT",
+      threadId: "thread-1",
+      value: "keep this prompt",
+    });
     actor.dispatch({ type: "SUBMIT", threadId: "thread-1" });
 
     await vi.waitFor(() => expect(actor.getSnapshot().status).toBe("idle"));
     expect(actor.getSnapshot()).toMatchObject({
-      draft: "keep this prompt",
       error: "Task is not idle",
     });
+    expect(composerDraftFor(actor.getSnapshot(), "thread-1")).toBe(
+      "keep this prompt",
+    );
   });
 
   it("requires explicit acknowledgement before restoring an unknown draft", async () => {
@@ -59,18 +69,24 @@ describe("v0.4 composer actor", () => {
     scopes.push(scope);
     const actor = createComposerActor(scope, gateway);
 
-    actor.dispatch({ type: "DRAFT", value: "review this prompt" });
+    actor.dispatch({
+      type: "DRAFT",
+      threadId: "thread-1",
+      value: "review this prompt",
+    });
     actor.dispatch({ type: "SUBMIT", threadId: "thread-1" });
     await vi.waitFor(() =>
       expect(actor.getSnapshot().status).toBe("manual-review"),
     );
-    expect(actor.getSnapshot().draft).toBe("");
+    expect(composerDraftFor(actor.getSnapshot(), "thread-1")).toBe("");
 
     actor.dispatch({ type: "ACKNOWLEDGE_MANUAL" });
     expect(actor.getSnapshot()).toMatchObject({
       status: "idle",
-      draft: "review this prompt",
     });
+    expect(composerDraftFor(actor.getSnapshot(), "thread-1")).toBe(
+      "review this prompt",
+    );
   });
 
   it("does not cancel an in-flight send when the next draft is edited", async () => {
@@ -79,14 +95,20 @@ describe("v0.4 composer actor", () => {
     scopes.push(scope);
     const actor = createComposerActor(scope, gateway);
 
-    actor.dispatch({ type: "DRAFT", value: "send this" });
+    actor.dispatch({ type: "DRAFT", threadId: "thread-1", value: "send this" });
     actor.dispatch({ type: "SUBMIT", threadId: "thread-1" });
-    actor.dispatch({ type: "DRAFT", value: "prepare this next" });
+    actor.dispatch({
+      type: "DRAFT",
+      threadId: "thread-1",
+      value: "prepare this next",
+    });
 
     expect(gateway.signal?.aborted).toBe(false);
     gateway.resolve();
     await vi.waitFor(() => expect(actor.getSnapshot().status).toBe("idle"));
-    expect(actor.getSnapshot().draft).toBe("prepare this next");
+    expect(composerDraftFor(actor.getSnapshot(), "thread-1")).toBe(
+      "prepare this next",
+    );
   });
 
   it("clears a draft only after Queue accepts it", async () => {
@@ -95,17 +117,33 @@ describe("v0.4 composer actor", () => {
     scopes.push(scope);
     const actor = createComposerActor(scope, gateway);
 
-    actor.dispatch({ type: "DRAFT", value: "follow-up work" });
+    actor.dispatch({
+      type: "DRAFT",
+      threadId: "thread-1",
+      value: "follow-up work",
+    });
     actor.dispatch({ type: "QUEUE", threadId: "thread-1" });
 
     expect(actor.getSnapshot().status).toBe("submitting");
     await vi.waitFor(() => expect(actor.getSnapshot().status).toBe("idle"));
-    expect(actor.getSnapshot().draft).toBe("");
+    expect(composerDraftFor(actor.getSnapshot(), "thread-1")).toBe("");
     expect(gateway.queued).toEqual({
       version: 1,
       threadId: "thread-1",
       text: "follow-up work",
     });
+  });
+
+  it("keeps drafts isolated by task", () => {
+    const scope = new Scope("composer-task-drafts-test");
+    scopes.push(scope);
+    const actor = createComposerActor(scope, new ImmediateQueueGateway());
+
+    actor.dispatch({ type: "DRAFT", threadId: "thread-a", value: "draft A" });
+    actor.dispatch({ type: "DRAFT", threadId: "thread-b", value: "draft B" });
+
+    expect(composerDraftFor(actor.getSnapshot(), "thread-a")).toBe("draft A");
+    expect(composerDraftFor(actor.getSnapshot(), "thread-b")).toBe("draft B");
   });
 });
 

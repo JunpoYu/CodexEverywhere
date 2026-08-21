@@ -4,6 +4,7 @@ import {
   RELAY_MESSAGE_TYPES,
   parseGatewayAuthenticationPayload,
   parseGatewayCipherFrame,
+  parseGatewayHandshakeHello,
   parseGatewayHandshakeAccepted,
   parseGatewayHandshakeResult,
   parseGatewayHandshakeReply,
@@ -67,6 +68,15 @@ describe("gateway wire validation", () => {
 
   it("rejects unsupported handshake and cipher frame versions", () => {
     expect(() =>
+      parseGatewayHandshakeHello({
+        type: "handshake/hello",
+        version: 2,
+        nodeId: "node-1",
+        deviceId: "device-1",
+        message: "YWJj",
+      }),
+    ).toThrow("Invalid gateway handshake hello");
+    expect(() =>
       parseGatewayHandshakeReply({
         type: "handshake/reply",
         version: 2,
@@ -120,6 +130,27 @@ describe("gateway wire validation", () => {
         ciphertext: "",
       }),
     ).toThrow("Invalid gateway cipher frame");
+  });
+
+  it("validates the unencrypted handshake hello before Noise processing", () => {
+    expect(
+      parseGatewayHandshakeHello({
+        type: "handshake/hello",
+        version: 1,
+        nodeId: "node-1",
+        deviceId: "device_1",
+        message: "YWJj",
+      }),
+    ).toMatchObject({ nodeId: "node-1", deviceId: "device_1" });
+    expect(() =>
+      parseGatewayHandshakeHello({
+        type: "handshake/hello",
+        version: 1,
+        nodeId: "node-1",
+        deviceId: "device with spaces",
+        message: "not base64!",
+      }),
+    ).toThrow("Invalid gateway handshake hello");
   });
 });
 

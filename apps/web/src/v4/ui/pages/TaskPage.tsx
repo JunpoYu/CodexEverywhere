@@ -1,15 +1,27 @@
-import { useEffect, useState, type FormEvent } from "react";
-import { useNavigate, useParams } from "react-router-dom";
+import { useEffect, useRef, useState, type FormEvent } from "react";
+import { Link, useNavigate, useParams } from "react-router-dom";
 
 import { useActorState } from "../../actors/use-actor.js";
+import { composerDraftFor } from "../../actors/composer-actor.js";
 import { durableMutation } from "../../gateway/durable-mutation.js";
 import { mutationOptions } from "../../gateway/gateway-port.js";
 import { Icon } from "../components/Icon.js";
 import { ModalDialog } from "../components/ModalDialog.js";
 import { StatusMessage } from "../components/StatusMessage.js";
 import { InteractionCard } from "../interactions/InteractionCard.js";
+import {
+  approvalSettingLabel,
+  reasoningEffortLabel,
+  sandboxSettingLabel,
+} from "../formatters/thread-settings.js";
 import { useRuntime } from "../runtime-context.js";
-import { TimelineItemView } from "../timeline/TimelineItemView.js";
+import { ConversationOutlineDialog } from "../timeline/ConversationOutlineDialog.js";
+import { projectConversationOutline } from "../timeline/conversation-outline-model.js";
+import {
+  TimelineViewport,
+  type TimelineViewportHandle,
+} from "../timeline/TimelineViewport.js";
+import { TaskContextBar } from "./TaskContextBar.js";
 import { ThreadSettingsPanel } from "./ThreadSettingsPanel.js";
 
 export function TaskPage() {
@@ -27,9 +39,24 @@ export function TaskPage() {
   const [handoffCopied, setHandoffCopied] = useState(false);
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
   const [taskNotice, setTaskNotice] = useState<string>();
+  const [outlineOpen, setOutlineOpen] = useState(false);
+  const [activeOutlineItemId, setActiveOutlineItemId] = useState<string>();
+  const timelineViewportRef = useRef<TimelineViewportHandle>(null);
+  const activeThreadId = useRef(threadId);
+  activeThreadId.current = threadId;
+  const composerDraft = composerDraftFor(composer, threadId);
 
   useEffect(() => {
+    setActionError(undefined);
+    setRenameTitle(undefined);
+    setTaskMutating(false);
+    setSettingsOpen(false);
+    setHandoff(undefined);
+    setHandoffCopied(false);
+    setDeleteConfirmOpen(false);
     setTaskNotice(undefined);
+    setOutlineOpen(false);
+    setActiveOutlineItemId(undefined);
     if (threadId.length > 0)
       runtime.thread.dispatch({ type: "OPEN", threadId });
     return () => runtime.thread.dispatch({ type: "CLOSE" });
@@ -40,7 +67,7 @@ export function TaskPage() {
     if (
       composer.status !== "idle" ||
       thread.status !== "idle" ||
-      composer.draft.trim().length === 0
+      composerDraft.trim().length === 0
     ) {
       return;
     }
@@ -48,29 +75,41 @@ export function TaskPage() {
   };
 
   const interrupt = async () => {
+    const targetThreadId = threadId;
     setActionError(undefined);
     try {
       await runtime.gateway.request(
         "turn/interrupt",
-        { version: 1, threadId },
+        { version: 1, threadId: targetThreadId },
         mutationOptions(),
       );
     } catch (reason) {
-      setActionError(reason instanceof Error ? reason.message : "中断任务失败");
+      if (activeThreadId.current === targetThreadId) {
+        setActionError(
+          reason instanceof Error ? reason.message : "中断任务失败",
+        );
+      }
     }
   };
 
   const tuiHandoff = async () => {
+    const targetThreadId = threadId;
     setActionError(undefined);
     try {
       const result = await runtime.gateway.request(
         "thread/tui/handoff",
-        { version: 1, threadId },
+        { version: 1, threadId: targetThreadId },
         mutationOptions(),
       );
-      setHandoff(result.command);
+      if (activeThreadId.current === targetThreadId) {
+        setHandoff(result.command);
+      }
     } catch (reason) {
-      setActionError(reason instanceof Error ? reason.message : "TUI 接力失败");
+      if (activeThreadId.current === targetThreadId) {
+        setActionError(
+          reason instanceof Error ? reason.message : "TUI 接力失败",
+        );
+      }
     }
   };
 
@@ -78,6 +117,7 @@ export function TaskPage() {
     event.preventDefault();
     const title = renameTitle?.trim() ?? "";
     if (title.length === 0) return;
+    const targetThreadId = threadId;
     setTaskMutating(true);
     setActionError(undefined);
     try {
@@ -85,21 +125,26 @@ export function TaskPage() {
         owner: runtime.scope,
         gateway: runtime.gateway,
         method: "thread/rename",
-        payload: { version: 1, threadId, title },
+        payload: { version: 1, threadId: targetThreadId, title },
       });
-      setRenameTitle(undefined);
-      runtime.thread.dispatch({ type: "OPEN", threadId });
-      runtime.tasks.dispatch({ type: "LOAD" });
+      runtime.refreshTasks();
+      if (activeThreadId.current === targetThreadId) {
+        setRenameTitle(undefined);
+        runtime.thread.dispatch({ type: "OPEN", threadId: targetThreadId });
+      }
     } catch (reason) {
-      setActionError(
-        reason instanceof Error ? reason.message : "任务重命名失败",
-      );
+      if (activeThreadId.current === targetThreadId) {
+        setActionError(
+          reason instanceof Error ? reason.message : "任务重命名失败",
+        );
+      }
     } finally {
-      setTaskMutating(false);
+      if (activeThreadId.current === targetThreadId) setTaskMutating(false);
     }
   };
 
   const archive = async (archived: boolean) => {
+    const targetThreadId = threadId;
     setTaskMutating(true);
     setActionError(undefined);
     try {
@@ -108,26 +153,40 @@ export function TaskPage() {
           owner: runtime.scope,
           gateway: runtime.gateway,
           method: "thread/unarchive",
-          payload: { version: 1, threadId },
+          payload: { version: 1, threadId: targetThreadId },
         });
       } else {
         await durableMutation({
           owner: runtime.scope,
           gateway: runtime.gateway,
           method: "thread/archive",
-          payload: { version: 1, threadId },
+          payload: { version: 1, threadId: targetThreadId },
         });
       }
-      runtime.tasks.dispatch({ type: "LOAD" });
-      navigate("/tasks");
+      const taskList = runtime.tasks.getSnapshot();
+      runtime.tasks.dispatch({
+        type: "LOAD",
+        ...(taskList.workspaceId === undefined
+          ? {}
+          : { workspaceId: taskList.workspaceId }),
+        ...(taskList.workspaceLabel === undefined
+          ? {}
+          : { workspaceLabel: taskList.workspaceLabel }),
+      });
+      if (activeThreadId.current === targetThreadId) navigate("/tasks");
     } catch (reason) {
-      setActionError(reason instanceof Error ? reason.message : "任务归档失败");
+      if (activeThreadId.current === targetThreadId) {
+        setActionError(
+          reason instanceof Error ? reason.message : "任务归档失败",
+        );
+      }
     } finally {
-      setTaskMutating(false);
+      if (activeThreadId.current === targetThreadId) setTaskMutating(false);
     }
   };
 
   const deleteTask = async () => {
+    const targetThreadId = threadId;
     setTaskMutating(true);
     setActionError(undefined);
     try {
@@ -135,14 +194,18 @@ export function TaskPage() {
         owner: runtime.scope,
         gateway: runtime.gateway,
         method: "thread/delete",
-        payload: { version: 1, threadId },
+        payload: { version: 1, threadId: targetThreadId },
       });
-      runtime.tasks.dispatch({ type: "LOAD" });
-      navigate("/tasks");
+      runtime.refreshTasks();
+      if (activeThreadId.current === targetThreadId) navigate("/tasks");
     } catch (reason) {
-      setActionError(reason instanceof Error ? reason.message : "任务删除失败");
+      if (activeThreadId.current === targetThreadId) {
+        setActionError(
+          reason instanceof Error ? reason.message : "任务删除失败",
+        );
+      }
     } finally {
-      setTaskMutating(false);
+      if (activeThreadId.current === targetThreadId) setTaskMutating(false);
     }
   };
 
@@ -158,6 +221,11 @@ export function TaskPage() {
   const taskActive =
     thread.status === "running" || thread.status === "waiting-input";
   const taskQueue = queue.items.filter((item) => item.threadId === threadId);
+  const outlineEntries = projectConversationOutline(snapshot.items);
+  const composerBusyElsewhere =
+    composer.status !== "idle" &&
+    composer.threadId !== undefined &&
+    composer.threadId !== threadId;
 
   return (
     <main
@@ -188,6 +256,18 @@ export function TaskPage() {
               </button>
             ) : null}
             <button
+              aria-controls="conversation-outline"
+              aria-expanded={outlineOpen}
+              aria-label={`打开对话大纲，当前已加载 ${outlineEntries.length} 条请求`}
+              className="conversation-secondary-action"
+              title={`对话大纲 · ${outlineEntries.length} 条已加载请求`}
+              type="button"
+              onClick={() => setOutlineOpen(true)}
+            >
+              <Icon name="outline" />
+              <span>大纲 {outlineEntries.length}</span>
+            </button>
+            <button
               aria-label="转到 TUI"
               className="conversation-secondary-action"
               title="转到 TUI"
@@ -196,16 +276,6 @@ export function TaskPage() {
             >
               <Icon name="terminal" />
               <span>转到 TUI</span>
-            </button>
-            <button
-              aria-label="任务设置"
-              className="conversation-secondary-action"
-              title="任务设置"
-              type="button"
-              onClick={() => setSettingsOpen(true)}
-            >
-              <Icon name="settings" />
-              <span>任务设置</span>
             </button>
             <details className="task-action-menu">
               <summary aria-label="更多任务操作">
@@ -251,6 +321,16 @@ export function TaskPage() {
             </details>
           </div>
         </header>
+        <TaskContextBar
+          approval={approvalSettingLabel(snapshot.settings.approvalPolicy)}
+          effort={reasoningEffortLabel(snapshot.settings.effort)}
+          model={snapshot.settings.model ?? "Codex 当前值"}
+          revision={snapshot.settings.revision}
+          sandbox={sandboxSettingLabel(snapshot.settings.sandbox)}
+          status={thread.status}
+          statusLabel={threadStateLabel(thread.status)}
+          onEdit={() => setSettingsOpen(true)}
+        />
         {actionError === undefined || deleteConfirmOpen ? null : (
           <div className="conversation-notice">
             <StatusMessage tone="error">{actionError}</StatusMessage>
@@ -276,25 +356,38 @@ export function TaskPage() {
             </button>
           </form>
         )}
-        <section className="timeline" aria-live="polite">
-          {snapshot.hasEarlierHistory ? (
-            <button
-              disabled={thread.status === "syncing"}
-              type="button"
-              onClick={() => runtime.thread.dispatch({ type: "LOAD_EARLIER" })}
-            >
-              {thread.status === "syncing" ? "正在加载…" : "加载更早记录"}
-            </button>
-          ) : null}
-          {snapshot.items.map((item) => (
-            <TimelineItemView item={item} key={item.id} />
-          ))}
-        </section>
+        <TimelineViewport
+          ref={timelineViewportRef}
+          hasEarlierHistory={snapshot.hasEarlierHistory}
+          historyDisabled={thread.refreshing === true}
+          historyError={thread.historyError}
+          historyStatus={thread.historyStatus}
+          items={snapshot.items}
+          key={threadId}
+          onActiveUserItemChange={setActiveOutlineItemId}
+          onLoadEarlier={() => {
+            runtime.thread.dispatch({ type: "LOAD_EARLIER" });
+            return runtime.thread.getSnapshot().historyStatus === "loading";
+          }}
+        />
         <section className="composer-dock">
           {snapshot.interactions.map((interaction) => (
             <InteractionCard interaction={interaction} key={interaction.id} />
           ))}
-          {composer.status === "manual-review" ? (
+          {composerBusyElsewhere ? (
+            <StatusMessage tone="warning">
+              {composer.status === "manual-review"
+                ? "另一个任务的发送结果需要人工核对。"
+                : "另一个任务正在发送或确认消息；你可以继续编辑此处草稿，完成后再发送。"}
+              <Link
+                to={`/tasks/${encodeURIComponent(composer.threadId ?? "")}`}
+              >
+                查看对应任务
+              </Link>
+            </StatusMessage>
+          ) : null}
+          {composer.status === "manual-review" &&
+          composer.threadId === threadId ? (
             <div
               className="outcome-warning mutation-outcome-pending"
               role="alert"
@@ -311,7 +404,9 @@ export function TaskPage() {
               </button>
             </div>
           ) : null}
-          {composer.status === "idle" && composer.error !== undefined ? (
+          {composer.status === "idle" &&
+          composer.threadId === threadId &&
+          composer.error !== undefined ? (
             <StatusMessage tone="error">{composer.error}</StatusMessage>
           ) : null}
           <form className="composer" onSubmit={submit}>
@@ -323,10 +418,11 @@ export function TaskPage() {
                   ? "任务运行中；可添加到 Queue…"
                   : "继续告诉 Codex 要做什么…"
               }
-              value={composer.draft}
+              value={composerDraft}
               onChange={(event) =>
                 runtime.composer.dispatch({
                   type: "DRAFT",
+                  threadId,
                   value: event.target.value,
                 })
               }
@@ -342,7 +438,7 @@ export function TaskPage() {
                 <button
                   disabled={
                     composer.status !== "idle" ||
-                    composer.draft.trim().length === 0
+                    composerDraft.trim().length === 0
                   }
                   type="button"
                   onClick={() =>
@@ -357,7 +453,7 @@ export function TaskPage() {
                 disabled={
                   composer.status !== "idle" ||
                   thread.status !== "idle" ||
-                  composer.draft.trim().length === 0
+                  composerDraft.trim().length === 0
                 }
                 type="submit"
               >
@@ -366,84 +462,48 @@ export function TaskPage() {
               </button>
             </div>
           </form>
-          <p className="composer-hint">按 Ctrl/⌘ + Enter 发送</p>
+          <div className="composer-meta">
+            <Link
+              aria-label={`查看 Queue，当前 ${taskQueue.length} 项`}
+              className={taskQueue.length > 0 ? "has-items" : undefined}
+              to="/queue"
+            >
+              <Icon name="queue" />
+              <span>Queue</span>
+              <strong>{taskQueue.length}</strong>
+            </Link>
+            <span>按 Ctrl/⌘ + Enter 发送</span>
+          </div>
         </section>
       </section>
-      <aside className="task-context" aria-label="任务上下文">
-        <section>
-          <header>
-            <span>运行上下文</span>
-            <span className={`state-pill ${thread.status}`}>
-              <i />
-              {threadStateLabel(thread.status)}
-            </span>
-          </header>
-          <dl>
-            <div>
-              <dt>模型</dt>
-              <dd>{snapshot.settings.model ?? "Codex 当前值"}</dd>
-            </div>
-            <div>
-              <dt>推理强度</dt>
-              <dd>{effortLabel(snapshot.settings.effort)}</dd>
-            </div>
-            <div>
-              <dt>设置 revision</dt>
-              <dd>{snapshot.settings.revision}</dd>
-            </div>
-          </dl>
-        </section>
-        <section>
-          <header>
-            <span>权限</span>
-            <button
-              className="context-action"
-              type="button"
-              onClick={() => setSettingsOpen(true)}
-            >
-              修改
-            </button>
-          </header>
-          <dl>
-            <div>
-              <dt>文件访问</dt>
-              <dd>{sandboxLabel(snapshot.settings.sandbox)}</dd>
-            </div>
-            <div>
-              <dt>审批策略</dt>
-              <dd>{approvalLabel(snapshot.settings.approvalPolicy)}</dd>
-            </div>
-          </dl>
-        </section>
-        <section>
-          <header>
-            <span>待处理</span>
-          </header>
-          <dl>
-            <div>
-              <dt>需要你的操作</dt>
-              <dd>{snapshot.interactions.length}</dd>
-            </div>
-            <div>
-              <dt>Queue</dt>
-              <dd>{taskQueue.length}</dd>
-            </div>
-          </dl>
-        </section>
-        <p className="context-footnote">
-          状态来自 Codex app-server；断线重连后会按权威快照恢复。
-        </p>
-      </aside>
       {settingsOpen ? (
         <ThreadSettingsPanel
           settings={snapshot.settings}
           threadId={threadId}
           onClose={() => setSettingsOpen(false)}
-          onSaved={(settings) =>
-            setTaskNotice(
-              `任务设置已保存 · ${sandboxLabel(settings.sandbox)} · ${approvalLabel(settings.approvalPolicy)}`,
-            )
-          }
+          onSaved={(settings) => {
+            if (activeThreadId.current === threadId) {
+              setTaskNotice(
+                `任务设置已保存 · ${sandboxSettingLabel(settings.sandbox)} · ${approvalSettingLabel(settings.approvalPolicy)}`,
+              );
+            }
+          }}
+        />
+      ) : null}
+      {outlineOpen ? (
+        <ConversationOutlineDialog
+          activeItemId={activeOutlineItemId}
+          entries={outlineEntries}
+          hasEarlierHistory={snapshot.hasEarlierHistory}
+          historyDisabled={thread.refreshing === true}
+          historyStatus={thread.historyStatus}
+          onClose={() => setOutlineOpen(false)}
+          onLoadEarlier={() => timelineViewportRef.current?.loadEarlier()}
+          onSelect={(itemId) => {
+            if (timelineViewportRef.current?.scrollToItem(itemId) === true) {
+              setOutlineOpen(false);
+            }
+          }}
         />
       ) : null}
       {deleteConfirmOpen ? (
@@ -537,30 +597,4 @@ function threadStateLabel(status: string): string {
     failed: "出现错误",
   };
   return labels[status] ?? status;
-}
-
-function sandboxLabel(value: string | undefined): string {
-  if (value === "read-only") return "只读";
-  if (value === "workspace-write") return "工作区可写";
-  if (value === "danger-full-access") return "完全访问";
-  return "Codex 当前值";
-}
-
-function approvalLabel(value: string | undefined): string {
-  if (value === "untrusted") return "严格审批";
-  if (value === "on-request") return "按需询问";
-  if (value === "never") return "从不询问";
-  return "Codex 当前值";
-}
-
-function effortLabel(value: string | undefined): string {
-  const labels: Record<string, string> = {
-    low: "低",
-    medium: "中",
-    high: "高",
-    xhigh: "很高",
-    max: "最大",
-    ultra: "Ultra",
-  };
-  return value === undefined ? "Codex 当前值" : (labels[value] ?? value);
 }

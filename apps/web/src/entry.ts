@@ -1,6 +1,6 @@
 import { announcePwaUpdate } from "./pwa-update.js";
 
-const PWA_ASSET_CACHE = "codex-everywhere-v52";
+const PWA_ASSET_CACHE = "codex-everywhere-v53";
 
 void registerServiceWorker();
 

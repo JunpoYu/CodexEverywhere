@@ -222,6 +222,23 @@ export function parseGatewayHandshakeReply(
   return value as GatewayHandshakeReply;
 }
 
+export function parseGatewayHandshakeHello(
+  input: unknown,
+): GatewayHandshakeHello {
+  const value = parseWireRecord(input, "gateway handshake hello");
+  if (
+    value.type !== "handshake/hello" ||
+    value.version !== PROTOCOL_VERSION ||
+    !isBoundedIdentifier(value.nodeId, 128) ||
+    typeof value.deviceId !== "string" ||
+    !/^[A-Za-z0-9_-]{1,128}$/u.test(value.deviceId) ||
+    !isBoundedBase64Url(value.message, MAX_GATEWAY_HANDSHAKE_BASE64URL_LENGTH)
+  ) {
+    throw new Error("Invalid gateway handshake hello");
+  }
+  return value as GatewayHandshakeHello;
+}
+
 export function parseGatewayHandshakeAccepted(
   input: unknown,
 ): GatewayHandshakeAccepted {

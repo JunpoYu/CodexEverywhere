@@ -4,6 +4,32 @@
 
 ## [Unreleased]
 
+## [0.4.0-alpha.11] - 2026-08-22
+
+### Added
+
+- 新增按已加载用户消息生成的对话大纲：桌面端使用不挤压主对话宽度的覆盖式抽屉，移动端使用底部 Sheet；支持本地筛选、当前位置高亮、稳定 item ID 跳转和显式加载更早大纲。
+
+### Changed
+
+- 任务中心默认汇总全部已授权工作区的任务，并在任务卡和桌面端最近任务中明确显示所属工作区；用户可按工作区筛选，筛选不会隐式修改全局默认工作区。
+- 对话页移除常驻右侧属性栏，把模型、推理强度、文件访问和审批策略收拢到页头下方的紧凑上下文栏；Interaction 就近保留在输入区上方，当前任务的 Queue 数量移到输入区下方。
+- Agent 进一步收紧模块边界：Direct discovery、Noise socket 生命周期和设备认证拆分为独立 adapter，Gateway 业务 handler 从 composition root 移入领域 registry；thread 权威投影、设置转换以及 resume/权限一致性分别由纯投影模块、设置模块和 `ThreadSessionCoordinator` 负责。
+- Web 将任务列表、任务上下文和设置页面样式迁入就近 CSS Modules，将任务设置冲突与 patch 计算提取为不依赖 React 的纯模型；架构检查会阻止这些边界重新回流到全局样式或巨型 composition root。
+- 任务首开与历史分页统一限制为每页 50 个 timeline item；命令输出、diff、MCP 结果和 generic payload 只在用户展开时挂载大型 DOM，长会话 ScenarioGateway 也使用与真实 Agent 相同的稳定游标分页。
+- 使用 npm 最新稳定版 Codex CLI `0.149.0` 重新生成并核对 app-server TypeScript 与 notification schema，生成结果与当前编译基线一致。
+
+### Fixed
+
+- 文件修改事件中的超长路径现在限制在卡片内部并可独立横向滚动，不再撑破时间线和对话页面边框；完整路径仍可通过悬停标题和键盘聚焦读取。
+- 修复并发或快速切换任务时可能重复 `thread/open`、对同一 lease 重复 `thread/resume`、旧异步结果关闭新任务，或在旧 app-server client 尚未释放时创建同任务新 client 的竞态；lease 释放现在等待底层 client 完整关闭，且正在释放的 lease 继续计入容量。
+- Composer 草稿、发送失败和结果未知状态按 thread ID 隔离；切换任务不会串用草稿，迟到的重命名、归档、删除、TUI 接力或中断结果也不会覆盖当前页面反馈。
+- Queue mutation 与 `mutation/status` 对账保持单飞，并区分仍在轮询的“对账中”和需要人工确认的终态“结果未知”；刷新和实时通知不会取消正在跟踪的 operation key，只有终态才重新开放人工刷新与处置。
+- Thread actor 会显式处理 lease failure，并把 open/close 目标绑定到 effect generation；设置面板在 revision 冲突后的 patch 重放与失败恢复不再依赖页面组件中的分散分支。
+- 修复进入任务后停留在当前历史窗口顶部、加载更早记录导致 Composer 短暂不可用、同任务刷新丢失已加载旧页，以及流式更新强制打断旧消息阅读的问题；时间线现在首开自动滚底，旧页插入保持可见锚点，用户上滚后可显式“回到最新”。只有用户显式分页引入的稳定 item ID 才能跨最新窗口刷新保留，因此滑动窗口持续前进也不会让 DOM 无界增长；并发刷新会合并为一次尾随权威读取，明确的 `thread/compacted` 通知会清除压缩前历史，即使新旧窗口仍有 item ID 重叠也不会保留陈旧前缀。
+- lease 的 notification、interaction 和 client-close 回调统一通过受观察的后台清理入口释放资源；底层 disposer 即使失败也只产生去敏的 `lease-disposal-failed` 控制面事件，不再泄漏为 Node.js 未处理 Promise rejection。
+- 推进 PWA 缓存代次，确保已安装的 alpha.10 页面能够发现并安全激活 alpha.11 Web 版本。
+
 ## [0.4.0-alpha.10] - 2026-08-21
 
 ### Changed

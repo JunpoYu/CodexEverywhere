@@ -86,6 +86,73 @@ describe("ThreadLeaseManager", () => {
     expect(client.closed).toBe(true);
   });
 
+  it("contains and reports a rejected background lease disposal", async () => {
+    const { manager, factory } = createManager();
+    const handle = await manager.acquire("thread-1", {
+      kind: "viewer",
+      id: "phone",
+    });
+    const events: ThreadLeaseEvent[] = [];
+    handle.lease.onEvent((event) => events.push(event));
+    const client = factory.clients[0]!;
+    client.notification("turn/started", {
+      threadId: "thread-1",
+      turn: { id: "turn-1", status: "inProgress" },
+    });
+    await handle.release();
+    client.rejectClose();
+
+    client.notification("turn/completed", {
+      threadId: "thread-1",
+      turn: { id: "turn-1", status: "completed" },
+    });
+
+    await eventually(() =>
+      events.some(
+        (event) =>
+          event.type === "lease/failed" &&
+          event.reason === "lease-disposal-failed",
+      ),
+    );
+    expect(manager.size).toBe(0);
+  });
+
+  it("waits for an idle lease to finish closing before recreating it", async () => {
+    const { manager, factory } = createManager();
+    const handle = await manager.acquire("thread-1", {
+      kind: "viewer",
+      id: "phone",
+    });
+    const client = factory.clients[0]!;
+    client.notification("turn/started", {
+      threadId: "thread-1",
+      turn: { id: "turn-1", status: "inProgress" },
+    });
+    await handle.release();
+    const allowClose = client.deferClose();
+    client.notification("turn/completed", {
+      threadId: "thread-1",
+      turn: { id: "turn-1", status: "completed" },
+    });
+    await eventually(() => client.closeRequested);
+
+    let acquired = false;
+    const next = manager
+      .acquire("thread-1", { kind: "viewer", id: "desktop" })
+      .then((value) => {
+        acquired = true;
+        return value;
+      });
+    await Promise.resolve();
+    expect(acquired).toBe(false);
+    expect(factory.clients).toHaveLength(1);
+
+    allowClose();
+    const nextHandle = await next;
+    expect(factory.clients).toHaveLength(2);
+    await nextHandle.release();
+  });
+
   it("keeps a pending interaction and accepts only the first device response", async () => {
     const { manager, factory } = createManager();
     const handle = await manager.acquire("thread-1", {
@@ -298,6 +365,9 @@ class FakeCodexClient implements CodexClient {
   readonly #requests = new Set<(request: CodexServerRequest) => void>();
   readonly #closeListeners = new Set<() => void>();
   closed = false;
+  closeRequested = false;
+  #closeGate: Promise<void> = Promise.resolve();
+  #closeError: Error | undefined;
 
   request<Result = unknown>(
     _method: string,
@@ -323,10 +393,24 @@ class FakeCodexClient implements CodexClient {
     return () => this.#closeListeners.delete(listener);
   }
 
-  close(): Promise<void> {
+  deferClose(): () => void {
+    let allow: (() => void) | undefined;
+    this.#closeGate = new Promise<void>((resolve) => {
+      allow = resolve;
+    });
+    return () => allow?.();
+  }
+
+  rejectClose(): void {
+    this.#closeError = new Error("synthetic client close failure");
+  }
+
+  async close(): Promise<void> {
+    this.closeRequested = true;
+    await this.#closeGate;
+    if (this.#closeError !== undefined) throw this.#closeError;
     this.closed = true;
     for (const listener of [...this.#closeListeners]) listener();
-    return Promise.resolve();
   }
 
   notification(method: string, params: JsonValue): void {

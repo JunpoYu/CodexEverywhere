@@ -130,7 +130,7 @@ test("任务可重命名、归档、取消归档并删除", async ({ page }) => 
   ).toBeVisible();
   await page.getByRole("button", { name: "永久删除" }).click();
   await expect(
-    page.locator(".task-grid .task-card").filter({
+    page.locator("[data-task-grid] [data-task-card]").filter({
       hasText: "任务生命周期新名称",
     }),
   ).toHaveCount(0);
@@ -139,6 +139,23 @@ test("任务可重命名、归档、取消归档并删除", async ({ page }) => 
 test("任务权限可连续保存，并始终显示权威结果", async ({ page }) => {
   await openScenario(page);
   await openTaskCard(page, "欢迎使用 CodexEverywhere");
+
+  await expect(page.getByLabel("任务运行设置摘要")).toBeVisible();
+  await expect(page.locator("aside.task-context")).toHaveCount(0);
+  await expect(page.getByLabel("模型：Codex 当前值")).toBeVisible();
+  await expect(page.getByLabel("推理：Codex 当前值")).toBeVisible();
+  await expect(page.getByLabel("文件：Codex 当前值")).toBeVisible();
+  await expect(page.getByLabel("审批：Codex 当前值")).toBeVisible();
+  await expect
+    .poll(() =>
+      page
+        .locator("[data-task-context-values]")
+        .evaluate((element) => element.scrollWidth <= element.clientWidth),
+    )
+    .toBe(true);
+  await expect(
+    page.getByRole("link", { name: "查看 Queue，当前 0 项" }),
+  ).toBeVisible();
 
   await page.getByRole("button", { name: "任务设置" }).click();
   const dialog = page.getByRole("dialog", { name: "任务权限与运行设置" });
@@ -165,6 +182,8 @@ test("任务权限可连续保存，并始终显示权威结果", async ({ page 
   await save.click();
   await expect(dialog.getByRole("radio", { name: /只读/u })).toBeChecked();
   await expect(save).toBeDisabled();
+  await expect(page.getByLabel("文件：只读")).toBeVisible();
+  await expect(page.getByLabel("审批：按需询问")).toBeVisible();
 });
 
 test("新任务展示全局默认权限，并允许仅覆盖本次任务", async ({ page }) => {
@@ -192,6 +211,66 @@ test("新任务展示全局默认权限，并允许仅覆盖本次任务", async
   const dialog = page.getByRole("dialog", { name: "任务权限与运行设置" });
   await expect(dialog.getByRole("radio", { name: /完全访问/u })).toBeChecked();
   await expect(dialog.getByRole("radio", { name: /从不询问/u })).toBeChecked();
+});
+
+test("任务默认跨工作区显示名称，并可按工作区筛选", async ({
+  page,
+}, testInfo) => {
+  await openScenario(page);
+
+  const filter = page.getByLabel("筛选任务工作区");
+  await expect(filter).toHaveValue("");
+  await expect(page.getByText(/全部工作区 · 已显示 1 个/u)).toBeVisible();
+  const welcome = page.locator("[data-task-card]").filter({
+    hasText: "欢迎使用 CodexEverywhere",
+  });
+  await expect(welcome.getByText("Demo", { exact: true })).toBeVisible();
+
+  await navigateTo(page, "/workspaces");
+  await page.getByPlaceholder("/public/project").fill("/public/research");
+  await page.getByPlaceholder("显示名称（可选）").fill("Research");
+  await page.getByRole("button", { name: "添加" }).click();
+  await expect(page.getByText("工作区已添加。")).toBeVisible();
+
+  await navigateTo(page, "/tasks");
+  await expect(filter.getByRole("option", { name: "Research" })).toBeAttached();
+  const newTaskWorkspace = page.getByRole("combobox", {
+    name: "新任务工作区",
+    exact: true,
+  });
+  await newTaskWorkspace.selectOption({
+    label: "Research",
+  });
+  const prompt = "验证 Research 工作区筛选";
+  await page.getByPlaceholder("描述你希望 Codex 完成的工作…").fill(prompt);
+  await page.getByRole("button", { name: "新建任务" }).click();
+  await expect(page.getByRole("heading", { name: prompt })).toBeVisible();
+
+  await navigateTo(page, "/tasks");
+  const researchTask = page
+    .locator("[data-task-card]")
+    .filter({ hasText: prompt });
+  await expect(
+    researchTask.getByText("Research", { exact: true }),
+  ).toBeVisible();
+  await filter.selectOption({ label: "Research" });
+  await expect(page.getByText(/Research · 已显示 1 个/u)).toBeVisible();
+  await expect(researchTask).toBeVisible();
+  await expect(welcome).toHaveCount(0);
+  if (!testInfo.project.name.includes("mobile")) {
+    await expect(page.getByText(/最近任务.*Research/u)).toBeVisible();
+  }
+  await expect(newTaskWorkspace).toHaveValue(await filter.inputValue());
+
+  if (testInfo.project.name.includes("mobile")) {
+    await filter.selectOption("");
+  } else {
+    await page.getByRole("link", { name: "全部", exact: true }).click();
+  }
+  await expect(filter).toHaveValue("");
+  await expect(page.getByText(/全部工作区 · 已显示 2 个/u)).toBeVisible();
+  await expect(researchTask).toBeVisible();
+  await expect(welcome).toBeVisible();
 });
 
 test("新任务的单字段覆盖不会冻结另一项全局默认权限", async ({ page }) => {
@@ -244,7 +323,10 @@ test("采用全局默认时会在创建前复核最新权限", async ({ page }) 
 test("新任务校验期间锁定请求快照中的全部输入", async ({ page }) => {
   await openScenario(page, "&scenarioPreferenceValidationDelay=1");
 
-  const workspace = page.getByLabel("工作区");
+  const workspace = page.getByRole("combobox", {
+    name: "新任务工作区",
+    exact: true,
+  });
   const prompt = page.getByPlaceholder("描述你希望 Codex 完成的工作…");
   const sandbox = page.getByLabel("本次任务 Sandbox");
   const title = "验证新任务输入快照";
@@ -268,13 +350,17 @@ test("新任务前置读取失败后可显式恢复且保留已输入请求", as
   await expect(
     page.getByText("Scenario preferences are temporarily unavailable"),
   ).toBeVisible();
-  await expect(page.getByLabel("工作区")).toBeDisabled();
+  const workspace = page.getByRole("combobox", {
+    name: "新任务工作区",
+    exact: true,
+  });
+  await expect(workspace).toBeDisabled();
 
   await page.getByRole("button", { name: "重新读取工作区和默认权限" }).click();
   await expect(page.getByLabel("本次任务 Sandbox")).toHaveValue(
     "workspace-write",
   );
-  await expect(page.getByLabel("工作区")).toBeEnabled();
+  await expect(workspace).toBeEnabled();
   await expect(prompt).toHaveValue("保留这条尚未提交的请求");
   await expect(page.getByRole("button", { name: "新建任务" })).toBeEnabled();
 });
@@ -361,7 +447,7 @@ test("全局设置显式保存，并成为新任务显示的默认权限", async
   const save = page.getByRole("button", { name: "保存全局设置" });
   await expect(save).toBeDisabled();
   await sandbox.selectOption("read-only");
-  await expect(page.locator("form.preference-form")).toHaveAttribute(
+  await expect(page.locator("[data-preferences-form]")).toHaveAttribute(
     "data-pwa-draft",
     "true",
   );
@@ -373,7 +459,7 @@ test("全局设置显式保存，并成为新任务显示的默认权限", async
   ).toBeVisible();
   await expect(sandbox).toHaveValue("read-only");
   await expect(save).toBeDisabled();
-  await expect(page.locator("form.preference-form")).not.toHaveAttribute(
+  await expect(page.locator("[data-preferences-form]")).not.toHaveAttribute(
     "data-pwa-draft",
     "true",
   );
@@ -382,6 +468,20 @@ test("全局设置显式保存，并成为新任务显示的默认权限", async
   await navigateTo(page, "/tasks");
   await expect(page.getByLabel("本次任务 Sandbox")).toHaveValue("read-only");
   await expect(page.getByText("采用全局默认", { exact: true })).toBeVisible();
+});
+
+test("Codex 版本读取失败不会阻断偏好与身份设置", async ({ page }) => {
+  await openScenario(page, "&scenarioCodexVersionFailure=1");
+  await navigateTo(page, "/settings");
+
+  await expect(page.getByLabel("默认 Sandbox")).toBeEnabled();
+  await expect(
+    page.getByRole("button", { name: "添加 Passkey" }),
+  ).toBeEnabled();
+  await expect(
+    page.getByText("Scenario Codex version is temporarily unavailable"),
+  ).toBeVisible();
+  await expect(page.getByText(/app-server 健康/u)).toBeVisible();
 });
 
 test("全局设置已由其他设备应用时直接收口为成功", async ({ page }) => {
@@ -466,6 +566,132 @@ test("390px 视口显示移动端主导航", async ({ page }, testInfo) => {
   await expect(navigation.getByRole("link", { name: "设置" })).toBeVisible();
 });
 
+test("长会话分页、首开滚底、阅读保护与对话大纲协同工作", async ({ page }) => {
+  await openScenario(page, "&scenarioLongConversation=1");
+  await openTaskCard(page, "长会话分页与大纲");
+
+  const timeline = page.locator(".timeline");
+  await expect(timeline.locator(".timeline-item")).toHaveCount(50);
+  await expect
+    .poll(() => timelineDistanceFromBottom(timeline))
+    .toBeLessThanOrEqual(2);
+
+  await expect(
+    page.getByText("SCENARIO_LARGE_OUTPUT_SENTINEL", { exact: true }),
+  ).toHaveCount(0);
+  await page.getByText("查看命令输出", { exact: true }).click();
+  await expect(
+    page.getByText("SCENARIO_LARGE_OUTPUT_SENTINEL", { exact: true }),
+  ).toBeVisible();
+
+  await page.getByRole("button", { name: /打开对话大纲/u }).click();
+  const outline = page.getByRole("dialog", { name: "对话大纲" });
+  await expect(outline).toBeVisible();
+  await expect(outline.getByText("当前已加载 24 条请求")).toBeVisible();
+  await expect(outline.getByText("历史请求 47", { exact: true })).toBeVisible();
+  await expect(outline.getByText("历史请求 01", { exact: true })).toHaveCount(
+    0,
+  );
+
+  const anchorBeforePagination = await firstVisibleTimelineAnchor(timeline);
+  await outline.getByRole("button", { name: "加载更早大纲" }).click();
+  await expect(timeline.locator(".timeline-item")).toHaveCount(100);
+  const anchorAfterPagination = await firstVisibleTimelineAnchor(timeline);
+  expect(anchorAfterPagination.id).toBe(anchorBeforePagination.id);
+  expect(
+    Math.abs(anchorAfterPagination.offset - anchorBeforePagination.offset),
+  ).toBeLessThanOrEqual(2);
+  await expect(outline.getByText("当前已加载 49 条请求")).toBeVisible();
+  await outline.getByText("历史请求 22", { exact: true }).click();
+  await expect(outline).toHaveCount(0);
+  await expect(
+    timeline.getByText("历史请求 22", { exact: true }),
+  ).toBeInViewport();
+  await expect(page.getByRole("button", { name: "回到最新" })).toBeVisible();
+
+  await page.getByRole("button", { name: "回到最新" }).click();
+  await expect
+    .poll(() => timelineDistanceFromBottom(timeline))
+    .toBeLessThanOrEqual(2);
+
+  await timeline.evaluate((element) => {
+    element.scrollTop = 0;
+    element.dispatchEvent(new Event("scroll"));
+  });
+  await expect(page.getByRole("button", { name: "回到最新" })).toBeVisible();
+  const detachedScrollTop = await timeline.evaluate(
+    (element) => element.scrollTop,
+  );
+  await page.getByLabel("给 Codex 的消息").fill("阅读旧消息时继续执行");
+  await page.getByRole("button", { name: "发送", exact: true }).click();
+  await expectScenarioReply(page);
+  await expect
+    .poll(() => timeline.evaluate((element) => element.scrollTop))
+    .toBeLessThanOrEqual(detachedScrollTop + 2);
+  await expect(page.getByRole("button", { name: "回到最新" })).toBeVisible();
+});
+
+test("长文件路径只在路径区域内部横向滚动", async ({ page }) => {
+  await page.goto("/");
+  const path =
+    "/public/demo/a/very/long/workspace/path/with_a_single_unbroken_filename_that_must_remain_fully_readable_without_expanding_the_file_change_card.ts";
+  await page.setContent(`
+    <link rel="stylesheet" href="/src/v4/styles/global.css" />
+    <main class="timeline">
+      <article class="timeline-item type-file-change">
+        <ul class="file-change-list">
+          <li>
+            <div>
+              <code tabindex="0" title="${path}">${path}</code>
+              <span>已修改</span>
+            </div>
+            <details class="timeline-details">
+              <summary>查看差异</summary>
+              <pre>+changed</pre>
+            </details>
+          </li>
+        </ul>
+      </article>
+    </main>
+  `);
+
+  const timeline = page.locator(".timeline");
+  const card = page.locator(".timeline-item");
+  const list = page.locator(".file-change-list");
+  const pathRegion = list.locator("code");
+  await expect(list).toHaveCSS("grid-template-columns", /\d+(?:\.\d+)?px/u);
+
+  const [timelineBox, cardBox, listBox] = await Promise.all([
+    timeline.boundingBox(),
+    card.boundingBox(),
+    list.boundingBox(),
+  ]);
+  expect(timelineBox).not.toBeNull();
+  expect(cardBox).not.toBeNull();
+  expect(listBox).not.toBeNull();
+  expect(listBox!.x + listBox!.width).toBeLessThanOrEqual(
+    cardBox!.x + cardBox!.width,
+  );
+  await expect
+    .poll(() => timeline.evaluate((element) => element.scrollWidth))
+    .toBeLessThanOrEqual(timelineBox!.width);
+  await expect
+    .poll(() =>
+      pathRegion.evaluate(
+        (element) => element.scrollWidth > element.clientWidth,
+      ),
+    )
+    .toBe(true);
+  await pathRegion.evaluate((element) => {
+    element.scrollLeft = element.scrollWidth;
+  });
+  await expect
+    .poll(() => pathRegion.evaluate((element) => element.scrollLeft))
+    .toBeGreaterThan(0);
+  await expect(pathRegion).toHaveCSS("overflow-x", "auto");
+  await expect(pathRegion).toHaveAttribute("title", path);
+});
+
 async function openScenario(
   page: import("@playwright/test").Page,
   extraQuery = "",
@@ -504,11 +730,41 @@ async function openTaskCard(
   title: string,
 ) {
   await page
-    .locator(".task-grid .task-card")
+    .locator("[data-task-grid] [data-task-card]")
     .filter({ hasText: title })
     .click();
 }
 
 async function openTaskActions(page: import("@playwright/test").Page) {
   await page.locator('summary[aria-label="更多任务操作"]').click();
+}
+
+async function timelineDistanceFromBottom(
+  timeline: import("@playwright/test").Locator,
+): Promise<number> {
+  return timeline.evaluate(
+    (element) =>
+      element.scrollHeight - element.clientHeight - element.scrollTop,
+  );
+}
+
+async function firstVisibleTimelineAnchor(
+  timeline: import("@playwright/test").Locator,
+): Promise<{ readonly id: string; readonly offset: number }> {
+  return timeline.evaluate((element) => {
+    const timelineRect = element.getBoundingClientRect();
+    const target = [
+      ...element.querySelectorAll<HTMLElement>("[data-timeline-item-id]"),
+    ].find(
+      (candidate) =>
+        candidate.getBoundingClientRect().bottom >= timelineRect.top + 1,
+    );
+    if (target?.dataset.timelineItemId === undefined) {
+      throw new Error("Timeline has no visible stable item anchor");
+    }
+    return {
+      id: target.dataset.timelineItemId,
+      offset: target.getBoundingClientRect().top - timelineRect.top,
+    };
+  });
 }

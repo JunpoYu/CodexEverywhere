@@ -3,8 +3,6 @@ import { randomUUID } from "node:crypto";
 import { Scope } from "@codex-everywhere/kernel";
 import {
   GatewayV2Error,
-  THREAD_TITLE_MAX_LENGTH,
-  jsonValueSchema,
   type InputOf,
   type InteractionResponse,
   type JsonValue,
@@ -13,31 +11,32 @@ import {
 
 import type { CodexClient, CodexClientFactoryPort } from "../codex/index.js";
 import {
-  type StoredThreadSettings,
-  type ThreadSettingsRepository,
-  ThreadSettingsRevisionConflictError,
-} from "../repositories/thread-settings-repository.js";
+  parseCodexObject,
+  requireCodexObject,
+  requireCodexString,
+} from "../codex/codex-json.js";
+import type { ThreadSettingsRepository } from "../repositories/thread-settings-repository.js";
 import { InteractionAlreadyResolvedError } from "./interaction-broker.js";
 import type { PreferencesService } from "./preferences-service.js";
 import type {
-  AuthoritativeThreadState,
   ThreadLease,
   ThreadLeaseHandle,
   ThreadLeaseManager,
-  ThreadLeaseState,
 } from "./thread-lease-manager.js";
+import { ThreadSessionCoordinator } from "./thread-session-coordinator.js";
 import type { WorkspaceService, WorkspaceView } from "./workspace-service.js";
+import {
+  parseThreadListResponse,
+  projectThreadHistory,
+  projectThreadSummary,
+} from "./thread-projection.js";
+import {
+  codexSandboxPolicy,
+  type RuntimeThreadSettings,
+} from "./thread-settings.js";
 
 type ThreadSummary = OutputOf<"thread/list">["threads"][number];
-type TimelineItem = OutputOf<"thread/history">["items"][number];
 type ThreadSettingsView = OutputOf<"thread/settings/update">;
-
-interface RuntimeThreadSettings {
-  readonly model?: string;
-  readonly effort?: string;
-  readonly sandbox?: "read-only" | "workspace-write" | "danger-full-access";
-  readonly approvalPolicy?: "untrusted" | "on-request" | "never";
-}
 
 export interface ThreadServiceOptions {
   readonly scope: Scope;
@@ -56,10 +55,8 @@ export class ThreadService {
   readonly #leases: ThreadLeaseManager;
   readonly #workspaces: WorkspaceService;
   readonly #preferences: PreferencesService;
-  readonly #settings: ThreadSettingsRepository;
+  readonly #sessions: ThreadSessionCoordinator;
   readonly #appServerSocketPath: string | undefined;
-  readonly #runtimeSettings = new Map<string, RuntimeThreadSettings>();
-  readonly #resumedLeases = new WeakSet<ThreadLease>();
 
   constructor(options: ThreadServiceOptions) {
     this.#scope = options.scope.fork("threads");
@@ -67,7 +64,11 @@ export class ThreadService {
     this.#leases = options.leases;
     this.#workspaces = options.workspaces;
     this.#preferences = options.preferences;
-    this.#settings = options.settings;
+    this.#sessions = new ThreadSessionCoordinator({
+      scope: this.#scope,
+      settings: options.settings,
+      workspaces: options.workspaces,
+    });
     this.#appServerSocketPath = options.appServerSocketPath;
   }
 
@@ -104,13 +105,15 @@ export class ThreadService {
         );
         for (const thread of result.threads) {
           const workspace = await this.#authorizedWorkspace(
-            requiredString(thread.cwd, "thread cwd"),
+            requireCodexString(thread.cwd, "thread cwd"),
           );
           if (
             workspace !== undefined &&
             selected.some((candidate) => candidate.id === workspace.id)
           ) {
-            collected.push(threadSummary(thread, workspace, input.archived));
+            collected.push(
+              projectThreadSummary(thread, workspace, input.archived),
+            );
           }
         }
         nextCursor = result.nextCursor;
@@ -130,46 +133,18 @@ export class ThreadService {
     handle: ThreadLeaseHandle,
     input: Pick<InputOf<"thread/open">, "historyCursor" | "historyLimit">,
   ): Promise<OutputOf<"thread/open">> {
-    const stored = await this.#settings.read(handle.threadId);
-    let runtime = this.#runtimeSettings.get(handle.threadId);
-    let thread: Readonly<Record<string, JsonValue>>;
-    let state: AuthoritativeThreadState;
-    if (!this.#resumedLeases.has(handle.lease) || runtime === undefined) {
-      const response = jsonObject(
-        await handle.lease.request("thread/resume", {
-          threadId: handle.threadId,
-          ...(stored.approvalPolicy === undefined
-            ? {}
-            : { approvalPolicy: stored.approvalPolicy }),
-          ...(stored.sandbox === undefined ? {} : { sandbox: stored.sandbox }),
-        }),
-        "thread/resume response",
-      );
-      thread = requiredObject(response.thread, "resumed thread");
-      state = handle.lease.adoptAuthoritativeThread(thread);
-      runtime = mergeStoredPermissions(
-        runtimeSettings(response, stored),
-        stored,
-      );
-      this.#runtimeSettings.set(handle.threadId, runtime);
-      this.#resumedLeases.add(handle.lease);
-    } else {
-      runtime = mergeStoredPermissions(runtime, stored);
-      this.#runtimeSettings.set(handle.threadId, runtime);
-      state = await handle.lease.synchronize(true);
-      thread = requiredObject(state.thread, "thread");
-    }
+    const { thread, state, settings } = await this.#sessions.open(handle);
     const workspace = await this.#workspaces.workspaceForPath(
       state.workspacePath,
     );
-    const page = historyPage(
-      timelineFromThread(thread),
+    const page = projectThreadHistory(
+      thread,
       input.historyCursor,
       input.historyLimit,
     );
     return {
       version: 1,
-      thread: threadSummary(thread, workspace, false),
+      thread: projectThreadSummary(thread, workspace, false),
       state: state.state,
       items: page.items,
       interactions: handle.lease.listInteractions(),
@@ -177,7 +152,7 @@ export class ThreadService {
         ? {}
         : { historyCursor: page.nextCursor }),
       hasEarlierHistory: page.hasMore,
-      settings: settingsView(stored.revision, runtime),
+      settings,
     };
   }
 
@@ -187,8 +162,8 @@ export class ThreadService {
   ): Promise<OutputOf<"thread/history">> {
     const state = await handle.lease.synchronize(true);
     await this.#workspaces.resolve(state.workspacePath);
-    const page = historyPage(
-      timelineFromThread(requiredObject(state.thread, "thread")),
+    const page = projectThreadHistory(
+      requireCodexObject(state.thread, "thread"),
       input.cursor,
       input.limit,
     );
@@ -213,7 +188,7 @@ export class ThreadService {
       sandbox,
       approvalPolicy,
       started: await this.#withClient("thread-start", async (client) =>
-        jsonObject(
+        parseCodexObject(
           await client.request("thread/start", {
             cwd: path,
             ...(requested.model === undefined
@@ -260,17 +235,16 @@ export class ThreadService {
       );
     }
     const { approvalPolicy, sandbox, started } = accepted;
-    const thread = requiredObject(started.thread, "started thread");
-    const threadId = requiredString(thread.id, "thread id");
+    const thread = requireCodexObject(started.thread, "started thread");
+    const threadId = requireCodexString(thread.id, "thread id");
     const currentWorkspace = await this.#workspaces.workspaceForPath(
-      requiredString(thread.cwd, "thread cwd"),
+      requireCodexString(thread.cwd, "thread cwd"),
     );
-    const stored = await this.#settings.save(threadId, 0, {
+    const startedSettings = await this.#sessions.rememberStarted({
+      threadId,
+      started,
       sandbox,
       approvalPolicy,
-    });
-    this.#runtimeSettings.set(threadId, {
-      ...runtimeSettings(started, stored),
       ...(requested.model === undefined ? {} : { model: requested.model }),
       ...(requested.effort === undefined ? {} : { effort: requested.effort }),
     });
@@ -283,7 +257,7 @@ export class ThreadService {
       id: `thread-start:${randomUUID()}`,
     });
     try {
-      const resumed = jsonObject(
+      const resumed = parseCodexObject(
         await handle.lease.request("thread/resume", {
           threadId,
           approvalPolicy,
@@ -292,10 +266,10 @@ export class ThreadService {
         "thread/resume response",
       );
       handle.lease.adoptAuthoritativeThread(
-        requiredObject(resumed.thread, "resumed thread"),
+        requireCodexObject(resumed.thread, "resumed thread"),
       );
-      this.#resumedLeases.add(handle.lease);
-      const turn = jsonObject(
+      this.#sessions.markResumed(handle.lease, startedSettings);
+      const turn = parseCodexObject(
         await handle.lease.request("turn/start", {
           threadId,
           clientUserMessageId: randomUUID(),
@@ -307,19 +281,19 @@ export class ThreadService {
             : { effort: requested.effort }),
           approvalPolicy,
           approvalsReviewer: "user",
-          sandboxPolicy: sandboxPolicy(sandbox),
+          sandboxPolicy: codexSandboxPolicy(sandbox),
         }),
         "turn/start response",
       );
-      const turnId = requiredString(
-        requiredObject(turn.turn, "started turn").id,
+      const turnId = requireCodexString(
+        requireCodexObject(turn.turn, "started turn").id,
         "turn id",
       );
       handle.lease.noteTurnStarted(turnId);
       return {
         version: 1,
         thread: {
-          ...threadSummary(thread, currentWorkspace, false),
+          ...projectThreadSummary(thread, currentWorkspace, false),
           state: "running",
         },
         turnId,
@@ -341,7 +315,7 @@ export class ThreadService {
         "Task is not idle; add the message to Queue instead",
       );
     }
-    const response = jsonObject(
+    const response = parseCodexObject(
       await handle.lease.request("turn/start", {
         threadId: handle.threadId,
         clientUserMessageId: randomUUID(),
@@ -349,8 +323,8 @@ export class ThreadService {
       }),
       "turn/start response",
     );
-    const turnId = requiredString(
-      requiredObject(response.turn, "started turn").id,
+    const turnId = requireCodexString(
+      requireCodexObject(response.turn, "started turn").id,
       "turn id",
     );
     handle.lease.noteTurnStarted(turnId);
@@ -404,8 +378,8 @@ export class ThreadService {
       async (lease, workspace) => {
         await lease.request("thread/name/set", { threadId, name: title });
         const state = await lease.synchronize(false);
-        return threadSummary(
-          requiredObject(state.thread, "thread"),
+        return projectThreadSummary(
+          requireCodexObject(state.thread, "thread"),
           workspace,
           false,
         );
@@ -420,8 +394,8 @@ export class ThreadService {
       async (lease, workspace) => {
         await lease.request("thread/archive", { threadId });
         const state = await lease.synchronize(false);
-        return threadSummary(
-          requiredObject(state.thread, "thread"),
+        return projectThreadSummary(
+          requireCodexObject(state.thread, "thread"),
           workspace,
           true,
         );
@@ -434,13 +408,13 @@ export class ThreadService {
       threadId,
       "unarchive",
       async (lease, workspace) => {
-        const response = jsonObject(
+        const response = parseCodexObject(
           await lease.request("thread/unarchive", { threadId }),
           "thread/unarchive response",
         );
-        const thread = requiredObject(response.thread, "unarchived thread");
+        const thread = requireCodexObject(response.thread, "unarchived thread");
         lease.adoptAuthoritativeThread(thread);
-        return threadSummary(thread, workspace, false);
+        return projectThreadSummary(thread, workspace, false);
       },
     );
   }
@@ -449,8 +423,7 @@ export class ThreadService {
     await this.#withAuthorizedLease(threadId, "delete", async (lease) => {
       await lease.request("thread/delete", { threadId });
     });
-    this.#runtimeSettings.delete(threadId);
-    await this.#settings.remove(threadId);
+    await this.#sessions.remove(threadId);
     await this.#leases.closeThread(threadId, "thread-deleted");
     return true;
   }
@@ -459,83 +432,7 @@ export class ThreadService {
     handle: ThreadLeaseHandle,
     input: InputOf<"thread/settings/update">,
   ): Promise<ThreadSettingsView> {
-    const mutation = await this.#settings.acquireMutation(handle.threadId, {
-      signal: this.#scope.signal,
-    });
-    try {
-      const stored = await this.#settings.read(handle.threadId);
-      if (stored.revision !== input.expectedRevision) {
-        throw revisionConflict();
-      }
-      const state = await handle.lease.synchronize(false);
-      await this.#workspaces.resolve(state.workspacePath);
-      let runtime = this.#runtimeSettings.get(handle.threadId);
-      if (runtime === undefined) {
-        const resumed = jsonObject(
-          await handle.lease.request("thread/resume", {
-            threadId: handle.threadId,
-            ...(stored.approvalPolicy === undefined
-              ? {}
-              : { approvalPolicy: stored.approvalPolicy }),
-            ...(stored.sandbox === undefined
-              ? {}
-              : { sandbox: stored.sandbox }),
-          }),
-          "thread/resume response",
-        );
-        runtime = runtimeSettings(resumed, stored);
-        this.#resumedLeases.add(handle.lease);
-      }
-      runtime = mergeStoredPermissions(runtime, stored);
-      const next: RuntimeThreadSettings = {
-        ...runtime,
-        ...(input.patch.model === undefined
-          ? {}
-          : { model: input.patch.model }),
-        ...(input.patch.effort === undefined
-          ? {}
-          : { effort: input.patch.effort }),
-        ...(input.patch.sandbox === undefined
-          ? {}
-          : { sandbox: input.patch.sandbox }),
-        ...(input.patch.approvalPolicy === undefined
-          ? {}
-          : { approvalPolicy: input.patch.approvalPolicy }),
-      };
-      await handle.lease.request("thread/settings/update", {
-        threadId: handle.threadId,
-        ...(input.patch.model === undefined
-          ? {}
-          : { model: input.patch.model }),
-        ...(input.patch.effort === undefined
-          ? {}
-          : { effort: input.patch.effort }),
-        ...(input.patch.approvalPolicy === undefined
-          ? {}
-          : { approvalPolicy: input.patch.approvalPolicy }),
-        ...(input.patch.sandbox === undefined
-          ? {}
-          : { sandboxPolicy: sandboxPolicy(input.patch.sandbox) }),
-      });
-      let saved: StoredThreadSettings;
-      try {
-        saved = await this.#settings.save(handle.threadId, stored.revision, {
-          ...(next.sandbox === undefined ? {} : { sandbox: next.sandbox }),
-          ...(next.approvalPolicy === undefined
-            ? {}
-            : { approvalPolicy: next.approvalPolicy }),
-        });
-      } catch (error) {
-        if (error instanceof ThreadSettingsRevisionConflictError) {
-          throw revisionConflict();
-        }
-        throw error;
-      }
-      this.#runtimeSettings.set(handle.threadId, next);
-      return settingsView(saved.revision, next);
-    } finally {
-      await mutation.release();
-    }
+    return this.#sessions.updateSettings(handle, input);
   }
 
   async tuiHandoff(threadId: string): Promise<OutputOf<"thread/tui/handoff">> {
@@ -610,334 +507,8 @@ export class ThreadService {
   }
 }
 
-interface HistoryPage {
-  readonly items: TimelineItem[];
-  readonly nextCursor?: string;
-  readonly hasMore: boolean;
-}
-
-function historyPage(
-  items: TimelineItem[],
-  cursor: string | undefined,
-  limit: number,
-): HistoryPage {
-  let end = items.length;
-  if (cursor !== undefined) {
-    const boundaryId = decodeHistoryCursor(cursor);
-    const boundary = items.findIndex((item) => item.id === boundaryId);
-    if (boundary < 0) {
-      throw new GatewayV2Error(
-        "HISTORY_CURSOR_STALE",
-        "History cursor is no longer present in the authoritative task",
-      );
-    }
-    end = boundary;
-  }
-  const start = Math.max(0, end - limit);
-  const page = items.slice(start, end);
-  return {
-    items: page,
-    ...(start === 0 || page.length === 0
-      ? {}
-      : { nextCursor: encodeHistoryCursor(page[0]!.id) }),
-    hasMore: start > 0,
-  };
-}
-
-function timelineFromThread(
-  thread: Readonly<Record<string, JsonValue>>,
-): TimelineItem[] {
-  if (!Array.isArray(thread.turns)) return [];
-  const timeline: TimelineItem[] = [];
-  for (const [turnIndex, value] of thread.turns.entries()) {
-    if (typeof value !== "object" || value === null || Array.isArray(value))
-      continue;
-    const turn = value as Readonly<Record<string, JsonValue>>;
-    const turnId =
-      typeof turn.id === "string" && turn.id.length > 0
-        ? turn.id
-        : `turn-${turnIndex}`;
-    const createdAt = timestampFromSeconds(turn.startedAt);
-    if (Array.isArray(turn.items)) {
-      for (const [itemIndex, raw] of turn.items.entries()) {
-        if (typeof raw !== "object" || raw === null || Array.isArray(raw))
-          continue;
-        const item = raw as Readonly<Record<string, JsonValue>>;
-        const id =
-          typeof item.id === "string" && item.id.length > 0
-            ? item.id
-            : `${turnId}:item:${itemIndex}`;
-        timeline.push({
-          version: 1,
-          id,
-          turnId,
-          type: timelineType(item.type),
-          ...(createdAt === undefined ? {} : { createdAt }),
-          data: item,
-        });
-      }
-    }
-    if (turn.error !== null && turn.error !== undefined) {
-      const error = jsonValueSchema.safeParse(turn.error);
-      timeline.push({
-        version: 1,
-        id: `${turnId}:error`,
-        turnId,
-        type: "error",
-        ...(createdAt === undefined ? {} : { createdAt }),
-        data:
-          error.success && isJsonObject(error.data)
-            ? error.data
-            : { message: "Codex turn failed" },
-      });
-    }
-  }
-  return timeline;
-}
-
-function timelineType(value: JsonValue | undefined): TimelineItem["type"] {
-  if (
-    value === "userMessage" ||
-    value === "agentMessage" ||
-    value === "reasoning" ||
-    value === "hookPrompt"
-  )
-    return "message";
-  if (value === "plan") return "plan";
-  if (value === "commandExecution") return "command";
-  if (value === "fileChange") return "file-change";
-  if (value === "mcpToolCall" || value === "dynamicToolCall") return "mcp";
-  if (value === "collabAgentToolCall" || value === "subAgentActivity")
-    return "subagent";
-  return "generic";
-}
-
-function threadSummary(
-  thread: Readonly<Record<string, JsonValue>>,
-  workspace: WorkspaceView,
-  archived: boolean,
-): ThreadSummary {
-  const name = typeof thread.name === "string" ? thread.name : undefined;
-  const preview = typeof thread.preview === "string" ? thread.preview : "";
-  return {
-    version: 1,
-    id: requiredString(thread.id, "thread id"),
-    workspaceId: workspace.id,
-    title: boundedThreadTitle(name ?? preview),
-    state: threadState(thread.status),
-    archived,
-    createdAt: requiredTimestamp(thread.createdAt, "thread createdAt"),
-    updatedAt: requiredTimestamp(thread.updatedAt, "thread updatedAt"),
-  };
-}
-
-function boundedThreadTitle(value: string): string {
-  if (value.length <= THREAD_TITLE_MAX_LENGTH) return value;
-
-  let end = THREAD_TITLE_MAX_LENGTH;
-  const lastCodeUnit = value.charCodeAt(end - 1);
-  if (lastCodeUnit >= 0xd800 && lastCodeUnit <= 0xdbff) end -= 1;
-  return value.slice(0, end);
-}
-
-function threadState(value: JsonValue | undefined): ThreadLeaseState {
-  const status = requiredObject(value, "thread status");
-  if (status.type === "active") return "running";
-  if (status.type === "systemError") return "failed";
-  return "idle";
-}
-
-function settingsView(
-  revision: number,
-  settings: RuntimeThreadSettings,
-): ThreadSettingsView {
-  return {
-    version: 1,
-    revision,
-    ...(settings.model === undefined ? {} : { model: settings.model }),
-    ...(settings.effort === undefined ? {} : { effort: settings.effort }),
-    ...(settings.sandbox === undefined ? {} : { sandbox: settings.sandbox }),
-    ...(settings.approvalPolicy === undefined
-      ? {}
-      : { approvalPolicy: settings.approvalPolicy }),
-  };
-}
-
-function runtimeSettings(
-  response: Readonly<Record<string, JsonValue>>,
-  stored: StoredThreadSettings,
-): RuntimeThreadSettings {
-  const model = typeof response.model === "string" ? response.model : undefined;
-  const effort =
-    typeof response.reasoningEffort === "string"
-      ? response.reasoningEffort
-      : typeof response.effort === "string"
-        ? response.effort
-        : undefined;
-  const approvalPolicy =
-    approvalFromValue(response.approvalPolicy) ?? stored.approvalPolicy;
-  const sandbox = sandboxFromValue(response.sandbox) ?? stored.sandbox;
-  return {
-    ...(model === undefined ? {} : { model }),
-    ...(effort === undefined ? {} : { effort }),
-    ...(sandbox === undefined ? {} : { sandbox }),
-    ...(approvalPolicy === undefined ? {} : { approvalPolicy }),
-  };
-}
-
-function mergeStoredPermissions(
-  runtime: RuntimeThreadSettings,
-  stored: StoredThreadSettings,
-): RuntimeThreadSettings {
-  return {
-    ...runtime,
-    ...(stored.sandbox === undefined ? {} : { sandbox: stored.sandbox }),
-    ...(stored.approvalPolicy === undefined
-      ? {}
-      : { approvalPolicy: stored.approvalPolicy }),
-  };
-}
-
-function approvalFromValue(
-  value: JsonValue | undefined,
-): RuntimeThreadSettings["approvalPolicy"] {
-  return value === "untrusted" || value === "on-request" || value === "never"
-    ? value
-    : undefined;
-}
-
-function sandboxFromValue(
-  value: JsonValue | undefined,
-): RuntimeThreadSettings["sandbox"] {
-  if (
-    value === "read-only" ||
-    value === "workspace-write" ||
-    value === "danger-full-access"
-  )
-    return value;
-  if (!isJsonObject(value)) return undefined;
-  if (value.type === "readOnly") return "read-only";
-  if (value.type === "workspaceWrite") return "workspace-write";
-  if (value.type === "dangerFullAccess") return "danger-full-access";
-  return undefined;
-}
-
-function sandboxPolicy(
-  value: "read-only" | "workspace-write" | "danger-full-access",
-): Readonly<Record<string, JsonValue>> {
-  if (value === "read-only") return { type: "readOnly", networkAccess: false };
-  if (value === "workspace-write") {
-    return {
-      type: "workspaceWrite",
-      writableRoots: [],
-      networkAccess: false,
-      excludeTmpdirEnvVar: false,
-      excludeSlashTmp: false,
-    };
-  }
-  return { type: "dangerFullAccess" };
-}
-
 function textInput(text: string): readonly JsonValue[] {
   return [{ type: "text", text, text_elements: [] }];
-}
-
-function parseThreadListResponse(value: unknown): {
-  readonly threads: Readonly<Record<string, JsonValue>>[];
-  readonly nextCursor?: string;
-} {
-  const response = jsonObject(value, "thread/list response");
-  if (!Array.isArray(response.data)) throw new Error("Thread list has no data");
-  const threads = response.data.map((entry) => requiredObject(entry, "thread"));
-  const nextCursor =
-    typeof response.nextCursor === "string" && response.nextCursor.length > 0
-      ? response.nextCursor
-      : undefined;
-  return { threads, ...(nextCursor === undefined ? {} : { nextCursor }) };
-}
-
-function jsonObject(
-  value: unknown,
-  field: string,
-): Readonly<Record<string, JsonValue>> {
-  const parsed = jsonValueSchema.safeParse(value);
-  if (!parsed.success || !isJsonObject(parsed.data)) {
-    throw new Error(`Invalid ${field}`);
-  }
-  return parsed.data;
-}
-
-function requiredObject(
-  value: JsonValue | undefined,
-  field: string,
-): Readonly<Record<string, JsonValue>> {
-  if (!isJsonObject(value)) {
-    throw new Error(`Invalid ${field}`);
-  }
-  return value;
-}
-
-function isJsonObject(
-  value: JsonValue | undefined,
-): value is Readonly<Record<string, JsonValue>> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function requiredString(value: JsonValue | undefined, field: string): string {
-  if (typeof value !== "string" || value.length === 0) {
-    throw new Error(`Invalid ${field}`);
-  }
-  return value;
-}
-
-function requiredTimestamp(
-  value: JsonValue | undefined,
-  field: string,
-): string {
-  const timestamp = timestampFromSeconds(value);
-  if (timestamp === undefined) throw new Error(`Invalid ${field}`);
-  return timestamp;
-}
-
-function timestampFromSeconds(
-  value: JsonValue | undefined,
-): string | undefined {
-  if (typeof value !== "number" || !Number.isFinite(value) || value < 0)
-    return undefined;
-  return new Date(value * 1_000).toISOString();
-}
-
-function encodeHistoryCursor(itemId: string): string {
-  return Buffer.from(
-    JSON.stringify({ version: 1, beforeItemId: itemId }),
-  ).toString("base64url");
-}
-
-function decodeHistoryCursor(value: string): string {
-  try {
-    const parsed = JSON.parse(
-      Buffer.from(value, "base64url").toString("utf8"),
-    ) as unknown;
-    if (
-      typeof parsed === "object" &&
-      parsed !== null &&
-      !Array.isArray(parsed) &&
-      (parsed as Record<string, unknown>).version === 1 &&
-      typeof (parsed as Record<string, unknown>).beforeItemId === "string"
-    ) {
-      return (parsed as { beforeItemId: string }).beforeItemId;
-    }
-  } catch {
-    // Converted into a stable public protocol error below.
-  }
-  throw new GatewayV2Error("INVALID_CURSOR", "History cursor is invalid");
-}
-
-function revisionConflict(): GatewayV2Error {
-  return new GatewayV2Error(
-    "REVISION_CONFLICT",
-    "Task settings changed; refresh before saving",
-  );
 }
 
 function shellQuote(value: string): string {

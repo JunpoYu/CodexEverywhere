@@ -10,6 +10,13 @@ import {
   queryOptions,
   type GatewayPort,
 } from "../gateway/gateway-port.js";
+import {
+  mergeAuthoritativeTimelineWindow,
+  mergeTimelinePages,
+  prependAuthoritativeHistoryPage,
+  replaceAuthoritativeTimelineWindow,
+  TIMELINE_PAGE_SIZE,
+} from "./thread-timeline-model.js";
 
 type Snapshot = OutputOf<"thread/open">;
 
@@ -25,7 +32,13 @@ export interface ThreadActorState {
     | "failed";
   readonly threadId?: string;
   readonly snapshot?: Snapshot;
+  /** Stable IDs introduced only by explicit backward pagination. */
+  readonly loadedHistoryItemIds: readonly string[];
   readonly refreshing?: boolean;
+  readonly historyStatus: "idle" | "loading" | "failed";
+  readonly historyError?: string | undefined;
+  readonly refreshPending?: boolean;
+  readonly replaceHistoryOnRefresh?: boolean | undefined;
   readonly error?: string;
 }
 
@@ -42,26 +55,34 @@ type Event =
       readonly type: "HISTORY_LOADED";
       readonly page: OutputOf<"thread/history">;
     }
+  | { readonly type: "HISTORY_FAILED"; readonly message: string }
   | { readonly type: "GATEWAY_EVENT"; readonly event: GatewayEventEnvelopeV2 }
   | { readonly type: "RECONNECTING" }
   | { readonly type: "CLOSE" }
   | { readonly type: "FAILED"; readonly message: string };
 
 type Effect =
-  | { readonly type: "FETCH"; readonly threadId: string }
+  | {
+      readonly type: "FETCH";
+      readonly threadId: string;
+      readonly previousThreadId?: string;
+    }
   | {
       readonly type: "HISTORY";
       readonly threadId: string;
       readonly cursor: string;
     }
-  | { readonly type: "CLOSE" };
+  | { readonly type: "CLOSE"; readonly threadId?: string };
 
 export function createThreadActor(scope: Scope, gateway: GatewayPort) {
-  let openedThreadId: string | undefined;
   return new Actor<ThreadActorState, Event, Effect>({
     name: "thread",
     scope,
-    initialState: { status: "closed" },
+    initialState: {
+      status: "closed",
+      historyStatus: "idle",
+      loadedHistoryItemIds: [],
+    },
     reducer: (state, event) => {
       switch (event.type) {
         case "OPEN":
@@ -69,24 +90,76 @@ export function createThreadActor(scope: Scope, gateway: GatewayPort) {
             state.threadId === event.threadId &&
             state.snapshot !== undefined
           ) {
+            if (state.historyStatus === "loading") {
+              return {
+                state: {
+                  ...state,
+                  refreshing: true,
+                  refreshPending: true,
+                },
+                preserveEffects: true,
+              };
+            }
+            if (state.refreshing === true) {
+              return {
+                state: { ...state, refreshPending: true },
+                preserveEffects: true,
+              };
+            }
             return {
               state: { ...state, refreshing: true },
               effects: [{ type: "FETCH", threadId: event.threadId }],
             };
           }
           return {
-            state: { status: "opening", threadId: event.threadId },
-            effects: [{ type: "FETCH", threadId: event.threadId }],
-          };
-        case "OPENED":
-          return {
             state: {
-              status: event.snapshot.state,
-              threadId: event.snapshot.thread.id,
-              snapshot: preserveTransientEvents(state.snapshot, event.snapshot),
-              refreshing: false,
+              status: "opening",
+              threadId: event.threadId,
+              historyStatus: "idle",
+              loadedHistoryItemIds: [],
             },
+            effects: [
+              {
+                type: "FETCH",
+                threadId: event.threadId,
+                ...(state.threadId === undefined ||
+                state.threadId === event.threadId
+                  ? {}
+                  : { previousThreadId: state.threadId }),
+              },
+            ],
           };
+        case "OPENED": {
+          const refreshAgain = state.refreshPending === true;
+          const replaceHistory = state.replaceHistoryOnRefresh === true;
+          const snapshot = replaceHistory
+            ? replaceAuthoritativeTimelineWindow(state.snapshot, event.snapshot)
+            : mergeAuthoritativeTimelineWindow(
+                state.snapshot,
+                event.snapshot,
+                state.loadedHistoryItemIds,
+              );
+          const nextState: ThreadActorState = {
+            status: event.snapshot.state,
+            threadId: event.snapshot.thread.id,
+            snapshot,
+            loadedHistoryItemIds: replaceHistory
+              ? []
+              : retainPresentIds(state.loadedHistoryItemIds, snapshot),
+            refreshing: refreshAgain,
+            historyStatus: state.historyStatus,
+            refreshPending: false,
+            replaceHistoryOnRefresh:
+              replaceHistory && refreshAgain ? true : undefined,
+          };
+          if (refreshAgain) {
+            return {
+              state: nextState,
+              effects: [{ type: "FETCH", threadId: event.snapshot.thread.id }],
+            };
+          }
+          return { state: nextState };
+        }
         case "SETTINGS_UPDATED":
           if (
             state.threadId !== event.threadId ||
@@ -106,13 +179,19 @@ export function createThreadActor(scope: Scope, gateway: GatewayPort) {
           if (
             state.threadId === undefined ||
             state.snapshot === undefined ||
+            state.refreshing === true ||
+            state.historyStatus === "loading" ||
             !state.snapshot.hasEarlierHistory ||
             state.snapshot.historyCursor === undefined
           ) {
-            return { state };
+            return { state, preserveEffects: true };
           }
           return {
-            state: { ...state, status: "syncing" },
+            state: {
+              ...state,
+              historyStatus: "loading",
+              historyError: undefined,
+            },
             effects: [
               {
                 type: "HISTORY",
@@ -122,23 +201,48 @@ export function createThreadActor(scope: Scope, gateway: GatewayPort) {
             ],
           };
         case "HISTORY_LOADED": {
-          if (state.snapshot === undefined) return { state };
-          const { historyCursor: _previousCursor, ...snapshot } =
-            state.snapshot;
-          return {
-            state: {
-              ...state,
-              status: snapshot.state,
-              snapshot: {
-                ...snapshot,
-                items: mergeTimeline(event.page.items, snapshot.items),
-                ...(event.page.nextCursor === undefined
-                  ? {}
-                  : { historyCursor: event.page.nextCursor }),
-                hasEarlierHistory: event.page.hasMore,
-              },
-            },
+          if (state.snapshot === undefined) {
+            return { state, preserveEffects: true };
+          }
+          const nextState: ThreadActorState = {
+            ...state,
+            snapshot: prependAuthoritativeHistoryPage(
+              state.snapshot,
+              event.page,
+            ),
+            loadedHistoryItemIds: appendNewHistoryIds(
+              state.loadedHistoryItemIds,
+              state.snapshot,
+              event.page,
+            ),
+            historyStatus: "idle",
+            historyError: undefined,
+            refreshPending: false,
           };
+          if (state.refreshPending === true && state.threadId !== undefined) {
+            return {
+              state: { ...nextState, refreshing: true },
+              effects: [{ type: "FETCH", threadId: state.threadId }],
+            };
+          }
+          return {
+            state: nextState,
+          };
+        }
+        case "HISTORY_FAILED": {
+          const nextState: ThreadActorState = {
+            ...state,
+            historyStatus: "failed",
+            historyError: event.message,
+            refreshPending: false,
+          };
+          if (state.refreshPending === true && state.threadId !== undefined) {
+            return {
+              state: { ...nextState, refreshing: true },
+              effects: [{ type: "FETCH", threadId: state.threadId }],
+            };
+          }
+          return { state: nextState };
         }
         case "GATEWAY_EVENT":
           return {
@@ -147,12 +251,29 @@ export function createThreadActor(scope: Scope, gateway: GatewayPort) {
           };
         case "RECONNECTING":
           return {
-            state: { ...state, status: "reconnecting", refreshing: false },
+            state: {
+              ...state,
+              status: "reconnecting",
+              refreshing: false,
+              historyStatus: "idle",
+              refreshPending: false,
+            },
           };
         case "CLOSE":
           return {
-            state: { status: "closed" },
-            effects: [{ type: "CLOSE" }],
+            state: {
+              status: "closed",
+              historyStatus: "idle",
+              loadedHistoryItemIds: [],
+            },
+            effects: [
+              {
+                type: "CLOSE",
+                ...(state.threadId === undefined
+                  ? {}
+                  : { threadId: state.threadId }),
+              },
+            ],
           };
         case "FAILED":
           return {
@@ -168,14 +289,12 @@ export function createThreadActor(scope: Scope, gateway: GatewayPort) {
     runEffect: async (effect, context) => {
       try {
         if (effect.type === "CLOSE") {
-          if (openedThreadId === undefined) return;
-          const closing = openedThreadId;
+          if (effect.threadId === undefined) return;
           await gateway.request(
             "thread/close",
-            { version: 1, threadId: closing },
+            { version: 1, threadId: effect.threadId },
             mutationOptions(crypto.randomUUID(), context.signal),
           );
-          if (openedThreadId === closing) openedThreadId = undefined;
           return;
         }
         if (effect.type === "HISTORY") {
@@ -185,42 +304,44 @@ export function createThreadActor(scope: Scope, gateway: GatewayPort) {
               version: 1,
               threadId: effect.threadId,
               cursor: effect.cursor,
-              limit: 100,
+              limit: TIMELINE_PAGE_SIZE,
             },
             queryOptions(context.signal),
           );
           context.dispatch({ type: "HISTORY_LOADED", page });
           return;
         }
-        if (
-          openedThreadId !== undefined &&
-          openedThreadId !== effect.threadId
-        ) {
+        if (effect.previousThreadId !== undefined) {
           await gateway.request(
             "thread/close",
-            { version: 1, threadId: openedThreadId },
+            { version: 1, threadId: effect.previousThreadId },
             mutationOptions(crypto.randomUUID(), context.signal),
           );
-          openedThreadId = undefined;
+          if (!context.isCurrent()) return;
         }
         const snapshot = await gateway.request(
           "thread/open",
-          { version: 1, threadId: effect.threadId, historyLimit: 100 },
+          {
+            version: 1,
+            threadId: effect.threadId,
+            historyLimit: TIMELINE_PAGE_SIZE,
+          },
           queryOptions(context.signal),
         );
-        openedThreadId = effect.threadId;
         context.dispatch({ type: "OPENED", snapshot });
       } catch (error) {
         if (!context.signal.aborted && effect.type !== "CLOSE") {
-          context.dispatch({
-            type: "FAILED",
-            message:
-              error instanceof Error
-                ? error.message
-                : effect.type === "HISTORY"
-                  ? "历史加载失败"
-                  : "任务打开失败",
-          });
+          const message =
+            error instanceof Error
+              ? error.message
+              : effect.type === "HISTORY"
+                ? "历史加载失败"
+                : "任务打开失败";
+          context.dispatch(
+            effect.type === "HISTORY"
+              ? { type: "HISTORY_FAILED", message }
+              : { type: "FAILED", message },
+          );
         }
       }
     },
@@ -228,16 +349,29 @@ export function createThreadActor(scope: Scope, gateway: GatewayPort) {
   });
 }
 
-function mergeTimeline(
-  earlier: Snapshot["items"],
-  current: Snapshot["items"],
-): Snapshot["items"] {
-  const seen = new Set<string>();
-  return [...earlier, ...current].filter((item) => {
-    if (seen.has(item.id)) return false;
-    seen.add(item.id);
-    return true;
-  });
+function appendNewHistoryIds(
+  loadedHistoryItemIds: readonly string[],
+  current: Snapshot,
+  page: OutputOf<"thread/history">,
+): readonly string[] {
+  const currentIds = new Set(current.items.map((item) => item.id));
+  const loadedIds = new Set(loadedHistoryItemIds);
+  const result = [...loadedHistoryItemIds];
+  for (const item of page.items) {
+    if (currentIds.has(item.id) || loadedIds.has(item.id)) continue;
+    loadedIds.add(item.id);
+    result.push(item.id);
+  }
+  return result;
+}
+
+function retainPresentIds(
+  loadedHistoryItemIds: readonly string[],
+  snapshot: Snapshot,
+): readonly string[] {
+  if (loadedHistoryItemIds.length === 0) return loadedHistoryItemIds;
+  const presentIds = new Set(snapshot.items.map((item) => item.id));
+  return loadedHistoryItemIds.filter((id) => presentIds.has(id));
 }
 
 function applyGatewayEvent(
@@ -254,6 +388,17 @@ function applyGatewayEvent(
       status: payload.state,
       snapshot: { ...state.snapshot, state: payload.state },
     };
+  }
+  if (event.type === "codex/notification") {
+    const payload = parseGatewayEventPayload(
+      "codex/notification",
+      event.payload,
+    );
+    if (payload.threadId !== state.threadId) return state;
+    if (payload.method === "thread/compacted") {
+      return { ...state, replaceHistoryOnRefresh: true };
+    }
+    return state;
   }
   if (event.type === "interaction/created") {
     const interaction = parseGatewayEventPayload(
@@ -293,7 +438,7 @@ function applyGatewayEvent(
       ...state,
       snapshot: {
         ...state.snapshot,
-        items: mergeTimeline(state.snapshot.items, [item]),
+        items: mergeTimelinePages(state.snapshot.items, [item]),
       },
     };
   }
@@ -314,22 +459,15 @@ function applyGatewayEvent(
       },
     };
   }
-  return state;
-}
-
-function preserveTransientEvents(
-  current: Snapshot | undefined,
-  authoritative: Snapshot,
-): Snapshot {
-  if (current === undefined || current.thread.id !== authoritative.thread.id) {
-    return authoritative;
+  if (event.type === "thread/lease/failed") {
+    const payload = parseGatewayEventPayload(event.type, event.payload);
+    if (payload.threadId !== state.threadId) return state;
+    return {
+      ...state,
+      status: "failed",
+      refreshing: false,
+      error: payload.reason,
+    };
   }
-  const transient = current.items.filter(
-    (item) => item.type === "generic" && item.data.source === "codex/generic",
-  );
-  if (transient.length === 0) return authoritative;
-  return {
-    ...authoritative,
-    items: mergeTimeline(authoritative.items, transient),
-  };
+  return state;
 }

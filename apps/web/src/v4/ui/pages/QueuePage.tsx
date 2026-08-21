@@ -14,9 +14,7 @@ export function QueuePage() {
   return (
     <main
       className="page"
-      aria-busy={
-        queue.status === "mutating" || queue.status === "indeterminate"
-      }
+      aria-busy={queue.status === "mutating" || queue.status === "reconciling"}
     >
       <header className="page-heading">
         <div>
@@ -25,7 +23,11 @@ export function QueuePage() {
           <p>待发送请求由宿主机 dispatcher 排队；结果未知不会静默重试。</p>
         </div>
         <button
-          disabled={queue.status === "loading"}
+          disabled={
+            queue.status === "loading" ||
+            queue.status === "mutating" ||
+            queue.status === "reconciling"
+          }
           type="button"
           onClick={() => runtime.queue.dispatch({ type: "LOAD" })}
         >
@@ -35,7 +37,11 @@ export function QueuePage() {
       </header>
       {queue.error === undefined ? null : (
         <StatusMessage
-          tone={queue.status === "indeterminate" ? "warning" : "error"}
+          tone={
+            queue.status === "indeterminate" || queue.status === "reconciling"
+              ? "warning"
+              : "error"
+          }
         >
           {queue.error}
         </StatusMessage>
@@ -43,7 +49,7 @@ export function QueuePage() {
       <section className="list-panel">
         {queue.items.map((item) => (
           <QueueRow
-            busy={queue.status === "mutating"}
+            busy={queue.status === "mutating" || queue.status === "reconciling"}
             item={item}
             key={item.id}
           />

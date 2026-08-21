@@ -13,7 +13,8 @@ import {
 type QueueItem = OutputOf<"queue/list">["items"][number];
 
 export interface QueueActorState {
-  readonly status: "loading" | "ready" | "mutating" | "indeterminate";
+  readonly status:
+    "loading" | "ready" | "mutating" | "reconciling" | "indeterminate";
   readonly items: readonly QueueItem[];
   readonly operationKey?: string;
   readonly error?: string;
@@ -78,6 +79,9 @@ export function createQueueActor(scope: Scope, gateway: GatewayPort) {
     reducer: (state, event) => {
       switch (event.type) {
         case "LOAD":
+          if (state.status === "mutating" || state.status === "reconciling") {
+            return { state, preserveEffects: true };
+          }
           return {
             state: { ...state, status: "loading" },
             effects: [
@@ -92,6 +96,9 @@ export function createQueueActor(scope: Scope, gateway: GatewayPort) {
         case "LOADED":
           return { state: { status: "ready", items: event.items } };
         case "ADD": {
+          if (state.status !== "ready") {
+            return { state, preserveEffects: true };
+          }
           const operationKey = crypto.randomUUID();
           return {
             state: { ...state, status: "mutating", operationKey },
@@ -106,6 +113,9 @@ export function createQueueActor(scope: Scope, gateway: GatewayPort) {
           };
         }
         case "REMOVE": {
+          if (state.status !== "ready") {
+            return { state, preserveEffects: true };
+          }
           const operationKey = crypto.randomUUID();
           return {
             state: { ...state, status: "mutating", operationKey },
@@ -113,6 +123,9 @@ export function createQueueActor(scope: Scope, gateway: GatewayPort) {
           };
         }
         case "STEER": {
+          if (state.status !== "ready") {
+            return { state, preserveEffects: true };
+          }
           const operationKey = crypto.randomUUID();
           return {
             state: { ...state, status: "mutating", operationKey },
@@ -127,6 +140,9 @@ export function createQueueActor(scope: Scope, gateway: GatewayPort) {
           };
         }
         case "ACKNOWLEDGE": {
+          if (state.status !== "ready") {
+            return { state, preserveEffects: true };
+          }
           const operationKey = crypto.randomUUID();
           return {
             state: { ...state, status: "mutating", operationKey },
@@ -141,49 +157,21 @@ export function createQueueActor(scope: Scope, gateway: GatewayPort) {
           };
         }
         case "CHANGED":
-          return state.status === "indeterminate" &&
-            state.operationKey !== undefined
-            ? {
-                state: {
-                  ...state,
-                  items: upsert(state.items, event.item),
-                },
-                effects: [
-                  {
-                    type: "STATUS" as const,
-                    operationKey: state.operationKey,
-                  },
-                ],
-              }
-            : {
-                state: {
-                  ...state,
-                  items: upsert(state.items, event.item),
-                },
-                preserveEffects: true,
-              };
+          return {
+            state: {
+              ...state,
+              items: upsert(state.items, event.item),
+            },
+            preserveEffects: true,
+          };
         case "REMOVED":
-          return state.status === "indeterminate" &&
-            state.operationKey !== undefined
-            ? {
-                state: {
-                  ...state,
-                  items: state.items.filter((item) => item.id !== event.itemId),
-                },
-                effects: [
-                  {
-                    type: "STATUS" as const,
-                    operationKey: state.operationKey,
-                  },
-                ],
-              }
-            : {
-                state: {
-                  ...state,
-                  items: state.items.filter((item) => item.id !== event.itemId),
-                },
-                preserveEffects: true,
-              };
+          return {
+            state: {
+              ...state,
+              items: state.items.filter((item) => item.id !== event.itemId),
+            },
+            preserveEffects: true,
+          };
         case "MUTATED":
           return {
             state: {
@@ -202,7 +190,7 @@ export function createQueueActor(scope: Scope, gateway: GatewayPort) {
           return {
             state: {
               ...state,
-              status: "indeterminate",
+              status: "reconciling",
               operationKey: event.operationKey,
               error: "Queue 操作结果未知，正在向宿主机对账。",
             },
@@ -212,7 +200,7 @@ export function createQueueActor(scope: Scope, gateway: GatewayPort) {
           return {
             state: {
               ...state,
-              status: "indeterminate",
+              status: "reconciling",
               operationKey: event.operationKey,
             },
             effects: [{ type: "STATUS", operationKey: event.operationKey }],
@@ -223,13 +211,21 @@ export function createQueueActor(scope: Scope, gateway: GatewayPort) {
             effects: [{ type: "FETCH" }],
           };
         case "FAILED":
-          return {
-            state: {
-              ...state,
-              status: event.unknown ? "indeterminate" : "ready",
-              error: event.message,
-            },
-          };
+          return event.unknown
+            ? {
+                state: {
+                  ...state,
+                  status: "indeterminate",
+                  error: event.message,
+                },
+              }
+            : {
+                state: {
+                  status: "ready",
+                  items: state.items,
+                  error: event.message,
+                },
+              };
       }
     },
     runEffect: async (effect, context) => {

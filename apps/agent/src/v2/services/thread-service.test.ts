@@ -79,7 +79,7 @@ describe("ThreadService", () => {
     expect(factory.client.closed).toBe(true);
   });
 
-  it("resumes a lease once and uses thread/read for later refreshes", async () => {
+  it("resumes a shared lease once when two viewers open concurrently", async () => {
     const directory = await mkdtemp(join(tmpdir(), "ce-thread-service-"));
     directories.push(directory);
     const workspacePath = join(directory, "workspace");
@@ -89,6 +89,61 @@ describe("ThreadService", () => {
       { create: true },
     );
     const scope = new Scope("thread-open-refresh-test");
+    scopes.push(scope);
+    scope.defer(() => state.close());
+    let allowResume: (() => void) | undefined;
+    const resumeGate = new Promise<void>((resolve) => {
+      allowResume = resolve;
+    });
+    const factory = new ThreadOpenFactory(workspacePath, resumeGate);
+    const leases = new ThreadLeaseManager({ scope, clientFactory: factory });
+    const workspaces = new WorkspaceService(state.workspaces, {
+      home: directory,
+    });
+    await workspaces.add(workspacePath, "Workspace");
+    const service = new ThreadService({
+      scope,
+      clients: factory,
+      leases,
+      workspaces,
+      preferences: new PreferencesService(state.preferences),
+      settings: state.threadSettings,
+    });
+    const first = await leases.acquire("thread-1", {
+      kind: "viewer",
+      id: "viewer-1",
+    });
+    const second = await leases.acquire("thread-1", {
+      kind: "viewer",
+      id: "viewer-2",
+    });
+
+    try {
+      const opened = Promise.all([
+        service.open(first, { historyLimit: 100 }),
+        service.open(second, { historyLimit: 100 }),
+      ]);
+      await eventually(() => factory.client.methods.includes("thread/resume"));
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      allowResume?.();
+      await opened;
+    } finally {
+      await Promise.all([first.release(), second.release()]);
+    }
+
+    expect(factory.client.methods).toEqual(["thread/resume", "thread/read"]);
+  });
+
+  it("resumes again when an idle task receives a new lease", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "ce-thread-service-"));
+    directories.push(directory);
+    const workspacePath = join(directory, "workspace");
+    await mkdir(workspacePath);
+    const state = await UserStateDatabase.open(
+      join(directory, "state.sqlite"),
+      { create: true },
+    );
+    const scope = new Scope("thread-new-lease-test");
     scopes.push(scope);
     scope.defer(() => state.close());
     const factory = new ThreadOpenFactory(workspacePath);
@@ -105,19 +160,25 @@ describe("ThreadService", () => {
       preferences: new PreferencesService(state.preferences),
       settings: state.threadSettings,
     });
-    const handle = await leases.acquire("thread-1", {
+
+    const first = await leases.acquire("thread-1", {
       kind: "viewer",
       id: "viewer-1",
     });
+    await service.open(first, { historyLimit: 100 });
+    await first.release();
+    const second = await leases.acquire("thread-1", {
+      kind: "viewer",
+      id: "viewer-2",
+    });
+    await service.open(second, { historyLimit: 100 });
+    await second.release();
 
-    try {
-      await service.open(handle, { historyLimit: 100 });
-      await service.open(handle, { historyLimit: 100 });
-    } finally {
-      await handle.release();
-    }
-
-    expect(factory.client.methods).toEqual(["thread/resume", "thread/read"]);
+    expect(factory.clients).toHaveLength(2);
+    expect(factory.clients.map((client) => client.methods)).toEqual([
+      ["thread/resume"],
+      ["thread/resume"],
+    ]);
   });
 
   it("updates task settings under the persisted permission boundary", async () => {
@@ -393,15 +454,29 @@ describe("ThreadService", () => {
 });
 
 class ThreadOpenFactory implements CodexClientFactoryPort {
-  readonly client: ThreadOpenClient;
+  readonly clients: ThreadOpenClient[] = [];
+  readonly #workspacePath: string;
+  readonly #resumeGate: Promise<void>;
 
-  constructor(workspacePath: string) {
-    this.client = new ThreadOpenClient(workspacePath);
+  constructor(
+    workspacePath: string,
+    resumeGate: Promise<void> = Promise.resolve(),
+  ) {
+    this.#workspacePath = workspacePath;
+    this.#resumeGate = resumeGate;
+  }
+
+  get client(): ThreadOpenClient {
+    const client = this.clients[0];
+    if (client === undefined) throw new Error("Thread client was not created");
+    return client;
   }
 
   create(scope: Scope): Promise<CodexClient> {
-    scope.defer(() => this.client.close());
-    return Promise.resolve(this.client);
+    const client = new ThreadOpenClient(this.#workspacePath, this.#resumeGate);
+    this.clients.push(client);
+    scope.defer(() => client.close());
+    return Promise.resolve(client);
   }
 }
 
@@ -409,21 +484,25 @@ class ThreadOpenClient implements CodexClient {
   readonly methods: string[] = [];
   closed = false;
 
-  constructor(private readonly workspacePath: string) {}
+  constructor(
+    private readonly workspacePath: string,
+    private readonly resumeGate: Promise<void>,
+  ) {}
 
-  request<Result = unknown>(method: string): Promise<Result> {
+  async request<Result = unknown>(method: string): Promise<Result> {
     this.methods.push(method);
     if (method === "thread/resume") {
-      return Promise.resolve({
+      await this.resumeGate;
+      return {
         thread: thread(this.workspacePath),
         approvalPolicy: "on-request",
         sandbox: workspaceWriteSandbox(),
-      } as Result);
+      } as Result;
     }
     if (method === "thread/read") {
-      return Promise.resolve({ thread: thread(this.workspacePath) } as Result);
+      return { thread: thread(this.workspacePath) } as Result;
     }
-    return Promise.reject(new Error(`Unexpected request: ${method}`));
+    throw new Error(`Unexpected request: ${method}`);
   }
 
   onNotification(): () => void {

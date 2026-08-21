@@ -28,6 +28,7 @@ describe("UserWebRuntime task refresh", () => {
       type: "LOAD",
       archived: true,
       workspaceId: "workspace-1",
+      workspaceLabel: "Research",
     });
     await vi.waitFor(() => expect(gateway.inputs).toHaveLength(1));
     await vi.waitFor(() =>
@@ -51,6 +52,11 @@ describe("UserWebRuntime task refresh", () => {
         workspaceId: "workspace-1",
       },
     ]);
+    expect(runtime.tasks.getSnapshot()).toMatchObject({
+      archived: true,
+      workspaceId: "workspace-1",
+      workspaceLabel: "Research",
+    });
   });
 
   it("ignores resume metadata and debounces timeline refreshes", async () => {

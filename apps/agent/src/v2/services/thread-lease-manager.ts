@@ -87,7 +87,7 @@ export class ThreadLease {
   readonly #interactions = new InteractionBroker();
   readonly #references = new Map<string, number>();
   readonly #events = new TypedEventBus<ThreadLeaseEvents>();
-  readonly #onDisposable: (lease: ThreadLease) => void;
+  readonly #onDisposable: (lease: ThreadLease) => void | Promise<void>;
   #state: ThreadLeaseState = "idle";
   #currentTurnId: string | undefined;
   #workspacePath: string | undefined;
@@ -97,7 +97,7 @@ export class ThreadLease {
     readonly threadId: string;
     readonly scope: Scope;
     readonly client: CodexClient;
-    readonly onDisposable: (lease: ThreadLease) => void;
+    readonly onDisposable: (lease: ThreadLease) => void | Promise<void>;
   }) {
     this.threadId = input.threadId;
     this.#scope = input.scope;
@@ -130,7 +130,7 @@ export class ThreadLease {
           this.#state = "running";
           this.#events.emit("state", this.#state);
         }
-        this.#disposeIfIdle();
+        this.#runBackgroundCleanup(() => this.#disposeIfIdle());
       }),
     );
     this.#scope.defer(
@@ -140,7 +140,7 @@ export class ThreadLease {
           interactionId,
           reason,
         });
-        this.#disposeIfIdle();
+        this.#runBackgroundCleanup(() => this.#disposeIfIdle());
       }),
     );
   }
@@ -175,12 +175,15 @@ export class ThreadLease {
     this.#references.set(key, (this.#references.get(key) ?? 0) + 1);
   }
 
-  releaseReference(kind: ThreadLeaseReferenceKind, id: string): void {
+  async releaseReference(
+    kind: ThreadLeaseReferenceKind,
+    id: string,
+  ): Promise<void> {
     const key = `${kind}:${id}`;
     const count = this.#references.get(key) ?? 0;
     if (count <= 1) this.#references.delete(key);
     else this.#references.set(key, count - 1);
-    this.#disposeIfIdle();
+    await this.#disposeIfIdle();
   }
 
   request<Result = unknown>(method: string, params?: unknown): Promise<Result> {
@@ -321,7 +324,7 @@ export class ThreadLease {
       type: "lease/failed",
       reason: "app-server-client-closed",
     });
-    this.#onDisposable(this);
+    this.#runBackgroundCleanup(() => this.#onDisposable(this));
   }
 
   #updateState(method: string, params: JsonValue): void {
@@ -347,18 +350,40 @@ export class ThreadLease {
       if (status === "systemError") this.#state = "failed";
     }
     if (this.#state !== previous) this.#events.emit("state", this.#state);
-    this.#disposeIfIdle();
+    this.#runBackgroundCleanup(() => this.#disposeIfIdle());
   }
 
-  #disposeIfIdle(): void {
+  async #disposeIfIdle(): Promise<void> {
     if (
       !this.#closed &&
       this.#state === "idle" &&
       this.#references.size === 0 &&
       this.#interactions.size === 0
     ) {
-      this.#onDisposable(this);
+      await this.#onDisposable(this);
     }
+  }
+
+  /** Observe callback-triggered disposal without leaking a rejected promise. */
+  #runBackgroundCleanup(cleanup: () => void | Promise<void>): void {
+    void Promise.resolve()
+      .then(cleanup)
+      .then(undefined, () => {
+        this.#state = "failed";
+        try {
+          this.#events.emit("state", this.#state);
+        } catch {
+          // Cleanup containment must not create another unhandled rejection.
+        }
+        try {
+          this.#events.emit("event", {
+            type: "lease/failed",
+            reason: "lease-disposal-failed",
+          });
+        } catch {
+          // Event listeners cannot make background containment reject.
+        }
+      });
   }
 
   #assertOpen(): void {
@@ -372,6 +397,7 @@ export class ThreadLeaseManager {
   readonly #maximumLeases: number;
   readonly #leases = new Map<string, ThreadLease>();
   readonly #creating = new Map<string, Promise<ThreadLease>>();
+  readonly #disposing = new Map<string, Promise<void>>();
   #closed = false;
 
   constructor(options: ThreadLeaseManagerOptions) {
@@ -387,10 +413,13 @@ export class ThreadLeaseManager {
     this.#scope.defer(async () => {
       this.#closed = true;
       const leases = [...this.#leases.values()];
+      const disposals = [...this.#disposing.values()];
       this.#leases.clear();
-      await Promise.allSettled(
-        leases.map((lease) => lease.close("manager-closed")),
-      );
+      this.#disposing.clear();
+      await Promise.allSettled([
+        ...leases.map((lease) => lease.close("manager-closed")),
+        ...disposals,
+      ]);
     });
   }
 
@@ -420,7 +449,7 @@ export class ThreadLeaseManager {
     const release = async (): Promise<void> => {
       if (released) return;
       released = true;
-      lease.releaseReference(reference.kind, reference.id);
+      await lease.releaseReference(reference.kind, reference.id);
     };
     if (ownerScope !== undefined) {
       try {
@@ -449,11 +478,19 @@ export class ThreadLeaseManager {
   }
 
   async #getOrCreate(threadId: string): Promise<ThreadLease> {
+    const disposal = this.#disposing.get(threadId);
+    if (disposal !== undefined) {
+      await disposal;
+      if (this.#closed) throw new Error("Thread lease manager is closed");
+    }
     const current = this.#leases.get(threadId);
     if (current !== undefined) return current;
     const pending = this.#creating.get(threadId);
     if (pending !== undefined) return pending;
-    if (this.#leases.size + this.#creating.size >= this.#maximumLeases) {
+    if (
+      this.#leases.size + this.#creating.size + this.#disposing.size >=
+      this.#maximumLeases
+    ) {
       throw new ThreadLeaseCapacityError(this.#maximumLeases);
     }
     const creation = this.#create(threadId).finally(() => {
@@ -482,10 +519,19 @@ export class ThreadLeaseManager {
     }
   }
 
-  #dispose(lease: ThreadLease): void {
-    if (this.#leases.get(lease.threadId) !== lease) return;
+  async #dispose(lease: ThreadLease): Promise<void> {
+    if (this.#leases.get(lease.threadId) !== lease) {
+      await this.#disposing.get(lease.threadId);
+      return;
+    }
     this.#leases.delete(lease.threadId);
-    void lease.close().catch(() => undefined);
+    const disposal = lease.close().finally(() => {
+      if (this.#disposing.get(lease.threadId) === disposal) {
+        this.#disposing.delete(lease.threadId);
+      }
+    });
+    this.#disposing.set(lease.threadId, disposal);
+    await disposal;
   }
 }
 

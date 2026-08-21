@@ -129,6 +129,9 @@ export class UserWebRuntime {
       ...(current.workspaceId === undefined
         ? {}
         : { workspaceId: current.workspaceId }),
+      ...(current.workspaceLabel === undefined
+        ? {}
+        : { workspaceLabel: current.workspaceLabel }),
     });
   }
 

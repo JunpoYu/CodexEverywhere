@@ -18,8 +18,12 @@ import { loadOrCreateOpaqueServerSetup } from "../host/passwords.js";
 import { RelayConnector } from "../gateway/relay-connector.js";
 import {
   DirectTransportV2,
-  acceptGatewayV2Socket,
+  type DirectTransportV2Options,
 } from "../v2/adapters/direct-transport.js";
+import {
+  acceptGatewayV2Socket,
+  type GatewaySocketConnectionOptions,
+} from "../v2/adapters/gateway-socket-connection.js";
 import { CodexClientFactory } from "../v2/codex/client-factory.js";
 import {
   createAgentCompositionRoot,
@@ -137,32 +141,13 @@ export async function runAgentServiceV2(paths: HostPaths): Promise<void> {
     );
     const direct = directTransport(config.transport);
     const relay = relayTransport(config.transport);
-    const gatewayOptions = {
-      parentScope: runtimeScope,
-      host: direct?.listenHost ?? "127.0.0.1",
-      port: direct?.listenPort ?? 0,
+    const gatewayConnectionOptions: GatewaySocketConnectionOptions = {
       nodeId: config.nodeId,
       userId,
       loginName,
       identity: identity.keyPair,
-      hostFingerprint: identity.fingerprint,
       deviceRegistry,
-      allowedOrigin: config.webAuthn.origin,
-      ...(direct === undefined ? {} : { directEndpoint: direct.endpoint }),
-      ...(relay === undefined
-        ? {}
-        : {
-            relayEndpoint: relay.endpoint,
-            relayRouteId: relay.routeId,
-          }),
-      createSession: (
-        device: Parameters<AgentCompositionRoot["createTransportSession"]>[0],
-        context: Parameters<
-          NonNullable<
-            Parameters<typeof DirectTransportV2.start>[0]["createSession"]
-          >
-        >[1],
-      ) =>
+      createSession: (device, context) =>
         root!.createTransportSession(device, {
           authenticationMode: context.authenticationMode,
           ...(context.resumeToken === undefined
@@ -171,16 +156,35 @@ export async function runAgentServiceV2(paths: HostPaths): Promise<void> {
         }),
     };
     if (direct !== undefined) {
-      directGateway = await DirectTransportV2.start(gatewayOptions);
+      const directGatewayOptions: DirectTransportV2Options = {
+        ...gatewayConnectionOptions,
+        parentScope: runtimeScope,
+        host: direct.listenHost,
+        port: direct.listenPort,
+        hostFingerprint: identity.fingerprint,
+        allowedOrigin: config.webAuthn.origin,
+        directEndpoint: direct.endpoint,
+        ...(relay === undefined
+          ? {}
+          : {
+              relayEndpoint: relay.endpoint,
+              relayRouteId: relay.routeId,
+            }),
+      };
+      directGateway = await DirectTransportV2.start(directGatewayOptions);
     }
     if (relay !== undefined) {
       relayConnector = await RelayConnector.start({
-        ...gatewayOptions,
         endpoint: relay.endpoint,
         routeId: relay.routeId,
         routeCapability: relay.routeCapability,
+        nodeId: config.nodeId,
+        userId,
+        identity: { publicKey: identity.keyPair.publicKey },
+        hostFingerprint: identity.fingerprint,
+        ...(direct === undefined ? {} : { directEndpoint: direct.endpoint }),
         acceptGatewaySocket: (socket) =>
-          acceptGatewayV2Socket(socket, gatewayOptions, runtimeScope),
+          acceptGatewayV2Socket(socket, gatewayConnectionOptions, runtimeScope),
       });
       let activeCapability = relay.routeCapability;
       const relayRouteId = relay.routeId;
