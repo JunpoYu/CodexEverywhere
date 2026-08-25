@@ -22,6 +22,7 @@ import {
 } from "../v2/adapters/direct-transport.js";
 import {
   acceptGatewayV2Socket,
+  type GatewayFatalRuntimeFailure,
   type GatewaySocketConnectionOptions,
 } from "../v2/adapters/gateway-socket-connection.js";
 import { CodexClientFactory } from "../v2/codex/client-factory.js";
@@ -38,6 +39,9 @@ import {
   startRelayCapabilityRenewalLoop,
 } from "./relay-capability-renewal.js";
 
+const FATAL_WASM_EXIT_GRACE_MS = 5_000;
+const SIGNAL_EXIT_GRACE_MS = 8_000;
+
 /** v0.4 composition root. It can serve onboarding before Codex is installed. */
 export async function runAgentServiceV2(paths: HostPaths): Promise<void> {
   await assertUserAccessEnabled();
@@ -50,6 +54,8 @@ export async function runAgentServiceV2(paths: HostPaths): Promise<void> {
   let relayConnector: RelayConnector | undefined;
   let relayRenewal:
     ReturnType<typeof startRelayCapabilityRenewalLoop> | undefined;
+  let fatalRuntimeFailure: GatewayFatalRuntimeFailure | undefined;
+  let signalExitTimer: ReturnType<typeof setTimeout> | undefined;
   try {
     state = await UserStateDatabase.open(paths.stateFile, { create: true });
     await updateHostConfigWithCoordination(paths, state, (config) => config, {
@@ -154,6 +160,22 @@ export async function runAgentServiceV2(paths: HostPaths): Promise<void> {
             ? {}
             : { resumeToken: context.resumeToken }),
         }),
+      onFatalRuntimeFailure: (failure) => {
+        if (fatalRuntimeFailure !== undefined) return;
+        fatalRuntimeFailure = failure;
+        process.stderr.write(
+          `${JSON.stringify({
+            level: "error",
+            event: "agent.fatal_wasm_runtime",
+            stage: failure.stage,
+          })}\n`,
+        );
+        // A trapped WASM runtime cannot be trusted for later handshakes. Keep
+        // the timer referenced so leaked sockets or a failed disposer cannot
+        // leave a PID that the watchdog mistakes for a healthy Agent.
+        setTimeout(() => process.exit(1), FATAL_WASM_EXIT_GRACE_MS);
+        void runtimeScope.close("fatal-wasm-runtime").catch(() => undefined);
+      },
     };
     if (direct !== undefined) {
       const directGatewayOptions: DirectTransportV2Options = {
@@ -214,16 +236,66 @@ export async function runAgentServiceV2(paths: HostPaths): Promise<void> {
       });
     }
     await writeProcessRecord(paths.agentPidFile);
-    await waitForShutdownSignal(runtimeScope);
+    await waitForShutdownSignal(runtimeScope, () => {
+      signalExitTimer ??= setTimeout(
+        () => process.exit(0),
+        SIGNAL_EXIT_GRACE_MS,
+      );
+    });
+    if (fatalRuntimeFailure !== undefined) {
+      throw new Error(
+        `Agent runtime entered an unrecoverable WASM state during ${fatalRuntimeFailure.stage}`,
+        { cause: fatalRuntimeFailure.error },
+      );
+    }
   } finally {
-    await relayRenewal?.close();
-    await relayConnector?.close();
-    await directGateway?.close();
-    await root?.close();
-    await state?.close();
-    await runtimeScope.close("agent-service-stopped");
-    await rm(paths.agentPidFile, { force: true });
-    await lock.release();
+    const cleanupFailures: string[] = [];
+    await captureCleanupFailure(cleanupFailures, "relay-renewal", () =>
+      relayRenewal?.close(),
+    );
+    await captureCleanupFailure(cleanupFailures, "relay-connector", () =>
+      relayConnector?.close(),
+    );
+    await captureCleanupFailure(cleanupFailures, "direct-gateway", () =>
+      directGateway?.close(),
+    );
+    await captureCleanupFailure(cleanupFailures, "composition-root", () =>
+      root?.close(),
+    );
+    await captureCleanupFailure(cleanupFailures, "state", () => state?.close());
+    await captureCleanupFailure(cleanupFailures, "runtime-scope", () =>
+      runtimeScope.close("agent-service-stopped"),
+    );
+    await captureCleanupFailure(cleanupFailures, "process-record", () =>
+      rm(paths.agentPidFile, { force: true }),
+    );
+    await captureCleanupFailure(cleanupFailures, "process-lock", () =>
+      lock.release(),
+    );
+    if (cleanupFailures.length > 0) {
+      process.stderr.write(
+        `${JSON.stringify({
+          level: "warn",
+          event: "agent.cleanup_failed",
+          components: cleanupFailures,
+        })}\n`,
+      );
+    }
+    // A completed cleanup should not be delayed by the safety timer. If an
+    // unowned handle remains, the unref'ed timer can still terminate it.
+    signalExitTimer?.unref?.();
+  }
+}
+
+async function captureCleanupFailure(
+  failures: string[],
+  component: string,
+  operation: () => void | Promise<void> | undefined,
+): Promise<void> {
+  try {
+    await operation();
+  } catch {
+    failures.push(component);
   }
 }
 
@@ -233,18 +305,32 @@ function safeError(error: unknown): string {
     : "unknown failure";
 }
 
-function waitForShutdownSignal(scope: Scope): Promise<void> {
+function waitForShutdownSignal(
+  scope: Scope,
+  onSignal: () => void,
+): Promise<void> {
   return new Promise((resolve) => {
+    let settled = false;
     const finish = () => {
-      process.off("SIGTERM", finish);
-      process.off("SIGINT", finish);
+      if (settled) return;
+      settled = true;
+      process.off("SIGTERM", signaled);
+      process.off("SIGINT", signaled);
+      scope.signal.removeEventListener("abort", finish);
       resolve();
     };
-    process.on("SIGTERM", finish);
-    process.on("SIGINT", finish);
+    const signaled = () => {
+      onSignal();
+      finish();
+    };
+    process.on("SIGTERM", signaled);
+    process.on("SIGINT", signaled);
+    scope.signal.addEventListener("abort", finish, { once: true });
     scope.defer(() => {
-      process.off("SIGTERM", finish);
-      process.off("SIGINT", finish);
+      process.off("SIGTERM", signaled);
+      process.off("SIGINT", signaled);
+      scope.signal.removeEventListener("abort", finish);
     });
+    if (scope.signal.aborted) finish();
   });
 }

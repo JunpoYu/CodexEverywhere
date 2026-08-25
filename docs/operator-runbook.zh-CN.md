@@ -34,7 +34,7 @@ schemaVersion: 1
 operation: inspect | fresh-install | patch-upgrade | clean-v0.4-cutover | rollback
 environment: staging | production
 repository: example/CodexEverywhere
-targetTag: v0.4.0-alpha.11
+targetTag: v0.4.0-alpha.12
 rollbackTag: v0.3.0-alpha.14
 approvedManifestSha256: <64 个小写十六进制字符>
 pwaOrigin: https://codex.example.com
@@ -409,7 +409,7 @@ Passkey Origin 必须是稳定 HTTPS Origin。Direct/FRP 将每个 Agent 的 loo
 2. 在维护窗口安装新的 rootless release；这会原子切换 `<rootlessRoot>/current`；
 3. 启用 Controller 时，从新的 verified rootless release 安装同 tag 的 privileged release，并重新安装双路启动器；
 4. 重启 rootless provisioner，并检查 credential/descriptor；
-5. 逐用户停止并启动 Agent，确认健康 app-server 未被停止；
+5. 逐用户停止 Agent，用新 release 重新生成 watchdog，再启动 Agent；确认健康 app-server 未被停止；
 6. 重启 Administrator Controller，确认 root/non-root CLI 仍是同一 tag；
 7. Relay wire 兼容时独立切换 Relay，并保留签名密钥、installation ID 和 route；
 8. 最后原子切换 Web；检查旧页面能明确提示更新，Service Worker 不丢失 outcome-unknown mutation；
@@ -423,6 +423,7 @@ sudo -iu <deployUser> /usr/local/bin/ce provisioner install-service
 sudo -iu <deployUser> /usr/local/bin/ce provisioner status
 
 sudo -iu <username> /usr/local/bin/ce agent stop
+sudo -iu <username> /usr/local/bin/ce agent install-service
 sudo -iu <username> /usr/local/bin/ce agent start
 sudo -iu <username> /usr/local/bin/ce agent status
 sudo -iu <username> /usr/local/bin/ce app-server status
@@ -430,6 +431,8 @@ sudo -iu <username> /usr/local/bin/ce app-server status
 sudo -iu <controllerUser> env CE_ADMIN_HOME=<controller-home> \
   /usr/local/bin/ce admin web restart
 ```
+
+`agent install-service` 必须在每次切换 release 后执行：它用当前不可变 release 重新生成 tmux/crontab watchdog。`agent start` 检测到该脚本后通过 watchdog 启动，不再另建 detached Agent。watchdog 对非零退出在两秒后重启，对 `agent stop` 产生的正常零退出则结束当前 tmux loop；crontab 仍按常驻服务策略在下一轮确保 Agent 存在，长期停用用户必须走管理员 access disable。若 `agent status` 只有 PID、但 Relay smoke 或最新结构化日志表明 Agent 已失联，应把它视为假健康并停止发布，不能靠重复配对掩盖。
 
 如果 Release 说明包含跨进程权限协调或锁格式变化，升级前已经运行的 `ce tui` 必须在 Agent 重启后退出并重新连接；退出 TUI 不会中断 app-server 中的 turn。
 

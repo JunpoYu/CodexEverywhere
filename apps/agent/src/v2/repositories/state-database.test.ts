@@ -1,7 +1,7 @@
 import { chmod, mkdtemp, rm, stat, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { AdminStateDatabase } from "./admin-state-database.js";
 import {
@@ -9,11 +9,13 @@ import {
   USER_STATE_APPLICATION_ID,
 } from "./state-schema.js";
 import type { StateSnapshotV1 } from "./state-snapshot.js";
+import { loadSqliteRuntime } from "./sqlite-runtime.js";
 import { UserStateDatabase } from "./user-state-database.js";
 
 const directories: string[] = [];
 
 afterEach(async () => {
+  vi.restoreAllMocks();
   await Promise.all(
     directories
       .splice(0)
@@ -104,6 +106,22 @@ describe("v0.4 state databases", () => {
     expect(await first.exportSnapshot()).toEqual(snapshot);
 
     await Promise.all([first.close(), second.close()]);
+  });
+
+  it("keeps the current WASM database while the state file is unchanged", async () => {
+    const SQL = await loadSqliteRuntime();
+    const closed = vi.spyOn(SQL.Database.prototype, "close");
+    const path = join(await temporaryDirectory(), "state.sqlite");
+    const database = await UserStateDatabase.open(path, { create: true });
+    closed.mockClear();
+
+    await database.exportSnapshot();
+    await database.verify();
+    await database.exportSnapshot();
+
+    expect(closed).not.toHaveBeenCalled();
+    await database.close();
+    expect(closed).toHaveBeenCalledTimes(1);
   });
 });
 

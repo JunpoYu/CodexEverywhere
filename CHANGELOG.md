@@ -4,6 +4,21 @@
 
 ## [Unreleased]
 
+## [0.4.0-alpha.12] - 2026-08-25
+
+### Changed
+
+- 将模型、推理强度、文件访问和审批策略从对话页顶部移到 Composer 附近：宽屏时使用输入框左侧空白区，窄屏与移动端自动折叠到输入框上方；完全文件访问与从不询问的组合会得到明确的高权限提示。
+- Composer 改为按 Enter 直接发送，任务运行中则加入 Queue；Shift + Enter 保留换行，并避免中文输入法确认候选时误发送。
+- 使用 npm 最新稳定版 Codex CLI `0.149.1` 重新生成完整 app-server TypeScript 与 notification schema，并通过真实 app-server contract 检查。
+
+### Fixed
+
+- Agent 状态 repository 仅在原子状态文件 revision 确实变化时重建内存中的 sql.js 数据库，避免每次查询重复创建、关闭 WASM 数据库；跨进程写入仍通过文件锁、inode/revision 检测和权威重载可见。
+- Noise 握手遇到不可恢复的 WASM runtime trap 时按安全阶段记录控制事件并在有界清理后非零退出；tmux watchdog 只对异常退出自动重启，正常停止不会形成重启循环。
+- `ce agent start` 在已安装 watchdog 时通过 tmux 服务入口启动 Agent，避免 detached 进程与 crontab watchdog 竞争并产生“PID 存活但 Relay 已离线”的假健康状态。
+- 推进 PWA 缓存代次，确保已安装的 alpha.11 页面能够发现并安全激活 alpha.12 Web 版本。
+
 ## [0.4.0-alpha.11] - 2026-08-22
 
 ### Added

@@ -10,6 +10,7 @@ import type { WebSearchMode } from "../WebSearchMode";
 import type { JsonValue } from "../serde_json/JsonValue";
 import type { AnalyticsConfig } from "./AnalyticsConfig";
 import type { ApprovalsReviewer } from "./ApprovalsReviewer";
+import type { AppsConfig } from "./AppsConfig";
 import type { AskForApproval } from "./AskForApproval";
 import type { ForcedChatgptWorkspaceIds } from "./ForcedChatgptWorkspaceIds";
 import type { SandboxMode } from "./SandboxMode";
@@ -23,7 +24,8 @@ export type Config = {
   model_auto_compact_token_limit: bigint | null;
   model_auto_compact_token_limit_scope: AutoCompactTokenLimitScope | null;
   model_provider: string | null;
-  approval_policy: AskForApproval | null; /**
+  approval_policy: AskForApproval | null;
+  /**
    * [UNSTABLE] Optional default for where approval requests are routed for
    * review.
    */
@@ -42,6 +44,7 @@ export type Config = {
   model_verbosity: Verbosity | null;
   service_tier: string | null;
   analytics: AnalyticsConfig | null;
+  apps: AppsConfig | null;
   desktop: { [key in string]?: JsonValue } | null;
 } & {
   [key in string]?:

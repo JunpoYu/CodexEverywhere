@@ -41,6 +41,20 @@ const assemblyBudgets = new WeakMap<
   SecureMessageAssemblyBudget
 >();
 
+export type GatewayHandshakeStage =
+  | "awaiting-hello"
+  | "parsing-hello"
+  | "noise-handshake"
+  | "peer-authentication"
+  | "session-creation"
+  | "handshake-reply"
+  | "connected";
+
+export interface GatewayFatalRuntimeFailure {
+  readonly error: WebAssembly.RuntimeError;
+  readonly stage: GatewayHandshakeStage;
+}
+
 /** Minimum capabilities required to authenticate and serve one Noise socket. */
 export interface GatewaySocketConnectionOptions {
   readonly nodeId: string;
@@ -52,6 +66,9 @@ export interface GatewaySocketConnectionOptions {
   readonly heartbeatMissLimit?: number;
   readonly deviceRegistry: GatewayDeviceRegistry;
   readonly createSession: GatewayV2SessionFactory;
+  readonly onFatalRuntimeFailure?: (
+    failure: GatewayFatalRuntimeFailure,
+  ) => void;
 }
 
 /**
@@ -79,6 +96,9 @@ export function gatewaySocketConnectionOptions(
       : { heartbeatMissLimit: options.heartbeatMissLimit }),
     deviceRegistry: options.deviceRegistry,
     createSession: options.createSession,
+    ...(options.onFatalRuntimeFailure === undefined
+      ? {}
+      : { onFatalRuntimeFailure: options.onFatalRuntimeFailure }),
   };
 }
 
@@ -127,11 +147,13 @@ export function acceptGatewayV2Socket(
       `${JSON.stringify({
         level: "warn",
         event: "gateway.handshake_rejected",
+        stage: connection.stage,
         reason: rejection.reason,
         detail: rejection.detail,
       })}\n`,
     );
     socket.close(1008, rejection.reason);
+    connection.reportFatalRuntimeFailure(error);
   });
 }
 
@@ -142,6 +164,7 @@ class GatewayV2Connection {
   readonly #assemblyBudget: SecureMessageAssemblyBudget;
   #session: SecureSession | undefined;
   #handler: GatewayV2Session | undefined;
+  #stage: GatewayHandshakeStage = "awaiting-hello";
   #receiveQueue: Promise<void> = Promise.resolve();
   #mutationQueue: Promise<void> = Promise.resolve();
 
@@ -157,10 +180,30 @@ class GatewayV2Connection {
     this.#assemblyBudget = assemblyBudget;
   }
 
+  get stage(): GatewayHandshakeStage {
+    return this.#stage;
+  }
+
+  reportFatalRuntimeFailure(error: unknown): void {
+    if (
+      !(error instanceof WebAssembly.RuntimeError) ||
+      this.#options.onFatalRuntimeFailure === undefined
+    ) {
+      return;
+    }
+    try {
+      this.#options.onFatalRuntimeFailure({ error, stage: this.#stage });
+    } catch {
+      // A failure reporter must not escape the rejected connection or request.
+    }
+  }
+
   async run(): Promise<void> {
     const first = await nextMessage(this.#scope, this.#socket, 10_000);
+    this.#stage = "parsing-hello";
     const hello = parseGatewayHandshakeHello(first);
     if (hello.nodeId !== this.#options.nodeId) throw new Error("Wrong node");
+    this.#stage = "noise-handshake";
     const handshake = new NoiseResponder(
       this.#options.identity,
       encodePrologue({
@@ -179,6 +222,7 @@ class GatewayV2Connection {
       handshake.receive(Buffer.from(hello.message, "base64url")),
     );
     const remoteStatic = handshake.remoteStatic();
+    this.#stage = "peer-authentication";
     const peer = await authenticateGatewayPeer(
       authentication,
       { deviceId: hello.deviceId, publicKey: remoteStatic },
@@ -189,6 +233,7 @@ class GatewayV2Connection {
       return;
     }
 
+    this.#stage = "session-creation";
     try {
       this.#handler = await this.#options.createSession(
         peer.device,
@@ -205,6 +250,7 @@ class GatewayV2Connection {
       return;
     }
 
+    this.#stage = "handshake-reply";
     const completed = handshake.finish(
       Buffer.from(
         JSON.stringify({
@@ -220,13 +266,17 @@ class GatewayV2Connection {
       ),
     );
     this.#session = completed.session;
+    this.#stage = "connected";
     this.#scope.defer(() => this.#handler?.close?.());
     this.#scope.defer(() => this.#session?.dispose());
     const receive = (data: RawData) => {
       const receivedAt = Date.now();
       this.#receiveQueue = this.#receiveQueue
         .then(() => this.#receiveEncrypted(data, receivedAt))
-        .catch(() => this.#socket.close(1008, "protocol error"));
+        .catch((error: unknown) => {
+          this.reportFatalRuntimeFailure(error);
+          this.#socket.close(1008, "protocol error");
+        });
     };
     this.#socket.on("message", receive);
     this.#scope.defer(() => {
@@ -252,14 +302,18 @@ class GatewayV2Connection {
     if (plaintext === undefined) return;
     const request = parseJsonMessage(plaintext);
     if (isQuery(request)) {
-      void this.#execute(request, receivedAt).catch(() =>
-        this.#socket.close(1011, "request processing failed"),
-      );
+      void this.#execute(request, receivedAt).catch((error: unknown) => {
+        this.reportFatalRuntimeFailure(error);
+        this.#socket.close(1011, "request processing failed");
+      });
       return;
     }
     this.#mutationQueue = this.#mutationQueue
       .then(() => this.#execute(request, receivedAt))
-      .catch(() => this.#socket.close(1011, "request processing failed"));
+      .catch((error: unknown) => {
+        this.reportFatalRuntimeFailure(error);
+        this.#socket.close(1011, "request processing failed");
+      });
   }
 
   async #execute(request: unknown, receivedAt: number): Promise<void> {
@@ -307,6 +361,7 @@ class GatewayV2Connection {
         this.#socket.send(JSON.stringify(wire));
       }
     } catch (error) {
+      this.reportFatalRuntimeFailure(error);
       process.stderr.write(
         `${JSON.stringify({
           level: "error",

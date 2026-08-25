@@ -1,0 +1,66 @@
+.notices {
+  width: min(780px, calc(100% - 28px));
+  margin: 0 auto;
+}
+
+.notices:not(:empty) {
+  margin-bottom: 8px;
+}
+
+.notices > :last-child {
+  margin-bottom: 0;
+}
+
+.workspace {
+  width: 100%;
+  container: task-composer / inline-size;
+}
+
+.layout {
+  display: grid;
+  width: 100%;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 780px) minmax(0, 1fr);
+  align-items: end;
+}
+
+.summary {
+  width: min(188px, calc(100% - 12px));
+  margin-right: 10px;
+  grid-column: 1;
+  justify-self: end;
+  container-type: inline-size;
+}
+
+.main {
+  min-width: 0;
+  grid-column: 2;
+}
+
+@container task-composer (max-width: 1080px) {
+  .layout {
+    grid-template-columns: minmax(0, 780px);
+    justify-content: center;
+    padding: 0 14px;
+  }
+
+  .summary,
+  .main {
+    width: 100%;
+    grid-column: 1;
+  }
+
+  .summary {
+    margin: 0 0 7px;
+    justify-self: stretch;
+  }
+}
+
+@media (max-width: 760px) {
+  .notices {
+    width: calc(100% - 16px);
+  }
+
+  .layout {
+    padding: 0 8px;
+  }
+}

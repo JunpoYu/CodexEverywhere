@@ -155,7 +155,7 @@ type CodexGenericEvent = {
 | `PreferencesService` | 用户默认设置和 revision                                     |
 | `AdminService`       | 独立管理员领域，不导入用户业务服务                          |
 
-连接层分为三个显式 seam：`DirectTransportV2` 只拥有 HTTP/WebSocket listener、连接上限和公开发现；`RelayConnector` 只拥有 Relay v1 控制连接与密文 tunnel；`GatewaySocketConnection` 统一拥有单个 Direct/Relay tunnel 上的 Noise 握手、心跳、分片预算、请求队列和 Scope 生命周期。设备模式与信任状态由不接触 Noise 私钥、Router 或 repository 的 `GatewayPeerAuthentication` 解析，再把最小设备绑定和认证上下文交给 session factory。业务校验与 dispatch 进入同一个 Gateway v2 Router。Direct 与 Relay composition 只能向单连接模块传递最小 `GatewaySocketConnectionOptions`；Relay 注册只能接收 Host 公钥，不接收静态私钥对象。
+连接层分为三个显式 seam：`DirectTransportV2` 只拥有 HTTP/WebSocket listener、连接上限和公开发现；`RelayConnector` 只拥有 Relay v1 控制连接与密文 tunnel；`GatewaySocketConnection` 统一拥有单个 Direct/Relay tunnel 上的 Noise 握手、心跳、分片预算、请求队列和 Scope 生命周期。设备模式与信任状态由不接触 Noise 私钥、Router 或 repository 的 `GatewayPeerAuthentication` 解析，再把最小设备绑定和认证上下文交给 session factory。业务校验与 dispatch 进入同一个 Gateway v2 Router。Direct 与 Relay composition 只能向单连接模块传递最小 `GatewaySocketConnectionOptions`；Relay 注册只能接收 Host 公钥，不接收静态私钥对象。Noise 或 SQLite 抛出的 `WebAssembly.RuntimeError` 表示当前进程内 WASM 状态不再可信，连接层只报告固定握手阶段，Agent 在五秒有界清理后非零退出；用户级 tmux watchdog 重启 Agent，但不停止独立 app-server。普通协议拒绝、身份失败和网络断线不得触发进程重启。
 
 Direct 的未加密 HTTP Host Discovery 是独立、只读的 adapter，只输出公开 Host Profile 并负责 Origin、CORS/PNA 与 no-store 响应；它不得接触 Gateway session、Router、设备私钥内容或用户业务服务。Noise 握手 hello 与 cipher frame 必须使用共享 protocol parser，在进入密码学和路由处理前完成版本、长度、标识符、序号及 base64url 校验，Agent 不维护更宽松的私有解析器。恢复握手必须在创建 Gateway session 前拒绝已撤销设备；连接关闭必须通过 Scope 释放 session、listener、timer 和未完成分片预算。
 
@@ -270,7 +270,7 @@ Queue item 和 delivery claim 在同一用户库中。dispatcher 在 app-server 
 - `UserStateDatabase`：metadata、workspace、preferences、thread permissions、identity、mutation receipts、Queue、最小安全审计；
 - `AdminStateDatabase`：管理员 identity、managed users、admin audit 和 admin mutation receipts。
 
-repository 之外禁止 import `sql.js`。状态文件继续使用跨进程锁、真实 UID、0600、文件 fsync、目录 durability 和原子 rename。`StateSnapshotV1` 只是 repository 内部的类型化数据形状，不对外提供 v0.3 转换或 JSON 导出。密码记录、恢复哈希和 Queue 内容不进入日志。
+repository 之外禁止 import `sql.js`。每个进程内的状态句柄复用当前 sql.js `Database`，在持有跨进程锁后通过文件 device、inode、size、mtime 和 ctime revision 判断原子状态文件是否被其他进程替换；revision 未变化时不得重复销毁、重建 WASM 数据库，变化时必须先验证 replacement 再关闭旧实例。状态文件继续使用跨进程锁、真实 UID、0600、文件 fsync、目录 durability 和原子 rename。`StateSnapshotV1` 只是 repository 内部的类型化数据形状，不对外提供 v0.3 转换或 JSON 导出。密码记录、恢复哈希和 Queue 内容不进入日志。
 
 v0.3 切换采用整目录隔离和全新初始化，不导入旧数据库。规则见[全新初始化与切换手册](migration-v0.4.zh-CN.md)。
 
