@@ -21,7 +21,7 @@ CodexEverywhere（CE）是面向 Linux/HPC 的自托管 Codex Web/PWA 控制平�
 CE 不重新实现 AgentLoop。thread、turn、工具活动、审批请求和执行状态始终以官方 [Codex app-server](https://developers.openai.com/codex/app-server) 为唯一事实源；CE 只负责安全连接、Web 身份、移动端产品体验、持久 Queue 和 HPC 生命周期。
 
 > [!WARNING]
-> 当前代码线为 `v0.4.0-alpha.11` 架构重建版。Gateway API v2 和新状态库不兼容 v0.3；v0.4 采用全新初始化，不迁移 v0.3 CE 状态。`~/.codex`、Codex 登录和 app-server 任务不属于清理范围。`v0.3.0-alpha.14` 是已完成实机验证的最后维护基线，只用于观察窗内恢复已保留的旧 CE 目录。v0.4 Alpha tag/Prerelease 冻结待验收制品；当前 production 门槛先要求一个真实用户完成全新安装 staging。多用户并发、跨用户隔离和管理员控制面的实机验收延后，不阻塞当前单用户版本。
+> 当前代码线为 `v0.4.0-alpha.12` 架构重建版。Gateway API v2 和新状态库不兼容 v0.3；v0.4 采用全新初始化，不迁移 v0.3 CE 状态。`~/.codex`、Codex 登录和 app-server 任务不属于清理范围。`v0.3.0-alpha.14` 是已完成实机验证的最后维护基线，只用于观察窗内恢复已保留的旧 CE 目录。v0.4 Alpha tag/Prerelease 冻结待验收制品；当前 production 门槛先要求一个真实用户完成全新安装 staging。多用户并发、跨用户隔离和管理员控制面的实机验收延后，不阻塞当前单用户版本。
 
 > [!NOTE]
 > 这是独立的非官方开源项目，与 OpenAI 没有关联或背书。Codex 是 OpenAI 的产品。
@@ -48,7 +48,7 @@ CE 不重新实现 AgentLoop。thread、turn、工具活动、审批请求和执
 - 审批、用户问题和 MCP elicitation 固定显示在 composer 上方；多个设备同时回答时只接受第一个合法响应。
 - Composer 草稿按任务隔离并只保存在当前 Web 运行时内存；快速切换任务不会把 A 的未发送内容带到 B，发送失败或结果未知反馈也只显示在原任务。
 - 任务权限使用独立设置面板，按“有未保存更改、保存中、结果对账、已保存、失败”显示明确状态；只有宿主机返回新 revision 后才提示生效，并允许在同一面板连续修改。
-- 对话页不使用常驻右侧属性栏；模型、推理强度与权限在页头下方紧凑呈现，待处理交互就近显示在输入区上方，当前任务的 Queue 数量显示在输入区下方并可直接进入 Queue。
+- 对话页不使用常驻右侧属性栏；模型、推理强度与权限作为“发送前检查”显示在桌面端输入框左侧，空间不足或移动端时收拢到输入框上方，高权限组合会被显式标记。待处理交互就近显示在输入区上方，当前任务的 Queue 数量显示在输入区下方并可直接进入 Queue。
 - 对话大纲只从当前已加载的权威用户消息派生，桌面端使用覆盖式侧边抽屉、移动端使用底部 Sheet；大纲可继续加载更早历史并按稳定 item ID 跳转，不会为了生成目录自动读取完整任务。用户向上阅读时实时更新不会强制滚底，可通过“回到最新”恢复跟随。
 - 可中断 turn，也可复制 `ce tui` 接力命令；关闭浏览器不会停止活动 turn。
 
@@ -59,6 +59,7 @@ CE 不重新实现 AgentLoop。thread、turn、工具活动、审批请求和执
 - 一次性恢复码、恢复交接码和 resume token 永不进入 durable receipt；只在 Agent 的有界内存窗口中允许同 operation key 重放。
 - Queue 使用持久 claim 和 at-most-once 边界；跨越 app-server 副作用窗口后无法证明结果时显式进入 `indeterminate`，必须由用户确认重试或放弃。
 - Queue actor 在 mutation 与 `mutation/status` 对账期间保持单飞；通知和误触刷新不得取消正在跟踪的 operation key。结果未知时可显式刷新权威 Queue，之后再处理具体的 indeterminate item。
+- Agent 将密码学或 SQLite 的 WASM runtime trap 视为进程级不可恢复状态：有界释放 CE 资源后由用户级 tmux watchdog 自动重启 Agent；独立的长期 Codex app-server 不随之停止，浏览器按正常断线流程重连并重新读取权威任务。
 
 ### 身份、初始化和临时模式
 

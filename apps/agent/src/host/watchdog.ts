@@ -48,7 +48,8 @@ export function renderWatchdogScript(
   const watchdogLock = `${scriptPath}.lock`;
   const runtimeBin = dirname(runtime.nodePath);
   const disabledMarker = `/etc/codex-everywhere-access/${process.getuid?.() ?? "unknown"}.disabled`;
-  const agentCommand = `PATH=${shellQuote(runtimeBin)}:\${PATH:-/usr/bin:/bin}; export PATH; exec ${shellQuote(runtime.nodePath)} ${shellQuote(runtime.cliPath)} agent serve >> ${shellQuote(logPath)} 2>&1`;
+  const agentInvocation = `${shellQuote(runtime.nodePath)} ${shellQuote(runtime.cliPath)} agent serve >> ${shellQuote(logPath)} 2>&1`;
+  const agentCommand = `PATH=${shellQuote(runtimeBin)}:\${PATH:-/usr/bin:/bin}; export PATH; while :; do ${agentInvocation}; STATUS=$?; if [ "$STATUS" -eq 0 ]; then exit 0; fi; sleep 2; done`;
   return `#!/bin/sh
 set -eu
 SESSION=${shellQuote(sessionName)}

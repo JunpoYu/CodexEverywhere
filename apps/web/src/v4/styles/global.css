@@ -1182,7 +1182,7 @@ pre {
 /* Composer and pending interactions */
 .composer-dock {
   flex: 0 0 auto;
-  padding: 9px max(14px, calc((100% - 780px) / 2)) 8px;
+  padding: 9px 0 8px;
   border-top: 1px solid var(--border);
   background: color-mix(in srgb, var(--surface) 97%, transparent);
   box-shadow: 0 -8px 26px rgb(17 41 32 / 3%);
@@ -1942,7 +1942,7 @@ pre {
   }
 
   .composer-dock {
-    padding: 7px 8px calc(7px + env(safe-area-inset-bottom));
+    padding: 7px 0 calc(7px + env(safe-area-inset-bottom));
   }
 
   .composer {

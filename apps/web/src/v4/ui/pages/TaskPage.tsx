@@ -21,7 +21,8 @@ import {
   TimelineViewport,
   type TimelineViewportHandle,
 } from "../timeline/TimelineViewport.js";
-import { TaskContextBar } from "./TaskContextBar.js";
+import composerDockStyles from "./TaskComposerDock.module.css";
+import { TaskRuntimeSummary } from "./TaskRuntimeSummary.js";
 import { ThreadSettingsPanel } from "./ThreadSettingsPanel.js";
 
 export function TaskPage() {
@@ -64,13 +65,14 @@ export function TaskPage() {
 
   const submit = (event: FormEvent) => {
     event.preventDefault();
-    if (
-      composer.status !== "idle" ||
-      thread.status !== "idle" ||
-      composerDraft.trim().length === 0
-    ) {
+    if (composer.status !== "idle" || composerDraft.trim().length === 0) {
       return;
     }
+    if (thread.status === "running" || thread.status === "waiting-input") {
+      runtime.composer.dispatch({ type: "QUEUE", threadId });
+      return;
+    }
+    if (thread.status !== "idle") return;
     runtime.composer.dispatch({ type: "SUBMIT", threadId });
   };
 
@@ -321,16 +323,6 @@ export function TaskPage() {
             </details>
           </div>
         </header>
-        <TaskContextBar
-          approval={approvalSettingLabel(snapshot.settings.approvalPolicy)}
-          effort={reasoningEffortLabel(snapshot.settings.effort)}
-          model={snapshot.settings.model ?? "Codex 当前值"}
-          revision={snapshot.settings.revision}
-          sandbox={sandboxSettingLabel(snapshot.settings.sandbox)}
-          status={thread.status}
-          statusLabel={threadStateLabel(thread.status)}
-          onEdit={() => setSettingsOpen(true)}
-        />
         {actionError === undefined || deleteConfirmOpen ? null : (
           <div className="conversation-notice">
             <StatusMessage tone="error">{actionError}</StatusMessage>
@@ -371,108 +363,146 @@ export function TaskPage() {
           }}
         />
         <section className="composer-dock">
-          {snapshot.interactions.map((interaction) => (
-            <InteractionCard interaction={interaction} key={interaction.id} />
-          ))}
-          {composerBusyElsewhere ? (
-            <StatusMessage tone="warning">
-              {composer.status === "manual-review"
-                ? "另一个任务的发送结果需要人工核对。"
-                : "另一个任务正在发送或确认消息；你可以继续编辑此处草稿，完成后再发送。"}
-              <Link
-                to={`/tasks/${encodeURIComponent(composer.threadId ?? "")}`}
+          <div className={composerDockStyles.notices}>
+            {snapshot.interactions.map((interaction) => (
+              <InteractionCard interaction={interaction} key={interaction.id} />
+            ))}
+            {composerBusyElsewhere ? (
+              <StatusMessage tone="warning">
+                {composer.status === "manual-review"
+                  ? "另一个任务的发送结果需要人工核对。"
+                  : "另一个任务正在发送或确认消息；你可以继续编辑此处草稿，完成后再发送。"}
+                <Link
+                  to={`/tasks/${encodeURIComponent(composer.threadId ?? "")}`}
+                >
+                  查看对应任务
+                </Link>
+              </StatusMessage>
+            ) : null}
+            {composer.status === "manual-review" &&
+            composer.threadId === threadId ? (
+              <div
+                className="outcome-warning mutation-outcome-pending"
+                role="alert"
               >
-                查看对应任务
-              </Link>
-            </StatusMessage>
-          ) : null}
-          {composer.status === "manual-review" &&
-          composer.threadId === threadId ? (
-            <div
-              className="outcome-warning mutation-outcome-pending"
-              role="alert"
-            >
-              <strong>发送结果需要人工确认</strong>
-              <span>{composer.error}</span>
-              <button
-                type="button"
-                onClick={() =>
-                  runtime.composer.dispatch({ type: "ACKNOWLEDGE_MANUAL" })
-                }
-              >
-                我已核对，恢复草稿
-              </button>
-            </div>
-          ) : null}
-          {composer.status === "idle" &&
-          composer.threadId === threadId &&
-          composer.error !== undefined ? (
-            <StatusMessage tone="error">{composer.error}</StatusMessage>
-          ) : null}
-          <form className="composer" onSubmit={submit}>
-            <textarea
-              aria-label="给 Codex 的消息"
-              rows={3}
-              placeholder={
-                taskActive
-                  ? "任务运行中；可添加到 Queue…"
-                  : "继续告诉 Codex 要做什么…"
-              }
-              value={composerDraft}
-              onChange={(event) =>
-                runtime.composer.dispatch({
-                  type: "DRAFT",
-                  threadId,
-                  value: event.target.value,
-                })
-              }
-              onKeyDown={(event) => {
-                if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
-                  event.preventDefault();
-                  event.currentTarget.form?.requestSubmit();
-                }
-              }}
-            />
-            <div>
-              {taskActive ? (
+                <strong>发送结果需要人工确认</strong>
+                <span>{composer.error}</span>
                 <button
-                  disabled={
-                    composer.status !== "idle" ||
-                    composerDraft.trim().length === 0
-                  }
                   type="button"
                   onClick={() =>
-                    runtime.composer.dispatch({ type: "QUEUE", threadId })
+                    runtime.composer.dispatch({ type: "ACKNOWLEDGE_MANUAL" })
                   }
                 >
-                  加入 Queue
+                  我已核对，恢复草稿
                 </button>
-              ) : null}
-              <button
-                className="primary"
-                disabled={
-                  composer.status !== "idle" ||
-                  thread.status !== "idle" ||
-                  composerDraft.trim().length === 0
-                }
-                type="submit"
-              >
-                <Icon name="send" />
-                {composer.status === "submitting" ? "发送中…" : "发送"}
-              </button>
+              </div>
+            ) : null}
+            {composer.status === "idle" &&
+            composer.threadId === threadId &&
+            composer.error !== undefined ? (
+              <StatusMessage tone="error">{composer.error}</StatusMessage>
+            ) : null}
+          </div>
+          <div className={composerDockStyles.workspace}>
+            <div className={composerDockStyles.layout}>
+              <div className={composerDockStyles.summary}>
+                <TaskRuntimeSummary
+                  approval={approvalSettingLabel(
+                    snapshot.settings.approvalPolicy,
+                  )}
+                  approvalNeedsAttention={
+                    snapshot.settings.approvalPolicy === "never"
+                  }
+                  effort={reasoningEffortLabel(snapshot.settings.effort)}
+                  model={snapshot.settings.model ?? "Codex 当前值"}
+                  revision={snapshot.settings.revision}
+                  sandbox={sandboxSettingLabel(snapshot.settings.sandbox)}
+                  sandboxNeedsAttention={
+                    snapshot.settings.sandbox === "danger-full-access"
+                  }
+                  status={thread.status}
+                  statusLabel={threadStateLabel(thread.status)}
+                  onEdit={() => setSettingsOpen(true)}
+                />
+              </div>
+              <div className={composerDockStyles.main}>
+                <form className="composer" onSubmit={submit}>
+                  <textarea
+                    aria-label="给 Codex 的消息"
+                    rows={3}
+                    placeholder={
+                      taskActive
+                        ? "任务运行中；可添加到 Queue…"
+                        : "继续告诉 Codex 要做什么…"
+                    }
+                    value={composerDraft}
+                    onChange={(event) =>
+                      runtime.composer.dispatch({
+                        type: "DRAFT",
+                        threadId,
+                        value: event.target.value,
+                      })
+                    }
+                    onKeyDown={(event) => {
+                      if (
+                        event.key === "Enter" &&
+                        !event.shiftKey &&
+                        !event.nativeEvent.isComposing
+                      ) {
+                        event.preventDefault();
+                        event.currentTarget.form?.requestSubmit();
+                      }
+                    }}
+                  />
+                  <div>
+                    {taskActive ? (
+                      <button
+                        disabled={
+                          composer.status !== "idle" ||
+                          composerDraft.trim().length === 0
+                        }
+                        type="button"
+                        onClick={() =>
+                          runtime.composer.dispatch({
+                            type: "QUEUE",
+                            threadId,
+                          })
+                        }
+                      >
+                        加入 Queue
+                      </button>
+                    ) : null}
+                    <button
+                      className="primary"
+                      disabled={
+                        composer.status !== "idle" ||
+                        thread.status !== "idle" ||
+                        composerDraft.trim().length === 0
+                      }
+                      type="submit"
+                    >
+                      <Icon name="send" />
+                      {composer.status === "submitting" ? "发送中…" : "发送"}
+                    </button>
+                  </div>
+                </form>
+                <div className="composer-meta">
+                  <Link
+                    aria-label={`查看 Queue，当前 ${taskQueue.length} 项`}
+                    className={taskQueue.length > 0 ? "has-items" : undefined}
+                    to="/queue"
+                  >
+                    <Icon name="queue" />
+                    <span>Queue</span>
+                    <strong>{taskQueue.length}</strong>
+                  </Link>
+                  <span>
+                    {taskActive ? "Enter 加入 Queue" : "Enter 发送"} · Shift +
+                    Enter 换行
+                  </span>
+                </div>
+              </div>
             </div>
-          </form>
-          <div className="composer-meta">
-            <Link
-              aria-label={`查看 Queue，当前 ${taskQueue.length} 项`}
-              className={taskQueue.length > 0 ? "has-items" : undefined}
-              to="/queue"
-            >
-              <Icon name="queue" />
-              <span>Queue</span>
-              <strong>{taskQueue.length}</strong>
-            </Link>
-            <span>按 Ctrl/⌘ + Enter 发送</span>
           </div>
         </section>
       </section>

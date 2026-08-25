@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { constants } from "node:fs";
+import { constants, type Stats } from "node:fs";
 import { mkdir, open, rename, rm } from "node:fs/promises";
 import { dirname } from "node:path";
 
@@ -25,6 +25,14 @@ export interface SqliteStateOwner {
   readonly gid: number;
 }
 
+type StateFileRevision = {
+  readonly device: number;
+  readonly inode: number;
+  readonly size: number;
+  readonly modifiedMs: number;
+  readonly changedMs: number;
+};
+
 /** Internal persistence primitive. Raw Database access cannot leave repositories. */
 export class SqliteStateFile {
   readonly #path: string;
@@ -32,6 +40,7 @@ export class SqliteStateFile {
   readonly #owner: SqliteStateOwner | undefined;
   readonly #coordinationAcquisitionAbort = new AbortController();
   #database: Database;
+  #revision: StateFileRevision | undefined;
   #tail: Promise<void> = Promise.resolve();
   #closed = false;
 
@@ -39,11 +48,13 @@ export class SqliteStateFile {
     path: string,
     spec: SqliteStateSpec,
     database: Database,
+    revision: StateFileRevision | undefined,
     owner?: SqliteStateOwner,
   ) {
     this.#path = path;
     this.#spec = spec;
     this.#database = database;
+    this.#revision = revision;
     this.#owner = owner;
   }
 
@@ -61,13 +72,19 @@ export class SqliteStateFile {
       ...(options.owner === undefined ? {} : { fileOwner: options.owner }),
     });
     try {
-      const bytes = await readSecureFile(path, options.owner?.uid);
+      const stored = await readSecureFile(path, options.owner?.uid);
       const SQL = await loadSqliteRuntime();
-      if (bytes === undefined) {
+      if (stored === undefined) {
         if (options.create !== true)
           throw new Error("State database is missing");
         const database = new SQL.Database();
-        const state = new SqliteStateFile(path, spec, database, options.owner);
+        const state = new SqliteStateFile(
+          path,
+          spec,
+          database,
+          undefined,
+          options.owner,
+        );
         try {
           database.run(spec.schema);
           state.#validate();
@@ -78,8 +95,14 @@ export class SqliteStateFile {
           throw error;
         }
       }
-      const database = new SQL.Database(bytes);
-      const state = new SqliteStateFile(path, spec, database, options.owner);
+      const database = new SQL.Database(stored.bytes);
+      const state = new SqliteStateFile(
+        path,
+        spec,
+        database,
+        stored.revision,
+        options.owner,
+      );
       try {
         state.#validate();
         return state;
@@ -198,10 +221,11 @@ export class SqliteStateFile {
   }
 
   async #reload(): Promise<void> {
-    const bytes = await readSecureFile(this.#path, this.#owner?.uid);
-    if (bytes === undefined) throw new Error("State database disappeared");
+    const stored = await readSecureFile(this.#path, this.#owner?.uid);
+    if (stored === undefined) throw new Error("State database disappeared");
+    if (sameRevision(this.#revision, stored.revision)) return;
     const SQL = await loadSqliteRuntime();
-    const replacement = new SQL.Database(bytes);
+    const replacement = new SQL.Database(stored.bytes);
     const previous = this.#database;
     this.#database = replacement;
     try {
@@ -211,6 +235,7 @@ export class SqliteStateFile {
       replacement.close();
       throw error;
     }
+    this.#revision = stored.revision;
     previous.close();
   }
 
@@ -248,6 +273,7 @@ export class SqliteStateFile {
   ): Promise<void> {
     const fence = await lock.beginCommit();
     const temporary = `${this.#path}.${process.pid}.${randomUUID()}.tmp`;
+    let writtenRevision: StateFileRevision | undefined;
     try {
       const handle = await open(temporary, "wx", 0o600);
       try {
@@ -256,12 +282,14 @@ export class SqliteStateFile {
         }
         await handle.writeFile(this.#database.export());
         await handle.sync();
+        writtenRevision = stateFileRevision(await handle.stat());
       } finally {
         await handle.close();
       }
       await lock.assertOwned();
       await rename(temporary, this.#path);
       await syncDirectoryForDurability(dirname(this.#path));
+      this.#revision = writtenRevision;
     } catch (error) {
       await rm(temporary, { force: true });
       throw error;
@@ -295,7 +323,10 @@ export class SqliteStateFile {
 async function readSecureFile(
   path: string,
   expectedOwnerUid = process.getuid?.(),
-): Promise<Uint8Array | undefined> {
+): Promise<
+  | { readonly bytes: Uint8Array; readonly revision: StateFileRevision }
+  | undefined
+> {
   let handle: Awaited<ReturnType<typeof open>>;
   try {
     handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
@@ -313,10 +344,37 @@ async function readSecureFile(
     if ((metadata.mode & 0o077) !== 0) {
       throw new Error("State database permissions must be 0600 or stricter");
     }
-    return handle.readFile();
+    return {
+      bytes: await handle.readFile(),
+      revision: stateFileRevision(metadata),
+    };
   } finally {
     await handle.close();
   }
+}
+
+function stateFileRevision(metadata: Stats): StateFileRevision {
+  return {
+    device: metadata.dev,
+    inode: metadata.ino,
+    size: metadata.size,
+    modifiedMs: metadata.mtimeMs,
+    changedMs: metadata.ctimeMs,
+  };
+}
+
+function sameRevision(
+  left: StateFileRevision | undefined,
+  right: StateFileRevision,
+): boolean {
+  return (
+    left !== undefined &&
+    left.device === right.device &&
+    left.inode === right.inode &&
+    left.size === right.size &&
+    left.modifiedMs === right.modifiedMs &&
+    left.changedMs === right.changedMs
+  );
 }
 
 function validateOwner(owner: SqliteStateOwner | undefined): void {

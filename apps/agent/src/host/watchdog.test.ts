@@ -35,8 +35,10 @@ describe("watchdog crontab management", () => {
     expect(script).toContain('PATH="$RUNTIME_BIN:${PATH:-/usr/bin:/bin}"');
     expect(script).toContain("export PATH");
     expect(script).toContain(
-      "PATH='\"'\"'/opt/node/bin'\"'\"':${PATH:-/usr/bin:/bin}; export PATH; exec",
+      "PATH='\"'\"'/opt/node/bin'\"'\"':${PATH:-/usr/bin:/bin}; export PATH; while :; do",
     );
+    expect(script).toContain('STATUS=$?; if [ "$STATUS" -eq 0 ]');
+    expect(script).toContain("sleep 2; done");
     expect(script).toContain('"$TMUX" has-session');
     expect(script).toContain('"$TMUX" new-session');
   });

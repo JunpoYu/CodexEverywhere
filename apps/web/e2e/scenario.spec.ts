@@ -21,6 +21,26 @@ test("ScenarioGateway 完成任务创建、流式收口和主导航", async ({ p
   ).toBeVisible();
   await expectScenarioReply(page);
 
+  const composer = page.getByLabel("给 Codex 的消息");
+  await composer.fill("输入法候选确认");
+  await composer.dispatchEvent("keydown", {
+    key: "Enter",
+    isComposing: true,
+  });
+  await expect(composer).toHaveValue("输入法候选确认");
+  await expect(
+    page.locator(".timeline").getByText("输入法候选确认", { exact: true }),
+  ).toHaveCount(0);
+  await composer.fill("第一行");
+  await composer.press("Shift+Enter");
+  await composer.type("第二行");
+  await expect(composer).toHaveValue("第一行\n第二行");
+  await composer.press("Enter");
+  await expect(composer).toHaveValue("");
+  await expect(
+    page.locator(".timeline").getByText("第一行\n第二行", { exact: true }),
+  ).toBeVisible();
+
   await page.getByRole("link", { name: /Queue/u }).last().click();
   await expect(page.getByRole("heading", { name: "Queue" })).toBeVisible();
   await expect(page.getByText("Queue 为空")).toBeVisible();
@@ -51,7 +71,7 @@ test("审批期间可排入、Steer 和移除 Queue", async ({ page }) => {
   await expect(page.getByText("允许 Codex 执行命令？")).toBeVisible();
   const composer = page.getByLabel("给 Codex 的消息");
   await composer.fill("审批完成后继续检查 Queue");
-  await page.getByRole("button", { name: "加入 Queue" }).click();
+  await composer.press("Enter");
   await expect(composer).toHaveValue("");
   await expect(page.locator("main.conversation-page")).toHaveAttribute(
     "aria-busy",
@@ -136,7 +156,9 @@ test("任务可重命名、归档、取消归档并删除", async ({ page }) => 
   ).toHaveCount(0);
 });
 
-test("任务权限可连续保存，并始终显示权威结果", async ({ page }) => {
+test("任务权限可连续保存，并始终显示权威结果", async ({ page }, testInfo) => {
+  const mobile = testInfo.project.name.includes("mobile");
+  if (!mobile) await page.setViewportSize({ width: 1600, height: 900 });
   await openScenario(page);
   await openTaskCard(page, "欢迎使用 CodexEverywhere");
 
@@ -153,6 +175,23 @@ test("任务权限可连续保存，并始终显示权威结果", async ({ page 
         .evaluate((element) => element.scrollWidth <= element.clientWidth),
     )
     .toBe(true);
+  const runtimeSummary = await page
+    .getByLabel("任务运行设置摘要")
+    .boundingBox();
+  const composerInput = await page.getByLabel("给 Codex 的消息").boundingBox();
+  expect(runtimeSummary).not.toBeNull();
+  expect(composerInput).not.toBeNull();
+  if (runtimeSummary !== null && composerInput !== null) {
+    if (mobile) {
+      expect(runtimeSummary.y + runtimeSummary.height).toBeLessThanOrEqual(
+        composerInput.y,
+      );
+    } else {
+      expect(runtimeSummary.x + runtimeSummary.width).toBeLessThanOrEqual(
+        composerInput.x,
+      );
+    }
+  }
   await expect(
     page.getByRole("link", { name: "查看 Queue，当前 0 项" }),
   ).toBeVisible();
@@ -184,6 +223,20 @@ test("任务权限可连续保存，并始终显示权威结果", async ({ page 
   await expect(save).toBeDisabled();
   await expect(page.getByLabel("文件：只读")).toBeVisible();
   await expect(page.getByLabel("审批：按需询问")).toBeVisible();
+
+  await dialog.getByRole("radio", { name: /完全访问/u }).click();
+  await dialog.getByRole("radio", { name: /从不询问/u }).click();
+  await save.click();
+  await expect(
+    dialog.getByText("设置已保存，并已应用到当前任务。"),
+  ).toBeVisible();
+  await expect(page.getByLabel("文件：完全访问")).toBeVisible();
+  await expect(page.getByLabel("审批：从不询问")).toBeVisible();
+  await expect(page.getByText("高权限", { exact: true })).toBeVisible();
+  await expect(page.locator("[data-task-runtime-summary]")).toHaveAttribute(
+    "data-elevated-access",
+    "true",
+  );
 });
 
 test("新任务展示全局默认权限，并允许仅覆盖本次任务", async ({ page }) => {

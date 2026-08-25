@@ -286,6 +286,89 @@ describe("DirectTransportV2", () => {
     client.socket.close();
   });
 
+  it("reports an unrecoverable WASM trap with its handshake stage", async () => {
+    const hostKeys = generateStaticKeyPair();
+    const deviceKeys = generateStaticKeyPair();
+    const trap = new WebAssembly.RuntimeError("memory access out of bounds");
+    const onFatalRuntimeFailure = vi.fn();
+    const gateway = await DirectTransportV2.start({
+      parentScope: trackedScope(),
+      host: "127.0.0.1",
+      port: 0,
+      nodeId: "node-1",
+      userId: "unix:1000",
+      identity: hostKeys,
+      hostFingerprint: `sha256:${"A".repeat(43)}`,
+      deviceRegistry: new FakeDevices(deviceKeys.publicKey, {
+        matchError: trap,
+      }),
+      createSession: () => new FakeV2Session(),
+      onFatalRuntimeFailure,
+    });
+    gateways.push(gateway);
+
+    await expect(
+      connect({
+        port: gateway.port,
+        hostPublicKey: hostKeys.publicKey,
+        deviceKeys,
+        auth: { mode: "login", deviceName: "New phone", rememberDevice: true },
+      }),
+    ).rejects.toThrow();
+    await waitFor(() => onFatalRuntimeFailure.mock.calls.length === 1);
+    expect(onFatalRuntimeFailure).toHaveBeenCalledWith({
+      error: trap,
+      stage: "peer-authentication",
+    });
+  });
+
+  it("reports an unrecoverable WASM trap after the handshake", async () => {
+    const hostKeys = generateStaticKeyPair();
+    const deviceKeys = generateStaticKeyPair();
+    const trap = new WebAssembly.RuntimeError("memory access out of bounds");
+    const session = new FakeV2Session();
+    vi.spyOn(session, "route").mockRejectedValue(trap);
+    const onFatalRuntimeFailure = vi.fn();
+    const gateway = await DirectTransportV2.start({
+      parentScope: trackedScope(),
+      host: "127.0.0.1",
+      port: 0,
+      nodeId: "node-1",
+      userId: "unix:1000",
+      identity: hostKeys,
+      hostFingerprint: `sha256:${"A".repeat(43)}`,
+      deviceRegistry: new FakeDevices(deviceKeys.publicKey),
+      createSession: () => session,
+      onFatalRuntimeFailure,
+    });
+    gateways.push(gateway);
+    const client = await connect({
+      port: gateway.port,
+      hostPublicKey: hostKeys.publicKey,
+      deviceKeys,
+      auth: {
+        mode: "pair",
+        pairingId: "pair-1",
+        secret: "S".repeat(43),
+        deviceName: "Phone",
+      },
+    });
+
+    sendEncryptedRequest(client.socket, client.session, {
+      version: 2,
+      requestId: "00000000-0000-4000-8000-000000000003",
+      method: "host/ping",
+      input: { version: 1 },
+    });
+
+    await waitFor(() => onFatalRuntimeFailure.mock.calls.length === 1);
+    expect(onFatalRuntimeFailure).toHaveBeenCalledWith({
+      error: trap,
+      stage: "connected",
+    });
+    await expect(closed(client.socket)).resolves.toBe(1011);
+  });
+
   it("rejects a revoked device during resume before creating a session", async () => {
     const hostKeys = generateStaticKeyPair();
     const deviceKeys = generateStaticKeyPair();
@@ -839,8 +922,30 @@ async function nextEncrypted(
 
 function nextMessage(socket: WebSocket): Promise<RawData> {
   return new Promise((resolve, reject) => {
-    socket.once("message", resolve);
-    socket.once("error", reject);
+    const cleanup = () => {
+      socket.off("message", received);
+      socket.off("error", failed);
+      socket.off("close", closedBeforeMessage);
+    };
+    const received = (data: RawData) => {
+      cleanup();
+      resolve(data);
+    };
+    const failed = (error: Error) => {
+      cleanup();
+      reject(error);
+    };
+    const closedBeforeMessage = () => {
+      cleanup();
+      reject(new Error("Socket closed before the next message"));
+    };
+    if (socket.readyState === WebSocket.CLOSED) {
+      closedBeforeMessage();
+      return;
+    }
+    socket.once("message", received);
+    socket.once("error", failed);
+    socket.once("close", closedBeforeMessage);
   });
 }
 

@@ -1,0 +1,222 @@
+.card {
+  width: 100%;
+  padding: 7px 8px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface-subtle);
+}
+
+.card[data-elevated-access="true"] {
+  border-color: color-mix(in srgb, var(--warning) 42%, var(--border));
+  box-shadow: inset 3px 0 0 var(--warning);
+}
+
+.header {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 5px;
+}
+
+.heading {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 5px;
+}
+
+.heading strong {
+  overflow: hidden;
+  color: var(--text-muted);
+  font-size: 10px;
+  font-weight: 680;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.risk {
+  flex: 0 0 auto;
+  padding: 2px 4px;
+  border-radius: 4px;
+  background: var(--warning-soft);
+  color: var(--warning-strong);
+  font-size: 8px;
+  font-weight: 720;
+  line-height: 1.2;
+}
+
+.edit {
+  display: inline-flex;
+  width: 26px;
+  min-height: 26px;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border-color: transparent;
+  background: transparent;
+  color: var(--accent-strong);
+}
+
+.edit svg {
+  width: 13px;
+  height: 13px;
+}
+
+.edit > span {
+  display: none;
+}
+
+.mobileState {
+  display: none;
+}
+
+.values {
+  display: grid;
+  min-width: 0;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin: 5px 0 0;
+  padding-top: 5px;
+  border-top: 1px solid var(--border);
+}
+
+.values > div {
+  display: grid;
+  min-width: 0;
+  gap: 1px;
+  padding: 3px 5px;
+}
+
+.values > div:nth-child(odd) {
+  padding-left: 0;
+  border-right: 1px solid var(--border);
+}
+
+.values > div:nth-child(even) {
+  padding-right: 0;
+}
+
+.values dt,
+.values dd {
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.values dt {
+  color: var(--text-subtle);
+  font-size: 8px;
+  font-weight: 620;
+}
+
+.values dd {
+  color: var(--text-muted);
+  font-size: 9px;
+  font-weight: 690;
+}
+
+.values > .needsAttention dd {
+  color: var(--warning-strong);
+}
+
+.values > .needsAttention dt::after {
+  display: inline-block;
+  width: 4px;
+  height: 4px;
+  margin-left: 3px;
+  border-radius: 50%;
+  background: var(--warning);
+  content: "";
+  vertical-align: 1px;
+}
+
+@container (min-width: 520px) {
+  .card {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    align-items: center;
+    gap: 10px;
+    padding: 6px 9px;
+  }
+
+  .header {
+    min-width: 128px;
+    border-right: 1px solid var(--border);
+    padding-right: 9px;
+  }
+
+  .edit {
+    width: auto;
+    min-height: 28px;
+    gap: 4px;
+    padding: 0 5px;
+  }
+
+  .edit > span {
+    display: inline;
+    font-size: 9px;
+  }
+
+  .values {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    margin: 0;
+    padding: 0;
+    border-top: 0;
+  }
+
+  .values > div {
+    padding: 1px 8px;
+    border-right: 1px solid var(--border);
+  }
+
+  .values > div:nth-child(odd) {
+    padding-left: 8px;
+  }
+
+  .values > div:last-child {
+    padding-right: 0;
+    border-right: 0;
+  }
+}
+
+@media (max-width: 760px) {
+  .card {
+    display: block;
+    padding: 6px 8px;
+  }
+
+  .header {
+    border-right: 0;
+    padding-right: 0;
+  }
+
+  .mobileState {
+    display: inline-flex;
+  }
+
+  .values {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    margin-top: 4px;
+    padding-top: 4px;
+    border-top: 1px solid var(--border);
+  }
+
+  .values > div,
+  .values > div:nth-child(odd) {
+    padding: 2px 5px;
+  }
+
+  .values > div:nth-child(odd) {
+    padding-left: 0;
+    border-right: 1px solid var(--border);
+  }
+
+  .values > div:nth-child(even) {
+    padding-right: 0;
+    border-right: 0;
+  }
+}
