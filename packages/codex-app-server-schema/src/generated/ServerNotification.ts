@@ -27,6 +27,7 @@ import type { ItemCompletedNotification } from "./v2/ItemCompletedNotification";
 import type { ItemGuardianApprovalReviewCompletedNotification } from "./v2/ItemGuardianApprovalReviewCompletedNotification";
 import type { ItemGuardianApprovalReviewStartedNotification } from "./v2/ItemGuardianApprovalReviewStartedNotification";
 import type { ItemStartedNotification } from "./v2/ItemStartedNotification";
+import type { McpServerEventStreamNotification } from "./v2/McpServerEventStreamNotification";
 import type { McpServerOauthLoginCompletedNotification } from "./v2/McpServerOauthLoginCompletedNotification";
 import type { McpServerStatusUpdatedNotification } from "./v2/McpServerStatusUpdatedNotification";
 import type { McpToolCallProgressNotification } from "./v2/McpToolCallProgressNotification";
@@ -58,6 +59,9 @@ import type { ThreadQueueChangedNotification } from "./v2/ThreadQueueChangedNoti
 import type { ThreadRealtimeClosedNotification } from "./v2/ThreadRealtimeClosedNotification";
 import type { ThreadRealtimeErrorNotification } from "./v2/ThreadRealtimeErrorNotification";
 import type { ThreadRealtimeItemAddedNotification } from "./v2/ThreadRealtimeItemAddedNotification";
+import type { ThreadRealtimeItemCompletedNotification } from "./v2/ThreadRealtimeItemCompletedNotification";
+import type { ThreadRealtimeItemStartedNotification } from "./v2/ThreadRealtimeItemStartedNotification";
+import type { ThreadRealtimeItemTranscriptDeltaNotification } from "./v2/ThreadRealtimeItemTranscriptDeltaNotification";
 import type { ThreadRealtimeOutputAudioDeltaNotification } from "./v2/ThreadRealtimeOutputAudioDeltaNotification";
 import type { ThreadRealtimeSdpNotification } from "./v2/ThreadRealtimeSdpNotification";
 import type { ThreadRealtimeStartedNotification } from "./v2/ThreadRealtimeStartedNotification";
@@ -184,6 +188,10 @@ export type ServerNotification =
       method: "mcpServer/startupStatus/updated";
       params: McpServerStatusUpdatedNotification;
     }
+  | {
+      method: "mcpServer/event/stream/notification";
+      params: McpServerEventStreamNotification;
+    }
   | { method: "account/updated"; params: AccountUpdatedNotification }
   | {
       method: "account/rateLimits/updated";
@@ -245,6 +253,18 @@ export type ServerNotification =
   | {
       method: "thread/realtime/itemAdded";
       params: ThreadRealtimeItemAddedNotification;
+    }
+  | {
+      method: "thread/realtime/item/started";
+      params: ThreadRealtimeItemStartedNotification;
+    }
+  | {
+      method: "thread/realtime/item/transcript/delta";
+      params: ThreadRealtimeItemTranscriptDeltaNotification;
+    }
+  | {
+      method: "thread/realtime/item/completed";
+      params: ThreadRealtimeItemCompletedNotification;
     }
   | {
       method: "thread/realtime/transcript/delta";

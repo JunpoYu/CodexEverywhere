@@ -24,9 +24,11 @@ import {
   overrideSandbox,
   permissionOverrideCount,
   rebaseInheritedPermissions,
-  threadStartPermissionOverrides,
+  threadStartSettings,
   type NewTaskPermissionDraft,
 } from "./new-task-permissions.js";
+import { effortAfterModelChange } from "./model-catalog-model.js";
+import { ModelEffortFields } from "./ModelEffortFields.js";
 import { TaskListSection } from "./TaskListSection.js";
 
 type Preferences = OutputOf<"preferences/read">;
@@ -35,11 +37,14 @@ export function TasksPage() {
   const runtime = useRuntime();
   const connection = useActorState(runtime.connection);
   const tasks = useActorState(runtime.tasks);
+  const models = useActorState(runtime.models);
   const [workspaces, setWorkspaces] = useState<
     Awaited<ReturnType<typeof loadWorkspaces>>
   >([]);
   const [workspaceId, setWorkspaceId] = useState("");
   const [prompt, setPrompt] = useState("");
+  const [model, setModel] = useState("");
+  const [effort, setEffort] = useState("");
   const [defaults, setDefaults] = useState<Preferences>();
   const [permissionDraft, setPermissionDraft] =
     useState<NewTaskPermissionDraft>();
@@ -64,6 +69,12 @@ export function TasksPage() {
       runtime.refreshTasks();
     }
   }, [runtime]);
+
+  useEffect(() => {
+    if (connection.status === "online" && models.status === "idle") {
+      runtime.models.dispatch({ type: "LOAD" });
+    }
+  }, [connection.status, models.status, runtime]);
 
   useEffect(() => {
     if (connection.status !== "online") return;
@@ -128,6 +139,8 @@ export function TasksPage() {
     event.preventDefault();
     const submittedWorkspaceId = workspaceId;
     const submittedPrompt = prompt.trim();
+    const submittedModel = model;
+    const submittedEffort = effort;
     const submittedDraft = permissionDraft;
     const displayedDefaults = defaults;
     if (
@@ -170,7 +183,10 @@ export function TasksPage() {
           workspaceId: submittedWorkspaceId,
           prompt: submittedPrompt,
           expectedPreferencesRevision: validatedDefaults.revision,
-          settings: threadStartPermissionOverrides(submittedDraft),
+          settings: threadStartSettings(submittedDraft, {
+            model: submittedModel,
+            effort: submittedEffort,
+          }),
         },
         onOutcomeUnknown: () => setStarting("reconciling"),
       });
@@ -206,6 +222,14 @@ export function TasksPage() {
         reason.code === "INVALID_INPUT"
       ) {
         setError("宿主机 Agent 不支持新版任务创建协议，请先升级 Agent。");
+      } else if (
+        reason instanceof GatewayRemoteError &&
+        reason.code === "CODEX_REQUEST_REJECTED"
+      ) {
+        runtime.models.dispatch({ type: "LOAD" });
+        setError(
+          "Codex 未接受任务配置或第一轮请求。CE 已重新读取可用模型；请检查模型与推理强度后重试。",
+        );
       } else {
         setError(errorMessage(reason));
       }
@@ -245,6 +269,21 @@ export function TasksPage() {
     defaults !== undefined &&
     permissionDraft !== undefined;
   const submissionLocked = starting !== "idle";
+  const chooseModel = (nextModel: string) => {
+    const nextEffort = effortAfterModelChange(
+      models.models,
+      nextModel,
+      effort,
+      "omit",
+    );
+    setModel(nextModel);
+    setEffort(nextEffort);
+    if (nextEffort !== effort) {
+      setWarning("原推理强度不受新模型支持，已恢复为该模型的默认值。");
+    } else {
+      setWarning(undefined);
+    }
+  };
 
   return (
     <main className="page tasks-page">
@@ -285,7 +324,11 @@ export function TasksPage() {
 
       <form
         className="new-task-card"
-        data-pwa-draft={overrideCount > 0 ? "true" : undefined}
+        data-pwa-draft={
+          overrideCount > 0 || model.length > 0 || effort.length > 0
+            ? "true"
+            : undefined
+        }
         onSubmit={(event) => void start(event)}
       >
         <label className="new-task-field">
@@ -317,7 +360,22 @@ export function TasksPage() {
           className="new-task-permissions"
           disabled={submissionLocked || !permissionsReady}
         >
-          <legend>本次任务权限</legend>
+          <legend>本次任务配置</legend>
+          <ModelEffortFields
+            catalog={models}
+            defaultModelLabel="Codex 默认模型"
+            disabled={submissionLocked}
+            effort={effort}
+            effortAriaLabel="本次任务推理强度"
+            model={model}
+            modelAriaLabel="本次任务模型"
+            onEffortChange={(value) => {
+              setEffort(value);
+              setWarning(undefined);
+            }}
+            onModelChange={chooseModel}
+            onRetry={() => runtime.models.dispatch({ type: "LOAD" })}
+          />
           <div className="new-task-permission-grid">
             <label>
               <span>Sandbox</span>
@@ -374,7 +432,7 @@ export function TasksPage() {
                     setWarning(undefined);
                   }}
                 >
-                  恢复全局默认
+                  恢复全局权限默认
                 </button>
                 <Link to="/settings">修改全局默认</Link>
               </div>

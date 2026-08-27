@@ -309,7 +309,7 @@ describe("ThreadService", () => {
       thread: { id: "thread-1", state: "running" },
       turnId: "turn-1",
     });
-    expect(factory.clients).toHaveLength(2);
+    expect(factory.clients).toHaveLength(1);
     expect(factory.clients[0]?.requests[0]).toEqual({
       method: "thread/start",
       params: expect.objectContaining({
@@ -321,12 +321,8 @@ describe("ThreadService", () => {
       sandbox: "danger-full-access",
       approvalPolicy: "never",
     });
-    expect(factory.clients[0]?.closed).toBe(true);
-    expect(factory.clients[1]?.closed).toBe(false);
-    expect(factory.clients[1]?.methods).toEqual([
-      "thread/resume",
-      "turn/start",
-    ]);
+    expect(factory.clients[0]?.closed).toBe(false);
+    expect(factory.clients[0]?.methods).toEqual(["thread/start", "turn/start"]);
     const lease = leases.get("thread-1");
     expect(lease?.state).toBe("waiting-input");
     expect(lease?.listInteractions()).toHaveLength(1);
@@ -336,11 +332,11 @@ describe("ThreadService", () => {
       kind: "approval",
       decision: "accept",
     });
-    factory.clients[1]?.notification("turn/completed", {
+    factory.clients[0]?.notification("turn/completed", {
       threadId: "thread-1",
       turn: { id: "turn-1", status: "completed" },
     });
-    await eventually(() => leases.size === 0 && factory.clients[1]!.closed);
+    await eventually(() => leases.size === 0 && factory.clients[0]!.closed);
   });
 
   it("rejects a stale default-permission revision before starting Codex", async () => {
@@ -651,7 +647,6 @@ class FirstTurnFactory implements CodexClientFactoryPort {
 
   create(scope: Scope): Promise<CodexClient> {
     const client = new FirstTurnClient(
-      this.clients.length === 0 ? "bootstrap" : "lease",
       this.workspacePath,
       this.threadStartGate,
       this.#markThreadStartRequested,
@@ -673,7 +668,6 @@ class FirstTurnClient implements CodexClient {
   closed = false;
 
   constructor(
-    private readonly role: "bootstrap" | "lease",
     private readonly workspacePath: string,
     private readonly threadStartGate: Promise<void>,
     private readonly markThreadStartRequested: () => void,
@@ -688,7 +682,7 @@ class FirstTurnClient implements CodexClient {
       method,
       ...(params === undefined ? {} : { params }),
     });
-    if (this.role === "bootstrap" && method === "thread/start") {
+    if (method === "thread/start") {
       this.markThreadStartRequested();
       await this.threadStartGate;
       return {
@@ -698,15 +692,7 @@ class FirstTurnClient implements CodexClient {
         sandbox: workspaceWriteSandbox(),
       } as Result;
     }
-    if (this.role === "lease" && method === "thread/resume") {
-      return {
-        thread: thread(this.workspacePath),
-        approvalPolicy: "on-request",
-        approvalsReviewer: "user",
-        sandbox: workspaceWriteSandbox(),
-      } as Result;
-    }
-    if (this.role === "lease" && method === "turn/start") {
+    if (method === "turn/start") {
       for (const listener of [...this.#serverRequests]) {
         listener({
           id: "approval-1",
@@ -723,7 +709,7 @@ class FirstTurnClient implements CodexClient {
       }
       return { turn: { id: "turn-1" } } as Result;
     }
-    throw new Error(`Unexpected ${this.role} request: ${method}`);
+    throw new Error(`Unexpected first-turn request: ${method}`);
   }
 
   onNotification(

@@ -18,4 +18,8 @@ export type SkillMetadata = {
   path: AbsolutePathBuf;
   scope: SkillScope;
   enabled: boolean;
+  /**
+   * Owning plugin ID, matching `PluginSummary.id`, when known.
+   */
+  pluginId: string | null;
 };

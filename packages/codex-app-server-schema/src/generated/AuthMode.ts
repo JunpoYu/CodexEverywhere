@@ -12,4 +12,5 @@ export type AuthMode =
   | "headers"
   | "agentIdentity"
   | "personalAccessToken"
-  | "bedrockApiKey";
+  | "bedrockApiKey"
+  | "bedrockAccessKeys";

@@ -184,27 +184,35 @@ export class ThreadService {
     const startWithPermissions = async (
       sandbox: NonNullable<RuntimeThreadSettings["sandbox"]>,
       approvalPolicy: NonNullable<RuntimeThreadSettings["approvalPolicy"]>,
-    ) => ({
-      sandbox,
-      approvalPolicy,
-      started: await this.#withClient("thread-start", async (client) =>
-        parseCodexObject(
-          await client.request("thread/start", {
-            cwd: path,
-            ...(requested.model === undefined
-              ? {}
-              : { model: requested.model }),
-            approvalPolicy,
-            approvalsReviewer: "user",
-            sandbox,
-            ...(requested.effort === undefined
-              ? {}
-              : { config: { model_reasoning_effort: requested.effort } }),
-          }),
-          "thread/start response",
-        ),
-      ),
-    });
+    ) =>
+      this.#leases.start(
+        async (client) => {
+          const started = parseCodexObject(
+            await client.request("thread/start", {
+              cwd: path,
+              ...(requested.model === undefined
+                ? {}
+                : { model: requested.model }),
+              approvalPolicy,
+              approvalsReviewer: "user",
+              sandbox,
+              ...(requested.effort === undefined
+                ? {}
+                : { config: { model_reasoning_effort: requested.effort } }),
+            }),
+            "thread/start response",
+          );
+          const thread = requireCodexObject(started.thread, "started thread");
+          return {
+            threadId: requireCodexString(thread.id, "thread id"),
+            result: { sandbox, approvalPolicy, started },
+          };
+        },
+        {
+          kind: "queue",
+          id: `thread-start:${randomUUID()}`,
+        },
+      );
     let accepted: Awaited<ReturnType<typeof startWithPermissions>>;
     if (
       requested.sandbox === undefined ||
@@ -234,41 +242,32 @@ export class ThreadService {
         requested.approvalPolicy,
       );
     }
-    const { approvalPolicy, sandbox, started } = accepted;
+    const {
+      handle,
+      result: { approvalPolicy, sandbox, started },
+    } = accepted;
     const thread = requireCodexObject(started.thread, "started thread");
-    const threadId = requireCodexString(thread.id, "thread id");
-    const currentWorkspace = await this.#workspaces.workspaceForPath(
-      requireCodexString(thread.cwd, "thread cwd"),
-    );
-    const startedSettings = await this.#sessions.rememberStarted({
-      threadId,
-      started,
-      sandbox,
-      approvalPolicy,
-      ...(requested.model === undefined ? {} : { model: requested.model }),
-      ...(requested.effort === undefined ? {} : { effort: requested.effort }),
-    });
-
-    // The first turn must be owned by a lease before it can emit an approval
-    // or user question. The running state keeps the lease alive even if the
-    // browser has not navigated to the new task yet.
-    const handle = await this.#leases.acquire(threadId, {
-      kind: "queue",
-      id: `thread-start:${randomUUID()}`,
-    });
+    const threadId = handle.threadId;
+    let settingsRemembered = false;
     try {
-      const resumed = parseCodexObject(
-        await handle.lease.request("thread/resume", {
-          threadId,
-          approvalPolicy,
-          sandbox,
-        }),
-        "thread/resume response",
+      const currentWorkspace = await this.#workspaces.workspaceForPath(
+        requireCodexString(thread.cwd, "thread cwd"),
       );
-      handle.lease.adoptAuthoritativeThread(
-        requireCodexObject(resumed.thread, "resumed thread"),
-      );
+      handle.lease.adoptAuthoritativeThread(thread);
+      const startedSettings = await this.#sessions.rememberStarted({
+        threadId,
+        started,
+        sandbox,
+        approvalPolicy,
+        ...(requested.model === undefined ? {} : { model: requested.model }),
+        ...(requested.effort === undefined ? {} : { effort: requested.effort }),
+      });
+      settingsRemembered = true;
       this.#sessions.markResumed(handle.lease, startedSettings);
+
+      // The same lease-owned client that created the empty thread starts its
+      // first turn. Codex does not publish a resumable rollout until that
+      // boundary, and interactions may arrive immediately after turn/start.
       const turn = parseCodexObject(
         await handle.lease.request("turn/start", {
           threadId,
@@ -298,6 +297,15 @@ export class ThreadService {
         },
         turnId,
       };
+    } catch (error) {
+      if (
+        settingsRemembered &&
+        error instanceof GatewayV2Error &&
+        error.code === "CODEX_REQUEST_REJECTED"
+      ) {
+        await this.#sessions.remove(threadId).catch(() => undefined);
+      }
+      throw error;
     } finally {
       await handle.release();
     }

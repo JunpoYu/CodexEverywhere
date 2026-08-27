@@ -10,6 +10,7 @@ import {
 describe("Gateway API v2 method registry", () => {
   it("contains the planned surface and permanently excludes removed methods", () => {
     expect(gatewayMethodNames).toContain("thread/open");
+    expect(gatewayMethodNames).toContain("model/list");
     expect(gatewayMethodNames).toContain("interaction/respond");
     expect(gatewayMethodNames).toContain("mutation/status");
     expect(gatewayMethodNames).toContain("admin/user/recovery/start");

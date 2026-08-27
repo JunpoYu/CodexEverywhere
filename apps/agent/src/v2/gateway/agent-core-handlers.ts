@@ -9,6 +9,7 @@ import {
 } from "@codex-everywhere/protocol/v2";
 
 import type { AgentMutationMiddleware } from "../services/mutation-middleware.js";
+import type { ModelCatalogService } from "../services/model-catalog-service.js";
 import type { PreferencesService } from "../services/preferences-service.js";
 import type { QueueService } from "../services/queue-service.js";
 import type { ThreadService } from "../services/thread-service.js";
@@ -22,6 +23,7 @@ export interface AgentCoreHandlerServices {
   readonly workspaces: WorkspaceService;
   readonly preferences: PreferencesService;
   readonly queue: QueueService;
+  readonly models: ModelCatalogService;
   readonly threads: ThreadService;
 }
 
@@ -31,9 +33,17 @@ export function registerAgentCoreHandlers(
 ): void {
   registerHostHandlers(router, services);
   registerWorkspaceHandlers(router, services);
+  registerModelHandlers(router, services);
   registerThreadHandlers(router, services);
   registerQueueHandlers(router, services);
   registerPreferenceHandlers(router, services);
+}
+
+function registerModelHandlers(
+  router: GatewayV2Router<AgentGatewayContext>,
+  services: AgentCoreHandlerServices,
+): void {
+  router.register("model/list", (input) => services.models.list(input));
 }
 
 export function registerAgentHandlerMap<Methods extends GatewayMethodName>(

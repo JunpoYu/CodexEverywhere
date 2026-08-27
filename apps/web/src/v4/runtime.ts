@@ -4,6 +4,7 @@ import { parseGatewayEventPayload } from "@codex-everywhere/protocol/v2";
 import type { SavedHost } from "../storage.js";
 import { createComposerActor } from "./actors/composer-actor.js";
 import { createConnectionActor } from "./actors/connection-actor.js";
+import { createModelCatalogActor } from "./actors/model-catalog-actor.js";
 import { createOnboardingActor } from "./actors/onboarding-actor.js";
 import { createQueueActor } from "./actors/queue-actor.js";
 import { createTaskListActor } from "./actors/task-list-actor.js";
@@ -15,6 +16,7 @@ export class UserWebRuntime {
   readonly scope = new Scope("web-v0.4");
   readonly connection = createConnectionActor(this.scope);
   readonly onboarding;
+  readonly models;
   readonly tasks;
   readonly thread;
   readonly composer;
@@ -34,6 +36,7 @@ export class UserWebRuntime {
     this.gateway = input.gateway;
     this.host = input.host;
     this.onboarding = createOnboardingActor(this.scope, input.gateway);
+    this.models = createModelCatalogActor(this.scope, input.gateway);
     this.tasks = createTaskListActor(this.scope, input.gateway);
     this.thread = createThreadActor(this.scope, input.gateway);
     this.composer = createComposerActor(this.scope, input.gateway);
@@ -78,10 +81,15 @@ export class UserWebRuntime {
               .itemId,
           });
         } else if (event.type === "setup/codex/login/completed") {
+          const completion = parseGatewayEventPayload(
+            event.type,
+            event.payload,
+          );
           this.onboarding.dispatch({
             type: "LOGIN_COMPLETED",
-            completion: parseGatewayEventPayload(event.type, event.payload),
+            completion,
           });
+          if (completion.success) this.models.dispatch({ type: "LOAD" });
           this.onboarding.dispatch({ type: "INSPECT" });
         } else if (event.type === "setup/codex/install/progress") {
           const progress = parseGatewayEventPayload(
@@ -188,6 +196,9 @@ export class UserWebRuntime {
   #restoreAuthoritativeState(): void {
     this.connection.dispatch({ type: "CONNECTED", hostName: this.host.name });
     this.onboarding.dispatch({ type: "INSPECT" });
+    if (this.models.getSnapshot().status !== "idle") {
+      this.models.dispatch({ type: "LOAD" });
+    }
     this.refreshTasks();
     this.queue.dispatch({ type: "LOAD" });
     const threadId = this.thread.getSnapshot().threadId;

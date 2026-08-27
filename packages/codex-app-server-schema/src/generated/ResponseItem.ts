@@ -74,7 +74,9 @@ export type ResponseItem =
   | {
       type: "function_call_output";
       id?: ResponseItemId;
-      call_id: string;
+      call_id?: string;
+      name?: string;
+      namespace?: string;
       output: FunctionCallOutputBody;
       internal_chat_message_metadata_passthrough?: InternalChatMessageMetadataPassthrough;
     }

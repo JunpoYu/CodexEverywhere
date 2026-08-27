@@ -17,4 +17,5 @@ export type ManagedHooksRequirements = {
   SubagentStart: Array<ConfiguredHookMatcherGroup>;
   SubagentStop: Array<ConfiguredHookMatcherGroup>;
   Stop: Array<ConfiguredHookMatcherGroup>;
+  Interrupt: Array<ConfiguredHookMatcherGroup>;
 };

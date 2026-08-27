@@ -31,4 +31,11 @@ export type LoginAccountParams =
        */
       chatgptPlanType?: string | null;
     }
-  | { type: "amazonBedrock"; apiKey: string; region: string };
+  | { type: "amazonBedrock"; apiKey: string; region: string }
+  | {
+      type: "amazonBedrockAccessKeys";
+      accessKeyId: string;
+      secretAccessKey: string;
+      sessionToken?: string | null;
+      region: string;
+    };

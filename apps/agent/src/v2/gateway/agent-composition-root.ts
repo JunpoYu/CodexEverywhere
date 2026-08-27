@@ -25,6 +25,7 @@ import {
   type IdentityServiceConfiguration,
 } from "../services/identity-service.js";
 import { AgentMutationMiddleware } from "../services/mutation-middleware.js";
+import { ModelCatalogService } from "../services/model-catalog-service.js";
 import { PreferencesService } from "../services/preferences-service.js";
 import { QueueService } from "../services/queue-service.js";
 import { SessionTicketService } from "../services/session-ticket-service.js";
@@ -87,6 +88,7 @@ export interface AgentCompositionRoot {
   readonly router: GatewayV2Router<AgentGatewayContext>;
   readonly leases: ThreadLeaseManager;
   readonly queue: QueueService;
+  readonly models: ModelCatalogService;
   readonly threads: ThreadService;
   readonly workspaces: WorkspaceService;
   readonly preferences: PreferencesService;
@@ -109,6 +111,7 @@ export const AGENT_SERVICE_TOKENS = {
   clients: createServiceToken<CodexClientFactoryPort>("agent.codex-clients"),
   leases: createServiceToken<ThreadLeaseManager>("agent.thread-leases"),
   queue: createServiceToken<QueueService>("agent.queue"),
+  models: createServiceToken<ModelCatalogService>("agent.models"),
   threads: createServiceToken<ThreadService>("agent.threads"),
   workspaces: createServiceToken<WorkspaceService>("agent.workspaces"),
   preferences: createServiceToken<PreferencesService>("agent.preferences"),
@@ -145,6 +148,10 @@ export async function createAgentCompositionRoot(
       leases,
       authorizeWorkspace: (path) => workspaces.resolve(path),
     });
+    const models = new ModelCatalogService({
+      scope,
+      clients: options.clients,
+    });
     const threads = new ThreadService({
       scope,
       clients: options.clients,
@@ -160,6 +167,7 @@ export async function createAgentCompositionRoot(
     registry.register(AGENT_SERVICE_TOKENS.preferences, preferences);
     registry.register(AGENT_SERVICE_TOKENS.leases, leases);
     registry.register(AGENT_SERVICE_TOKENS.queue, queue);
+    registry.register(AGENT_SERVICE_TOKENS.models, models);
     registry.register(AGENT_SERVICE_TOKENS.threads, threads);
 
     const tickets = new SessionTicketService({ scope });
@@ -311,6 +319,7 @@ export async function createAgentCompositionRoot(
       workspaces,
       preferences,
       queue,
+      models,
       threads,
     });
     router.seal({ access: new Set(["pre-auth", "user"]) });
@@ -322,6 +331,7 @@ export async function createAgentCompositionRoot(
       router,
       leases,
       queue,
+      models,
       threads,
       workspaces,
       preferences,

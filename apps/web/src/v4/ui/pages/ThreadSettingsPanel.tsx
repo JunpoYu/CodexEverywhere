@@ -16,6 +16,8 @@ import {
   type ThreadSettingsDraft,
   type ThreadSettingsPatch,
 } from "./thread-settings-model.js";
+import { effortAfterModelChange } from "./model-catalog-model.js";
+import { ModelEffortFields } from "./ModelEffortFields.js";
 import styles from "./ThreadSettingsPanel.module.css";
 
 type SaveState =
@@ -36,6 +38,7 @@ export function ThreadSettingsPanel(input: {
 }) {
   const runtime = useRuntime();
   const thread = useActorState(runtime.thread);
+  const models = useActorState(runtime.models);
   const [model, setModel] = useState(input.settings.model ?? "");
   const [effort, setEffort] = useState(input.settings.effort ?? "");
   const [sandbox, setSandbox] = useState(input.settings.sandbox ?? "");
@@ -47,6 +50,12 @@ export function ThreadSettingsPanel(input: {
   const [warning, setWarning] = useState<string>();
   const conflictPatch = useRef<ThreadSettingsPatch | undefined>(undefined);
   const draftThreadId = useRef(input.threadId);
+
+  useEffect(() => {
+    if (models.status === "idle") {
+      runtime.models.dispatch({ type: "LOAD" });
+    }
+  }, [models.status, runtime]);
 
   useEffect(() => {
     const threadChanged = draftThreadId.current !== input.threadId;
@@ -182,6 +191,19 @@ export function ThreadSettingsPanel(input: {
     if (!busy) input.onClose();
   };
 
+  const chooseModel = (nextModel: string) => {
+    const nextEffort = effortAfterModelChange(
+      models.models,
+      nextModel,
+      effort,
+      "default",
+    );
+    updateDraft({ model: nextModel, effort: nextEffort });
+    if (nextEffort !== effort) {
+      setWarning("原推理强度不受新模型支持，已切换为该模型的默认值。");
+    }
+  };
+
   return (
     <ModalDialog
       aria-describedby="thread-settings-description"
@@ -302,39 +324,20 @@ export function ThreadSettingsPanel(input: {
           <summary>
             模型与推理强度 <Icon name="chevron-down" />
           </summary>
-          <div>
-            <label>
-              <span>模型</span>
-              <small>留空会保持当前模型。</small>
-              <input
-                disabled={locked}
-                placeholder={input.settings.model ?? "保持当前模型"}
-                value={model}
-                onChange={(event) => updateDraft({ model: event.target.value })}
-              />
-            </label>
-            <label>
-              <span>推理强度</span>
-              <small>较高强度通常更慢，并消耗更多 token。</small>
-              <select
-                disabled={locked}
-                value={effort}
-                onChange={(event) =>
-                  updateDraft({ effort: event.target.value })
-                }
-              >
-                {input.settings.effort === undefined ? (
-                  <option value="">保持当前值</option>
-                ) : null}
-                <option value="low">低</option>
-                <option value="medium">中</option>
-                <option value="high">高</option>
-                <option value="xhigh">很高</option>
-                <option value="max">最大</option>
-                <option value="ultra">Ultra</option>
-              </select>
-            </label>
-          </div>
+          <ModelEffortFields
+            catalog={models}
+            defaultModelLabel="保持 Codex 当前模型"
+            disabled={locked}
+            effort={effort}
+            effortAriaLabel="当前任务推理强度"
+            model={model}
+            modelAriaLabel="当前任务模型"
+            showDefaultEffortOption={input.settings.effort === undefined}
+            showDefaultModelOption={input.settings.model === undefined}
+            onEffortChange={(value) => updateDraft({ effort: value })}
+            onModelChange={chooseModel}
+            onRetry={() => runtime.models.dispatch({ type: "LOAD" })}
+          />
         </details>
 
         {sandbox === "danger-full-access" || approvalPolicy === "never" ? (

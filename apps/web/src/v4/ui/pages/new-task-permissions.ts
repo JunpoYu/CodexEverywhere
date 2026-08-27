@@ -82,6 +82,18 @@ export function threadStartPermissionOverrides(
   };
 }
 
+export function threadStartSettings(
+  draft: NewTaskPermissionDraft,
+  runtime: { readonly model: string; readonly effort: string },
+): NonNullable<InputOf<"thread/start">["settings"]> {
+  const model = runtime.model.trim();
+  return {
+    ...threadStartPermissionOverrides(draft),
+    ...(model.length === 0 ? {} : { model }),
+    ...(runtime.effort.length === 0 ? {} : { effort: runtime.effort }),
+  };
+}
+
 export function permissionOverrideCount(draft: NewTaskPermissionDraft): number {
   return (
     Number(draft.sandbox.source === "override") +

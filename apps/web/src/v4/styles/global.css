@@ -483,6 +483,7 @@ pre {
   grid-template-columns: minmax(145px, 0.75fr) minmax(145px, 0.75fr) 1.5fr;
   align-items: end;
   gap: 10px;
+  margin-top: 12px;
 }
 
 .new-task-permission-grid > label {

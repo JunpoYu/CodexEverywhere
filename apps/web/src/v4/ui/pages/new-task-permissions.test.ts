@@ -9,6 +9,7 @@ import {
   permissionOverrideCount,
   rebaseInheritedPermissions,
   threadStartPermissionOverrides,
+  threadStartSettings,
 } from "./new-task-permissions.js";
 
 type Preferences = OutputOf<"preferences/read">;
@@ -33,6 +34,18 @@ describe("new task permission provenance", () => {
     expect(threadStartPermissionOverrides(draft)).toEqual({
       sandbox: "danger-full-access",
     });
+  });
+
+  it("adds optional model and effort overrides to the same start settings", () => {
+    const draft = defaultPermissionDraft(current);
+
+    expect(
+      threadStartSettings(draft, {
+        model: " gpt-example ",
+        effort: "high",
+      }),
+    ).toEqual({ model: "gpt-example", effort: "high" });
+    expect(threadStartSettings(draft, { model: "", effort: "" })).toEqual({});
   });
 
   it("rebases an untouched field without replacing the explicit override", () => {
