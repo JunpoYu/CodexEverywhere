@@ -23,6 +23,49 @@ afterEach(async () => {
 });
 
 describe("ThreadLeaseManager", () => {
+  it("binds a newly started thread to the provisional client", async () => {
+    const { manager, factory } = createManager();
+    const started = await manager.start(
+      async (client) => ({
+        threadId: "thread-new",
+        result: client,
+      }),
+      { kind: "queue", id: "first-turn" },
+    );
+
+    expect(started.result).toBe(factory.clients[0]);
+    expect(started.handle.lease).toBe(manager.get("thread-new"));
+    expect(factory.clients).toHaveLength(1);
+    factory.clients[0]!.serverRequest({
+      id: "approval-new",
+      method: "item/commandExecution/requestApproval",
+      params: {
+        threadId: "thread-new",
+        turnId: "turn-new",
+        itemId: "item-new",
+      },
+      respond: vi.fn(),
+      reject: vi.fn(),
+    });
+    expect(started.handle.lease.listInteractions()).toHaveLength(1);
+    await started.handle.release();
+  });
+
+  it("closes a provisional client when starting a thread fails", async () => {
+    const { manager, factory } = createManager();
+
+    await expect(
+      manager.start(
+        async () => {
+          throw new Error("start rejected");
+        },
+        { kind: "queue", id: "first-turn" },
+      ),
+    ).rejects.toThrow("start rejected");
+    expect(manager.size).toBe(0);
+    expect(factory.clients[0]?.closed).toBe(true);
+  });
+
   it("shares one app-server client across multiple viewers", async () => {
     const { manager, factory } = createManager();
     const [first, second] = await Promise.all([

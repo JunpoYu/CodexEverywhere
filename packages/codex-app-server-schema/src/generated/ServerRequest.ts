@@ -7,7 +7,6 @@ import type { RequestId } from "./RequestId";
 import type { AttestationGenerateParams } from "./v2/AttestationGenerateParams";
 import type { ChatgptAuthTokensRefreshParams } from "./v2/ChatgptAuthTokensRefreshParams";
 import type { CommandExecutionRequestApprovalParams } from "./v2/CommandExecutionRequestApprovalParams";
-import type { CurrentTimeReadParams } from "./v2/CurrentTimeReadParams";
 import type { DynamicToolCallParams } from "./v2/DynamicToolCallParams";
 import type { FileChangeRequestApprovalParams } from "./v2/FileChangeRequestApprovalParams";
 import type { McpServerElicitationRequestParams } from "./v2/McpServerElicitationRequestParams";
@@ -54,7 +53,6 @@ export type ServerRequest =
       id: RequestId;
       params: AttestationGenerateParams;
     }
-  | { method: "currentTime/read"; id: RequestId; params: CurrentTimeReadParams }
   | {
       method: "applyPatchApproval";
       id: RequestId;

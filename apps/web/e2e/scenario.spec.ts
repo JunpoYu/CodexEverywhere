@@ -266,6 +266,31 @@ test("新任务展示全局默认权限，并允许仅覆盖本次任务", async
   await expect(dialog.getByRole("radio", { name: /从不询问/u })).toBeChecked();
 });
 
+test("新任务可在第一轮前选择模型与受支持的推理强度", async ({ page }) => {
+  await openScenario(page);
+
+  const model = page.getByLabel("本次任务模型");
+  const effort = page.getByLabel("本次任务推理强度");
+  await expect(model).toHaveValue("");
+  await expect(effort).toHaveValue("");
+  await model.selectOption("gpt-5.6-sol");
+  await effort.selectOption("ultra");
+  await model.selectOption("gpt-5.6-luna");
+  await expect(effort).toHaveValue("");
+  await effort.selectOption("high");
+
+  const prompt = "验证首轮模型配置";
+  await page.getByPlaceholder("描述你希望 Codex 完成的工作…").fill(prompt);
+  await page.getByRole("button", { name: "新建任务" }).click();
+  await expect(page.getByRole("heading", { name: prompt })).toBeVisible();
+
+  await page.getByRole("button", { name: "任务设置" }).click();
+  const dialog = page.getByRole("dialog", { name: "任务权限与运行设置" });
+  await dialog.getByText("模型与推理强度", { exact: false }).click();
+  await expect(dialog.getByLabel("当前任务模型")).toHaveValue("gpt-5.6-luna");
+  await expect(dialog.getByLabel("当前任务推理强度")).toHaveValue("high");
+});
+
 test("任务默认跨工作区显示名称，并可按工作区筛选", async ({
   page,
 }, testInfo) => {

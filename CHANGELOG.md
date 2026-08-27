@@ -4,6 +4,21 @@
 
 ## [Unreleased]
 
+## [0.4.0-alpha.13] - 2026-08-27
+
+### Added
+
+- 新增类型化 `model/list` Gateway 查询和 `ModelCatalogService`，从当前 Codex app-server 动态读取可用模型、默认推理强度及受支持档位；Web 使用共享 actor 与纯投影同时服务新建任务和已有任务设置。
+
+### Changed
+
+- 新建任务可在第一轮发送前选择模型和推理强度，并与 Sandbox、审批策略一起作为同一次 `thread/start` 设置快照提交；目录读取失败时仍可使用 Codex 默认值。
+- 使用 npm 最新稳定版 Codex CLI `0.150.1` 重新生成完整 app-server TypeScript 与 notification schema，并通过真实 app-server contract 检查。
+
+### Fixed
+
+- 修复 CE 在 `thread/start` 后关闭创建 client、再对尚无 rollout 的空任务执行 `thread/resume`，导致新任务稳定显示 `Codex app-server rejected the request` 的问题；创建与第一轮现在由同一个 lease-owned client 完成，且在 `turn/start` 前已经接管审批与用户问题订阅。
+
 ## [0.4.0-alpha.12] - 2026-08-25
 
 ### Changed

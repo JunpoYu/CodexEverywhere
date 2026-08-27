@@ -1,0 +1,45 @@
+.fields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  min-width: 0;
+}
+
+.fields label {
+  display: grid;
+  align-content: start;
+  gap: 5px;
+  min-width: 0;
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.fields small {
+  min-height: 30px;
+  color: var(--text-muted);
+  font-size: 9px;
+  font-weight: 450;
+  line-height: 1.4;
+}
+
+.catalogStatus {
+  display: flex;
+  grid-column: 1 / -1;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  color: var(--warning-strong);
+  font-size: 9px;
+}
+
+.catalogStatus button {
+  flex: 0 0 auto;
+  min-height: 30px;
+  padding: 0 9px;
+}
+
+@media (max-width: 640px) {
+  .fields {
+    grid-template-columns: 1fr;
+  }
+}

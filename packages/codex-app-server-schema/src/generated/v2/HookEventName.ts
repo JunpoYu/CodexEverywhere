@@ -13,4 +13,5 @@ export type HookEventName =
   | "userPromptSubmit"
   | "subagentStart"
   | "subagentStop"
-  | "stop";
+  | "stop"
+  | "interrupt";

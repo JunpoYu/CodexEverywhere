@@ -1,3 +1,4 @@
+export { ModelCatalogService } from "./model-catalog-service.js";
 export {
   AgentMutationMiddleware,
   type MutationReceiptResolver,

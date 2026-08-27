@@ -4,13 +4,7 @@
 import type { ThreadMetadataGitInfoUpdateParams } from "./ThreadMetadataGitInfoUpdateParams";
 
 export type ThreadMetadataUpdateParams = {
-  threadId: string;
-  /**
-   * Omit to leave the project unchanged, use an empty string to clear it,
-   * or provide an existing project ID to assign it.
-   */
-  projectId?: string | null;
-  /**
+  threadId: string; /**
    * Patch the stored Git metadata for this thread.
    * Omit a field to leave it unchanged, set it to `null` to clear it, or
    * provide a string to replace the stored value.

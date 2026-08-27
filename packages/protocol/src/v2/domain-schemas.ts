@@ -148,6 +148,28 @@ export const threadSettingsSchema = z
   })
   .strict();
 
+export const modelCatalogEntrySchema = z
+  .object({
+    version: z.literal(1),
+    id: identifierSchema,
+    model: z.string().min(1).max(256),
+    displayName: z.string().min(1).max(1_024),
+    description: z.string().max(8_192),
+    isDefault: z.boolean(),
+    defaultEffort: z.string().min(1).max(128),
+    supportedEfforts: z
+      .array(
+        z
+          .object({
+            effort: z.string().min(1).max(128),
+            description: z.string().max(4_096),
+          })
+          .strict(),
+      )
+      .max(32),
+  })
+  .strict();
+
 export const threadSnapshotSchema = z
   .object({
     version: z.literal(1),

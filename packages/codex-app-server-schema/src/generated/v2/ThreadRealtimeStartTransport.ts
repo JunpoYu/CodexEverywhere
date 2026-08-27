@@ -14,4 +14,11 @@ export type ThreadRealtimeStartTransport =
        * realtime events data channel.
        */
       sdp: string;
+    }
+  | {
+      type: "existingCall";
+      /**
+       * Identifier of a realtime call already created and negotiated by the client.
+       */
+      callId: string;
     };

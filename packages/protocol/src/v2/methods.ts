@@ -20,6 +20,7 @@ import {
   directoryEntrySchema,
   interactionSchema,
   interactionResponseSchema,
+  modelCatalogEntrySchema,
   preferencesSchema,
   queueItemSchema,
   threadSettingsSchema,
@@ -371,6 +372,14 @@ export const gatewayMethodDefinitions = {
     "durable",
     versionedResult({ workspaceId: identifierSchema }),
     versionedResult({ workspaceId: identifierSchema }),
+  ),
+  "model/list": query(
+    "user",
+    versionedResult(pageInputFields),
+    versionedResult({
+      models: z.array(modelCatalogEntrySchema).max(200),
+      ...pageResultFields,
+    }),
   ),
   "thread/list": query(
     "user",

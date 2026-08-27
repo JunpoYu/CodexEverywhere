@@ -24,6 +24,7 @@ export {
   directoryEntrySchema,
   interactionSchema,
   interactionResponseSchema,
+  modelCatalogEntrySchema,
   preferencesSchema,
   queueItemSchema,
   threadSettingsSchema,

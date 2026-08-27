@@ -434,6 +434,44 @@ export class ScenarioGateway implements GatewayPort {
         this.#armWorkspaceListFailure();
         return { version: 1, workspaceId };
       }
+      case "model/list":
+        return {
+          version: 1,
+          models: [
+            {
+              version: 1,
+              id: "gpt-5.6-sol",
+              model: "gpt-5.6-sol",
+              displayName: "GPT-5.6-Sol",
+              description: "前沿复杂任务模型",
+              isDefault: true,
+              defaultEffort: "low",
+              supportedEfforts: [
+                { effort: "low", description: "响应更快" },
+                { effort: "medium", description: "平衡速度与深度" },
+                { effort: "high", description: "更深入推理" },
+                { effort: "xhigh", description: "高强度推理" },
+                { effort: "max", description: "最大推理强度" },
+                { effort: "ultra", description: "Ultra 推理" },
+              ],
+            },
+            {
+              version: 1,
+              id: "gpt-5.6-luna",
+              model: "gpt-5.6-luna",
+              displayName: "GPT-5.6-Luna",
+              description: "快速日常任务模型",
+              isDefault: false,
+              defaultEffort: "medium",
+              supportedEfforts: [
+                { effort: "low", description: "响应更快" },
+                { effort: "medium", description: "平衡速度与深度" },
+                { effort: "high", description: "更深入推理" },
+              ],
+            },
+          ],
+          hasMore: false,
+        };
       case "thread/list": {
         const archived = Boolean(record.archived);
         const workspaceId =

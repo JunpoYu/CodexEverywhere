@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto";
+
 import { Scope, TypedEventBus } from "@codex-everywhere/kernel";
 import {
   codexGenericEvent,
@@ -398,6 +400,7 @@ export class ThreadLeaseManager {
   readonly #leases = new Map<string, ThreadLease>();
   readonly #creating = new Map<string, Promise<ThreadLease>>();
   readonly #disposing = new Map<string, Promise<void>>();
+  readonly #starting = new Set<Scope>();
   #closed = false;
 
   constructor(options: ThreadLeaseManagerOptions) {
@@ -444,6 +447,67 @@ export class ThreadLeaseManager {
     if (this.#closed) throw new Error("Thread lease manager is closed");
     if (threadId.length === 0) throw new Error("Thread ID is empty");
     const lease = await this.#getOrCreate(threadId);
+    return this.#attachReference(lease, reference, ownerScope);
+  }
+
+  /**
+   * Starts a thread on a provisional client and binds that same client to the
+   * resulting lease before the first turn can emit interactions.
+   */
+  async start<Result>(
+    initialize: (
+      client: CodexClient,
+    ) => Promise<{ readonly threadId: string; readonly result: Result }>,
+    reference: { readonly kind: ThreadLeaseReferenceKind; readonly id: string },
+    ownerScope?: Scope,
+  ): Promise<{ readonly handle: ThreadLeaseHandle; readonly result: Result }> {
+    if (this.#closed) throw new Error("Thread lease manager is closed");
+    this.#assertCapacity();
+    const scope = this.#scope.fork(`thread-start-${randomUUID()}`);
+    this.#starting.add(scope);
+    let lease: ThreadLease | undefined;
+    try {
+      const client = await this.#factory.create(scope);
+      const initialized = await initialize(client);
+      if (initialized.threadId.length === 0) {
+        throw new Error("Started thread ID is empty");
+      }
+      if (this.#closed) throw new Error("Thread lease manager is closed");
+      const disposal = this.#disposing.get(initialized.threadId);
+      if (disposal !== undefined) await disposal;
+      if (this.#closed) throw new Error("Thread lease manager is closed");
+      if (
+        this.#leases.has(initialized.threadId) ||
+        this.#creating.has(initialized.threadId)
+      ) {
+        throw new Error("Started thread already has a lease");
+      }
+      lease = new ThreadLease({
+        threadId: initialized.threadId,
+        scope,
+        client,
+        onDisposable: (candidate) => this.#dispose(candidate),
+      });
+      this.#leases.set(initialized.threadId, lease);
+      this.#starting.delete(scope);
+      const handle = await this.#attachReference(lease, reference, ownerScope);
+      return { handle, result: initialized.result };
+    } catch (error) {
+      if (lease !== undefined && this.#leases.get(lease.threadId) === lease) {
+        this.#leases.delete(lease.threadId);
+      }
+      await scope.close("thread-start-failed").catch(() => undefined);
+      throw error;
+    } finally {
+      this.#starting.delete(scope);
+    }
+  }
+
+  async #attachReference(
+    lease: ThreadLease,
+    reference: { readonly kind: ThreadLeaseReferenceKind; readonly id: string },
+    ownerScope?: Scope,
+  ): Promise<ThreadLeaseHandle> {
     lease.addReference(reference.kind, reference.id);
     let released = false;
     const release = async (): Promise<void> => {
@@ -459,7 +523,7 @@ export class ThreadLeaseManager {
         throw error;
       }
     }
-    return { threadId, lease, release };
+    return { threadId: lease.threadId, lease, release };
   }
 
   get(threadId: string): ThreadLease | undefined {
@@ -487,18 +551,25 @@ export class ThreadLeaseManager {
     if (current !== undefined) return current;
     const pending = this.#creating.get(threadId);
     if (pending !== undefined) return pending;
-    if (
-      this.#leases.size + this.#creating.size + this.#disposing.size >=
-      this.#maximumLeases
-    ) {
-      throw new ThreadLeaseCapacityError(this.#maximumLeases);
-    }
+    this.#assertCapacity();
     const creation = this.#create(threadId).finally(() => {
       if (this.#creating.get(threadId) === creation)
         this.#creating.delete(threadId);
     });
     this.#creating.set(threadId, creation);
     return creation;
+  }
+
+  #assertCapacity(): void {
+    if (
+      this.#leases.size +
+        this.#creating.size +
+        this.#disposing.size +
+        this.#starting.size >=
+      this.#maximumLeases
+    ) {
+      throw new ThreadLeaseCapacityError(this.#maximumLeases);
+    }
   }
 
   async #create(threadId: string): Promise<ThreadLease> {
