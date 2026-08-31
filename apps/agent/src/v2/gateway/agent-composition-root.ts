@@ -288,6 +288,16 @@ export async function createAgentCompositionRoot(
       ),
     );
     scope.defer(
+      titles.events.on("renamed", ({ threadId }) =>
+        publish(
+          gatewayEventEnvelopeV2("thread/name/changed", {
+            version: 1,
+            threadId,
+          }),
+        ),
+      ),
+    );
+    scope.defer(
       queue.events.on("removed", ({ itemId }) =>
         publish(
           gatewayEventEnvelopeV2("queue/removed", { version: 1, itemId }),

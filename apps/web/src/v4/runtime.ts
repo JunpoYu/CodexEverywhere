@@ -100,6 +100,8 @@ export class UserWebRuntime {
           if (progress.phase === "completed" || progress.phase === "failed") {
             this.onboarding.dispatch({ type: "INSPECT" });
           }
+        } else if (event.type === "thread/name/changed") {
+          this.refreshTasks();
         }
         if (event.type === "codex/notification") {
           const notification = parseGatewayEventPayload(

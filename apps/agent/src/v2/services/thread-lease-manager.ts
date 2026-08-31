@@ -92,8 +92,8 @@ export class ThreadLease {
   readonly #onDisposable: (lease: ThreadLease) => void | Promise<void>;
   #state: ThreadLeaseState = "idle";
   #currentTurnId: string | undefined;
-  #lastTerminalTurn:
-    { readonly id: string; readonly status: string } | undefined;
+  readonly #terminalTurns = new Map<string, string>();
+  readonly #settledStartResponses = new Set<string>();
   #workspacePath: string | undefined;
   #closed = false;
 
@@ -165,9 +165,7 @@ export class ThreadLease {
   }
 
   terminalTurnStatus(turnId: string): string | undefined {
-    return this.#lastTerminalTurn?.id === turnId
-      ? this.#lastTerminalTurn.status
-      : undefined;
+    return this.#terminalTurns.get(turnId);
   }
 
   get workspacePath(): string | undefined {
@@ -250,7 +248,14 @@ export class ThreadLease {
     if (turnId.length === 0) throw new Error("Turn ID is empty");
     // A very short turn may complete before its turn/start response reaches
     // the caller. Never regress that authoritative terminal notification.
-    if (this.terminalTurnStatus(turnId) !== undefined) return;
+    if (this.terminalTurnStatus(turnId) !== undefined) {
+      // Callers synchronously schedule optional completion effects after this
+      // method. Retain the status through that boundary, then discard it once
+      // the delayed start response has been fully observed.
+      this.#scope.setTimeout(() => this.#terminalTurns.delete(turnId), 0);
+      return;
+    }
+    this.#settledStartResponses.add(turnId);
     const next = this.#interactions.size > 0 ? "waiting-input" : "running";
     const changed = this.#state !== next;
     this.#state = next;
@@ -351,10 +356,9 @@ export class ThreadLease {
       const completedTurnId = nestedId(params, "turn");
       const completedTurnStatus = nestedString(params, "turn", "status");
       if (completedTurnId !== undefined && completedTurnStatus !== undefined) {
-        this.#lastTerminalTurn = {
-          id: completedTurnId,
-          status: completedTurnStatus,
-        };
+        if (!this.#settledStartResponses.delete(completedTurnId)) {
+          this.#terminalTurns.set(completedTurnId, completedTurnStatus);
+        }
       }
       if (
         completedTurnId === undefined ||

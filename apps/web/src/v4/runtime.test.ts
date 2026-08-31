@@ -140,6 +140,31 @@ describe("UserWebRuntime task refresh", () => {
     });
   });
 
+  it("refreshes a filtered task list after a background name change", async () => {
+    const gateway = new ThreadRefreshGateway();
+    const runtime = new UserWebRuntime({ gateway, host: savedHost() });
+    runtimes.push(runtime);
+
+    runtime.tasks.dispatch({
+      type: "LOAD",
+      archived: false,
+      workspaceId: "workspace-1",
+      workspaceLabel: "Research",
+    });
+    await vi.waitFor(() => expect(gateway.taskListInputs).toHaveLength(1));
+
+    gateway.nameChanged("thread-background");
+
+    await vi.waitFor(() => expect(gateway.taskListInputs).toHaveLength(2));
+    expect(gateway.openCalls).toBe(0);
+    expect(gateway.taskListInputs.at(-1)).toEqual({
+      version: 1,
+      archived: false,
+      limit: 50,
+      workspaceId: "workspace-1",
+    });
+  });
+
   it("runs a trailing refresh for a settings update received during refresh", async () => {
     const gateway = new ThreadRefreshGateway();
     const runtime = new UserWebRuntime({ gateway, host: savedHost() });
@@ -231,6 +256,15 @@ class ThreadRefreshGateway implements GatewayPort {
         threadId: "thread-1",
         method,
         params: { threadId: "thread-1" },
+      }),
+    );
+  }
+
+  nameChanged(threadId: string): void {
+    this.emit(
+      gatewayEventEnvelopeV2("thread/name/changed", {
+        version: 1,
+        threadId,
       }),
     );
   }

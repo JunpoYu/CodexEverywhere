@@ -55,6 +55,8 @@ describe("AutoTitleService", () => {
     scopes.push(scope);
     const service = new AutoTitleService({ scope });
     const lease = new FakeTitleLease();
+    const renamed = vi.fn();
+    service.events.on("renamed", renamed);
 
     service.schedule(lease, "turn-1", "请修复登录握手失败，并补充测试");
 
@@ -65,6 +67,7 @@ describe("AutoTitleService", () => {
     await vi.waitFor(() => expect(lease.name).toBe("修复登录握手失败"));
     await vi.waitFor(() => expect(lease.references.size).toBe(0));
     expect(lease.methods).toEqual(["thread/read", "thread/name/set"]);
+    expect(renamed).toHaveBeenCalledWith({ threadId: "thread-1" });
   });
 
   it("closes the response/subscription gap for an already completed turn", async () => {
@@ -134,6 +137,31 @@ describe("AutoTitleService", () => {
     expect(external.methods).toEqual([]);
   });
 
+  it("restores an external rename that races an in-flight automatic write", async () => {
+    const scope = new Scope("racing-manual-title-test");
+    scopes.push(scope);
+    const service = new AutoTitleService({ scope });
+    const lease = new FakeTitleLease();
+    const allowAutomaticWrite = lease.deferNextNameSet();
+
+    service.schedule(lease, "turn-1", "修复任务自动命名竞态");
+    lease.complete("turn-1", "completed");
+    await vi.waitFor(() =>
+      expect(lease.methods).toEqual(["thread/read", "thread/name/set"]),
+    );
+
+    lease.externalRename("TUI 手动名称");
+    allowAutomaticWrite();
+
+    await vi.waitFor(() => expect(lease.references.size).toBe(0));
+    expect(lease.name).toBe("TUI 手动名称");
+    expect(lease.methods).toEqual([
+      "thread/read",
+      "thread/name/set",
+      "thread/name/set",
+    ]);
+  });
+
   it("contains app-server naming failures and releases its lease reference", async () => {
     const scope = new Scope("title-failure-test");
     scopes.push(scope);
@@ -156,6 +184,9 @@ class FakeTitleLease implements AutoTitleLeasePort {
   readonly references = new Set<string>();
   readonly methods: string[] = [];
   readonly #listeners = new Set<(event: ThreadLeaseEvent) => void>();
+  #nextNameSetGate:
+    | { readonly promise: Promise<void>; readonly resolve: () => void }
+    | undefined;
   #lastTerminalTurn:
     { readonly id: string; readonly status: string } | undefined;
   name: string | undefined;
@@ -183,19 +214,34 @@ class FakeTitleLease implements AutoTitleLeasePort {
       : undefined;
   }
 
-  request<Result = unknown>(method: string, params?: unknown): Promise<Result> {
+  async request<Result = unknown>(
+    method: string,
+    params?: unknown,
+  ): Promise<Result> {
     this.methods.push(method);
     if (method === "thread/read") {
-      if (this.failRead) return Promise.reject(new Error("read failed"));
-      return Promise.resolve({
+      if (this.failRead) throw new Error("read failed");
+      return {
         thread: { id: this.threadId, name: this.name ?? null },
-      } as Result);
+      } as Result;
     }
     if (method === "thread/name/set") {
+      const gate = this.#nextNameSetGate;
+      this.#nextNameSetGate = undefined;
+      await gate?.promise;
       this.name = (params as { name: string }).name;
-      return Promise.resolve({} as Result);
+      return {} as Result;
     }
-    return Promise.reject(new Error(`Unexpected request: ${method}`));
+    throw new Error(`Unexpected request: ${method}`);
+  }
+
+  deferNextNameSet(): () => void {
+    let resolve!: () => void;
+    const promise = new Promise<void>((complete) => {
+      resolve = complete;
+    });
+    this.#nextNameSetGate = { promise, resolve };
+    return resolve;
   }
 
   onEvent(listener: (event: ThreadLeaseEvent) => void): () => void {

@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 
-import { Scope } from "@codex-everywhere/kernel";
+import { Scope, TypedEventBus } from "@codex-everywhere/kernel";
 import type { JsonValue } from "@codex-everywhere/protocol/v2";
 
 import { deriveAutomaticTitle } from "./auto-title.js";
@@ -26,6 +26,10 @@ export interface AutoTitleServiceOptions {
   readonly deriveTitle?: (prompt: string) => string | undefined;
 }
 
+export interface AutoTitleServiceEvents {
+  readonly renamed: { readonly threadId: string };
+}
+
 interface PendingAutoTitle {
   readonly lease: AutoTitleLeasePort;
   readonly referenceId: string;
@@ -35,6 +39,7 @@ interface PendingAutoTitle {
   unsubscribe: () => void;
   finishing: boolean;
   released: boolean;
+  conflictingName?: string;
 }
 
 /**
@@ -42,6 +47,7 @@ interface PendingAutoTitle {
  * The app-server remains authoritative and any explicit name wins.
  */
 export class AutoTitleService implements AutoTitleServicePort {
+  readonly events = new TypedEventBus<AutoTitleServiceEvents>();
   readonly #scope: Scope;
   readonly #deriveTitle: (prompt: string) => string | undefined;
   readonly #pending = new Map<string, PendingAutoTitle>();
@@ -49,6 +55,7 @@ export class AutoTitleService implements AutoTitleServicePort {
   constructor(options: AutoTitleServiceOptions) {
     this.#scope = options.scope.fork("auto-titles");
     this.#deriveTitle = options.deriveTitle ?? deriveAutomaticTitle;
+    this.#scope.defer(() => this.events.clear());
     this.#scope.defer(async () => {
       const pending = [...this.#pending.values()];
       this.#pending.clear();
@@ -109,6 +116,7 @@ export class AutoTitleService implements AutoTitleServicePort {
       threadId: lease.threadId,
       name: title,
     });
+    this.#emitRenamed(lease.threadId);
   }
 
   async cancel(threadId: string): Promise<void> {
@@ -126,10 +134,17 @@ export class AutoTitleService implements AutoTitleServicePort {
     }
     const codexEvent = titleRelevantCodexEvent(event);
     if (codexEvent === undefined) return;
-    if (
-      codexEvent.method === "thread/name/updated" &&
-      notificationThreadName(codexEvent.params) !== undefined
-    ) {
+    const observedName =
+      codexEvent.method === "thread/name/updated"
+        ? notificationThreadName(codexEvent.params)
+        : undefined;
+    if (observedName !== undefined) {
+      if (pending.finishing) {
+        if (observedName !== pending.title) {
+          pending.conflictingName = observedName;
+        }
+        return;
+      }
       // A TUI or another Web client explicitly named the thread first.
       this.#runBackground(() => this.cancel(pending.threadId));
       return;
@@ -153,7 +168,6 @@ export class AutoTitleService implements AutoTitleServicePort {
       return;
     }
     pending.finishing = true;
-    pending.unsubscribe();
     try {
       const response = await pending.lease.request("thread/read", {
         threadId: pending.threadId,
@@ -161,7 +175,8 @@ export class AutoTitleService implements AutoTitleServicePort {
       });
       if (
         this.#pending.get(pending.threadId) !== pending ||
-        responseThreadName(response) !== undefined
+        responseThreadName(response) !== undefined ||
+        pending.conflictingName !== undefined
       ) {
         return;
       }
@@ -169,6 +184,14 @@ export class AutoTitleService implements AutoTitleServicePort {
         threadId: pending.threadId,
         name: pending.title,
       });
+      if (this.#pending.get(pending.threadId) !== pending) return;
+      if (pending.conflictingName !== undefined) {
+        await pending.lease.request("thread/name/set", {
+          threadId: pending.threadId,
+          name: pending.conflictingName,
+        });
+      }
+      this.#emitRenamed(pending.threadId);
     } catch {
       // Naming failure is intentionally contained; a later meaningful turn
       // may schedule another attempt while the thread remains unnamed.
@@ -189,6 +212,14 @@ export class AutoTitleService implements AutoTitleServicePort {
 
   #runBackground(operation: () => Promise<void>): void {
     void operation().catch(() => undefined);
+  }
+
+  #emitRenamed(threadId: string): void {
+    try {
+      this.events.emit("renamed", { threadId });
+    } catch {
+      // Task-list refresh subscribers cannot affect an app-server rename.
+    }
   }
 }
 
