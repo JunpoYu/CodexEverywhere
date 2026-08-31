@@ -16,6 +16,8 @@ import {
   requireCodexString,
 } from "../codex/codex-json.js";
 import type { ThreadSettingsRepository } from "../repositories/thread-settings-repository.js";
+import type { AutoTitleServicePort } from "./auto-title-service.js";
+import { hasExplicitThreadName } from "./auto-title.js";
 import { InteractionAlreadyResolvedError } from "./interaction-broker.js";
 import type { PreferencesService } from "./preferences-service.js";
 import type {
@@ -45,6 +47,7 @@ export interface ThreadServiceOptions {
   readonly workspaces: WorkspaceService;
   readonly preferences: PreferencesService;
   readonly settings: ThreadSettingsRepository;
+  readonly titles: AutoTitleServicePort;
   readonly appServerSocketPath?: string;
 }
 
@@ -55,6 +58,7 @@ export class ThreadService {
   readonly #leases: ThreadLeaseManager;
   readonly #workspaces: WorkspaceService;
   readonly #preferences: PreferencesService;
+  readonly #titles: AutoTitleServicePort;
   readonly #sessions: ThreadSessionCoordinator;
   readonly #appServerSocketPath: string | undefined;
 
@@ -64,6 +68,7 @@ export class ThreadService {
     this.#leases = options.leases;
     this.#workspaces = options.workspaces;
     this.#preferences = options.preferences;
+    this.#titles = options.titles;
     this.#sessions = new ThreadSessionCoordinator({
       scope: this.#scope,
       settings: options.settings,
@@ -268,27 +273,38 @@ export class ThreadService {
       // The same lease-owned client that created the empty thread starts its
       // first turn. Codex does not publish a resumable rollout until that
       // boundary, and interactions may arrive immediately after turn/start.
-      const turn = parseCodexObject(
-        await handle.lease.request("turn/start", {
-          threadId,
-          clientUserMessageId: randomUUID(),
-          cwd: currentWorkspace.path,
-          input: textInput(input.prompt),
-          ...(requested.model === undefined ? {} : { model: requested.model }),
-          ...(requested.effort === undefined
-            ? {}
-            : { effort: requested.effort }),
-          approvalPolicy,
-          approvalsReviewer: "user",
-          sandboxPolicy: codexSandboxPolicy(sandbox),
-        }),
-        "turn/start response",
-      );
-      const turnId = requireCodexString(
-        requireCodexObject(turn.turn, "started turn").id,
-        "turn id",
-      );
-      handle.lease.noteTurnStarted(turnId);
+      const stopObservingStart = handle.lease.observeTurnStartResponse();
+      let turnId: string;
+      try {
+        const turn = parseCodexObject(
+          await handle.lease.request("turn/start", {
+            threadId,
+            clientUserMessageId: randomUUID(),
+            cwd: currentWorkspace.path,
+            input: textInput(input.prompt),
+            ...(requested.model === undefined
+              ? {}
+              : { model: requested.model }),
+            ...(requested.effort === undefined
+              ? {}
+              : { effort: requested.effort }),
+            approvalPolicy,
+            approvalsReviewer: "user",
+            sandboxPolicy: codexSandboxPolicy(sandbox),
+          }),
+          "turn/start response",
+        );
+        turnId = requireCodexString(
+          requireCodexObject(turn.turn, "started turn").id,
+          "turn id",
+        );
+        handle.lease.noteTurnStarted(turnId);
+        if (!hasExplicitThreadName(thread)) {
+          this.#titles.schedule(handle.lease, turnId, input.prompt);
+        }
+      } finally {
+        stopObservingStart();
+      }
       return {
         version: 1,
         thread: {
@@ -317,25 +333,36 @@ export class ThreadService {
   ): Promise<OutputOf<"turn/start">> {
     const state = await handle.lease.synchronize(false);
     await this.#workspaces.resolve(state.workspacePath);
-    if (state.state !== "idle") {
+    const terminalFailureCanRetry =
+      state.state === "failed" && state.currentTurnId === undefined;
+    if (state.state !== "idle" && !terminalFailureCanRetry) {
       throw new GatewayV2Error(
         "THREAD_NOT_IDLE",
         "Task is not idle; add the message to Queue instead",
       );
     }
-    const response = parseCodexObject(
-      await handle.lease.request("turn/start", {
-        threadId: handle.threadId,
-        clientUserMessageId: randomUUID(),
-        input: textInput(prompt),
-      }),
-      "turn/start response",
-    );
-    const turnId = requireCodexString(
-      requireCodexObject(response.turn, "started turn").id,
-      "turn id",
-    );
-    handle.lease.noteTurnStarted(turnId);
+    const stopObservingStart = handle.lease.observeTurnStartResponse();
+    let turnId: string;
+    try {
+      const response = parseCodexObject(
+        await handle.lease.request("turn/start", {
+          threadId: handle.threadId,
+          clientUserMessageId: randomUUID(),
+          input: textInput(prompt),
+        }),
+        "turn/start response",
+      );
+      turnId = requireCodexString(
+        requireCodexObject(response.turn, "started turn").id,
+        "turn id",
+      );
+      handle.lease.noteTurnStarted(turnId);
+      if (!hasExplicitThreadName(state.thread)) {
+        this.#titles.schedule(handle.lease, turnId, prompt);
+      }
+    } finally {
+      stopObservingStart();
+    }
     return { version: 1, threadId: handle.threadId, turnId };
   }
 
@@ -384,7 +411,7 @@ export class ThreadService {
       threadId,
       "rename",
       async (lease, workspace) => {
-        await lease.request("thread/name/set", { threadId, name: title });
+        await this.#titles.renameManually(lease, title);
         const state = await lease.synchronize(false);
         return projectThreadSummary(
           requireCodexObject(state.thread, "thread"),
@@ -428,6 +455,7 @@ export class ThreadService {
   }
 
   async delete(threadId: string): Promise<boolean> {
+    await this.#titles.cancel(threadId);
     await this.#withAuthorizedLease(threadId, "delete", async (lease) => {
       await lease.request("thread/delete", { threadId });
     });

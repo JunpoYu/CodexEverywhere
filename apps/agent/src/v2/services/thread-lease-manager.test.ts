@@ -283,6 +283,122 @@ describe("ThreadLeaseManager", () => {
     await handle.release();
   });
 
+  it("does not regress a turn that completed before turn/start returned", async () => {
+    const { manager, factory } = createManager();
+    const handle = await manager.acquire("thread-1", {
+      kind: "queue",
+      id: "fast-turn",
+    });
+    const stopObservingStart = handle.lease.observeTurnStartResponse();
+    factory.clients[0]!.notification("turn/completed", {
+      threadId: "thread-1",
+      turn: { id: "turn-1", status: "completed" },
+    });
+
+    handle.lease.noteTurnStarted("turn-1");
+    stopObservingStart();
+
+    expect(handle.lease.state).toBe("idle");
+    expect(handle.lease.currentTurnId).toBeUndefined();
+    expect(handle.lease.terminalTurnStatus("turn-1")).toBe("completed");
+    await handle.release();
+  });
+
+  it("retains every early terminal turn until its delayed start response settles", async () => {
+    const { manager, factory } = createManager();
+    const handle = await manager.acquire("thread-1", {
+      kind: "queue",
+      id: "two-fast-turns",
+    });
+    const stopObservingFirst = handle.lease.observeTurnStartResponse();
+    const stopObservingSecond = handle.lease.observeTurnStartResponse();
+    const client = factory.clients[0]!;
+    client.notification("turn/completed", {
+      threadId: "thread-1",
+      turn: { id: "turn-1", status: "completed" },
+    });
+    client.notification("turn/completed", {
+      threadId: "thread-1",
+      turn: { id: "turn-2", status: "failed" },
+    });
+
+    expect(handle.lease.terminalTurnStatus("turn-1")).toBe("completed");
+    expect(handle.lease.terminalTurnStatus("turn-2")).toBe("failed");
+    handle.lease.noteTurnStarted("turn-1");
+    handle.lease.noteTurnStarted("turn-2");
+    stopObservingFirst();
+    stopObservingSecond();
+
+    expect(handle.lease.state).toBe("idle");
+    expect(handle.lease.currentTurnId).toBeUndefined();
+    await eventually(
+      () =>
+        handle.lease.terminalTurnStatus("turn-1") === undefined &&
+        handle.lease.terminalTurnStatus("turn-2") === undefined,
+    );
+    await handle.release();
+  });
+
+  it("does not retain terminal status after a normal start response", async () => {
+    const { manager, factory } = createManager();
+    const handle = await manager.acquire("thread-1", {
+      kind: "queue",
+      id: "normal-turn",
+    });
+
+    const stopObservingStart = handle.lease.observeTurnStartResponse();
+    handle.lease.noteTurnStarted("turn-1");
+    stopObservingStart();
+    factory.clients[0]!.notification("turn/completed", {
+      threadId: "thread-1",
+      turn: { id: "turn-1", status: "completed" },
+    });
+
+    expect(handle.lease.terminalTurnStatus("turn-1")).toBeUndefined();
+    await handle.release();
+  });
+
+  it("does not cache terminal turns started outside CE", async () => {
+    const { manager, factory } = createManager();
+    const handle = await manager.acquire("thread-1", {
+      kind: "viewer",
+      id: "tui-observer",
+    });
+
+    for (let index = 0; index < 256; index += 1) {
+      factory.clients[0]!.notification("turn/completed", {
+        threadId: "thread-1",
+        turn: { id: `tui-turn-${index}`, status: "completed" },
+      });
+    }
+
+    expect(handle.lease.terminalTurnStatus("tui-turn-0")).toBeUndefined();
+    expect(handle.lease.terminalTurnStatus("tui-turn-255")).toBeUndefined();
+    await handle.release();
+  });
+
+  it("retains completion through an explicitly observed response gap", async () => {
+    const { manager, factory } = createManager();
+    const handle = await manager.acquire("thread-1", {
+      kind: "queue",
+      id: "observed-steer",
+    });
+    handle.lease.noteTurnStarted("turn-1");
+    const stopObserving = handle.lease.observeTerminalTurn("turn-1");
+
+    factory.clients[0]!.notification("turn/completed", {
+      threadId: "thread-1",
+      turn: { id: "turn-1", status: "completed" },
+    });
+
+    expect(handle.lease.terminalTurnStatus("turn-1")).toBe("completed");
+    stopObserving();
+    await eventually(
+      () => handle.lease.terminalTurnStatus("turn-1") === undefined,
+    );
+    await handle.release();
+  });
+
   it("emits explicit resolution and generic forward-compatible events", async () => {
     const { manager, factory } = createManager();
     const handle = await manager.acquire("thread-1", {

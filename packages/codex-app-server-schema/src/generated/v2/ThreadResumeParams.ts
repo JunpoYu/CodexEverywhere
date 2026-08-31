@@ -40,5 +40,12 @@ export type ThreadResumeParams = {
   config?: { [key in string]?: JsonValue } | null;
   baseInstructions?: string | null;
   developerInstructions?: string | null;
-  personality?: Personality | null;
+  personality?: Personality | null; /**
+   * When true, return only thread metadata and live-resume state without
+   * populating `thread.turns`. This is useful when the client plans to call
+   * `thread/turns/list` immediately after resuming. Full-history hydration
+   * is deprecated for paginated threads; use this with `thread/turns/list`
+   * and `thread/items/list` instead.
+   */
+  excludeTurns?: boolean;
 };

@@ -117,6 +117,12 @@ describe("real Codex app-server contract", () => {
         threadId,
         name: "Permission Restart Contract",
       });
+      const primed = await firstClient.request<ThreadStartResponse>(
+        "thread/resume",
+        { threadId },
+      );
+      expect(primed.approvalPolicy).toBe("never");
+      expect(primed.sandbox?.type).toBe("dangerFullAccess");
       await firstClient.close();
       await processHandle.stop();
       await rm(socketPath, { force: true });

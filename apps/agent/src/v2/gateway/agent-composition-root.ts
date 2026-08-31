@@ -15,6 +15,7 @@ import {
 import type { HostPaths } from "../../host/paths.js";
 import type { CodexClientFactoryPort } from "../codex/client-factory.js";
 import type { UserStateDatabase } from "../repositories/user-state-database.js";
+import { AutoTitleService } from "../services/auto-title-service.js";
 import {
   CodexSupervisor,
   type CodexSupervisorDependencies,
@@ -89,6 +90,7 @@ export interface AgentCompositionRoot {
   readonly leases: ThreadLeaseManager;
   readonly queue: QueueService;
   readonly models: ModelCatalogService;
+  readonly titles: AutoTitleService;
   readonly threads: ThreadService;
   readonly workspaces: WorkspaceService;
   readonly preferences: PreferencesService;
@@ -112,6 +114,7 @@ export const AGENT_SERVICE_TOKENS = {
   leases: createServiceToken<ThreadLeaseManager>("agent.thread-leases"),
   queue: createServiceToken<QueueService>("agent.queue"),
   models: createServiceToken<ModelCatalogService>("agent.models"),
+  titles: createServiceToken<AutoTitleService>("agent.auto-titles"),
   threads: createServiceToken<ThreadService>("agent.threads"),
   workspaces: createServiceToken<WorkspaceService>("agent.workspaces"),
   preferences: createServiceToken<PreferencesService>("agent.preferences"),
@@ -142,10 +145,12 @@ export async function createAgentCompositionRoot(
         ? {}
         : { maximumLeases: options.maximumThreadLeases }),
     });
+    const titles = new AutoTitleService({ scope });
     const queue = new QueueService({
       scope,
       repository: options.state.queue,
       leases,
+      titles,
       authorizeWorkspace: (path) => workspaces.resolve(path),
     });
     const models = new ModelCatalogService({
@@ -159,6 +164,7 @@ export async function createAgentCompositionRoot(
       workspaces,
       preferences,
       settings: options.state.threadSettings,
+      titles,
       ...(options.appServerSocketPath === undefined
         ? {}
         : { appServerSocketPath: options.appServerSocketPath }),
@@ -168,6 +174,7 @@ export async function createAgentCompositionRoot(
     registry.register(AGENT_SERVICE_TOKENS.leases, leases);
     registry.register(AGENT_SERVICE_TOKENS.queue, queue);
     registry.register(AGENT_SERVICE_TOKENS.models, models);
+    registry.register(AGENT_SERVICE_TOKENS.titles, titles);
     registry.register(AGENT_SERVICE_TOKENS.threads, threads);
 
     const tickets = new SessionTicketService({ scope });
@@ -281,6 +288,16 @@ export async function createAgentCompositionRoot(
       ),
     );
     scope.defer(
+      titles.events.on("renamed", ({ threadId }) =>
+        publish(
+          gatewayEventEnvelopeV2("thread/name/changed", {
+            version: 1,
+            threadId,
+          }),
+        ),
+      ),
+    );
+    scope.defer(
       queue.events.on("removed", ({ itemId }) =>
         publish(
           gatewayEventEnvelopeV2("queue/removed", { version: 1, itemId }),
@@ -332,6 +349,7 @@ export async function createAgentCompositionRoot(
       leases,
       queue,
       models,
+      titles,
       threads,
       workspaces,
       preferences,

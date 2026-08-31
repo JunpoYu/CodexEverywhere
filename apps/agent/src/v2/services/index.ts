@@ -1,5 +1,12 @@
 export { ModelCatalogService } from "./model-catalog-service.js";
 export {
+  AutoTitleService,
+  type AutoTitleLeasePort,
+  type AutoTitleServiceOptions,
+  type AutoTitleServicePort,
+} from "./auto-title-service.js";
+export { deriveAutomaticTitle, hasExplicitThreadName } from "./auto-title.js";
+export {
   AgentMutationMiddleware,
   type MutationReceiptResolver,
 } from "./mutation-middleware.js";

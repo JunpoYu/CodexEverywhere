@@ -896,6 +896,8 @@ export class ScenarioGateway implements GatewayPort {
     const interactionKind = scenarioInteractionKind(prompt);
     if (interactionKind !== undefined) {
       this.#createScenarioInteraction(id, turnId, interactionKind);
+    } else if (scenarioTurnFails(prompt)) {
+      this.#failScenarioTurn(id, turnId);
     } else {
       this.#completeScenarioTurn(id, turnId);
     }
@@ -910,6 +912,8 @@ export class ScenarioGateway implements GatewayPort {
     const interactionKind = scenarioInteractionKind(prompt);
     if (interactionKind !== undefined) {
       this.#createScenarioInteraction(threadId, turnId, interactionKind);
+    } else if (scenarioTurnFails(prompt)) {
+      this.#failScenarioTurn(threadId, turnId);
     } else {
       this.#completeScenarioTurn(threadId, turnId);
     }
@@ -966,6 +970,26 @@ export class ScenarioGateway implements GatewayPort {
         },
       });
       this.#setThreadState(threadId, "idle");
+    }, 250);
+  }
+
+  #failScenarioTurn(threadId: string, turnId: string): void {
+    this.#scope.setTimeout(() => {
+      const thread = this.#threads.get(threadId);
+      if (thread === undefined) return;
+      const createdAt = new Date().toISOString();
+      thread.items.push({
+        version: 1,
+        id: `${turnId}:error`,
+        turnId,
+        type: "error",
+        createdAt,
+        data: {
+          message: "Scenario usage limit exceeded",
+          codexErrorInfo: "UsageLimitExceeded",
+        },
+      });
+      this.#setThreadState(threadId, "failed");
     }, 250);
   }
 
@@ -1263,6 +1287,10 @@ function scenarioInteractionKind(
   if (/\[question\]|需要提问/iu.test(prompt)) return "user-question";
   if (/\[mcp\]|需要 mcp/iu.test(prompt)) return "mcp-elicitation";
   return undefined;
+}
+
+function scenarioTurnFails(prompt: string): boolean {
+  return /\[usage-limit\]/iu.test(prompt);
 }
 
 function scenarioInteractionRequest(kind: Interaction["kind"]): {

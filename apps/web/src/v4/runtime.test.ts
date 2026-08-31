@@ -111,6 +111,60 @@ describe("UserWebRuntime task refresh", () => {
     });
   });
 
+  it("refreshes the active task and filtered task list after a name update", async () => {
+    const gateway = new ThreadRefreshGateway();
+    const runtime = new UserWebRuntime({ gateway, host: savedHost() });
+    runtimes.push(runtime);
+
+    runtime.tasks.dispatch({
+      type: "LOAD",
+      archived: true,
+      workspaceId: "workspace-1",
+      workspaceLabel: "Research",
+    });
+    runtime.thread.dispatch({ type: "OPEN", threadId: "thread-1" });
+    await vi.waitFor(() => expect(gateway.taskListInputs).toHaveLength(1));
+    await vi.waitFor(() =>
+      expect(runtime.thread.getSnapshot().status).toBe("idle"),
+    );
+
+    gateway.notification("thread/name/updated");
+
+    await vi.waitFor(() => expect(gateway.taskListInputs).toHaveLength(2));
+    await vi.waitFor(() => expect(gateway.openCalls).toBe(2));
+    expect(gateway.taskListInputs.at(-1)).toEqual({
+      version: 1,
+      archived: true,
+      limit: 50,
+      workspaceId: "workspace-1",
+    });
+  });
+
+  it("refreshes a filtered task list after a background name change", async () => {
+    const gateway = new ThreadRefreshGateway();
+    const runtime = new UserWebRuntime({ gateway, host: savedHost() });
+    runtimes.push(runtime);
+
+    runtime.tasks.dispatch({
+      type: "LOAD",
+      archived: false,
+      workspaceId: "workspace-1",
+      workspaceLabel: "Research",
+    });
+    await vi.waitFor(() => expect(gateway.taskListInputs).toHaveLength(1));
+
+    gateway.nameChanged("thread-background");
+
+    await vi.waitFor(() => expect(gateway.taskListInputs).toHaveLength(2));
+    expect(gateway.openCalls).toBe(0);
+    expect(gateway.taskListInputs.at(-1)).toEqual({
+      version: 1,
+      archived: false,
+      limit: 50,
+      workspaceId: "workspace-1",
+    });
+  });
+
   it("runs a trailing refresh for a settings update received during refresh", async () => {
     const gateway = new ThreadRefreshGateway();
     const runtime = new UserWebRuntime({ gateway, host: savedHost() });
@@ -152,6 +206,7 @@ class ThreadRefreshGateway implements GatewayPort {
       }
     | undefined;
   openCalls = 0;
+  readonly taskListInputs: InputOf<"thread/list">[] = [];
   settingsRevision = 0;
 
   request<Method extends GatewayMethodName>(
@@ -159,6 +214,14 @@ class ThreadRefreshGateway implements GatewayPort {
     input: InputOf<Method>,
     _options: RequestOptionsOf<Method>,
   ): Promise<OutputOf<Method>> {
+    if (method === "thread/list") {
+      this.taskListInputs.push(input as InputOf<"thread/list">);
+      return Promise.resolve({
+        version: 1,
+        threads: [],
+        hasMore: false,
+      }) as Promise<OutputOf<Method>>;
+    }
     if (method !== "thread/open") {
       return Promise.reject(new Error(`Unexpected method: ${method}`));
     }
@@ -193,6 +256,15 @@ class ThreadRefreshGateway implements GatewayPort {
         threadId: "thread-1",
         method,
         params: { threadId: "thread-1" },
+      }),
+    );
+  }
+
+  nameChanged(threadId: string): void {
+    this.emit(
+      gatewayEventEnvelopeV2("thread/name/changed", {
+        version: 1,
+        threadId,
       }),
     );
   }

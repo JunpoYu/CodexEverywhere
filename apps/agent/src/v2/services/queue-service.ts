@@ -9,6 +9,8 @@ import type {
   QueueRepository,
 } from "../repositories/queue-repository.js";
 import { QueueStateConflictError } from "../repositories/queue-repository.js";
+import type { AutoTitleServicePort } from "./auto-title-service.js";
+import { hasExplicitThreadName } from "./auto-title.js";
 import type {
   ThreadLease,
   ThreadLeaseManager,
@@ -28,6 +30,7 @@ export interface QueueServiceOptions {
   readonly scope: Scope;
   readonly repository: QueueRepository;
   readonly leases: ThreadLeaseManager;
+  readonly titles: AutoTitleServicePort;
   /** Resolves and authorizes a real workspace path without returning content. */
   readonly authorizeWorkspace: (path: string) => Promise<string>;
   readonly dispatchIntervalMs?: number;
@@ -39,6 +42,7 @@ export class QueueService {
   readonly #scope: Scope;
   readonly #repository: QueueRepository;
   readonly #leases: ThreadLeaseManager;
+  readonly #titles: AutoTitleServicePort;
   readonly #authorizeWorkspace: (path: string) => Promise<string>;
   readonly #dispatchIntervalMs: number;
   #started = false;
@@ -48,6 +52,7 @@ export class QueueService {
     this.#scope = options.scope.fork("queue");
     this.#repository = options.repository;
     this.#leases = options.leases;
+    this.#titles = options.titles;
     this.#authorizeWorkspace = options.authorizeWorkspace;
     this.#dispatchIntervalMs = options.dispatchIntervalMs ?? 1_000;
     if (
@@ -139,6 +144,7 @@ export class QueueService {
         claimed.item,
         claimed.identity,
         snapshot.currentTurnId,
+        !hasExplicitThreadName(snapshot.thread),
       );
     } catch (error) {
       if (error instanceof QueueStateConflictError)
@@ -227,7 +233,13 @@ export class QueueService {
         throw error;
       }
       this.#deliveryEvent(claimed.item, "delivering");
-      await this.#deliver(handle.lease, claimed.item, claimed.identity);
+      await this.#deliver(
+        handle.lease,
+        claimed.item,
+        claimed.identity,
+        undefined,
+        !hasExplicitThreadName(snapshot.thread),
+      );
       return true;
     } finally {
       await handle.release();
@@ -239,42 +251,66 @@ export class QueueService {
     item: QueueRecord,
     identity: QueueDeliveryIdentity,
     expectedTurnId?: string,
+    autoTitleEligible = false,
   ): Promise<QueueRecord> {
     let turnId: string;
+    const releaseTerminalObservation =
+      identity.operation === "turn/steer" &&
+      autoTitleEligible &&
+      expectedTurnId !== undefined
+        ? lease.observeTerminalTurn(expectedTurnId)
+        : undefined;
+    const releaseStartObservation =
+      identity.operation === "turn/start"
+        ? lease.observeTurnStartResponse()
+        : undefined;
     try {
-      if (identity.operation === "turn/steer") {
-        if (expectedTurnId === undefined) {
-          throw new Error("Steer delivery has no active turn precondition");
+      try {
+        if (identity.operation === "turn/steer") {
+          if (expectedTurnId === undefined) {
+            throw new Error("Steer delivery has no active turn precondition");
+          }
+          const response = await lease.request<unknown>("turn/steer", {
+            threadId: identity.threadId,
+            expectedTurnId,
+            input: textInput(item.text),
+            clientUserMessageId: identity.clientUserMessageId,
+          });
+          turnId = responseTurnId(response, false);
+        } else {
+          const response = await lease.request<unknown>("turn/start", {
+            threadId: identity.threadId,
+            cwd: item.workspacePath,
+            input: textInput(item.text),
+            clientUserMessageId: identity.clientUserMessageId,
+          });
+          turnId = responseTurnId(response, true);
+          lease.noteTurnStarted(turnId);
         }
-        const response = await lease.request<unknown>("turn/steer", {
-          threadId: identity.threadId,
-          expectedTurnId,
-          input: textInput(item.text),
-          clientUserMessageId: identity.clientUserMessageId,
-        });
-        turnId = responseTurnId(response, false);
-      } else {
-        const response = await lease.request<unknown>("turn/start", {
-          threadId: identity.threadId,
-          cwd: item.workspacePath,
-          input: textInput(item.text),
-          clientUserMessageId: identity.clientUserMessageId,
-        });
-        turnId = responseTurnId(response, true);
-        lease.noteTurnStarted(turnId);
+      } catch {
+        const repaired = await this.#markIndeterminate(identity);
+        this.events.emit("changed", repaired);
+        if (repaired.status === "completed") {
+          this.#deliveryEvent(repaired, "completed");
+          return repaired;
+        }
+        this.#deliveryEvent(repaired, "indeterminate");
+        throw new GatewayV2Error(
+          "QUEUE_OUTCOME_UNKNOWN",
+          "Queue delivery may have reached Codex; automatic replay is disabled",
+        );
       }
-    } catch {
-      const repaired = await this.#markIndeterminate(identity);
-      this.events.emit("changed", repaired);
-      if (repaired.status === "completed") {
-        this.#deliveryEvent(repaired, "completed");
-        return repaired;
+
+      if (autoTitleEligible) {
+        try {
+          this.#titles.schedule(lease, turnId, item.text);
+        } catch {
+          // Optional presentation work cannot alter Queue delivery semantics.
+        }
       }
-      this.#deliveryEvent(repaired, "indeterminate");
-      throw new GatewayV2Error(
-        "QUEUE_OUTCOME_UNKNOWN",
-        "Queue delivery may have reached Codex; automatic replay is disabled",
-      );
+    } finally {
+      releaseTerminalObservation?.();
+      releaseStartObservation?.();
     }
 
     try {

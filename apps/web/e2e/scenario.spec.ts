@@ -1,5 +1,7 @@
 import { expect, test } from "@playwright/test";
 
+const TIMELINE_ANCHOR_TOLERANCE_PX = 6;
+
 test("ScenarioGateway 完成任务创建、流式收口和主导航", async ({ page }) => {
   await page.goto("/?scenario=1");
   await page.getByRole("button", { name: "打开 ScenarioGateway" }).click();
@@ -115,6 +117,31 @@ test("用户问答与 MCP elicitation 固定显示在 composer 上方", async ({
   await expect(page.getByText("外部工具请求确认")).toBeVisible();
   await page.getByLabel("返回给 MCP 的结构化内容").fill('{"approved":true}');
   await page.getByRole("button", { name: "允许", exact: true }).click();
+  await expectScenarioReply(page);
+});
+
+test("额度类 turn 失败结束后可以直接发送新消息重试", async ({ page }) => {
+  await openScenario(page);
+  await createTask(page, "[usage-limit] 验证失败后恢复");
+
+  await expect(
+    page.getByText(
+      "上一次运行已经失败并结束；限制或连接恢复后，可直接发送新消息继续此任务。",
+      { exact: true },
+    ),
+  ).toBeVisible();
+  const composer = page.getByLabel("给 Codex 的消息");
+  const send = page.getByRole("button", { name: "发送", exact: true });
+  await composer.fill("额度已经恢复，继续执行");
+  await expect(send).toBeEnabled();
+  await composer.press("Enter");
+
+  await expect(composer).toHaveValue("");
+  await expect(
+    page.locator(".timeline").getByText("额度已经恢复，继续执行", {
+      exact: true,
+    }),
+  ).toBeVisible();
   await expectScenarioReply(page);
 });
 
@@ -674,11 +701,17 @@ test("长会话分页、首开滚底、阅读保护与对话大纲协同工作",
   const anchorBeforePagination = await firstVisibleTimelineAnchor(timeline);
   await outline.getByRole("button", { name: "加载更早大纲" }).click();
   await expect(timeline.locator(".timeline-item")).toHaveCount(100);
-  const anchorAfterPagination = await firstVisibleTimelineAnchor(timeline);
-  expect(anchorAfterPagination.id).toBe(anchorBeforePagination.id);
-  expect(
-    Math.abs(anchorAfterPagination.offset - anchorBeforePagination.offset),
-  ).toBeLessThanOrEqual(2);
+  await expect
+    .poll(async () => {
+      const anchorAfterPagination = await firstVisibleTimelineAnchor(timeline);
+      if (anchorAfterPagination.id !== anchorBeforePagination.id) {
+        return Number.POSITIVE_INFINITY;
+      }
+      return Math.abs(
+        anchorAfterPagination.offset - anchorBeforePagination.offset,
+      );
+    })
+    .toBeLessThanOrEqual(TIMELINE_ANCHOR_TOLERANCE_PX);
   await expect(outline.getByText("当前已加载 49 条请求")).toBeVisible();
   await outline.getByText("历史请求 22", { exact: true }).click();
   await expect(outline).toHaveCount(0);

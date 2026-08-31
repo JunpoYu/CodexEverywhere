@@ -12,6 +12,7 @@ import type {
 import type { CodexClient } from "../codex/client.js";
 import type { CodexClientFactoryPort } from "../codex/client-factory.js";
 import { UserStateDatabase } from "../repositories/user-state-database.js";
+import { AutoTitleService } from "./auto-title-service.js";
 import { QueueService } from "./queue-service.js";
 import { ThreadLeaseManager } from "./thread-lease-manager.js";
 
@@ -33,6 +34,7 @@ afterEach(async () => {
 describe("QueueService", () => {
   it("claims durably before a single turn/start and completes the item", async () => {
     const fixture = await createFixture();
+    const scheduleTitle = vi.spyOn(fixture.titles, "schedule");
     const item = await fixture.queue.add({
       threadId: "thread-1",
       text: "synthetic queued message",
@@ -45,6 +47,11 @@ describe("QueueService", () => {
     );
 
     expect(fixture.runtime.turnStarts).toBe(1);
+    expect(scheduleTitle).toHaveBeenCalledWith(
+      expect.objectContaining({ threadId: "thread-1" }),
+      "turn-1",
+      "synthetic queued message",
+    );
     const methods = fixture.runtime.requests.map((entry) => entry.method);
     expect(methods.indexOf("thread/read")).toBeLessThan(
       methods.indexOf("turn/start"),
@@ -134,6 +141,25 @@ describe("QueueService", () => {
     });
   });
 
+  it("captures completion before a Queue steer response schedules its title", async () => {
+    const fixture = await createFixture();
+    fixture.runtime.status = "active";
+    fixture.runtime.activeTurnId = "active-turn";
+    fixture.runtime.completeSteerBeforeResponse = true;
+    const item = await fixture.queue.add({
+      threadId: "thread-1",
+      text: "修复 Queue steer 完成竞态",
+    });
+    await fixture.queue.start();
+
+    await fixture.queue.steer(item.id, "修复 Queue steer 完成竞态");
+
+    await eventually(
+      () => fixture.runtime.threadName === "修复 Queue steer 完成竞态",
+    );
+    await eventually(() => fixture.leases.size === 0);
+  });
+
   it("pauses before claiming when workspace authorization changed", async () => {
     const fixture = await createFixture();
     const item = await fixture.queue.add({
@@ -182,6 +208,8 @@ interface Fixture {
   readonly database: UserStateDatabase;
   readonly queue: QueueService;
   readonly runtime: FakeCodexRuntime;
+  readonly titles: AutoTitleService;
+  readonly leases: ThreadLeaseManager;
 }
 
 async function createFixture(): Promise<Fixture> {
@@ -199,14 +227,16 @@ async function createFixture(): Promise<Fixture> {
     scope,
     clientFactory: runtime,
   });
+  const titles = new AutoTitleService({ scope });
   const queue = new QueueService({
     scope,
     repository: database.queue,
     leases,
+    titles,
     authorizeWorkspace: async (path) => path,
     dispatchIntervalMs: 60_000,
   });
-  return { database, queue, runtime };
+  return { database, queue, runtime, titles, leases };
 }
 
 class FakeCodexRuntime implements CodexClientFactoryPort {
@@ -215,6 +245,8 @@ class FakeCodexRuntime implements CodexClientFactoryPort {
   activeTurnId: string | undefined;
   workspacePath = "/work/project";
   failTurnStart = false;
+  completeSteerBeforeResponse = false;
+  threadName: string | undefined;
   turnStarts = 0;
   turnSteers = 0;
 
@@ -246,6 +278,7 @@ class FakeCodexClient implements CodexClient {
         thread: {
           id: "thread-1",
           cwd: this.#runtime.workspacePath,
+          name: this.#runtime.threadName ?? null,
           status:
             this.#runtime.status === "active"
               ? { type: "active", activeFlags: [] }
@@ -270,7 +303,25 @@ class FakeCodexClient implements CodexClient {
     }
     if (method === "turn/steer") {
       this.#runtime.turnSteers += 1;
-      return { turnId: this.#runtime.activeTurnId } as Result;
+      const turnId = this.#runtime.activeTurnId;
+      if (this.#runtime.completeSteerBeforeResponse && turnId !== undefined) {
+        this.#runtime.status = "idle";
+        this.#runtime.activeTurnId = undefined;
+        for (const listener of this.#notifications) {
+          listener({
+            method: "turn/completed",
+            params: {
+              threadId: "thread-1",
+              turn: { id: turnId, status: "completed" },
+            },
+          });
+        }
+      }
+      return { turnId } as Result;
+    }
+    if (method === "thread/name/set") {
+      this.#runtime.threadName = (params as { name: string }).name;
+      return {} as Result;
     }
     throw new Error(`Unexpected Codex method: ${method}`);
   }

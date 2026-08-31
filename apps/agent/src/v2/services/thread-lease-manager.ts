@@ -23,7 +23,7 @@ import {
 } from "./interaction-broker.js";
 
 export type ThreadLeaseState = "idle" | "running" | "waiting-input" | "failed";
-export type ThreadLeaseReferenceKind = "viewer" | "queue";
+export type ThreadLeaseReferenceKind = "viewer" | "queue" | "effect";
 
 export type ThreadLeaseEvent =
   | {
@@ -92,6 +92,12 @@ export class ThreadLease {
   readonly #onDisposable: (lease: ThreadLease) => void | Promise<void>;
   #state: ThreadLeaseState = "idle";
   #currentTurnId: string | undefined;
+  readonly #terminalTurns = new Map<
+    string,
+    { status: string; pendingStartResponse: boolean }
+  >();
+  readonly #terminalObservers = new Map<string, number>();
+  #turnStartResponseObservers = 0;
   #workspacePath: string | undefined;
   #closed = false;
 
@@ -160,6 +166,50 @@ export class ThreadLease {
 
   get currentTurnId(): string | undefined {
     return this.#currentTurnId;
+  }
+
+  terminalTurnStatus(turnId: string): string | undefined {
+    return this.#terminalTurns.get(turnId)?.status;
+  }
+
+  /** Retains a terminal notification across another response boundary. */
+  observeTerminalTurn(turnId: string): () => void {
+    this.#assertOpen();
+    if (turnId.length === 0) throw new Error("Turn ID is empty");
+    this.#terminalObservers.set(
+      turnId,
+      (this.#terminalObservers.get(turnId) ?? 0) + 1,
+    );
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      const count = this.#terminalObservers.get(turnId) ?? 0;
+      if (count <= 1) this.#terminalObservers.delete(turnId);
+      else this.#terminalObservers.set(turnId, count - 1);
+      this.#scheduleTerminalTurnCleanup(turnId);
+    };
+  }
+
+  /** Marks a CE turn/start request whose response has not settled yet. */
+  observeTurnStartResponse(): () => void {
+    this.#assertOpen();
+    this.#turnStartResponseObservers += 1;
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      this.#turnStartResponseObservers = Math.max(
+        0,
+        this.#turnStartResponseObservers - 1,
+      );
+      if (this.#turnStartResponseObservers !== 0) return;
+      for (const [turnId, terminal] of this.#terminalTurns) {
+        if (!terminal.pendingStartResponse) continue;
+        terminal.pendingStartResponse = false;
+        this.#scheduleTerminalTurnCleanup(turnId);
+      }
+    };
   }
 
   get workspacePath(): string | undefined {
@@ -240,6 +290,17 @@ export class ThreadLease {
   noteTurnStarted(turnId: string): void {
     this.#assertOpen();
     if (turnId.length === 0) throw new Error("Turn ID is empty");
+    // A very short turn may complete before its turn/start response reaches
+    // the caller. Never regress that authoritative terminal notification.
+    const terminal = this.#terminalTurns.get(turnId);
+    if (terminal !== undefined) {
+      terminal.pendingStartResponse = false;
+      // Callers synchronously schedule optional completion effects after this
+      // method. Retain the status through that boundary, then discard it once
+      // the delayed start response has been fully observed.
+      this.#scheduleTerminalTurnCleanup(turnId);
+      return;
+    }
     const next = this.#interactions.size > 0 ? "waiting-input" : "running";
     const changed = this.#state !== next;
     this.#state = next;
@@ -338,6 +399,19 @@ export class ThreadLease {
     if (method === "turn/completed") {
       this.#state = this.#interactions.size > 0 ? "waiting-input" : "idle";
       const completedTurnId = nestedId(params, "turn");
+      const completedTurnStatus = nestedString(params, "turn", "status");
+      if (completedTurnId !== undefined && completedTurnStatus !== undefined) {
+        const pendingStartResponse = this.#turnStartResponseObservers > 0;
+        if (
+          pendingStartResponse ||
+          (this.#terminalObservers.get(completedTurnId) ?? 0) > 0
+        ) {
+          this.#terminalTurns.set(completedTurnId, {
+            status: completedTurnStatus,
+            pendingStartResponse,
+          });
+        }
+      }
       if (
         completedTurnId === undefined ||
         completedTurnId === this.#currentTurnId
@@ -364,6 +438,28 @@ export class ThreadLease {
     ) {
       await this.#onDisposable(this);
     }
+  }
+
+  #scheduleTerminalTurnCleanup(turnId: string): void {
+    const terminal = this.#terminalTurns.get(turnId);
+    if (
+      this.#scope.closed ||
+      terminal === undefined ||
+      terminal.pendingStartResponse ||
+      (this.#terminalObservers.get(turnId) ?? 0) > 0
+    ) {
+      return;
+    }
+    this.#scope.setTimeout(() => {
+      const current = this.#terminalTurns.get(turnId);
+      if (
+        current === terminal &&
+        !current.pendingStartResponse &&
+        (this.#terminalObservers.get(turnId) ?? 0) === 0
+      ) {
+        this.#terminalTurns.delete(turnId);
+      }
+    }, 0);
   }
 
   /** Observe callback-triggered disposal without leaking a rejected promise. */
@@ -652,6 +748,22 @@ function nestedId(params: JsonValue, field: string): string | undefined {
   }
   const id = (nested as Readonly<Record<string, JsonValue>>).id;
   return typeof id === "string" && id.length > 0 ? id : undefined;
+}
+
+function nestedString(
+  params: JsonValue,
+  field: string,
+  nestedField: string,
+): string | undefined {
+  if (typeof params !== "object" || params === null || Array.isArray(params)) {
+    return undefined;
+  }
+  const nested = (params as Readonly<Record<string, JsonValue>>)[field];
+  if (typeof nested !== "object" || nested === null || Array.isArray(nested)) {
+    return undefined;
+  }
+  const value = (nested as Readonly<Record<string, JsonValue>>)[nestedField];
+  return typeof value === "string" && value.length > 0 ? value : undefined;
 }
 
 function requiredNestedObject(

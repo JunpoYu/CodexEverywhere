@@ -4,6 +4,21 @@
 
 ## [Unreleased]
 
+## [0.4.0-alpha.14] - 2026-08-31
+
+### Added
+
+- 新增 `AutoTitleService`：尚无 app-server 明确名称的任务会在首个有效 turn 成功后使用本地规则生成一次简洁标题，Web、Queue 和后续发送共享同一服务；通用短指令会暂缓命名，不产生额外模型调用。
+
+### Changed
+
+- 使用 npm 最新稳定版 Codex CLI `0.151.0` 重新生成完整 app-server TypeScript 与 notification schema，并通过真实 app-server contract 检查。
+
+### Fixed
+
+- 自动命名使用短期 effect lease 引用等待准确的 `turn/completed`，覆盖极短 turn 在 `turn/start` 响应前已经完成的通知竞态，并在写入前重新读取权威名称；Web/TUI 手动名称、失败或中断 turn、断线和命名错误均不会被覆盖或改变原消息与 Queue 的副作用结果。名称更新会同时刷新当前任务和保留筛选条件的任务列表。
+- 修复额度或上游错误使已终结 turn 把任务永久锁定在 `failed`、额度恢复后仍无法发送的问题；Web 现在明确提示该失败可重试，Agent 仅在权威状态没有活动 turn 时允许继续，发送被拒绝时仍恢复原草稿。推进 PWA 缓存代次，确保已安装页面能够发现修复版本。
+
 ## [0.4.0-alpha.13] - 2026-08-27
 
 ### Added

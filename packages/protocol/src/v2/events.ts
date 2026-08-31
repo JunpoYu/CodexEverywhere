@@ -65,6 +65,7 @@ export const gatewayEventDefinitions = {
     threadId: identifierSchema,
     reason: shortTextSchema,
   }),
+  "thread/name/changed": versioned({ threadId: identifierSchema }),
   "queue/changed": versioned({ item: queueItemSchema }),
   "queue/removed": versioned({ itemId: identifierSchema }),
   "queue/delivery": versioned({
