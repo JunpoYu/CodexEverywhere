@@ -260,6 +260,10 @@ export class QueueService {
       expectedTurnId !== undefined
         ? lease.observeTerminalTurn(expectedTurnId)
         : undefined;
+    const releaseStartObservation =
+      identity.operation === "turn/start"
+        ? lease.observeTurnStartResponse()
+        : undefined;
     try {
       try {
         if (identity.operation === "turn/steer") {
@@ -306,6 +310,7 @@ export class QueueService {
       }
     } finally {
       releaseTerminalObservation?.();
+      releaseStartObservation?.();
     }
 
     try {

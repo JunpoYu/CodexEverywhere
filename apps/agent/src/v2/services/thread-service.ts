@@ -273,29 +273,37 @@ export class ThreadService {
       // The same lease-owned client that created the empty thread starts its
       // first turn. Codex does not publish a resumable rollout until that
       // boundary, and interactions may arrive immediately after turn/start.
-      const turn = parseCodexObject(
-        await handle.lease.request("turn/start", {
-          threadId,
-          clientUserMessageId: randomUUID(),
-          cwd: currentWorkspace.path,
-          input: textInput(input.prompt),
-          ...(requested.model === undefined ? {} : { model: requested.model }),
-          ...(requested.effort === undefined
-            ? {}
-            : { effort: requested.effort }),
-          approvalPolicy,
-          approvalsReviewer: "user",
-          sandboxPolicy: codexSandboxPolicy(sandbox),
-        }),
-        "turn/start response",
-      );
-      const turnId = requireCodexString(
-        requireCodexObject(turn.turn, "started turn").id,
-        "turn id",
-      );
-      handle.lease.noteTurnStarted(turnId);
-      if (!hasExplicitThreadName(thread)) {
-        this.#titles.schedule(handle.lease, turnId, input.prompt);
+      const stopObservingStart = handle.lease.observeTurnStartResponse();
+      let turnId: string;
+      try {
+        const turn = parseCodexObject(
+          await handle.lease.request("turn/start", {
+            threadId,
+            clientUserMessageId: randomUUID(),
+            cwd: currentWorkspace.path,
+            input: textInput(input.prompt),
+            ...(requested.model === undefined
+              ? {}
+              : { model: requested.model }),
+            ...(requested.effort === undefined
+              ? {}
+              : { effort: requested.effort }),
+            approvalPolicy,
+            approvalsReviewer: "user",
+            sandboxPolicy: codexSandboxPolicy(sandbox),
+          }),
+          "turn/start response",
+        );
+        turnId = requireCodexString(
+          requireCodexObject(turn.turn, "started turn").id,
+          "turn id",
+        );
+        handle.lease.noteTurnStarted(turnId);
+        if (!hasExplicitThreadName(thread)) {
+          this.#titles.schedule(handle.lease, turnId, input.prompt);
+        }
+      } finally {
+        stopObservingStart();
       }
       return {
         version: 1,
@@ -333,21 +341,27 @@ export class ThreadService {
         "Task is not idle; add the message to Queue instead",
       );
     }
-    const response = parseCodexObject(
-      await handle.lease.request("turn/start", {
-        threadId: handle.threadId,
-        clientUserMessageId: randomUUID(),
-        input: textInput(prompt),
-      }),
-      "turn/start response",
-    );
-    const turnId = requireCodexString(
-      requireCodexObject(response.turn, "started turn").id,
-      "turn id",
-    );
-    handle.lease.noteTurnStarted(turnId);
-    if (!hasExplicitThreadName(state.thread)) {
-      this.#titles.schedule(handle.lease, turnId, prompt);
+    const stopObservingStart = handle.lease.observeTurnStartResponse();
+    let turnId: string;
+    try {
+      const response = parseCodexObject(
+        await handle.lease.request("turn/start", {
+          threadId: handle.threadId,
+          clientUserMessageId: randomUUID(),
+          input: textInput(prompt),
+        }),
+        "turn/start response",
+      );
+      turnId = requireCodexString(
+        requireCodexObject(response.turn, "started turn").id,
+        "turn id",
+      );
+      handle.lease.noteTurnStarted(turnId);
+      if (!hasExplicitThreadName(state.thread)) {
+        this.#titles.schedule(handle.lease, turnId, prompt);
+      }
+    } finally {
+      stopObservingStart();
     }
     return { version: 1, threadId: handle.threadId, turnId };
   }

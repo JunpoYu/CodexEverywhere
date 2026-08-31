@@ -289,12 +289,14 @@ describe("ThreadLeaseManager", () => {
       kind: "queue",
       id: "fast-turn",
     });
+    const stopObservingStart = handle.lease.observeTurnStartResponse();
     factory.clients[0]!.notification("turn/completed", {
       threadId: "thread-1",
       turn: { id: "turn-1", status: "completed" },
     });
 
     handle.lease.noteTurnStarted("turn-1");
+    stopObservingStart();
 
     expect(handle.lease.state).toBe("idle");
     expect(handle.lease.currentTurnId).toBeUndefined();
@@ -308,6 +310,8 @@ describe("ThreadLeaseManager", () => {
       kind: "queue",
       id: "two-fast-turns",
     });
+    const stopObservingFirst = handle.lease.observeTurnStartResponse();
+    const stopObservingSecond = handle.lease.observeTurnStartResponse();
     const client = factory.clients[0]!;
     client.notification("turn/completed", {
       threadId: "thread-1",
@@ -322,6 +326,8 @@ describe("ThreadLeaseManager", () => {
     expect(handle.lease.terminalTurnStatus("turn-2")).toBe("failed");
     handle.lease.noteTurnStarted("turn-1");
     handle.lease.noteTurnStarted("turn-2");
+    stopObservingFirst();
+    stopObservingSecond();
 
     expect(handle.lease.state).toBe("idle");
     expect(handle.lease.currentTurnId).toBeUndefined();
@@ -340,13 +346,34 @@ describe("ThreadLeaseManager", () => {
       id: "normal-turn",
     });
 
+    const stopObservingStart = handle.lease.observeTurnStartResponse();
     handle.lease.noteTurnStarted("turn-1");
+    stopObservingStart();
     factory.clients[0]!.notification("turn/completed", {
       threadId: "thread-1",
       turn: { id: "turn-1", status: "completed" },
     });
 
     expect(handle.lease.terminalTurnStatus("turn-1")).toBeUndefined();
+    await handle.release();
+  });
+
+  it("does not cache terminal turns started outside CE", async () => {
+    const { manager, factory } = createManager();
+    const handle = await manager.acquire("thread-1", {
+      kind: "viewer",
+      id: "tui-observer",
+    });
+
+    for (let index = 0; index < 256; index += 1) {
+      factory.clients[0]!.notification("turn/completed", {
+        threadId: "thread-1",
+        turn: { id: `tui-turn-${index}`, status: "completed" },
+      });
+    }
+
+    expect(handle.lease.terminalTurnStatus("tui-turn-0")).toBeUndefined();
+    expect(handle.lease.terminalTurnStatus("tui-turn-255")).toBeUndefined();
     await handle.release();
   });
 

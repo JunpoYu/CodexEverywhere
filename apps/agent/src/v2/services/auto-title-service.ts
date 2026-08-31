@@ -39,6 +39,7 @@ interface PendingAutoTitle {
   unsubscribe: () => void;
   finishing: boolean;
   released: boolean;
+  finishPromise?: Promise<void>;
   conflictingName?: string;
   readonly unobservedServiceNames: string[];
 }
@@ -125,6 +126,10 @@ export class AutoTitleService implements AutoTitleServicePort {
     const pending = this.#pending.get(threadId);
     if (pending === undefined) return;
     this.#pending.delete(threadId);
+    if (pending.finishPromise !== undefined) {
+      await pending.finishPromise.catch(() => undefined);
+      return;
+    }
     await this.#release(pending).catch(() => undefined);
   }
 
@@ -164,11 +169,13 @@ export class AutoTitleService implements AutoTitleServicePort {
   }
 
   #settle(pending: PendingAutoTitle, status: string): void {
-    this.#runBackground(() =>
-      status === "completed"
-        ? this.#finish(pending)
-        : this.cancel(pending.threadId),
-    );
+    if (status !== "completed") {
+      this.#runBackground(() => this.cancel(pending.threadId));
+      return;
+    }
+    const finishPromise = this.#finish(pending);
+    pending.finishPromise = finishPromise;
+    this.#runBackground(() => finishPromise);
   }
 
   async #finish(pending: PendingAutoTitle): Promise<void> {

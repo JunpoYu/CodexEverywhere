@@ -97,7 +97,7 @@ export class ThreadLease {
     { status: string; pendingStartResponse: boolean }
   >();
   readonly #terminalObservers = new Map<string, number>();
-  readonly #settledStartResponses = new Set<string>();
+  #turnStartResponseObservers = 0;
   #workspacePath: string | undefined;
   #closed = false;
 
@@ -191,6 +191,27 @@ export class ThreadLease {
     };
   }
 
+  /** Marks a CE turn/start request whose response has not settled yet. */
+  observeTurnStartResponse(): () => void {
+    this.#assertOpen();
+    this.#turnStartResponseObservers += 1;
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      this.#turnStartResponseObservers = Math.max(
+        0,
+        this.#turnStartResponseObservers - 1,
+      );
+      if (this.#turnStartResponseObservers !== 0) return;
+      for (const [turnId, terminal] of this.#terminalTurns) {
+        if (!terminal.pendingStartResponse) continue;
+        terminal.pendingStartResponse = false;
+        this.#scheduleTerminalTurnCleanup(turnId);
+      }
+    };
+  }
+
   get workspacePath(): string | undefined {
     return this.#workspacePath;
   }
@@ -280,7 +301,6 @@ export class ThreadLease {
       this.#scheduleTerminalTurnCleanup(turnId);
       return;
     }
-    this.#settledStartResponses.add(turnId);
     const next = this.#interactions.size > 0 ? "waiting-input" : "running";
     const changed = this.#state !== next;
     this.#state = next;
@@ -381,15 +401,14 @@ export class ThreadLease {
       const completedTurnId = nestedId(params, "turn");
       const completedTurnStatus = nestedString(params, "turn", "status");
       if (completedTurnId !== undefined && completedTurnStatus !== undefined) {
-        const startResponseSettled =
-          this.#settledStartResponses.delete(completedTurnId);
+        const pendingStartResponse = this.#turnStartResponseObservers > 0;
         if (
-          !startResponseSettled ||
+          pendingStartResponse ||
           (this.#terminalObservers.get(completedTurnId) ?? 0) > 0
         ) {
           this.#terminalTurns.set(completedTurnId, {
             status: completedTurnStatus,
-            pendingStartResponse: !startResponseSettled,
+            pendingStartResponse,
           });
         }
       }

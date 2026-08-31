@@ -173,6 +173,33 @@ describe("AutoTitleService", () => {
     ]);
   });
 
+  it("joins an in-flight automatic write before a Web manual rename", async () => {
+    const scope = new Scope("racing-web-title-test");
+    scopes.push(scope);
+    const service = new AutoTitleService({ scope });
+    const lease = new FakeTitleLease();
+    const allowAutomaticWrite = lease.deferNextNameSet();
+
+    service.schedule(lease, "turn-1", "修复 Web 手动改名竞态");
+    lease.complete("turn-1", "completed");
+    await vi.waitFor(() =>
+      expect(lease.methods).toEqual(["thread/read", "thread/name/set"]),
+    );
+
+    const manualRename = service.renameManually(lease, "Web 手动名称");
+    await Promise.resolve();
+    expect(lease.methods).toEqual(["thread/read", "thread/name/set"]);
+    allowAutomaticWrite();
+    await manualRename;
+
+    expect(lease.name).toBe("Web 手动名称");
+    expect(lease.methods).toEqual([
+      "thread/read",
+      "thread/name/set",
+      "thread/name/set",
+    ]);
+  });
+
   it("contains app-server naming failures and releases its lease reference", async () => {
     const scope = new Scope("title-failure-test");
     scopes.push(scope);
