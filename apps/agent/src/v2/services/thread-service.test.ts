@@ -121,16 +121,17 @@ describe("ThreadService", () => {
       id: "viewer-2",
     });
 
+    const opens = [
+      service.open(first, { historyLimit: 100 }),
+      service.open(second, { historyLimit: 100 }),
+    ];
     try {
-      const opened = Promise.all([
-        service.open(first, { historyLimit: 100 }),
-        service.open(second, { historyLimit: 100 }),
-      ]);
-      await eventually(() => factory.client.methods.includes("thread/resume"));
-      await new Promise((resolve) => setTimeout(resolve, 25));
+      await factory.resumeRequested;
       allowResume?.();
-      await opened;
+      await Promise.all(opens);
     } finally {
+      allowResume?.();
+      await Promise.allSettled(opens);
       await Promise.all([first.release(), second.release()]);
     }
 
@@ -525,8 +526,10 @@ describe("ThreadService", () => {
 
 class ThreadOpenFactory implements CodexClientFactoryPort {
   readonly clients: ThreadOpenClient[] = [];
+  readonly resumeRequested: Promise<void>;
   readonly #workspacePath: string;
   readonly #resumeGate: Promise<void>;
+  readonly #markResumeRequested: () => void;
 
   constructor(
     workspacePath: string,
@@ -535,6 +538,11 @@ class ThreadOpenFactory implements CodexClientFactoryPort {
   ) {
     this.#workspacePath = workspacePath;
     this.#resumeGate = resumeGate;
+    let markResumeRequested: (() => void) | undefined;
+    this.resumeRequested = new Promise<void>((resolve) => {
+      markResumeRequested = resolve;
+    });
+    this.#markResumeRequested = () => markResumeRequested?.();
   }
 
   get client(): ThreadOpenClient {
@@ -548,6 +556,7 @@ class ThreadOpenFactory implements CodexClientFactoryPort {
       this.#workspacePath,
       this.#resumeGate,
       this.status,
+      this.#markResumeRequested,
     );
     this.clients.push(client);
     scope.defer(() => client.close());
@@ -563,11 +572,13 @@ class ThreadOpenClient implements CodexClient {
     private readonly workspacePath: string,
     private readonly resumeGate: Promise<void>,
     private readonly status: "idle" | "systemError" | "active",
+    private readonly markResumeRequested: () => void,
   ) {}
 
   async request<Result = unknown>(method: string): Promise<Result> {
     this.methods.push(method);
     if (method === "thread/resume") {
+      this.markResumeRequested();
       await this.resumeGate;
       return {
         thread: thread(this.workspacePath, this.status),
@@ -871,12 +882,4 @@ function workspaceWriteSandbox() {
     excludeTmpdirEnvVar: false,
     excludeSlashTmp: false,
   };
-}
-
-async function eventually(check: () => boolean): Promise<void> {
-  for (let attempt = 0; attempt < 100; attempt += 1) {
-    if (check()) return;
-    await new Promise((resolve) => setTimeout(resolve, 1));
-  }
-  throw new Error("Condition was not met");
 }
