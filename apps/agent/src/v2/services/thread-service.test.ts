@@ -121,17 +121,17 @@ describe("ThreadService", () => {
       id: "viewer-2",
     });
 
-    const opened = Promise.all([
+    const opens = [
       service.open(first, { historyLimit: 100 }),
       service.open(second, { historyLimit: 100 }),
-    ]);
+    ];
     try {
       await factory.resumeRequested;
       allowResume?.();
-      await opened;
+      await Promise.all(opens);
     } finally {
       allowResume?.();
-      await Promise.allSettled([opened]);
+      await Promise.allSettled(opens);
       await Promise.all([first.release(), second.release()]);
     }
 
