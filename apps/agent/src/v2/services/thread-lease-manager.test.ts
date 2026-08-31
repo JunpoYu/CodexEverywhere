@@ -283,6 +283,25 @@ describe("ThreadLeaseManager", () => {
     await handle.release();
   });
 
+  it("does not regress a turn that completed before turn/start returned", async () => {
+    const { manager, factory } = createManager();
+    const handle = await manager.acquire("thread-1", {
+      kind: "queue",
+      id: "fast-turn",
+    });
+    factory.clients[0]!.notification("turn/completed", {
+      threadId: "thread-1",
+      turn: { id: "turn-1", status: "completed" },
+    });
+
+    handle.lease.noteTurnStarted("turn-1");
+
+    expect(handle.lease.state).toBe("idle");
+    expect(handle.lease.currentTurnId).toBeUndefined();
+    expect(handle.lease.terminalTurnStatus("turn-1")).toBe("completed");
+    await handle.release();
+  });
+
   it("emits explicit resolution and generic forward-compatible events", async () => {
     const { manager, factory } = createManager();
     const handle = await manager.acquire("thread-1", {

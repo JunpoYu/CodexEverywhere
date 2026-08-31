@@ -23,7 +23,7 @@ import {
 } from "./interaction-broker.js";
 
 export type ThreadLeaseState = "idle" | "running" | "waiting-input" | "failed";
-export type ThreadLeaseReferenceKind = "viewer" | "queue";
+export type ThreadLeaseReferenceKind = "viewer" | "queue" | "effect";
 
 export type ThreadLeaseEvent =
   | {
@@ -92,6 +92,8 @@ export class ThreadLease {
   readonly #onDisposable: (lease: ThreadLease) => void | Promise<void>;
   #state: ThreadLeaseState = "idle";
   #currentTurnId: string | undefined;
+  #lastTerminalTurn:
+    { readonly id: string; readonly status: string } | undefined;
   #workspacePath: string | undefined;
   #closed = false;
 
@@ -160,6 +162,12 @@ export class ThreadLease {
 
   get currentTurnId(): string | undefined {
     return this.#currentTurnId;
+  }
+
+  terminalTurnStatus(turnId: string): string | undefined {
+    return this.#lastTerminalTurn?.id === turnId
+      ? this.#lastTerminalTurn.status
+      : undefined;
   }
 
   get workspacePath(): string | undefined {
@@ -240,6 +248,9 @@ export class ThreadLease {
   noteTurnStarted(turnId: string): void {
     this.#assertOpen();
     if (turnId.length === 0) throw new Error("Turn ID is empty");
+    // A very short turn may complete before its turn/start response reaches
+    // the caller. Never regress that authoritative terminal notification.
+    if (this.terminalTurnStatus(turnId) !== undefined) return;
     const next = this.#interactions.size > 0 ? "waiting-input" : "running";
     const changed = this.#state !== next;
     this.#state = next;
@@ -338,6 +349,13 @@ export class ThreadLease {
     if (method === "turn/completed") {
       this.#state = this.#interactions.size > 0 ? "waiting-input" : "idle";
       const completedTurnId = nestedId(params, "turn");
+      const completedTurnStatus = nestedString(params, "turn", "status");
+      if (completedTurnId !== undefined && completedTurnStatus !== undefined) {
+        this.#lastTerminalTurn = {
+          id: completedTurnId,
+          status: completedTurnStatus,
+        };
+      }
       if (
         completedTurnId === undefined ||
         completedTurnId === this.#currentTurnId
@@ -652,6 +670,22 @@ function nestedId(params: JsonValue, field: string): string | undefined {
   }
   const id = (nested as Readonly<Record<string, JsonValue>>).id;
   return typeof id === "string" && id.length > 0 ? id : undefined;
+}
+
+function nestedString(
+  params: JsonValue,
+  field: string,
+  nestedField: string,
+): string | undefined {
+  if (typeof params !== "object" || params === null || Array.isArray(params)) {
+    return undefined;
+  }
+  const nested = (params as Readonly<Record<string, JsonValue>>)[field];
+  if (typeof nested !== "object" || nested === null || Array.isArray(nested)) {
+    return undefined;
+  }
+  const value = (nested as Readonly<Record<string, JsonValue>>)[nestedField];
+  return typeof value === "string" && value.length > 0 ? value : undefined;
 }
 
 function requiredNestedObject(

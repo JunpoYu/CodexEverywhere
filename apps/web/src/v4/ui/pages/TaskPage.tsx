@@ -46,6 +46,9 @@ export function TaskPage() {
   const activeThreadId = useRef(threadId);
   activeThreadId.current = threadId;
   const composerDraft = composerDraftFor(composer, threadId);
+  const retryableTurnFailure =
+    thread.status === "failed" && thread.error === undefined;
+  const canStartTurn = thread.status === "idle" || retryableTurnFailure;
 
   useEffect(() => {
     setActionError(undefined);
@@ -72,7 +75,7 @@ export function TaskPage() {
       runtime.composer.dispatch({ type: "QUEUE", threadId });
       return;
     }
-    if (thread.status !== "idle") return;
+    if (!canStartTurn) return;
     runtime.composer.dispatch({ type: "SUBMIT", threadId });
   };
 
@@ -402,6 +405,11 @@ export function TaskPage() {
             composer.error !== undefined ? (
               <StatusMessage tone="error">{composer.error}</StatusMessage>
             ) : null}
+            {retryableTurnFailure ? (
+              <StatusMessage tone="warning">
+                上一次运行已经失败并结束；限制或连接恢复后，可直接发送新消息继续此任务。
+              </StatusMessage>
+            ) : null}
           </div>
           <div className={composerDockStyles.workspace}>
             <div className={composerDockStyles.layout}>
@@ -433,7 +441,9 @@ export function TaskPage() {
                     placeholder={
                       taskActive
                         ? "任务运行中；可添加到 Queue…"
-                        : "继续告诉 Codex 要做什么…"
+                        : retryableTurnFailure
+                          ? "上一次运行失败；恢复后可直接继续…"
+                          : "继续告诉 Codex 要做什么…"
                     }
                     value={composerDraft}
                     onChange={(event) =>
@@ -476,7 +486,7 @@ export function TaskPage() {
                       className="primary"
                       disabled={
                         composer.status !== "idle" ||
-                        thread.status !== "idle" ||
+                        !canStartTurn ||
                         composerDraft.trim().length === 0
                       }
                       type="submit"

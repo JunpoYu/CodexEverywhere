@@ -73,11 +73,13 @@ import type { ThreadGoalClearParams } from "./v2/ThreadGoalClearParams";
 import type { ThreadGoalGetParams } from "./v2/ThreadGoalGetParams";
 import type { ThreadGoalSetParams } from "./v2/ThreadGoalSetParams";
 import type { ThreadInjectItemsParams } from "./v2/ThreadInjectItemsParams";
+import type { ThreadItemsListParams } from "./v2/ThreadItemsListParams";
 import type { ThreadListParams } from "./v2/ThreadListParams";
 import type { ThreadLoadedListParams } from "./v2/ThreadLoadedListParams";
 import type { ThreadMetadataUpdateParams } from "./v2/ThreadMetadataUpdateParams";
 import type { ThreadReadParams } from "./v2/ThreadReadParams";
 import type { ThreadResumeParams } from "./v2/ThreadResumeParams";
+import type { ThreadRevertParams } from "./v2/ThreadRevertParams";
 import type { ThreadRollbackParams } from "./v2/ThreadRollbackParams";
 import type { ThreadSectionCreateParams } from "./v2/ThreadSectionCreateParams";
 import type { ThreadSectionDeleteParams } from "./v2/ThreadSectionDeleteParams";
@@ -87,6 +89,7 @@ import type { ThreadSectionUpdateParams } from "./v2/ThreadSectionUpdateParams";
 import type { ThreadSetNameParams } from "./v2/ThreadSetNameParams";
 import type { ThreadShellCommandParams } from "./v2/ThreadShellCommandParams";
 import type { ThreadStartParams } from "./v2/ThreadStartParams";
+import type { ThreadTurnsListParams } from "./v2/ThreadTurnsListParams";
 import type { ThreadUnarchiveParams } from "./v2/ThreadUnarchiveParams";
 import type { ThreadUnsubscribeParams } from "./v2/ThreadUnsubscribeParams";
 import type { TurnInterruptParams } from "./v2/TurnInterruptParams";
@@ -144,6 +147,7 @@ export type ClientRequest =
       params: ThreadApproveGuardianDeniedActionParams;
     }
   | { method: "thread/rollback"; id: RequestId; params: ThreadRollbackParams }
+  | { method: "thread/revert"; id: RequestId; params: ThreadRevertParams }
   | { method: "thread/list"; id: RequestId; params: ThreadListParams }
   | {
       method: "threadSection/list";
@@ -171,6 +175,16 @@ export type ClientRequest =
       params: ThreadLoadedListParams;
     }
   | { method: "thread/read"; id: RequestId; params: ThreadReadParams }
+  | {
+      method: "thread/turns/list";
+      id: RequestId;
+      params: ThreadTurnsListParams;
+    }
+  | {
+      method: "thread/items/list";
+      id: RequestId;
+      params: ThreadItemsListParams;
+    }
   | {
       method: "thread/inject_items";
       id: RequestId;

@@ -13,6 +13,7 @@ export type CodexErrorInfo =
   | "contextWindowExceeded"
   | "sessionBudgetExceeded"
   | "usageLimitExceeded"
+  | "rateLimitExceeded"
   | "serverOverloaded"
   | "cyberPolicy"
   | "misalignmentPolicyViolation"

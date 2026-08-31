@@ -106,6 +106,9 @@ export class UserWebRuntime {
             "codex/notification",
             event.payload,
           );
+          if (notification.method === "thread/name/updated") {
+            this.refreshTasks();
+          }
           if (
             notification.threadId === this.thread.getSnapshot().threadId &&
             notificationRequiresThreadSnapshot(notification.method)

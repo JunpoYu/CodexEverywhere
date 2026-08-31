@@ -152,6 +152,7 @@ type CodexGenericEvent = {
 | `CodexClientFactory`  | 按 scope 创建独立 JSON-RPC client                           |
 | `ModelCatalogService` | 将 app-server 动态模型目录投影为稳定 Gateway 契约           |
 | `ThreadLeaseManager`  | 每任务一个共享 lease，管理 viewer/Queue 引用                |
+| `AutoTitleService`    | 在成功 turn 后为未命名任务生成一次本地标题                  |
 | `InteractionBroker`   | 当前 client 上未解决的 app-server server request            |
 | `QueueService`        | repository、dispatcher、Steer、crash window 和结果未知      |
 | `PreferencesService`  | 用户默认设置和 revision                                     |
@@ -161,7 +162,7 @@ type CodexGenericEvent = {
 
 Direct 的未加密 HTTP Host Discovery 是独立、只读的 adapter，只输出公开 Host Profile 并负责 Origin、CORS/PNA 与 no-store 响应；它不得接触 Gateway session、Router、设备私钥内容或用户业务服务。Noise 握手 hello 与 cipher frame 必须使用共享 protocol parser，在进入密码学和路由处理前完成版本、长度、标识符、序号及 base64url 校验，Agent 不维护更宽松的私有解析器。恢复握手必须在创建 Gateway session 前拒绝已撤销设备；连接关闭必须通过 Scope 释放 session、listener、timer 和未完成分片预算。
 
-Agent composition root 只构造服务、绑定 Scope、连接控制面事件并完成静态装配，不直接声明业务 handler。用户 Gateway 方法在独立的 core handler registry 中按 host、workspace、model、thread、Queue 和 preferences 分组；Identity 与 Setup 使用各自的 handler map。`ModelCatalogService` 只负责 app-server 目录的运行时校验与稳定字段投影。`ThreadService` 是 thread 用例 facade，只编排 client、lease、workspace 和偏好锁；`ThreadSessionCoordinator` 独占每任务的权限 coordination fence、每 lease 一次 resume 和运行设置缓存。Codex JSON 运行时边界、权威 thread 到 CE timeline/summary 的纯投影、以及 thread settings 的双向转换分别位于独立模块。投影和设置转换模块不得保存会话状态或发起 app-server 请求，session coordinator 不得反向依赖 Gateway、Queue 或展示投影。
+Agent composition root 只构造服务、绑定 Scope、连接控制面事件并完成静态装配，不直接声明业务 handler。用户 Gateway 方法在独立的 core handler registry 中按 host、workspace、model、thread、Queue 和 preferences 分组；Identity 与 Setup 使用各自的 handler map。`ModelCatalogService` 只负责 app-server 目录的运行时校验与稳定字段投影。`ThreadService` 是 thread 用例 facade，只编排 client、lease、workspace 和偏好锁；`ThreadSessionCoordinator` 独占每任务的权限 coordination fence、每 lease 一次 resume 和运行设置缓存。`AutoTitleService` 只接收已被 Codex 接受的 user message，在对应 turn 成功后用纯本地规则产生有界标题，并通过 `thread/name/set` 写回 app-server；它不调用模型、不持久化 prompt、不维护第二份 thread 名称。Codex JSON 运行时边界、权威 thread 到 CE timeline/summary 的纯投影、以及 thread settings 的双向转换分别位于独立模块。投影和设置转换模块不得保存会话状态或发起 app-server 请求，session coordinator 不得反向依赖 Gateway、Queue 或展示投影。
 
 ### 5.1 Thread lease
 
@@ -171,11 +172,13 @@ Agent composition root 只构造服务、绑定 Scope、连接控制面事件并
 - notification/server-request 订阅；
 - `InteractionBroker`；
 - 当前 turn、thread 状态与 workspace path；
-- viewer/Queue 引用计数和子 scope。
+- viewer/Queue/短期 effect 引用计数和子 scope。
 
 浏览器断线立即释放 viewer；活动 turn、待处理 interaction 或 Queue 引用继续保留 lease。无引用且 idle 时立即关闭。Gateway session 会合并同一连接内并发的 `thread/open`，并在 close 完成后才允许同任务重新 open；viewer Scope 的异步释放必须一直等待到底层 app-server client 关闭。Manager 把正在释放的 lease 计入容量，同一任务的旧 client 未完成关闭前不得创建新 client。notification、interaction 和 client-close 等同步回调触发异步释放时，必须进入同一个受观察的后台清理入口；disposer 失败只能发出不含底层异常内容的控制面失败事件，不能形成未处理 Promise rejection。最多保留 128 个 lease，达到上限时拒绝创建，不驱逐活动任务。
 
 新任务先在 Manager 计入容量的 provisional Scope 中创建 client；app-server 返回 thread ID 后，必须把同一个 client 绑定为该 thread 的 lease，再发送第一轮。不得关闭创建 client 后立即对空 thread 执行 `thread/resume`：Codex 在第一轮前可能还没有可恢复 rollout；也不得先发送第一轮再补订阅，因为审批或用户问题可以在 `turn/start` 后立即到达。
+
+当已接受的 Web 或 Queue 消息具有可用标题且 app-server thread 尚无明确名称时，`AutoTitleService` 在 turn 完成前持有一个短期 effect 引用。只有收到相同 turn ID 的成功完成事件后，它才重新读取权威 `thread.name` 并在仍为空时调用 `thread/name/set`。lease 仅保留最近一个终态 turn 的 ID 和状态，用于关闭 `turn/start` 响应与完成通知之间的订阅间隙；它不缓存正文或重建连续事件 buffer。手动 Web 重命名会先取消待处理自动命名；TUI 或其他 client 的 `thread/name/updated` 也会取消它。通用短指令、失败或中断的 turn、已有名称以及任何自动命名错误都不得改写名称或改变原 mutation 结果；effect 释放后 lease 仍按正常 idle 规则关闭。
 
 `thread/open` 总是返回 app-server 权威快照、历史边界、当前状态、thread settings 和未解决 interaction。多个设备回答同一 interaction 时，broker 原子取出待处理项，第一个合法回答成功，其余设备收到 `interaction/resolved` 或明确失败。
 

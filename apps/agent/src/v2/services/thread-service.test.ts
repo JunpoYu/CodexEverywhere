@@ -16,6 +16,7 @@ import type {
 import type { CodexClient } from "../codex/client.js";
 import type { CodexClientFactoryPort } from "../codex/client-factory.js";
 import { UserStateDatabase } from "../repositories/user-state-database.js";
+import { AutoTitleService } from "./auto-title-service.js";
 import { PreferencesService } from "./preferences-service.js";
 import { ThreadLeaseManager } from "./thread-lease-manager.js";
 import { ThreadService } from "./thread-service.js";
@@ -61,6 +62,7 @@ describe("ThreadService", () => {
       workspaces,
       preferences: new PreferencesService(state.preferences),
       settings: state.threadSettings,
+      titles: new AutoTitleService({ scope }),
     });
 
     const result = await service.list({
@@ -108,6 +110,7 @@ describe("ThreadService", () => {
       workspaces,
       preferences: new PreferencesService(state.preferences),
       settings: state.threadSettings,
+      titles: new AutoTitleService({ scope }),
     });
     const first = await leases.acquire("thread-1", {
       kind: "viewer",
@@ -159,6 +162,7 @@ describe("ThreadService", () => {
       workspaces,
       preferences: new PreferencesService(state.preferences),
       settings: state.threadSettings,
+      titles: new AutoTitleService({ scope }),
     });
 
     const first = await leases.acquire("thread-1", {
@@ -179,6 +183,57 @@ describe("ThreadService", () => {
       ["thread/resume"],
       ["thread/resume"],
     ]);
+  });
+
+  it("starts a new turn after an authoritative terminal system error", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "ce-thread-service-"));
+    directories.push(directory);
+    const workspacePath = join(directory, "workspace");
+    await mkdir(workspacePath);
+    const state = await UserStateDatabase.open(
+      join(directory, "state.sqlite"),
+      { create: true },
+    );
+    const scope = new Scope("thread-terminal-error-retry-test");
+    scopes.push(scope);
+    scope.defer(() => state.close());
+    const factory = new ThreadOpenFactory(
+      workspacePath,
+      Promise.resolve(),
+      "systemError",
+    );
+    const leases = new ThreadLeaseManager({ scope, clientFactory: factory });
+    const workspaces = new WorkspaceService(state.workspaces, {
+      home: directory,
+    });
+    await workspaces.add(workspacePath, "Workspace");
+    const service = new ThreadService({
+      scope,
+      clients: factory,
+      leases,
+      workspaces,
+      preferences: new PreferencesService(state.preferences),
+      settings: state.threadSettings,
+      titles: new AutoTitleService({ scope }),
+    });
+    const handle = await leases.acquire("thread-1", {
+      kind: "viewer",
+      id: "viewer-1",
+    });
+
+    try {
+      await expect(
+        service.turnStart(handle, "continue after the quota reset"),
+      ).resolves.toEqual({
+        version: 1,
+        threadId: "thread-1",
+        turnId: "turn-retry",
+      });
+      expect(factory.client.methods).toEqual(["thread/read", "turn/start"]);
+      expect(handle.lease.state).toBe("running");
+    } finally {
+      await handle.release();
+    }
   });
 
   it("updates task settings under the persisted permission boundary", async () => {
@@ -206,6 +261,7 @@ describe("ThreadService", () => {
       workspaces,
       preferences: new PreferencesService(state.preferences),
       settings: state.threadSettings,
+      titles: new AutoTitleService({ scope }),
     });
     const handle = await leases.acquire("thread-1", {
       kind: "viewer",
@@ -295,6 +351,7 @@ describe("ThreadService", () => {
       workspaces,
       preferences,
       settings: state.threadSettings,
+      titles: new AutoTitleService({ scope }),
     });
 
     const result = await service.start({
@@ -325,6 +382,7 @@ describe("ThreadService", () => {
     expect(factory.clients[0]?.methods).toEqual(["thread/start", "turn/start"]);
     const lease = leases.get("thread-1");
     expect(lease?.state).toBe("waiting-input");
+    expect(lease?.referenceCount).toBe(1);
     expect(lease?.listInteractions()).toHaveLength(1);
 
     await lease?.respondToInteraction("interaction:thread-1:approval-1", {
@@ -336,7 +394,21 @@ describe("ThreadService", () => {
       threadId: "thread-1",
       turn: { id: "turn-1", status: "completed" },
     });
-    await eventually(() => leases.size === 0 && factory.clients[0]!.closed);
+    await vi.waitFor(() =>
+      expect(factory.clients[0]?.methods).toEqual([
+        "thread/start",
+        "turn/start",
+        "thread/read",
+        "thread/name/set",
+      ]),
+    );
+    await vi.waitFor(() =>
+      expect(leases.size === 0 && factory.clients[0]!.closed).toBe(true),
+    );
+    expect(factory.clients[0]?.requests.at(-1)).toEqual({
+      method: "thread/name/set",
+      params: { threadId: "thread-1", name: "run a command" },
+    });
   });
 
   it("rejects a stale default-permission revision before starting Codex", async () => {
@@ -366,6 +438,7 @@ describe("ThreadService", () => {
       workspaces,
       preferences,
       settings: state.threadSettings,
+      titles: new AutoTitleService({ scope }),
     });
 
     const start = service.start({
@@ -414,6 +487,7 @@ describe("ThreadService", () => {
       workspaces,
       preferences,
       settings: state.threadSettings,
+      titles: new AutoTitleService({ scope }),
     });
 
     const start = service.start({
@@ -457,6 +531,7 @@ class ThreadOpenFactory implements CodexClientFactoryPort {
   constructor(
     workspacePath: string,
     resumeGate: Promise<void> = Promise.resolve(),
+    private readonly status: "idle" | "systemError" | "active" = "idle",
   ) {
     this.#workspacePath = workspacePath;
     this.#resumeGate = resumeGate;
@@ -469,7 +544,11 @@ class ThreadOpenFactory implements CodexClientFactoryPort {
   }
 
   create(scope: Scope): Promise<CodexClient> {
-    const client = new ThreadOpenClient(this.#workspacePath, this.#resumeGate);
+    const client = new ThreadOpenClient(
+      this.#workspacePath,
+      this.#resumeGate,
+      this.status,
+    );
     this.clients.push(client);
     scope.defer(() => client.close());
     return Promise.resolve(client);
@@ -483,6 +562,7 @@ class ThreadOpenClient implements CodexClient {
   constructor(
     private readonly workspacePath: string,
     private readonly resumeGate: Promise<void>,
+    private readonly status: "idle" | "systemError" | "active",
   ) {}
 
   async request<Result = unknown>(method: string): Promise<Result> {
@@ -490,13 +570,16 @@ class ThreadOpenClient implements CodexClient {
     if (method === "thread/resume") {
       await this.resumeGate;
       return {
-        thread: thread(this.workspacePath),
+        thread: thread(this.workspacePath, this.status),
         approvalPolicy: "on-request",
         sandbox: workspaceWriteSandbox(),
       } as Result;
     }
     if (method === "thread/read") {
-      return { thread: thread(this.workspacePath) } as Result;
+      return { thread: thread(this.workspacePath, this.status) } as Result;
+    }
+    if (method === "turn/start") {
+      return { turn: { id: "turn-retry" } } as Result;
     }
     throw new Error(`Unexpected request: ${method}`);
   }
@@ -709,6 +792,12 @@ class FirstTurnClient implements CodexClient {
       }
       return { turn: { id: "turn-1" } } as Result;
     }
+    if (method === "thread/read") {
+      return { thread: thread(this.workspacePath) } as Result;
+    }
+    if (method === "thread/name/set") {
+      return {} as Result;
+    }
     throw new Error(`Unexpected first-turn request: ${method}`);
   }
 
@@ -743,16 +832,34 @@ class FirstTurnClient implements CodexClient {
   }
 }
 
-function thread(workspacePath: string) {
+function thread(
+  workspacePath: string,
+  status: "idle" | "systemError" | "active" = "idle",
+) {
   return {
     id: "thread-1",
     cwd: workspacePath,
-    name: "First task",
+    name: null,
     preview: "First task",
     createdAt: 1_776_297_600,
     updatedAt: 1_776_297_600,
-    status: { type: "idle" },
-    turns: [],
+    status:
+      status === "active"
+        ? { type: status, activeFlags: [] }
+        : { type: status },
+    turns:
+      status === "systemError"
+        ? [
+            {
+              id: "turn-failed",
+              status: "failed",
+              error: {
+                message: "Scenario usage limit exceeded",
+                codexErrorInfo: "UsageLimitExceeded",
+              },
+            },
+          ]
+        : [],
   };
 }
 

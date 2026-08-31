@@ -12,6 +12,7 @@ import type {
 import type { CodexClient } from "../codex/client.js";
 import type { CodexClientFactoryPort } from "../codex/client-factory.js";
 import { UserStateDatabase } from "../repositories/user-state-database.js";
+import { AutoTitleService } from "./auto-title-service.js";
 import { QueueService } from "./queue-service.js";
 import { ThreadLeaseManager } from "./thread-lease-manager.js";
 
@@ -33,6 +34,7 @@ afterEach(async () => {
 describe("QueueService", () => {
   it("claims durably before a single turn/start and completes the item", async () => {
     const fixture = await createFixture();
+    const scheduleTitle = vi.spyOn(fixture.titles, "schedule");
     const item = await fixture.queue.add({
       threadId: "thread-1",
       text: "synthetic queued message",
@@ -45,6 +47,11 @@ describe("QueueService", () => {
     );
 
     expect(fixture.runtime.turnStarts).toBe(1);
+    expect(scheduleTitle).toHaveBeenCalledWith(
+      expect.objectContaining({ threadId: "thread-1" }),
+      "turn-1",
+      "synthetic queued message",
+    );
     const methods = fixture.runtime.requests.map((entry) => entry.method);
     expect(methods.indexOf("thread/read")).toBeLessThan(
       methods.indexOf("turn/start"),
@@ -182,6 +189,7 @@ interface Fixture {
   readonly database: UserStateDatabase;
   readonly queue: QueueService;
   readonly runtime: FakeCodexRuntime;
+  readonly titles: AutoTitleService;
 }
 
 async function createFixture(): Promise<Fixture> {
@@ -199,14 +207,16 @@ async function createFixture(): Promise<Fixture> {
     scope,
     clientFactory: runtime,
   });
+  const titles = new AutoTitleService({ scope });
   const queue = new QueueService({
     scope,
     repository: database.queue,
     leases,
+    titles,
     authorizeWorkspace: async (path) => path,
     dispatchIntervalMs: 60_000,
   });
-  return { database, queue, runtime };
+  return { database, queue, runtime, titles };
 }
 
 class FakeCodexRuntime implements CodexClientFactoryPort {

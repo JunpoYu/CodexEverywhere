@@ -26,5 +26,17 @@ export type ThreadResumeResponse = {
    * should prefer `activePermissionProfile` for profile provenance.
    */
   sandbox: SandboxPolicy;
-  reasoningEffort: ReasoningEffort | null;
+  reasoningEffort: ReasoningEffort | null; /**
+   * Opaque cursor for hydrating paginated turns backwards.
+   *
+   * Pass this as `cursor` to `thread/turns/list` with
+   * `sortDirection: "desc"`. The first page includes the turn identified by the cursor.
+   */
+  turnsBackwardsCursor: string | null; /**
+   * Opaque cursor for hydrating paginated items backwards.
+   *
+   * Pass this as `cursor` to `thread/items/list` with
+   * `sortDirection: "desc"`. The first page includes the item identified by the cursor.
+   */
+  itemsBackwardsCursor: string | null;
 };

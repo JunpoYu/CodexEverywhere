@@ -21,7 +21,7 @@ CodexEverywhere（CE）是面向 Linux/HPC 的自托管 Codex Web/PWA 控制平�
 CE 不重新实现 AgentLoop。thread、turn、工具活动、审批请求和执行状态始终以官方 [Codex app-server](https://developers.openai.com/codex/app-server) 为唯一事实源；CE 只负责安全连接、Web 身份、移动端产品体验、持久 Queue 和 HPC 生命周期。
 
 > [!WARNING]
-> 当前代码线为 `v0.4.0-alpha.13` 架构重建版。Gateway API v2 和新状态库不兼容 v0.3；v0.4 采用全新初始化，不迁移 v0.3 CE 状态。`~/.codex`、Codex 登录和 app-server 任务不属于清理范围。`v0.3.0-alpha.14` 是已完成实机验证的最后维护基线，只用于观察窗内恢复已保留的旧 CE 目录。v0.4 Alpha tag/Prerelease 冻结待验收制品；当前 production 门槛先要求一个真实用户完成全新安装 staging。多用户并发、跨用户隔离和管理员控制面的实机验收延后，不阻塞当前单用户版本。
+> 当前代码线为 `v0.4.0-alpha.14` 架构重建版。Gateway API v2 和新状态库不兼容 v0.3；v0.4 采用全新初始化，不迁移 v0.3 CE 状态。`~/.codex`、Codex 登录和 app-server 任务不属于清理范围。`v0.3.0-alpha.14` 是已完成实机验证的最后维护基线，只用于观察窗内恢复已保留的旧 CE 目录。v0.4 Alpha tag/Prerelease 冻结待验收制品；当前 production 门槛先要求一个真实用户完成全新安装 staging。多用户并发、跨用户隔离和管理员控制面的实机验收延后，不阻塞当前单用户版本。
 
 > [!NOTE]
 > 这是独立的非官方开源项目，与 OpenAI 没有关联或背书。Codex 是 OpenAI 的产品。
@@ -41,7 +41,9 @@ CE 不重新实现 AgentLoop。thread、turn、工具活动、审批请求和执
 
 - 在 UI 中把 app-server `thread` 称为“任务”，协议和代码继续使用 `thread`。
 - 创建、打开、分页、重命名、归档、恢复和删除任务；按稳定 item/turn ID 合并权威历史与实时状态。
+- 尚无 app-server 明确名称的任务会在首个有效 turn 成功后获得简洁的本地自动标题；“继续处理”等信息不足的请求会暂缓命名，Web 或 TUI 的任何明确名称始终优先且不会被自动覆盖。自动命名不发起额外模型调用，失败也不影响原 turn。
 - 进入任务只加载最近 50 个时间线 item 并自动定位到最新消息；更早历史由用户按 50 项显式加载，插入旧页时保持当前阅读锚点。同任务权威刷新会按稳定 item ID 更新最新窗口而不丢失已加载旧页。
+- app-server 返回额度、上游网络等 turn 级失败时保留错误时间线和失败状态，但不会永久锁定 Composer；确认限制或连接恢复后可直接发送新消息继续同一任务。lease 或权威同步失败仍会阻止发送，避免把基础设施故障误判为可恢复 turn。
 - 任务中心默认按更新时间汇总全部已授权工作区的任务，每张任务卡明确显示所属工作区，并可按工作区筛选；筛选范围同时作用于桌面端最近任务，但不会改变全局默认工作区。
 - 新建任务会在第一轮发送前从 app-server 动态读取可用模型及其推理强度，并同时显示当前全局 Sandbox 与审批默认值；模型、推理强度和单次权限覆盖通过同一个 `thread/start` 边界提交。模型目录不可用时仍可选择 Codex 默认值。未覆盖的权限字段由 Agent 在 Codex 接受创建时从同一 revision 的全局偏好解析；全局偏好更新与该创建边界共用短期协调锁，避免其他设备的并发修改被旧页面冻结或覆盖。
 - 结构化呈现消息、计划、命令、文件修改、MCP、subagent、错误和未知的 generic event。
