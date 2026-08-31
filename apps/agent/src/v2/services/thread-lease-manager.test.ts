@@ -350,6 +350,28 @@ describe("ThreadLeaseManager", () => {
     await handle.release();
   });
 
+  it("retains completion through an explicitly observed response gap", async () => {
+    const { manager, factory } = createManager();
+    const handle = await manager.acquire("thread-1", {
+      kind: "queue",
+      id: "observed-steer",
+    });
+    handle.lease.noteTurnStarted("turn-1");
+    const stopObserving = handle.lease.observeTerminalTurn("turn-1");
+
+    factory.clients[0]!.notification("turn/completed", {
+      threadId: "thread-1",
+      turn: { id: "turn-1", status: "completed" },
+    });
+
+    expect(handle.lease.terminalTurnStatus("turn-1")).toBe("completed");
+    stopObserving();
+    await eventually(
+      () => handle.lease.terminalTurnStatus("turn-1") === undefined,
+    );
+    await handle.release();
+  });
+
   it("emits explicit resolution and generic forward-compatible events", async () => {
     const { manager, factory } = createManager();
     const handle = await manager.acquire("thread-1", {

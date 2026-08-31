@@ -92,7 +92,11 @@ export class ThreadLease {
   readonly #onDisposable: (lease: ThreadLease) => void | Promise<void>;
   #state: ThreadLeaseState = "idle";
   #currentTurnId: string | undefined;
-  readonly #terminalTurns = new Map<string, string>();
+  readonly #terminalTurns = new Map<
+    string,
+    { status: string; pendingStartResponse: boolean }
+  >();
+  readonly #terminalObservers = new Map<string, number>();
   readonly #settledStartResponses = new Set<string>();
   #workspacePath: string | undefined;
   #closed = false;
@@ -165,7 +169,26 @@ export class ThreadLease {
   }
 
   terminalTurnStatus(turnId: string): string | undefined {
-    return this.#terminalTurns.get(turnId);
+    return this.#terminalTurns.get(turnId)?.status;
+  }
+
+  /** Retains a terminal notification across another response boundary. */
+  observeTerminalTurn(turnId: string): () => void {
+    this.#assertOpen();
+    if (turnId.length === 0) throw new Error("Turn ID is empty");
+    this.#terminalObservers.set(
+      turnId,
+      (this.#terminalObservers.get(turnId) ?? 0) + 1,
+    );
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      const count = this.#terminalObservers.get(turnId) ?? 0;
+      if (count <= 1) this.#terminalObservers.delete(turnId);
+      else this.#terminalObservers.set(turnId, count - 1);
+      this.#scheduleTerminalTurnCleanup(turnId);
+    };
   }
 
   get workspacePath(): string | undefined {
@@ -248,11 +271,13 @@ export class ThreadLease {
     if (turnId.length === 0) throw new Error("Turn ID is empty");
     // A very short turn may complete before its turn/start response reaches
     // the caller. Never regress that authoritative terminal notification.
-    if (this.terminalTurnStatus(turnId) !== undefined) {
+    const terminal = this.#terminalTurns.get(turnId);
+    if (terminal !== undefined) {
+      terminal.pendingStartResponse = false;
       // Callers synchronously schedule optional completion effects after this
       // method. Retain the status through that boundary, then discard it once
       // the delayed start response has been fully observed.
-      this.#scope.setTimeout(() => this.#terminalTurns.delete(turnId), 0);
+      this.#scheduleTerminalTurnCleanup(turnId);
       return;
     }
     this.#settledStartResponses.add(turnId);
@@ -356,8 +381,16 @@ export class ThreadLease {
       const completedTurnId = nestedId(params, "turn");
       const completedTurnStatus = nestedString(params, "turn", "status");
       if (completedTurnId !== undefined && completedTurnStatus !== undefined) {
-        if (!this.#settledStartResponses.delete(completedTurnId)) {
-          this.#terminalTurns.set(completedTurnId, completedTurnStatus);
+        const startResponseSettled =
+          this.#settledStartResponses.delete(completedTurnId);
+        if (
+          !startResponseSettled ||
+          (this.#terminalObservers.get(completedTurnId) ?? 0) > 0
+        ) {
+          this.#terminalTurns.set(completedTurnId, {
+            status: completedTurnStatus,
+            pendingStartResponse: !startResponseSettled,
+          });
         }
       }
       if (
@@ -386,6 +419,28 @@ export class ThreadLease {
     ) {
       await this.#onDisposable(this);
     }
+  }
+
+  #scheduleTerminalTurnCleanup(turnId: string): void {
+    const terminal = this.#terminalTurns.get(turnId);
+    if (
+      this.#scope.closed ||
+      terminal === undefined ||
+      terminal.pendingStartResponse ||
+      (this.#terminalObservers.get(turnId) ?? 0) > 0
+    ) {
+      return;
+    }
+    this.#scope.setTimeout(() => {
+      const current = this.#terminalTurns.get(turnId);
+      if (
+        current === terminal &&
+        !current.pendingStartResponse &&
+        (this.#terminalObservers.get(turnId) ?? 0) === 0
+      ) {
+        this.#terminalTurns.delete(turnId);
+      }
+    }, 0);
   }
 
   /** Observe callback-triggered disposal without leaking a rejected promise. */

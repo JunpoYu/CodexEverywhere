@@ -141,6 +141,25 @@ describe("QueueService", () => {
     });
   });
 
+  it("captures completion before a Queue steer response schedules its title", async () => {
+    const fixture = await createFixture();
+    fixture.runtime.status = "active";
+    fixture.runtime.activeTurnId = "active-turn";
+    fixture.runtime.completeSteerBeforeResponse = true;
+    const item = await fixture.queue.add({
+      threadId: "thread-1",
+      text: "修复 Queue steer 完成竞态",
+    });
+    await fixture.queue.start();
+
+    await fixture.queue.steer(item.id, "修复 Queue steer 完成竞态");
+
+    await eventually(
+      () => fixture.runtime.threadName === "修复 Queue steer 完成竞态",
+    );
+    await eventually(() => fixture.leases.size === 0);
+  });
+
   it("pauses before claiming when workspace authorization changed", async () => {
     const fixture = await createFixture();
     const item = await fixture.queue.add({
@@ -190,6 +209,7 @@ interface Fixture {
   readonly queue: QueueService;
   readonly runtime: FakeCodexRuntime;
   readonly titles: AutoTitleService;
+  readonly leases: ThreadLeaseManager;
 }
 
 async function createFixture(): Promise<Fixture> {
@@ -216,7 +236,7 @@ async function createFixture(): Promise<Fixture> {
     authorizeWorkspace: async (path) => path,
     dispatchIntervalMs: 60_000,
   });
-  return { database, queue, runtime, titles };
+  return { database, queue, runtime, titles, leases };
 }
 
 class FakeCodexRuntime implements CodexClientFactoryPort {
@@ -225,6 +245,8 @@ class FakeCodexRuntime implements CodexClientFactoryPort {
   activeTurnId: string | undefined;
   workspacePath = "/work/project";
   failTurnStart = false;
+  completeSteerBeforeResponse = false;
+  threadName: string | undefined;
   turnStarts = 0;
   turnSteers = 0;
 
@@ -256,6 +278,7 @@ class FakeCodexClient implements CodexClient {
         thread: {
           id: "thread-1",
           cwd: this.#runtime.workspacePath,
+          name: this.#runtime.threadName ?? null,
           status:
             this.#runtime.status === "active"
               ? { type: "active", activeFlags: [] }
@@ -280,7 +303,25 @@ class FakeCodexClient implements CodexClient {
     }
     if (method === "turn/steer") {
       this.#runtime.turnSteers += 1;
-      return { turnId: this.#runtime.activeTurnId } as Result;
+      const turnId = this.#runtime.activeTurnId;
+      if (this.#runtime.completeSteerBeforeResponse && turnId !== undefined) {
+        this.#runtime.status = "idle";
+        this.#runtime.activeTurnId = undefined;
+        for (const listener of this.#notifications) {
+          listener({
+            method: "turn/completed",
+            params: {
+              threadId: "thread-1",
+              turn: { id: turnId, status: "completed" },
+            },
+          });
+        }
+      }
+      return { turnId } as Result;
+    }
+    if (method === "thread/name/set") {
+      this.#runtime.threadName = (params as { name: string }).name;
+      return {} as Result;
     }
     throw new Error(`Unexpected Codex method: ${method}`);
   }

@@ -40,6 +40,7 @@ interface PendingAutoTitle {
   finishing: boolean;
   released: boolean;
   conflictingName?: string;
+  readonly unobservedServiceNames: string[];
 }
 
 /**
@@ -88,6 +89,7 @@ export class AutoTitleService implements AutoTitleServicePort {
         unsubscribe: () => undefined,
         finishing: false,
         released: false,
+        unobservedServiceNames: [],
       };
       pending.unsubscribe = lease.onEvent((event) =>
         this.#observe(pending, event),
@@ -139,6 +141,12 @@ export class AutoTitleService implements AutoTitleServicePort {
         ? notificationThreadName(codexEvent.params)
         : undefined;
     if (observedName !== undefined) {
+      const serviceNameIndex =
+        pending.unobservedServiceNames.indexOf(observedName);
+      if (serviceNameIndex >= 0) {
+        pending.unobservedServiceNames.splice(serviceNameIndex, 1);
+        return;
+      }
       if (pending.finishing) {
         if (observedName !== pending.title) {
           pending.conflictingName = observedName;
@@ -180,16 +188,14 @@ export class AutoTitleService implements AutoTitleServicePort {
       ) {
         return;
       }
-      await pending.lease.request("thread/name/set", {
-        threadId: pending.threadId,
-        name: pending.title,
-      });
+      await this.#writePendingName(pending, pending.title);
       if (this.#pending.get(pending.threadId) !== pending) return;
-      if (pending.conflictingName !== undefined) {
-        await pending.lease.request("thread/name/set", {
-          threadId: pending.threadId,
-          name: pending.conflictingName,
-        });
+      let restoredName = pending.conflictingName;
+      while (restoredName !== undefined) {
+        await this.#writePendingName(pending, restoredName);
+        if (this.#pending.get(pending.threadId) !== pending) return;
+        if (pending.conflictingName === restoredName) break;
+        restoredName = pending.conflictingName;
       }
       this.#emitRenamed(pending.threadId);
     } catch {
@@ -208,6 +214,17 @@ export class AutoTitleService implements AutoTitleServicePort {
     pending.released = true;
     pending.unsubscribe();
     await pending.lease.releaseReference("effect", pending.referenceId);
+  }
+
+  async #writePendingName(
+    pending: PendingAutoTitle,
+    name: string,
+  ): Promise<void> {
+    pending.unobservedServiceNames.push(name);
+    await pending.lease.request("thread/name/set", {
+      threadId: pending.threadId,
+      name,
+    });
   }
 
   #runBackground(operation: () => Promise<void>): void {

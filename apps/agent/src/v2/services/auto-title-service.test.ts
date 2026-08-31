@@ -137,12 +137,13 @@ describe("AutoTitleService", () => {
     expect(external.methods).toEqual([]);
   });
 
-  it("restores an external rename that races an in-flight automatic write", async () => {
+  it("restores the latest external rename across in-flight title writes", async () => {
     const scope = new Scope("racing-manual-title-test");
     scopes.push(scope);
     const service = new AutoTitleService({ scope });
     const lease = new FakeTitleLease();
     const allowAutomaticWrite = lease.deferNextNameSet();
+    const allowFirstRestoration = lease.deferNextNameSet();
 
     service.schedule(lease, "turn-1", "修复任务自动命名竞态");
     lease.complete("turn-1", "completed");
@@ -150,13 +151,23 @@ describe("AutoTitleService", () => {
       expect(lease.methods).toEqual(["thread/read", "thread/name/set"]),
     );
 
-    lease.externalRename("TUI 手动名称");
+    lease.externalRename("TUI 第一次名称");
     allowAutomaticWrite();
+    await vi.waitFor(() =>
+      expect(lease.methods).toEqual([
+        "thread/read",
+        "thread/name/set",
+        "thread/name/set",
+      ]),
+    );
+    lease.externalRename("TUI 最新名称");
+    allowFirstRestoration();
 
     await vi.waitFor(() => expect(lease.references.size).toBe(0));
-    expect(lease.name).toBe("TUI 手动名称");
+    expect(lease.name).toBe("TUI 最新名称");
     expect(lease.methods).toEqual([
       "thread/read",
+      "thread/name/set",
       "thread/name/set",
       "thread/name/set",
     ]);
@@ -184,9 +195,10 @@ class FakeTitleLease implements AutoTitleLeasePort {
   readonly references = new Set<string>();
   readonly methods: string[] = [];
   readonly #listeners = new Set<(event: ThreadLeaseEvent) => void>();
-  #nextNameSetGate:
-    | { readonly promise: Promise<void>; readonly resolve: () => void }
-    | undefined;
+  readonly #nameSetGates: Array<{
+    readonly promise: Promise<void>;
+    readonly resolve: () => void;
+  }> = [];
   #lastTerminalTurn:
     { readonly id: string; readonly status: string } | undefined;
   name: string | undefined;
@@ -226,10 +238,14 @@ class FakeTitleLease implements AutoTitleLeasePort {
       } as Result;
     }
     if (method === "thread/name/set") {
-      const gate = this.#nextNameSetGate;
-      this.#nextNameSetGate = undefined;
+      const gate = this.#nameSetGates.shift();
       await gate?.promise;
       this.name = (params as { name: string }).name;
+      this.emit({
+        type: "codex/notification",
+        method: "thread/name/updated",
+        params: { threadId: this.threadId, threadName: this.name },
+      });
       return {} as Result;
     }
     throw new Error(`Unexpected request: ${method}`);
@@ -240,7 +256,7 @@ class FakeTitleLease implements AutoTitleLeasePort {
     const promise = new Promise<void>((complete) => {
       resolve = complete;
     });
-    this.#nextNameSetGate = { promise, resolve };
+    this.#nameSetGates.push({ promise, resolve });
     return resolve;
   }
 

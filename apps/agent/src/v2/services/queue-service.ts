@@ -254,48 +254,58 @@ export class QueueService {
     autoTitleEligible = false,
   ): Promise<QueueRecord> {
     let turnId: string;
+    const releaseTerminalObservation =
+      identity.operation === "turn/steer" &&
+      autoTitleEligible &&
+      expectedTurnId !== undefined
+        ? lease.observeTerminalTurn(expectedTurnId)
+        : undefined;
     try {
-      if (identity.operation === "turn/steer") {
-        if (expectedTurnId === undefined) {
-          throw new Error("Steer delivery has no active turn precondition");
-        }
-        const response = await lease.request<unknown>("turn/steer", {
-          threadId: identity.threadId,
-          expectedTurnId,
-          input: textInput(item.text),
-          clientUserMessageId: identity.clientUserMessageId,
-        });
-        turnId = responseTurnId(response, false);
-      } else {
-        const response = await lease.request<unknown>("turn/start", {
-          threadId: identity.threadId,
-          cwd: item.workspacePath,
-          input: textInput(item.text),
-          clientUserMessageId: identity.clientUserMessageId,
-        });
-        turnId = responseTurnId(response, true);
-        lease.noteTurnStarted(turnId);
-      }
-    } catch {
-      const repaired = await this.#markIndeterminate(identity);
-      this.events.emit("changed", repaired);
-      if (repaired.status === "completed") {
-        this.#deliveryEvent(repaired, "completed");
-        return repaired;
-      }
-      this.#deliveryEvent(repaired, "indeterminate");
-      throw new GatewayV2Error(
-        "QUEUE_OUTCOME_UNKNOWN",
-        "Queue delivery may have reached Codex; automatic replay is disabled",
-      );
-    }
-
-    if (autoTitleEligible) {
       try {
-        this.#titles.schedule(lease, turnId, item.text);
+        if (identity.operation === "turn/steer") {
+          if (expectedTurnId === undefined) {
+            throw new Error("Steer delivery has no active turn precondition");
+          }
+          const response = await lease.request<unknown>("turn/steer", {
+            threadId: identity.threadId,
+            expectedTurnId,
+            input: textInput(item.text),
+            clientUserMessageId: identity.clientUserMessageId,
+          });
+          turnId = responseTurnId(response, false);
+        } else {
+          const response = await lease.request<unknown>("turn/start", {
+            threadId: identity.threadId,
+            cwd: item.workspacePath,
+            input: textInput(item.text),
+            clientUserMessageId: identity.clientUserMessageId,
+          });
+          turnId = responseTurnId(response, true);
+          lease.noteTurnStarted(turnId);
+        }
       } catch {
-        // Optional presentation work cannot alter Queue delivery semantics.
+        const repaired = await this.#markIndeterminate(identity);
+        this.events.emit("changed", repaired);
+        if (repaired.status === "completed") {
+          this.#deliveryEvent(repaired, "completed");
+          return repaired;
+        }
+        this.#deliveryEvent(repaired, "indeterminate");
+        throw new GatewayV2Error(
+          "QUEUE_OUTCOME_UNKNOWN",
+          "Queue delivery may have reached Codex; automatic replay is disabled",
+        );
       }
+
+      if (autoTitleEligible) {
+        try {
+          this.#titles.schedule(lease, turnId, item.text);
+        } catch {
+          // Optional presentation work cannot alter Queue delivery semantics.
+        }
+      }
+    } finally {
+      releaseTerminalObservation?.();
     }
 
     try {
