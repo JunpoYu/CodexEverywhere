@@ -30,6 +30,12 @@ export type McpServerElicitationRequestParams = {
       requestedSchema: JsonValue;
     }
   | {
+      mode: "openaiForm";
+      _meta: JsonValue | null;
+      message: string;
+      requestedSchema: JsonValue;
+    }
+  | {
       mode: "url";
       _meta: JsonValue | null;
       message: string;

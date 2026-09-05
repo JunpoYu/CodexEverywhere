@@ -12,7 +12,7 @@
          → staging → 人工批准 → production
 ```
 
-生产部署只接受语义版本 tag，例如 `v0.4.0-alpha.14`。禁止从功能分支、PR head、本地路径、未提交工作区或服务器上的 Git checkout 构建生产文件。生产服务器不需要 clone 本项目，也不得通过 `git pull`、`pnpm install` 或 `pnpm build` 完成升级。
+生产部署只接受语义版本 tag，例如 `v0.4.0-alpha.15`。禁止从功能分支、PR head、本地路径、未提交工作区或服务器上的 Git checkout 构建生产文件。生产服务器不需要 clone 本项目，也不得通过 `git pull`、`pnpm install` 或 `pnpm build` 完成升级。
 
 公开仓库保存通用代码、模板和安装器。个人与单集群部署默认把真实配置保存在对应服务器的本地受限目录；只有多环境、多人运维或需要配置审阅时，才需要额外建立私有 ops 仓库。两种方式都不得把生产配置复制回公开开发仓库。
 
@@ -102,6 +102,8 @@ hpc-tools/activate-rootless-release.sh \
 该命令默认只接受由正式 Release 安装路径生成的 `verified` inventory。开发 bundle 由 `install-rootless-agent.sh` 记录为 `development`；若确需在非生产环境切回，必须显式执行 `activate-rootless-release.sh <id> <install-root> <runtime-directory> --allow-development`。升级前遗留且没有 `release-inventory.json` 的目录一律拒绝，不会因为其中恰好存在 `dist/cli.js` 就补写 release ID 或宣称已经验证；需要继续使用时应从可信制品重新安装为新目录。
 
 切换 `current` 后重启 provisioner 和用户 Agent 才会加载新代码；健康 app-server 和活动 turn 不应停止。每个用户必须先运行当前 release 的 `ce agent install-service` 重新生成 tmux/crontab watchdog，再运行 `ce agent start`；否则 watchdog 仍可能执行旧 release 的生命周期策略。普通补丁升级可让既有官方 TUI 继续连接，但若 Release 说明包含跨进程状态代次、锁或 app-server 权限协调迁移，所有升级前启动的 `ce tui` 也必须在对应用户 Agent 重启后退出并用新 Release 重连；退出 TUI 不会中断 app-server 中仍在运行的 turn。已加载旧 JavaScript 的 Agent/TUI 无法被新代码的 coordination fence 追溯约束，混用期间不提供新版本的并发一致性保证。生产运维应记录尚未重启的用户 Agent 与尚未重连的 TUI，并采用滚动方式完成切换。
+
+`v0.4.0-alpha.15` 新增 Codex 运行时跨进程栅栏，因此从 alpha.14 升级时属于上一段所述的协调迁移：切换 Release 后必须重启 Agent，并退出、重开升级前已经运行的 `ce tui`。执行 PWA 内“检查并更新 Codex”或“重启 app-server”前，还必须停止任何绕过 CE、直接连接该 app-server 的 IDE 或 CLI；CE 会权威拒绝已经活动的 turn，但无法冻结不使用 CE 栅栏的第三方 client 在检查后新发请求。
 
 ## 5. Web
 

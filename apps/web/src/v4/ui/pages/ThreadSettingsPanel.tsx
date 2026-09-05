@@ -52,10 +52,8 @@ export function ThreadSettingsPanel(input: {
   const draftThreadId = useRef(input.threadId);
 
   useEffect(() => {
-    if (models.status === "idle") {
-      runtime.models.dispatch({ type: "LOAD" });
-    }
-  }, [models.status, runtime]);
+    runtime.models.dispatch({ type: "LOAD" });
+  }, [runtime]);
 
   useEffect(() => {
     const threadChanged = draftThreadId.current !== input.threadId;

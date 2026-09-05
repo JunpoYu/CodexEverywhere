@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, rm } from "node:fs/promises";
+import { mkdtemp, mkdir, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -17,6 +17,7 @@ import type { CodexClient } from "../codex/client.js";
 import type { CodexClientFactoryPort } from "../codex/client-factory.js";
 import { UserStateDatabase } from "../repositories/user-state-database.js";
 import { AutoTitleService } from "./auto-title-service.js";
+import type { CodexRuntimeGatePort } from "./codex-runtime-gate.js";
 import { PreferencesService } from "./preferences-service.js";
 import { ThreadLeaseManager } from "./thread-lease-manager.js";
 import { ThreadService } from "./thread-service.js";
@@ -24,6 +25,10 @@ import { WorkspaceService } from "./workspace-service.js";
 
 const directories: string[] = [];
 const scopes: Scope[] = [];
+const runtimeGate: CodexRuntimeGatePort = {
+  acquire: async () => ({ release: async () => undefined }),
+  run: (operation) => operation(),
+};
 
 afterEach(async () => {
   await Promise.allSettled(
@@ -63,6 +68,7 @@ describe("ThreadService", () => {
       preferences: new PreferencesService(state.preferences),
       settings: state.threadSettings,
       titles: new AutoTitleService({ scope }),
+      runtimeGate,
     });
 
     const result = await service.list({
@@ -111,6 +117,7 @@ describe("ThreadService", () => {
       preferences: new PreferencesService(state.preferences),
       settings: state.threadSettings,
       titles: new AutoTitleService({ scope }),
+      runtimeGate,
     });
     const first = await leases.acquire("thread-1", {
       kind: "viewer",
@@ -136,6 +143,55 @@ describe("ThreadService", () => {
     }
 
     expect(factory.client.methods).toEqual(["thread/resume", "thread/read"]);
+  });
+
+  it("returns the authoritative nested working directory only when requested", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "ce-thread-service-"));
+    directories.push(directory);
+    const workspacePath = join(directory, "workspace");
+    const workingDirectory = join(workspacePath, "nested", "project");
+    await mkdir(workingDirectory, { recursive: true });
+    const state = await UserStateDatabase.open(
+      join(directory, "state.sqlite"),
+      { create: true },
+    );
+    const scope = new Scope("thread-working-directory-test");
+    scopes.push(scope);
+    scope.defer(() => state.close());
+    const factory = new ThreadOpenFactory(workingDirectory);
+    const leases = new ThreadLeaseManager({ scope, clientFactory: factory });
+    const workspaces = new WorkspaceService(state.workspaces, {
+      home: directory,
+    });
+    await workspaces.add(workspacePath, "Workspace");
+    const service = new ThreadService({
+      scope,
+      clients: factory,
+      leases,
+      workspaces,
+      preferences: new PreferencesService(state.preferences),
+      settings: state.threadSettings,
+      titles: new AutoTitleService({ scope }),
+      runtimeGate,
+    });
+    const handle = await leases.acquire("thread-1", {
+      kind: "viewer",
+      id: "viewer-1",
+    });
+
+    try {
+      const legacy = await service.open(handle, { historyLimit: 100 });
+      const requested = await service.open(handle, {
+        historyLimit: 100,
+        includeWorkingDirectory: true,
+      });
+
+      expect(legacy).not.toHaveProperty("workingDirectory");
+      expect(requested.workingDirectory).toBe(await realpath(workingDirectory));
+      expect(requested.thread.workspaceId).toBe(legacy.thread.workspaceId);
+    } finally {
+      await handle.release();
+    }
   });
 
   it("resumes again when an idle task receives a new lease", async () => {
@@ -164,6 +220,7 @@ describe("ThreadService", () => {
       preferences: new PreferencesService(state.preferences),
       settings: state.threadSettings,
       titles: new AutoTitleService({ scope }),
+      runtimeGate,
     });
 
     const first = await leases.acquire("thread-1", {
@@ -216,6 +273,7 @@ describe("ThreadService", () => {
       preferences: new PreferencesService(state.preferences),
       settings: state.threadSettings,
       titles: new AutoTitleService({ scope }),
+      runtimeGate,
     });
     const handle = await leases.acquire("thread-1", {
       kind: "viewer",
@@ -263,6 +321,7 @@ describe("ThreadService", () => {
       preferences: new PreferencesService(state.preferences),
       settings: state.threadSettings,
       titles: new AutoTitleService({ scope }),
+      runtimeGate,
     });
     const handle = await leases.acquire("thread-1", {
       kind: "viewer",
@@ -353,6 +412,7 @@ describe("ThreadService", () => {
       preferences,
       settings: state.threadSettings,
       titles: new AutoTitleService({ scope }),
+      runtimeGate,
     });
 
     const result = await service.start({
@@ -440,6 +500,7 @@ describe("ThreadService", () => {
       preferences,
       settings: state.threadSettings,
       titles: new AutoTitleService({ scope }),
+      runtimeGate,
     });
 
     const start = service.start({
@@ -489,6 +550,7 @@ describe("ThreadService", () => {
       preferences,
       settings: state.threadSettings,
       titles: new AutoTitleService({ scope }),
+      runtimeGate,
     });
 
     const start = service.start({

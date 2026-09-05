@@ -10,6 +10,7 @@ import type { SleepItem } from "../SleepItem";
 import type { WebSearchItem } from "../WebSearchItem";
 import type { JsonValue } from "../serde_json/JsonValue";
 import type { AgentMessageDelivery } from "./AgentMessageDelivery";
+import type { AsyncUserInputQuestion } from "./AsyncUserInputQuestion";
 import type { CollabAgentState } from "./CollabAgentState";
 import type { CollabAgentTool } from "./CollabAgentTool";
 import type { CollabAgentToolCallStatus } from "./CollabAgentToolCallStatus";
@@ -44,6 +45,7 @@ export type ThreadItem =
       phase: MessagePhase | null;
       memoryCitation: MemoryCitation | null;
       delivery: AgentMessageDelivery | null;
+      questions: Array<AsyncUserInputQuestion> | null;
     }
   | {
       type: "functionCallOutput";

@@ -38,6 +38,8 @@ export interface ScenarioGatewayOptions {
   readonly failFirstPreferencesReadOnce?: boolean;
   readonly failWorkspaceListAfterMutationOnce?: boolean;
   readonly longConversation?: boolean;
+  readonly longWorkspace?: boolean;
+  readonly runtimeSwitchRequired?: boolean;
   readonly preferencesAlreadyAppliedConflictOnce?: boolean;
   readonly preferencesConflictRefreshFailureOnce?: boolean;
   readonly threadSettingsConflictOnce?: boolean;
@@ -67,6 +69,7 @@ export class ScenarioGateway implements GatewayPort {
   #delaySecondPreferencesReadOnce: boolean;
   #failSecondCodexVersionReadOnce: boolean;
   #codexVersionReads = 0;
+  #runtimeSwitchState: "none" | "restart-required";
   #failFirstPreferencesReadOnce: boolean;
   #taskPrerequisiteFailureDisarmScheduled = false;
   #unmatchedWorkspaceReads = 0;
@@ -95,6 +98,9 @@ export class ScenarioGateway implements GatewayPort {
       options.delaySecondPreferencesReadOnce ?? false;
     this.#failSecondCodexVersionReadOnce =
       options.failSecondCodexVersionReadOnce ?? false;
+    this.#runtimeSwitchState = options.runtimeSwitchRequired
+      ? "restart-required"
+      : "none";
     this.#failFirstPreferencesReadOnce =
       options.failFirstPreferencesReadOnce ?? false;
     this.#failWorkspaceListAfterMutationOnce =
@@ -106,10 +112,13 @@ export class ScenarioGateway implements GatewayPort {
     this.#threadSettingsConflictOnce =
       options.threadSettingsConflictOnce ?? false;
     const now = new Date().toISOString();
+    const workspacePath = options.longWorkspace
+      ? `/public/demo/${"nested-project-directory/".repeat(12)}workspace`
+      : "/public/demo";
     this.#workspaces.set("workspace-demo", {
       version: 1,
       id: "workspace-demo",
-      path: "/public/demo",
+      path: workspacePath,
       label: "Demo",
       isDefault: true,
       revision: 1,
@@ -347,6 +356,9 @@ export class ScenarioGateway implements GatewayPort {
           ...(this.#codexInstalled ? { installedVersion: "scenario" } : {}),
           latestVersion: "scenario",
           relation: this.#codexInstalled ? "current" : "unknown",
+          ...(record.includeRuntimeSwitchState === true
+            ? { runtimeSwitchState: this.#runtimeSwitchState }
+            : {}),
         };
       case "setup/codex/login/start": {
         const operationId = crypto.randomUUID();
@@ -373,6 +385,7 @@ export class ScenarioGateway implements GatewayPort {
         this.#codexAuthenticated = false;
         return { version: 1, loggedOut: true };
       case "setup/app-server/restart":
+        this.#runtimeSwitchState = "none";
         return { version: 1, restarted: true };
       case "workspace/list":
         if (this.#workspaceListFailureArmed) {
@@ -513,6 +526,7 @@ export class ScenarioGateway implements GatewayPort {
             ? record.historyCursor
             : undefined,
           Number(record.historyLimit),
+          record.includeWorkingDirectory === true,
         );
       case "thread/history": {
         const thread = this.#requiredThread(String(record.threadId));
@@ -997,12 +1011,17 @@ export class ScenarioGateway implements GatewayPort {
     threadId: string,
     historyCursor: string | undefined,
     historyLimit: number,
+    includeWorkingDirectory: boolean,
   ) {
     const thread = this.#requiredThread(threadId);
+    const workspace = this.#workspaces.get(thread.summary.workspaceId);
     const page = scenarioHistoryPage(thread.items, historyCursor, historyLimit);
     return {
       version: 1,
       thread: thread.summary,
+      ...(includeWorkingDirectory && workspace !== undefined
+        ? { workingDirectory: workspace.path }
+        : {}),
       state: thread.summary.state,
       items: page.items,
       interactions: this.#threadInteractions(threadId),

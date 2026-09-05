@@ -227,6 +227,9 @@ export function TaskPage() {
     thread.status === "running" || thread.status === "waiting-input";
   const taskQueue = queue.items.filter((item) => item.threadId === threadId);
   const outlineEntries = projectConversationOutline(snapshot.items);
+  const workingDirectoryText = snapshot.workingDirectory ?? "暂不可用";
+  const workingDirectoryStatus =
+    snapshot.workingDirectory === undefined ? "unavailable" : "ready";
   const composerBusyElsewhere =
     composer.status !== "idle" &&
     composer.threadId !== undefined &&
@@ -506,6 +509,21 @@ export function TaskPage() {
                     <span>Queue</span>
                     <strong>{taskQueue.length}</strong>
                   </Link>
+                  <div
+                    aria-label={`工作目录：${workingDirectoryText}`}
+                    className={composerDockStyles.directory}
+                    data-state={workingDirectoryStatus}
+                    data-working-directory
+                  >
+                    <Icon name="workspace" />
+                    <span>工作目录</span>
+                    <code
+                      data-working-directory-path
+                      title={snapshot.workingDirectory}
+                    >
+                      {workingDirectoryText}
+                    </code>
+                  </div>
                   <span>
                     {taskActive ? "Enter 加入 Queue" : "Enter 发送"} · Shift +
                     Enter 换行

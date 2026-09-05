@@ -266,6 +266,56 @@ test("任务权限可连续保存，并始终显示权威结果", async ({ page 
   );
 });
 
+test("输入框下方显示工作目录，长路径只在自身区域滚动", async ({
+  page,
+}, testInfo) => {
+  if (!testInfo.project.name.includes("mobile")) {
+    await page.setViewportSize({ width: 1600, height: 900 });
+  }
+  await openScenario(page, "&scenarioLongWorkspace=1");
+  await openTaskCard(page, "欢迎使用 CodexEverywhere");
+
+  const directory = page.locator("[data-working-directory]");
+  const pathRegion = directory.locator("[data-working-directory-path]");
+  await expect(directory).toHaveAttribute("data-state", "ready");
+  const path = await pathRegion.textContent();
+  expect(path).not.toBeNull();
+  expect(path).toMatch(/^\/public\/demo\//u);
+  await expect(directory).toHaveAttribute("aria-label", `工作目录：${path}`);
+  await expect(pathRegion).toHaveAttribute("title", path!);
+
+  const [composerBox, directoryBox] = await Promise.all([
+    page.getByLabel("给 Codex 的消息").boundingBox(),
+    directory.boundingBox(),
+  ]);
+  expect(composerBox).not.toBeNull();
+  expect(directoryBox).not.toBeNull();
+  expect(directoryBox!.y).toBeGreaterThanOrEqual(
+    composerBox!.y + composerBox!.height,
+  );
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () => document.documentElement.scrollWidth <= window.innerWidth,
+      ),
+    )
+    .toBe(true);
+  await expect
+    .poll(() =>
+      pathRegion.evaluate(
+        (element) => element.scrollWidth > element.clientWidth,
+      ),
+    )
+    .toBe(true);
+  await pathRegion.evaluate((element) => {
+    element.scrollLeft = element.scrollWidth;
+  });
+  await expect
+    .poll(() => pathRegion.evaluate((element) => element.scrollLeft))
+    .toBeGreaterThan(0);
+  await expect(pathRegion).toHaveCSS("overflow-x", "auto");
+});
+
 test("新任务展示全局默认权限，并允许仅覆盖本次任务", async ({ page }) => {
   await openScenario(page);
 
@@ -587,6 +637,22 @@ test("Codex 版本读取失败不会阻断偏好与身份设置", async ({ page 
     page.getByText("Scenario Codex version is temporarily unavailable"),
   ).toBeVisible();
   await expect(page.getByText(/app-server 健康/u)).toBeVisible();
+});
+
+test("手动重启后刷新运行时切换状态", async ({ page }) => {
+  await openScenario(page, "&scenarioRuntimeSwitchRequired=1");
+  await navigateTo(page, "/settings");
+
+  const pendingMessage = page.getByText(
+    "Codex 已更新，但 app-server 尚未切换到新版本。确认没有活动任务后点击重启。",
+  );
+  await expect(pendingMessage).toBeVisible();
+  await page.getByRole("button", { name: "重启 app-server" }).click();
+
+  await expect(
+    page.getByText("app-server 已重启；当前任务将从权威状态重新打开"),
+  ).toBeVisible();
+  await expect(pendingMessage).toBeHidden();
 });
 
 test("全局设置已由其他设备应用时直接收口为成功", async ({ page }) => {

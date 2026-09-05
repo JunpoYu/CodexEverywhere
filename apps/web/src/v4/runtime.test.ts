@@ -195,7 +195,119 @@ describe("UserWebRuntime task refresh", () => {
     await new Promise((resolve) => setTimeout(resolve, 150));
     expect(gateway.openCalls).toBe(3);
   });
+
+  it("reloads models and reopens the visible task after a runtime switch", async () => {
+    const gateway = new RuntimeSwitchGateway();
+    const runtime = new UserWebRuntime({ gateway, host: savedHost() });
+    runtimes.push(runtime);
+
+    runtime.thread.dispatch({ type: "OPEN", threadId: "thread-1" });
+    await vi.waitFor(() =>
+      expect(runtime.thread.getSnapshot().status).toBe("idle"),
+    );
+    gateway.installCompleted();
+
+    await vi.waitFor(() => expect(gateway.modelListCalls).toBe(1));
+    await vi.waitFor(() => expect(gateway.openCalls).toBe(2));
+    await vi.waitFor(() =>
+      expect(runtime.models.getSnapshot()).toMatchObject({
+        status: "ready",
+        models: [{ model: "gpt-6-astra", isDefault: true }],
+      }),
+    );
+    expect(runtime.thread.getSnapshot()).toMatchObject({
+      status: "idle",
+      threadId: "thread-1",
+    });
+  });
 });
+
+class RuntimeSwitchGateway implements GatewayPort {
+  readonly #listeners = new Set<(event: GatewayEventEnvelopeV2) => void>();
+  modelListCalls = 0;
+  openCalls = 0;
+
+  request<Method extends GatewayMethodName>(
+    method: Method,
+    input: InputOf<Method>,
+    _options: RequestOptionsOf<Method>,
+  ): Promise<OutputOf<Method>> {
+    if (method === "setup/status") {
+      return Promise.resolve({
+        version: 1,
+        networkConfigured: true,
+        networkMode: "direct",
+        codexInstalled: true,
+        codexVersion: "codex-cli 0.153.4",
+        codexAuthenticated: true,
+        appServerHealthy: true,
+        ready: true,
+      }) as Promise<OutputOf<Method>>;
+    }
+    if (method === "model/list") {
+      this.modelListCalls += 1;
+      return Promise.resolve({
+        version: 1,
+        models: [
+          {
+            version: 1,
+            id: "gpt-6-astra",
+            model: "gpt-6-astra",
+            displayName: "GPT-6 Astra",
+            description: "",
+            isDefault: true,
+            defaultEffort: "medium",
+            supportedEfforts: [{ effort: "medium", description: "" }],
+          },
+        ],
+        hasMore: false,
+      }) as Promise<OutputOf<Method>>;
+    }
+    if (method === "thread/open") {
+      this.openCalls += 1;
+      return Promise.resolve(
+        threadSnapshot((input as InputOf<"thread/open">).threadId),
+      ) as Promise<OutputOf<Method>>;
+    }
+    return Promise.reject(new Error(`Unexpected method: ${method}`));
+  }
+
+  installCompleted(): void {
+    this.emit(
+      gatewayEventEnvelopeV2("thread/lease/failed", {
+        version: 1,
+        threadId: "thread-1",
+        reason: "app-server-client-closed",
+      }),
+    );
+    this.emit(
+      gatewayEventEnvelopeV2("setup/codex/install/progress", {
+        version: 1,
+        operationId: "install-1",
+        phase: "completed",
+      }),
+    );
+  }
+
+  onEvent(listener: (event: GatewayEventEnvelopeV2) => void): () => void {
+    this.#listeners.add(listener);
+    return () => this.#listeners.delete(listener);
+  }
+
+  onConnectionLost(_listener: (error: Error) => void): () => void {
+    return () => undefined;
+  }
+
+  onConnectionRestored(_listener: () => void): () => void {
+    return () => undefined;
+  }
+
+  close(): void {}
+
+  private emit(event: GatewayEventEnvelopeV2): void {
+    for (const listener of this.#listeners) listener(event);
+  }
+}
 
 class ThreadRefreshGateway implements GatewayPort {
   readonly #listeners = new Set<(event: GatewayEventEnvelopeV2) => void>();

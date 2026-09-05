@@ -22,6 +22,8 @@ export function createScenarioConnection(kind: "user" | "admin"): {
         "scenarioWorkspaceRefreshFailure",
       ),
       longConversation: search.has("scenarioLongConversation"),
+      longWorkspace: search.has("scenarioLongWorkspace"),
+      runtimeSwitchRequired: search.has("scenarioRuntimeSwitchRequired"),
       preferencesAlreadyAppliedConflictOnce: search.has(
         "scenarioPreferencesAlreadyApplied",
       ),

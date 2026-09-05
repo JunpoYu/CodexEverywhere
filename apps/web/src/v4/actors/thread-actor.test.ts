@@ -1,5 +1,6 @@
 import { Scope } from "@codex-everywhere/kernel";
 import {
+  GatewayRemoteError,
   gatewayEventEnvelopeV2,
   type GatewayEventEnvelopeV2,
   type GatewayMethodName,
@@ -33,7 +34,27 @@ describe("v0.4 thread actor", () => {
     expect(gateway.openInputs[0]).toMatchObject({
       threadId: "thread-a",
       historyLimit: 50,
+      includeWorkingDirectory: true,
     });
+  });
+
+  it("falls back to the alpha.14 thread/open shape during a rolling update", async () => {
+    const gateway = new DeferredThreadGateway();
+    gateway.rejectWorkingDirectoryInput = true;
+    const scope = new Scope("thread-open-compatibility-test");
+    scopes.push(scope);
+    const actor = createThreadActor(scope, gateway);
+
+    actor.dispatch({ type: "OPEN", threadId: "thread-a" });
+
+    await vi.waitFor(() => expect(gateway.openInputs).toHaveLength(2));
+    expect(gateway.openInputs[0]).toHaveProperty(
+      "includeWorkingDirectory",
+      true,
+    );
+    expect(gateway.openInputs[1]).not.toHaveProperty("includeWorkingDirectory");
+    gateway.resolve("thread-a", snapshot("thread-a"));
+    await vi.waitFor(() => expect(actor.getSnapshot().status).toBe("idle"));
   });
 
   it("keeps only the latest thread/open result", async () => {
@@ -411,6 +432,7 @@ class DeferredThreadGateway implements GatewayPort {
   readonly closedThreadIds: string[] = [];
   readonly openInputs: InputOf<"thread/open">[] = [];
   readonly historyInputs: InputOf<"thread/history">[] = [];
+  rejectWorkingDirectoryInput = false;
   #historyPending:
     | {
         readonly resolve: (value: OutputOf<"thread/history">) => void;
@@ -443,6 +465,17 @@ class DeferredThreadGateway implements GatewayPort {
     this.signal = options.signal;
     const openInput = input as InputOf<"thread/open">;
     this.openInputs.push(openInput);
+    if (
+      this.rejectWorkingDirectoryInput &&
+      openInput.includeWorkingDirectory === true
+    ) {
+      return Promise.reject(
+        new GatewayRemoteError({
+          code: "INVALID_INPUT",
+          message: "Gateway request input did not match its schema",
+        }),
+      ) as Promise<OutputOf<Method>>;
+    }
     const threadId = openInput.threadId;
     return new Promise<OutputOf<"thread/open">>((resolve) => {
       this.#pending.set(threadId, resolve);

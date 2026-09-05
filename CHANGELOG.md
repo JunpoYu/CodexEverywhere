@@ -4,6 +4,26 @@
 
 ## [Unreleased]
 
+## [0.4.0-alpha.15] - 2026-09-05
+
+### Added
+
+- 每个任务在 Composer 下方显示 app-server 权威恢复出的实际工作目录；工作区子目录创建的 TUI 任务不会被错误显示成工作区根目录。长路径只在路径区域内横向滚动，不会撑宽对话页面，移动端仍保持可查看和可复制。
+
+### Changed
+
+- 使用 npm 最新稳定版 Codex CLI `0.153.4` 重新生成完整 app-server TypeScript 与 notification schema，并通过真实 app-server contract 检查。
+- 新任务和任务设置不维护模型白名单；进入相关界面、Codex 登录完成、app-server 手动重启或 Codex 更新完成后，Web 都会重新分页读取当前 app-server 的 `model/list`。新的目录读取会取代尚未完成的旧读取，避免旧异步结果遮蔽刚上线的模型。
+- PWA 中的 Codex 更新只有在二进制安装、权威活动任务复核和 app-server 切换全部成功后才报告完成。`CodexRuntimeGate` 使用状态库既有的跨进程锁，把安装后的最终安全复核和重启围成同一栅栏；Web、Queue 与 `ce tui` 的 `thread/start`、`thread/compact/start`、`turn/start`、`turn/steer` 和 `review/start` 不能插入复核与重启之间。安装期间开始的新任务会让最终复核失败并保留待切换状态，不会被中断。权威扫描仍覆盖 TUI、Exec、IDE 与 subagent 来源；直接绕过 CE 连接 app-server 的外部客户端不受栅栏控制，更新前必须由操作者停止。
+
+### Fixed
+
+- 修复用户级 Codex 已更新但长期 app-server 仍运行旧进程，导致新模型（例如 `gpt-6-astra`）无法出现在 Web 模型选择器中的问题；安全切换后模型目录会立即刷新。
+- Codex 安装开始前写入不含业务内容的私有运行时切换标记，安装成功后记录 `restart-required`，只有新 app-server 健康启动才清除；浏览器重连后仍能看到未完成状态并继续重启或重试。手动重启成功也会清除旧安装失败反馈。
+- alpha.15 Web 对 `thread/open` 工作目录字段和 Codex 版本切换状态采用一次只读兼容回退；与 alpha.14 Agent 滚动切换时不会再因严格 input schema 导致任务无法打开。
+- 新版 schema 已识别但尚无结构化 UI 的 model-provider auth recovery notification 继续进入 `codex/generic` 时间线，不会因为变成“已知事件”而被静默丢弃。
+- 设备码登录的创建与取消现在也经过同一运行时栅栏；自动切换完成后会从 app-server 重新打开当前可见任务，手动重启后则立即重读版本切换状态，避免页面残留失效警告或永久禁用 Composer。
+
 ## [0.4.0-alpha.14] - 2026-08-31
 
 ### Added

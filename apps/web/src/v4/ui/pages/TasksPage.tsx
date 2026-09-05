@@ -71,10 +71,10 @@ export function TasksPage() {
   }, [runtime]);
 
   useEffect(() => {
-    if (connection.status === "online" && models.status === "idle") {
+    if (connection.status === "online") {
       runtime.models.dispatch({ type: "LOAD" });
     }
-  }, [connection.status, models.status, runtime]);
+  }, [connection.status, runtime]);
 
   useEffect(() => {
     if (connection.status !== "online") return;

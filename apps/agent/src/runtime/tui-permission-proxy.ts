@@ -69,10 +69,15 @@ type PendingPermissionRequest = {
     | "thread/resume"
     | "thread/fork"
     | "thread/settings/update"
-    | "thread/delete";
+    | "thread/delete"
+    | "thread/compact/start"
+    | "turn/start"
+    | "turn/steer"
+    | "review/start";
   params: Record<string, unknown>;
   observation?: ThreadSettingsObservation;
   lease?: ThreadSettingsMutationLease;
+  runtimeLease?: { release(): Promise<void> };
   releasePromise?: Promise<void>;
 };
 
@@ -107,6 +112,7 @@ export async function startTuiPermissionProxy(options: {
     threadId: string,
     options?: { signal?: AbortSignal },
   ): Promise<ThreadSettingsMutationLease>;
+  acquireRuntimeMutation?(): Promise<{ release(): Promise<void> }>;
   internalRepairTimeoutMs?: number;
   onThreadPermissions?(
     observation: TuiThreadPermissionObservation,
@@ -202,6 +208,17 @@ export async function startTuiPermissionProxy(options: {
                   if (needsMutationLease && !threadId) {
                     throw new Error(`${method} requires a thread id`);
                   }
+                  pending = { method, params: message.params };
+                  const needsRuntimeLease =
+                    method === "thread/start" ||
+                    method === "thread/compact/start" ||
+                    method === "turn/start" ||
+                    method === "turn/steer" ||
+                    method === "review/start";
+                  if (needsRuntimeLease && options.acquireRuntimeMutation) {
+                    pending.runtimeLease =
+                      await options.acquireRuntimeMutation();
+                  }
                   const lease =
                     needsMutationLease &&
                     threadId &&
@@ -211,13 +228,14 @@ export async function startTuiPermissionProxy(options: {
                           { signal: lifecycleAbort.signal },
                         )
                       : undefined;
-                  pending = {
-                    method,
-                    params: message.params,
-                    ...(lease ? { lease } : {}),
-                  };
+                  if (lease) pending.lease = lease;
+                  const observesPermissions =
+                    method === "thread/start" ||
+                    method === "thread/resume" ||
+                    method === "thread/fork" ||
+                    method === "thread/settings/update";
                   const observation =
-                    method !== "thread/delete" &&
+                    observesPermissions &&
                     options.beginThreadPermissionObservation
                       ? await options.beginThreadPermissionObservation(
                           method === "thread/resume" ||
@@ -488,7 +506,11 @@ function permissionRequestMethod(
     value === "thread/start" ||
     value === "thread/resume" ||
     value === "thread/fork" ||
-    value === "thread/delete"
+    value === "thread/delete" ||
+    value === "thread/compact/start" ||
+    value === "turn/start" ||
+    value === "turn/steer" ||
+    value === "review/start"
   ) {
     return value;
   }
@@ -574,21 +596,23 @@ async function releasePermissionRequests(
 async function releaseMutationLease(
   pending: PendingPermissionRequest | undefined,
 ): Promise<void> {
-  const lease = pending?.lease;
-  if (!lease) return;
+  if (!pending || (!pending.lease && !pending.runtimeLease)) return;
   if (pending.releasePromise) {
     await pending.releasePromise;
     return;
   }
   const releasePromise = (async () => {
     try {
-      await lease.release();
+      await pending.lease?.release();
+      await pending.runtimeLease?.release();
     } catch {
       // A failed ownership-safe release remains retryable. Retry once before
       // surfacing the failure and keeping the proxy from closing Host state.
-      await lease.release();
+      await pending.lease?.release();
+      await pending.runtimeLease?.release();
     }
     delete pending.lease;
+    delete pending.runtimeLease;
   })();
   pending.releasePromise = releasePromise;
   try {

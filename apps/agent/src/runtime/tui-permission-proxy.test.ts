@@ -57,6 +57,9 @@ describe("TUI permission inheritance proxy", () => {
     const upstreamSocketPath = join(directory, "upstream.sock");
     const upstreamMessages: Array<Record<string, unknown>> = [];
     const observations: Array<Record<string, unknown>> = [];
+    let runtimeAcquisitions = 0;
+    let runtimeReleases = 0;
+    const runtimeDepthsAtUpstream: number[] = [];
     let upstreamClient: WebSocket | undefined;
     const upstreamServer = createServer();
     const upstreamWebSockets = new WebSocketServer({ noServer: true });
@@ -70,6 +73,14 @@ describe("TUI permission inheritance proxy", () => {
       socket.on("message", (raw) => {
         const message = JSON.parse(raw.toString()) as Record<string, unknown>;
         upstreamMessages.push(message);
+        if (
+          message.method === "thread/start" ||
+          message.method === "thread/compact/start" ||
+          message.method === "turn/start" ||
+          message.method === "review/start"
+        ) {
+          runtimeDepthsAtUpstream.push(runtimeAcquisitions - runtimeReleases);
+        }
         if (message.id !== undefined) {
           const threadId =
             message.method === "thread/start" ? "thread-new" : "thread-1";
@@ -113,6 +124,17 @@ describe("TUI permission inheritance proxy", () => {
       upstreamSocketPath,
       runtimeDir: directory,
       ...permissionOptions,
+      acquireRuntimeMutation: async () => {
+        runtimeAcquisitions += 1;
+        let released = false;
+        return {
+          release: async () => {
+            if (released) return;
+            released = true;
+            runtimeReleases += 1;
+          },
+        };
+      },
       onThreadPermissions: async (observation, causalObservation) => {
         observations.push(observation);
         await permissionOptions.onThreadPermissions!(
@@ -185,6 +207,25 @@ describe("TUI permission inheritance proxy", () => {
         },
       }),
     );
+    await sendAndWait(
+      client,
+      JSON.stringify({
+        id: 6,
+        method: "review/start",
+        params: {
+          threadId: "thread-1",
+          target: { type: "uncommittedChanges" },
+        },
+      }),
+    );
+    await sendAndWait(
+      client,
+      JSON.stringify({
+        id: 7,
+        method: "thread/compact/start",
+        params: { threadId: "thread-1" },
+      }),
+    );
 
     expect(
       upstreamMessages
@@ -231,6 +272,8 @@ describe("TUI permission inheritance proxy", () => {
       },
       { id: 4, approvalPolicy: "on-request", sandbox: "read-only" },
       { id: 5, approvalPolicy: undefined, sandbox: undefined },
+      { id: 6, approvalPolicy: undefined, sandbox: undefined },
+      { id: 7, approvalPolicy: undefined, sandbox: undefined },
     ]);
     expect(firstResume.result).toMatchObject({
       approvalPolicy: "never",
@@ -265,6 +308,9 @@ describe("TUI permission inheritance proxy", () => {
         sandboxPolicy: { type: "readOnly", networkAccess: false },
       },
     ]);
+    expect(runtimeAcquisitions).toBe(4);
+    expect(runtimeReleases).toBe(4);
+    expect(runtimeDepthsAtUpstream).toEqual([1, 1, 1, 1]);
     await expect(
       repository.applyToResume({ threadId: "thread-1" }),
     ).resolves.toMatchObject({
@@ -282,7 +328,7 @@ describe("TUI permission inheritance proxy", () => {
     await sendAndWait(
       client,
       JSON.stringify({
-        id: 6,
+        id: 8,
         method: "thread/delete",
         params: { threadId: "thread-new" },
       }),

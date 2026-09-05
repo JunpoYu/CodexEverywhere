@@ -295,12 +295,17 @@ export const gatewayMethodDefinitions = {
   ),
   "setup/codex/version": query(
     "user",
-    versionedEmptySchema,
+    versionedResult({
+      includeRuntimeSwitchState: z.literal(true).optional(),
+    }),
     versionedResult({
       installed: z.boolean(),
       installedVersion: z.string().max(256).optional(),
       latestVersion: z.string().max(256).optional(),
       relation: z.enum(["older", "current", "newer", "unknown"]),
+      runtimeSwitchState: z
+        .enum(["none", "installing", "restart-required"])
+        .optional(),
     }),
   ),
   "setup/codex/login/start": mutation(
@@ -399,6 +404,7 @@ export const gatewayMethodDefinitions = {
       threadId: identifierSchema,
       historyCursor: z.string().min(1).max(2_048).optional(),
       historyLimit: z.number().int().min(1).max(200).default(50),
+      includeWorkingDirectory: z.literal(true).optional(),
     }),
     threadSnapshotSchema,
   ),
