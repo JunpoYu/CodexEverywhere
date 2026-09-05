@@ -53,9 +53,8 @@ export function createOnboardingActor(scope: Scope, gateway: GatewayPort) {
           return { state: withoutLoginCompletion(withoutError(state)) };
         case "LOADED": {
           const error =
-            !event.status.codexInstalled &&
             state.installProgress?.phase === "failed"
-              ? "Codex 安装失败，请检查宿主机网络和 Agent 日志"
+              ? "Codex 更新或 app-server 切换失败；请确认没有活动任务后重试，必要时检查 Agent 日志"
               : !event.status.codexAuthenticated &&
                   state.loginCompletion?.success === false
                 ? (state.loginCompletion.error ?? "Codex 设备码登录失败")
@@ -73,7 +72,7 @@ export function createOnboardingActor(scope: Scope, gateway: GatewayPort) {
         case "INSTALL_PROGRESS": {
           const error =
             event.progress.phase === "failed"
-              ? "Codex 安装失败，请检查宿主机网络和 Agent 日志"
+              ? "Codex 更新或 app-server 切换失败；请确认没有活动任务后重试，必要时检查 Agent 日志"
               : undefined;
           return {
             state: {

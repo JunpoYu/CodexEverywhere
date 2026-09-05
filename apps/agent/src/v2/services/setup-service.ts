@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 
 import { Scope, TypedEventBus } from "@codex-everywhere/kernel";
+import type { ThreadSourceKind } from "@codex-everywhere/codex-app-server-schema/v2";
 import type { CodexInstallProgressPhase } from "@codex-everywhere/protocol";
 import { GatewayV2Error } from "@codex-everywhere/protocol/v2";
 
@@ -31,6 +32,20 @@ import type { CodexSupervisorPort } from "./codex-supervisor.js";
 
 const LOGIN_TTL_MS = 15 * 60_000;
 const LOGIN_POLL_INTERVAL_SECONDS = 5;
+const RESTART_SAFETY_PAGE_LIMIT = 200;
+const RESTART_SAFETY_MAX_PAGES = 100;
+const ALL_THREAD_SOURCE_KINDS = [
+  "cli",
+  "vscode",
+  "exec",
+  "appServer",
+  "subAgent",
+  "subAgentReview",
+  "subAgentCompact",
+  "subAgentThreadSpawn",
+  "subAgentOther",
+  "unknown",
+] as const satisfies readonly ThreadSourceKind[];
 
 export type SetupServiceEvent =
   | {
@@ -217,21 +232,17 @@ export class SetupService {
     };
   }
 
-  #startInstall(versionConstraint: string | undefined) {
+  async #startInstall(versionConstraint: string | undefined) {
     this.#scope.throwIfClosed();
     const active = this.#installOperation;
     if (active !== undefined) {
-      if (active.versionConstraint !== versionConstraint) {
-        throw new GatewayV2Error(
-          "INSTALL_IN_PROGRESS",
-          "A different Codex installation is already in progress",
-        );
-      }
-      return {
-        version: 1 as const,
-        operationId: active.id,
-        accepted: true as const,
-      };
+      return acceptedInstall(active, versionConstraint);
+    }
+
+    await this.#assertRuntimeRestartSafe();
+    const concurrent = this.#installOperation;
+    if (concurrent !== undefined) {
+      return acceptedInstall(concurrent, versionConstraint);
     }
 
     const id = randomUUID();
@@ -259,8 +270,14 @@ export class SetupService {
         env: this.#environment(config),
         ...(versionConstraint === undefined ? {} : { versionConstraint }),
         signal: this.#scope.signal,
-        onProgress: (phase) => this.#emitInstallProgress(operationId, phase),
+        onProgress: (phase) => {
+          if (phase === "installing" || phase === "verifying") {
+            this.#emitInstallProgress(operationId, phase);
+          }
+        },
       });
+      await this.#assertRuntimeRestartSafe();
+      await this.#supervisor.restart();
       this.#emitInstallProgress(operationId, "completed");
     } catch (error) {
       this.#emitInstallProgress(operationId, "failed");
@@ -380,9 +397,86 @@ export class SetupService {
   }
 
   async #restart() {
-    await this.#assertRestartSafe();
+    await this.#assertRuntimeRestartSafe();
     await this.#supervisor.restart();
     return { version: 1 as const, restarted: true as const };
+  }
+
+  async #assertRuntimeRestartSafe(): Promise<void> {
+    if (this.#loginOperations.size > 0) {
+      throw new GatewayV2Error(
+        "APP_SERVER_BUSY",
+        "Cannot restart Codex app-server while a device login is active",
+      );
+    }
+    await this.#assertRestartSafe();
+    const inspection = await this.#supervisor.inspect();
+    if (
+      inspection.health === "starting" ||
+      inspection.health === "live-unresponsive"
+    ) {
+      throw new GatewayV2Error(
+        "APP_SERVER_BUSY",
+        "Cannot verify active Codex tasks while app-server is starting or unresponsive",
+      );
+    }
+    if (inspection.health !== "healthy") return;
+    await this.#assertNoActiveCodexThreads();
+  }
+
+  async #assertNoActiveCodexThreads(): Promise<void> {
+    await this.#withClient(async (client) => {
+      for (const archived of [false, true]) {
+        let cursor: string | undefined;
+        const seenCursors = new Set<string>();
+        let complete = false;
+        for (let page = 0; page < RESTART_SAFETY_MAX_PAGES; page += 1) {
+          const response = await client.request("thread/list", {
+            ...(cursor === undefined ? {} : { cursor }),
+            limit: RESTART_SAFETY_PAGE_LIMIT,
+            archived,
+            sortKey: "updated_at",
+            sortDirection: "desc",
+            sourceKinds: [...ALL_THREAD_SOURCE_KINDS],
+          });
+          if (!isRecord(response) || !Array.isArray(response.data)) {
+            throw invalidRestartSafetyResponse();
+          }
+          for (const thread of response.data) {
+            if (!isRecord(thread) || !isRecord(thread.status)) {
+              throw invalidRestartSafetyResponse();
+            }
+            if (thread.status.type === "active") {
+              throw new GatewayV2Error(
+                "APP_SERVER_BUSY",
+                "Cannot restart Codex app-server while a task is active",
+              );
+            }
+            if (
+              thread.status.type !== "notLoaded" &&
+              thread.status.type !== "idle" &&
+              thread.status.type !== "systemError"
+            ) {
+              throw invalidRestartSafetyResponse();
+            }
+          }
+          if (response.nextCursor === null) {
+            complete = true;
+            break;
+          }
+          if (
+            typeof response.nextCursor !== "string" ||
+            response.nextCursor.length === 0 ||
+            seenCursors.has(response.nextCursor)
+          ) {
+            throw invalidRestartSafetyResponse();
+          }
+          cursor = response.nextCursor;
+          seenCursors.add(cursor);
+        }
+        if (!complete) throw invalidRestartSafetyResponse();
+      }
+    });
   }
 
   async #readAccountAuthenticated(): Promise<boolean> {
@@ -477,6 +571,30 @@ export class SetupService {
       // A transient transport subscriber cannot change setup side-effect outcome.
     }
   }
+}
+
+function acceptedInstall(
+  active: InstallOperation,
+  versionConstraint: string | undefined,
+) {
+  if (active.versionConstraint !== versionConstraint) {
+    throw new GatewayV2Error(
+      "INSTALL_IN_PROGRESS",
+      "A different Codex installation is already in progress",
+    );
+  }
+  return {
+    version: 1 as const,
+    operationId: active.id,
+    accepted: true as const,
+  };
+}
+
+function invalidRestartSafetyResponse(): GatewayV2Error {
+  return new GatewayV2Error(
+    "CODEX_INVALID_RESPONSE",
+    "Codex app-server returned an invalid task list while checking restart safety",
+  );
 }
 
 function requiredProxy(

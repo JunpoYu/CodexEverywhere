@@ -174,6 +174,7 @@ export const threadSnapshotSchema = z
   .object({
     version: z.literal(1),
     thread: threadSummarySchema,
+    workingDirectory: pathSchema.optional(),
     state: threadStateSchema,
     items: z.array(timelineItemSchema),
     interactions: z.array(interactionSchema),

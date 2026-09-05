@@ -195,7 +195,91 @@ describe("UserWebRuntime task refresh", () => {
     await new Promise((resolve) => setTimeout(resolve, 150));
     expect(gateway.openCalls).toBe(3);
   });
+
+  it("reloads the model catalog after the active Codex runtime is switched", async () => {
+    const gateway = new RuntimeSwitchGateway();
+    const runtime = new UserWebRuntime({ gateway, host: savedHost() });
+    runtimes.push(runtime);
+
+    gateway.installCompleted();
+
+    await vi.waitFor(() => expect(gateway.modelListCalls).toBe(1));
+    await vi.waitFor(() =>
+      expect(runtime.models.getSnapshot()).toMatchObject({
+        status: "ready",
+        models: [{ model: "gpt-6-astra", isDefault: true }],
+      }),
+    );
+  });
 });
+
+class RuntimeSwitchGateway implements GatewayPort {
+  readonly #listeners = new Set<(event: GatewayEventEnvelopeV2) => void>();
+  modelListCalls = 0;
+
+  request<Method extends GatewayMethodName>(
+    method: Method,
+    _input: InputOf<Method>,
+    _options: RequestOptionsOf<Method>,
+  ): Promise<OutputOf<Method>> {
+    if (method === "setup/status") {
+      return Promise.resolve({
+        version: 1,
+        networkConfigured: true,
+        networkMode: "direct",
+        codexInstalled: true,
+        codexVersion: "codex-cli 0.153.4",
+        codexAuthenticated: true,
+        appServerHealthy: true,
+        ready: true,
+      }) as Promise<OutputOf<Method>>;
+    }
+    if (method === "model/list") {
+      this.modelListCalls += 1;
+      return Promise.resolve({
+        version: 1,
+        models: [
+          {
+            version: 1,
+            id: "gpt-6-astra",
+            model: "gpt-6-astra",
+            displayName: "GPT-6 Astra",
+            description: "",
+            isDefault: true,
+            defaultEffort: "medium",
+            supportedEfforts: [{ effort: "medium", description: "" }],
+          },
+        ],
+        hasMore: false,
+      }) as Promise<OutputOf<Method>>;
+    }
+    return Promise.reject(new Error(`Unexpected method: ${method}`));
+  }
+
+  installCompleted(): void {
+    const event = gatewayEventEnvelopeV2("setup/codex/install/progress", {
+      version: 1,
+      operationId: "install-1",
+      phase: "completed",
+    });
+    for (const listener of this.#listeners) listener(event);
+  }
+
+  onEvent(listener: (event: GatewayEventEnvelopeV2) => void): () => void {
+    this.#listeners.add(listener);
+    return () => this.#listeners.delete(listener);
+  }
+
+  onConnectionLost(_listener: (error: Error) => void): () => void {
+    return () => undefined;
+  }
+
+  onConnectionRestored(_listener: () => void): () => void {
+    return () => undefined;
+  }
+
+  close(): void {}
+}
 
 class ThreadRefreshGateway implements GatewayPort {
   readonly #listeners = new Set<(event: GatewayEventEnvelopeV2) => void>();

@@ -38,6 +38,7 @@ export interface ScenarioGatewayOptions {
   readonly failFirstPreferencesReadOnce?: boolean;
   readonly failWorkspaceListAfterMutationOnce?: boolean;
   readonly longConversation?: boolean;
+  readonly longWorkspace?: boolean;
   readonly preferencesAlreadyAppliedConflictOnce?: boolean;
   readonly preferencesConflictRefreshFailureOnce?: boolean;
   readonly threadSettingsConflictOnce?: boolean;
@@ -106,10 +107,13 @@ export class ScenarioGateway implements GatewayPort {
     this.#threadSettingsConflictOnce =
       options.threadSettingsConflictOnce ?? false;
     const now = new Date().toISOString();
+    const workspacePath = options.longWorkspace
+      ? `/public/demo/${"nested-project-directory/".repeat(12)}workspace`
+      : "/public/demo";
     this.#workspaces.set("workspace-demo", {
       version: 1,
       id: "workspace-demo",
-      path: "/public/demo",
+      path: workspacePath,
       label: "Demo",
       isDefault: true,
       revision: 1,
@@ -513,6 +517,7 @@ export class ScenarioGateway implements GatewayPort {
             ? record.historyCursor
             : undefined,
           Number(record.historyLimit),
+          record.includeWorkingDirectory === true,
         );
       case "thread/history": {
         const thread = this.#requiredThread(String(record.threadId));
@@ -997,12 +1002,17 @@ export class ScenarioGateway implements GatewayPort {
     threadId: string,
     historyCursor: string | undefined,
     historyLimit: number,
+    includeWorkingDirectory: boolean,
   ) {
     const thread = this.#requiredThread(threadId);
+    const workspace = this.#workspaces.get(thread.summary.workspaceId);
     const page = scenarioHistoryPage(thread.items, historyCursor, historyLimit);
     return {
       version: 1,
       thread: thread.summary,
+      ...(includeWorkingDirectory && workspace !== undefined
+        ? { workingDirectory: workspace.path }
+        : {}),
       state: thread.summary.state,
       items: page.items,
       interactions: this.#threadInteractions(threadId),

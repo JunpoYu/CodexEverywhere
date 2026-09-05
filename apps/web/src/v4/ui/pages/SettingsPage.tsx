@@ -94,6 +94,23 @@ export function SettingsPage() {
     return () => controller.abort();
   }, [runtime]);
 
+  useEffect(() => {
+    const phase = onboarding.installProgress?.phase;
+    if (phase !== "completed" && phase !== "failed") return;
+    const controller = new AbortController();
+    void runtime.gateway
+      .request(
+        "setup/codex/version",
+        { version: 1 },
+        queryOptions(controller.signal),
+      )
+      .then((nextVersion) => {
+        if (!controller.signal.aborted) setCodexVersion(nextVersion);
+      })
+      .catch(() => undefined);
+    return () => controller.abort();
+  }, [onboarding.installProgress?.phase, runtime]);
+
   const editPreferences = (patch: PreferencePatch) => {
     setPreferenceDraft((current) =>
       current === undefined ? current : { ...current, ...patch },
@@ -294,7 +311,7 @@ export function SettingsPage() {
           method: "setup/codex/install",
           payload: { version: 1 },
         }),
-      "Codex 更新已提交；安装完成后状态会自动刷新",
+      "Codex 更新已提交；完成后会安全切换 app-server 并刷新模型目录",
     );
   };
 
@@ -312,6 +329,7 @@ export function SettingsPage() {
       if (restarted && threadId !== undefined) {
         runtime.thread.dispatch({ type: "OPEN", threadId });
       }
+      if (restarted) runtime.models.dispatch({ type: "LOAD" });
     });
   };
 

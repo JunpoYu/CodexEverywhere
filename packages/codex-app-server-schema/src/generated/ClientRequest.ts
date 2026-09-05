@@ -52,6 +52,7 @@ import type { PluginInstallParams } from "./v2/PluginInstallParams";
 import type { PluginInstalledParams } from "./v2/PluginInstalledParams";
 import type { PluginListParams } from "./v2/PluginListParams";
 import type { PluginReadParams } from "./v2/PluginReadParams";
+import type { PluginReconcileParams } from "./v2/PluginReconcileParams";
 import type { PluginShareCheckoutParams } from "./v2/PluginShareCheckoutParams";
 import type { PluginShareDeleteParams } from "./v2/PluginShareDeleteParams";
 import type { PluginShareListParams } from "./v2/PluginShareListParams";
@@ -210,6 +211,7 @@ export type ClientRequest =
     }
   | { method: "plugin/list"; id: RequestId; params: PluginListParams }
   | { method: "plugin/installed"; id: RequestId; params: PluginInstalledParams }
+  | { method: "plugin/reconcile"; id: RequestId; params: PluginReconcileParams }
   | { method: "plugin/read"; id: RequestId; params: PluginReadParams }
   | {
       method: "plugin/skill/read";

@@ -266,6 +266,56 @@ test("任务权限可连续保存，并始终显示权威结果", async ({ page 
   );
 });
 
+test("输入框下方显示工作目录，长路径只在自身区域滚动", async ({
+  page,
+}, testInfo) => {
+  if (!testInfo.project.name.includes("mobile")) {
+    await page.setViewportSize({ width: 1600, height: 900 });
+  }
+  await openScenario(page, "&scenarioLongWorkspace=1");
+  await openTaskCard(page, "欢迎使用 CodexEverywhere");
+
+  const directory = page.locator("[data-working-directory]");
+  const pathRegion = directory.locator("[data-working-directory-path]");
+  await expect(directory).toHaveAttribute("data-state", "ready");
+  const path = await pathRegion.textContent();
+  expect(path).not.toBeNull();
+  expect(path).toMatch(/^\/public\/demo\//u);
+  await expect(directory).toHaveAttribute("aria-label", `工作目录：${path}`);
+  await expect(pathRegion).toHaveAttribute("title", path!);
+
+  const [composerBox, directoryBox] = await Promise.all([
+    page.getByLabel("给 Codex 的消息").boundingBox(),
+    directory.boundingBox(),
+  ]);
+  expect(composerBox).not.toBeNull();
+  expect(directoryBox).not.toBeNull();
+  expect(directoryBox!.y).toBeGreaterThanOrEqual(
+    composerBox!.y + composerBox!.height,
+  );
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () => document.documentElement.scrollWidth <= window.innerWidth,
+      ),
+    )
+    .toBe(true);
+  await expect
+    .poll(() =>
+      pathRegion.evaluate(
+        (element) => element.scrollWidth > element.clientWidth,
+      ),
+    )
+    .toBe(true);
+  await pathRegion.evaluate((element) => {
+    element.scrollLeft = element.scrollWidth;
+  });
+  await expect
+    .poll(() => pathRegion.evaluate((element) => element.scrollLeft))
+    .toBeGreaterThan(0);
+  await expect(pathRegion).toHaveCSS("overflow-x", "auto");
+});
+
 test("新任务展示全局默认权限，并允许仅覆盖本次任务", async ({ page }) => {
   await openScenario(page);
 

@@ -26,9 +26,6 @@ export function createModelCatalogActor(scope: Scope, gateway: GatewayPort) {
     reducer: (state, event) => {
       switch (event.type) {
         case "LOAD":
-          if (state.status === "loading") {
-            return { state, preserveEffects: true };
-          }
           return {
             state: { status: "loading", models: state.models },
             effects: [{ type: "FETCH" }],

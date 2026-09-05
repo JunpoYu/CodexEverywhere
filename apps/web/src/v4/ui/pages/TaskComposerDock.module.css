@@ -36,6 +36,53 @@
   grid-column: 2;
 }
 
+.directory {
+  display: flex;
+  min-width: 0;
+  max-width: min(68%, 560px);
+  flex: 1 1 auto;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  overflow: hidden;
+}
+
+.directory > span {
+  flex: 0 0 auto;
+  color: var(--text-subtle);
+  font-weight: 620;
+  white-space: nowrap;
+}
+
+.directory > svg {
+  width: 11px;
+  height: 11px;
+  flex: 0 0 auto;
+}
+
+.directory > code {
+  display: block;
+  min-width: 0;
+  max-width: 100%;
+  flex: 0 1 auto;
+  padding: 2px 4px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  border-radius: 4px;
+  background: var(--surface-muted);
+  color: var(--text-muted);
+  font-size: inherit;
+  overscroll-behavior-inline: contain;
+  scrollbar-width: thin;
+  white-space: nowrap;
+}
+
+.directory[data-state="unavailable"] > code {
+  background: transparent;
+  color: var(--text-subtle);
+  font-family: inherit;
+}
+
 @container task-composer (max-width: 1080px) {
   .layout {
     grid-template-columns: minmax(0, 780px);
@@ -62,5 +109,10 @@
 
   .layout {
     padding: 0 8px;
+  }
+
+  .directory {
+    max-width: none;
+    justify-content: flex-end;
   }
 }

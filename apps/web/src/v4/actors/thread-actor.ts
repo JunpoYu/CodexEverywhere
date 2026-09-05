@@ -325,6 +325,7 @@ export function createThreadActor(scope: Scope, gateway: GatewayPort) {
             version: 1,
             threadId: effect.threadId,
             historyLimit: TIMELINE_PAGE_SIZE,
+            includeWorkingDirectory: true,
           },
           queryOptions(context.signal),
         );

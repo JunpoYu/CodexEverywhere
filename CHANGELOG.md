@@ -4,6 +4,22 @@
 
 ## [Unreleased]
 
+## [0.4.0-alpha.15] - 2026-09-05
+
+### Added
+
+- 每个任务在 Composer 下方显示 app-server 权威恢复出的实际工作目录；工作区子目录创建的 TUI 任务不会被错误显示成工作区根目录。长路径只在路径区域内横向滚动，不会撑宽对话页面，移动端仍保持可查看和可复制。
+
+### Changed
+
+- 使用 npm 最新稳定版 Codex CLI `0.153.4` 重新生成完整 app-server TypeScript 与 notification schema，并通过真实 app-server contract 检查。
+- 新任务和任务设置不维护模型白名单；进入相关界面、Codex 登录完成、app-server 手动重启或 Codex 更新完成后，Web 都会重新分页读取当前 app-server 的 `model/list`。新的目录读取会取代尚未完成的旧读取，避免旧异步结果遮蔽刚上线的模型。
+- PWA 中的 Codex 更新只有在二进制安装、权威活动任务复核和 app-server 切换全部成功后才报告完成。更新前后都会同时检查 CE lease、设备码登录和 app-server 中来自 Web、TUI、Exec、IDE 与 subagent 的活动任务；存在活动任务时失败关闭，不中断 turn。
+
+### Fixed
+
+- 修复用户级 Codex 已更新但长期 app-server 仍运行旧进程，导致新模型（例如 `gpt-6-astra`）无法出现在 Web 模型选择器中的问题；安全切换后模型目录会立即刷新。
+
 ## [0.4.0-alpha.14] - 2026-08-31
 
 ### Added

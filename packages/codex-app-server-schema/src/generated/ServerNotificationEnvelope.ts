@@ -8,6 +8,7 @@ import type { AccountRateLimitsUpdatedNotification } from "./v2/AccountRateLimit
 import type { AccountUpdatedNotification } from "./v2/AccountUpdatedNotification";
 import type { AgentMessageDeltaNotification } from "./v2/AgentMessageDeltaNotification";
 import type { AppListUpdatedNotification } from "./v2/AppListUpdatedNotification";
+import type { AuthRecoveryNotification } from "./v2/AuthRecoveryNotification";
 import type { CommandExecOutputDeltaNotification } from "./v2/CommandExecOutputDeltaNotification";
 import type { CommandExecutionOutputDeltaNotification } from "./v2/CommandExecutionOutputDeltaNotification";
 import type { ConfigWarningNotification } from "./v2/ConfigWarningNotification";
@@ -237,6 +238,14 @@ export type ServerNotificationEnvelope = {
   | { method: "thread/compacted"; params: ContextCompactedNotification }
   | { method: "model/rerouted"; params: ModelReroutedNotification }
   | { method: "model/verification"; params: ModelVerificationNotification }
+  | {
+      method: "modelProvider/authRecoveryStarted";
+      params: AuthRecoveryNotification;
+    }
+  | {
+      method: "modelProvider/authRecoveryCompleted";
+      params: AuthRecoveryNotification;
+    }
   | {
       method: "turn/moderationMetadata";
       params: TurnModerationMetadataNotification;

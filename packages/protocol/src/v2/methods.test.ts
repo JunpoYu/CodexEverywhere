@@ -80,6 +80,16 @@ describe("Gateway API v2 method registry", () => {
     expectTypeOf<RequestOptionsOf<"thread/open">>().toEqualTypeOf<{
       readonly signal?: AbortSignal;
     }>();
+    expectTypeOf<InputOf<"thread/open">>().toEqualTypeOf<{
+      version: 1;
+      threadId: string;
+      historyCursor?: string;
+      historyLimit: number;
+      includeWorkingDirectory?: true;
+    }>();
+    expectTypeOf<OutputOf<"thread/open">["workingDirectory"]>().toEqualTypeOf<
+      string | undefined
+    >();
   });
 
   it("fails closed for cached thread/start payloads without the revision guard", () => {

@@ -318,8 +318,8 @@ function installPhaseLabel(
   return {
     preparing: "准备中",
     installing: "安装中",
-    verifying: "校验中",
-    completed: "已完成",
-    failed: "失败",
+    verifying: "校验并切换 app-server",
+    completed: "已完成，模型目录已刷新",
+    failed: "未完全应用，请确认没有活动任务后重试",
   }[phase];
 }

@@ -136,11 +136,18 @@ export class ThreadService {
 
   async open(
     handle: ThreadLeaseHandle,
-    input: Pick<InputOf<"thread/open">, "historyCursor" | "historyLimit">,
+    input: Pick<
+      InputOf<"thread/open">,
+      "historyCursor" | "historyLimit" | "includeWorkingDirectory"
+    >,
   ): Promise<OutputOf<"thread/open">> {
     const { thread, state, settings } = await this.#sessions.open(handle);
+    const workingDirectory =
+      input.includeWorkingDirectory === true
+        ? await this.#workspaces.resolve(state.workspacePath)
+        : undefined;
     const workspace = await this.#workspaces.workspaceForPath(
-      state.workspacePath,
+      workingDirectory ?? state.workspacePath,
     );
     const page = projectThreadHistory(
       thread,
@@ -150,6 +157,7 @@ export class ThreadService {
     return {
       version: 1,
       thread: projectThreadSummary(thread, workspace, false),
+      ...(workingDirectory === undefined ? {} : { workingDirectory }),
       state: state.state,
       items: page.items,
       interactions: handle.lease.listInteractions(),

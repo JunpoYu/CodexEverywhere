@@ -1,6 +1,6 @@
 # CodexEverywhere v0.4 staging 验收手册
 
-本文把 `v0.4.0-alpha.14` 上线前仍需真实基础设施的单用户门槛转换为可执行流程和严格 receipt。v0.4 采用全新初始化，不进行 v0.3 数据库正向或反向迁移。多用户并发、跨用户隔离和 Administrator Controller 的实机验收延后，不阻塞当前单用户版本。
+本文把 `v0.4.0-alpha.15` 上线前仍需真实基础设施的单用户门槛转换为可执行流程和严格 receipt。v0.4 采用全新初始化，不进行 v0.3 数据库正向或反向迁移。多用户并发、跨用户隔离和 Administrator Controller 的实机验收延后，不阻塞当前单用户版本。
 
 ## 1. 安全边界
 
@@ -20,7 +20,7 @@
 4. Direct HTTPS/WSS 入口和无状态 Relay；
 5. 桌面与 390px 移动端浏览器；
 6. staging 专用 Codex 订阅登录；
-7. verified alpha.14 与目标 v0.4 Release 制品，可原子切换 release 指针。
+7. verified `v0.4.0-alpha.14` 回退制品与目标 `v0.4.0-alpha.15` Release 制品，可原子切换 release 指针。
 
 浏览器、Agent 宿主机与 Relay 必须使用健康时间源，任意两者实测 UTC 偏差不超过 30 秒。CentOS 7 检查 `timedatectl status`、`chronyc tracking` 和 `chronyc sources`；不能只依据 `chronyd` 进程存在。
 
@@ -62,7 +62,7 @@ pnpm staging:receipt -- init "${CE_STAGING_EVIDENCE_DIR}/staging.json"
 
 对测试用户：
 
-1. 在 alpha.14 记录 app-server PID 和健康状态；
+1. 在 `v0.4.0-alpha.14` 记录 app-server PID 和健康状态；
 2. 确认 turn、interaction、Queue delivery、mutation 与登录流程静止；
 3. 停止 Agent，但保持 app-server；
 4. 将完整 `~/.codex-everywhere` 改名为唯一的保留目录；

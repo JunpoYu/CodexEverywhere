@@ -399,6 +399,7 @@ export const gatewayMethodDefinitions = {
       threadId: identifierSchema,
       historyCursor: z.string().min(1).max(2_048).optional(),
       historyLimit: z.number().int().min(1).max(200).default(50),
+      includeWorkingDirectory: z.literal(true).optional(),
     }),
     threadSnapshotSchema,
   ),

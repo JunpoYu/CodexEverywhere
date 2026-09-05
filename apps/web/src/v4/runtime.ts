@@ -99,6 +99,9 @@ export class UserWebRuntime {
           this.onboarding.dispatch({ type: "INSTALL_PROGRESS", progress });
           if (progress.phase === "completed" || progress.phase === "failed") {
             this.onboarding.dispatch({ type: "INSPECT" });
+            if (progress.phase === "completed") {
+              this.models.dispatch({ type: "LOAD" });
+            }
           }
         } else if (event.type === "thread/name/changed") {
           this.refreshTasks();

@@ -11,4 +11,8 @@ export type Project = {
   position: number;
   createdAt: number;
   updatedAt: number;
+  /**
+   * Newest non-archived member thread's recency, in Unix seconds; null when none exist.
+   */
+  recencyAt: number | null;
 };

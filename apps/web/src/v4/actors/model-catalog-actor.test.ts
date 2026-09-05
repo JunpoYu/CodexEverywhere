@@ -46,6 +46,32 @@ describe("model catalog actor", () => {
       error: "offline",
     });
   });
+
+  it("supersedes an in-flight catalog read when a newer refresh is requested", async () => {
+    let resolveFirst!: (value: ReturnType<typeof page>) => void;
+    const first = new Promise<ReturnType<typeof page>>((resolve) => {
+      resolveFirst = resolve;
+    });
+    const request = vi
+      .fn()
+      .mockReturnValueOnce(first)
+      .mockResolvedValueOnce(page([model("gpt-6-astra")], undefined));
+    const actor = createActor(request);
+
+    actor.dispatch({ type: "LOAD" });
+    await eventually(() => request.mock.calls.length === 1);
+    actor.dispatch({ type: "LOAD" });
+    await eventually(() => actor.getSnapshot().status === "ready");
+
+    expect(actor.getSnapshot().models.map((item) => item.model)).toEqual([
+      "gpt-6-astra",
+    ]);
+    resolveFirst(page([model("stale-model")], undefined));
+    await Promise.resolve();
+    expect(actor.getSnapshot().models.map((item) => item.model)).toEqual([
+      "gpt-6-astra",
+    ]);
+  });
 });
 
 function createActor(request: ReturnType<typeof vi.fn>) {

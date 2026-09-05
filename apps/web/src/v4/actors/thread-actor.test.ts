@@ -33,6 +33,7 @@ describe("v0.4 thread actor", () => {
     expect(gateway.openInputs[0]).toMatchObject({
       threadId: "thread-a",
       historyLimit: 50,
+      includeWorkingDirectory: true,
     });
   });
 

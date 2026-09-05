@@ -162,7 +162,7 @@ type CodexGenericEvent = {
 
 Direct 的未加密 HTTP Host Discovery 是独立、只读的 adapter，只输出公开 Host Profile 并负责 Origin、CORS/PNA 与 no-store 响应；它不得接触 Gateway session、Router、设备私钥内容或用户业务服务。Noise 握手 hello 与 cipher frame 必须使用共享 protocol parser，在进入密码学和路由处理前完成版本、长度、标识符、序号及 base64url 校验，Agent 不维护更宽松的私有解析器。恢复握手必须在创建 Gateway session 前拒绝已撤销设备；连接关闭必须通过 Scope 释放 session、listener、timer 和未完成分片预算。
 
-Agent composition root 只构造服务、绑定 Scope、连接控制面事件并完成静态装配，不直接声明业务 handler。用户 Gateway 方法在独立的 core handler registry 中按 host、workspace、model、thread、Queue 和 preferences 分组；Identity 与 Setup 使用各自的 handler map。`ModelCatalogService` 只负责 app-server 目录的运行时校验与稳定字段投影。`ThreadService` 是 thread 用例 facade，只编排 client、lease、workspace 和偏好锁；`ThreadSessionCoordinator` 独占每任务的权限 coordination fence、每 lease 一次 resume 和运行设置缓存。`AutoTitleService` 只接收已被 Codex 接受的 user message，在对应 turn 成功后用纯本地规则产生有界标题，并通过 `thread/name/set` 写回 app-server；它不调用模型、不持久化 prompt、不维护第二份 thread 名称。Codex JSON 运行时边界、权威 thread 到 CE timeline/summary 的纯投影、以及 thread settings 的双向转换分别位于独立模块。投影和设置转换模块不得保存会话状态或发起 app-server 请求，session coordinator 不得反向依赖 Gateway、Queue 或展示投影。
+Agent composition root 只构造服务、绑定 Scope、连接控制面事件并完成静态装配，不直接声明业务 handler。用户 Gateway 方法在独立的 core handler registry 中按 host、workspace、model、thread、Queue 和 preferences 分组；Identity 与 Setup 使用各自的 handler map。`ModelCatalogService` 只负责 app-server 目录的运行时校验与稳定字段投影。`SetupService` 把 Codex 更新和 app-server 切换视为一个完整生命周期：二进制变更前后都检查设备码登录、CE lease 与 app-server 权威 `thread/list`，分页覆盖 Web、TUI、Exec、IDE 和 subagent 来源；只有不存在活动任务且 app-server 状态可验证时才允许重启，`completed` 事件只在新运行时健康切换后发出。`ThreadService` 是 thread 用例 facade，只编排 client、lease、workspace 和偏好锁；`ThreadSessionCoordinator` 独占每任务的权限 coordination fence、每 lease 一次 resume 和运行设置缓存。`AutoTitleService` 只接收已被 Codex 接受的 user message，在对应 turn 成功后用纯本地规则产生有界标题，并通过 `thread/name/set` 写回 app-server；它不调用模型、不持久化 prompt、不维护第二份 thread 名称。Codex JSON 运行时边界、权威 thread 到 CE timeline/summary 的纯投影、以及 thread settings 的双向转换分别位于独立模块。投影和设置转换模块不得保存会话状态或发起 app-server 请求，session coordinator 不得反向依赖 Gateway、Queue 或展示投影。
 
 ### 5.1 Thread lease
 
@@ -180,7 +180,7 @@ Agent composition root 只构造服务、绑定 Scope、连接控制面事件并
 
 当已接受的 Web 或 Queue 消息具有可用标题且 app-server thread 尚无明确名称时，`AutoTitleService` 在 turn 完成前持有一个短期 effect 引用。只有收到相同 turn ID 的成功完成事件后，它才重新读取权威 `thread.name` 并在仍为空时调用 `thread/name/set`。每个 CE `turn/start` 调用都在发请求前显式建立短期 response observation，并在响应后的标题注册边界由 `finally` 释放；lease 只在该 observation 存在时按 turn ID 暂存提前到达的终态，TUI 等外部 client 的 turn 不进入缓存。Queue `turn/steer` 同样在请求前为当前 turn 建立引用计数的短期终态观察。这样既覆盖多个极短 turn 和 Steer 的乱序响应，又不缓存正文或重建连续事件 buffer。手动 Web 重命名会先等待已经发出的自动写入收口，再提交明确名称；TUI 或其他 client 的 `thread/name/updated` 在自动写入与冲突恢复期间也持续被观察，若连续出现多个明确名称则追踪到最新写入。成功的 service-owned 重命名只通过版本化 `thread/name/changed` 控制事件通知所有已认证任务列表重新读取权威摘要，事件不携带标题内容。通用短指令、失败或中断的 turn、已有名称以及任何自动命名错误都不得改写名称或改变原 mutation 结果；effect 释放后 lease 仍按正常 idle 规则关闭。
 
-`thread/open` 总是返回 app-server 权威快照、历史边界、当前状态、thread settings 和未解决 interaction。多个设备回答同一 interaction 时，broker 原子取出待处理项，第一个合法回答成功，其余设备收到 `interaction/resolved` 或明确失败。
+`thread/open` 总是返回 app-server 权威快照、历史边界、当前状态、thread settings 和未解决 interaction。Web 可通过 `includeWorkingDirectory: true` 同时请求 lease 从 app-server 恢复并经 Workspace 授权校验后的真实工作目录；该字段必须来自 thread `cwd`，不能用所属 Workspace 根目录近似。Agent 只在客户端显式请求时返回可选 `workingDirectory`，避免缓存旧 Web 因严格 output schema 收到未知字段。多个设备回答同一 interaction 时，broker 原子取出待处理项，第一个合法回答成功，其余设备收到 `interaction/resolved` 或明确失败。
 
 Web Thread actor 不维护独立的 `openedThreadId` 影子变量；切换和关闭目标由 reducer 写入 generation-bound effect。旧 `thread/open` 即使在取消后才返回，也不能改写后续 close 目标或把旧任务重新暴露为当前任务。Composer actor 只保存按 thread ID 隔离的内存草稿及 mutation 对账状态；草稿不是会话事实源，不能跨任务复用，失败反馈也必须归属到原任务。
 
@@ -217,7 +217,7 @@ request fingerprint 是完整、已验证 input 的 canonical SHA-256；数据�
 
 任务设置只把用户实际修改的字段发送给 app-server。Web 设置面板以 Gateway 返回的 `ThreadSettings` 和新 revision 直接更新 Thread actor，不能通过盲目重开任务伪造成功；面板在保存期间保持打开，明确区分 dirty、saving、reconciling、saved 和 error，并在新改动出现前保持成功反馈。结果未知或确定拒绝时才重新读取权威设置。`thread/open` 同步期间收到的 `thread/settings/updated` acknowledgement 必须抑制递归刷新，避免页面持续显示同步并反复切换 Composer 可用状态。
 
-新任务的 sandbox 与 approval 分别记录为“继承全局”或“本次覆盖”，model 与 effort 则是可选的本次覆盖。Web 的共享 Model Catalog actor 分页读取 `model/list`，创建页和任务设置面板共用纯选择模型与受支持 effort 投影，不维护两份硬编码模型清单。Web 只在至少一个权限字段继承时于提交边界重读一次 `preferences/read`，把该次读取的 `expectedPreferencesRevision`、可选 model/effort 和仅含显式权限覆盖字段的 settings 交给 `thread/start`。Agent 使用状态库现有的跨进程 coordination lock，在锁内读取并校验 revision、解析所有继承字段，并一直持有到 app-server 接受 `thread/start`；`preferences/update` 使用同一把锁，因此不能插入读取与 Codex 接受之间。两个权限字段都显式覆盖时不读取或锁定默认偏好。这里不引入偏好轮询、跨页面字符串 RPC 或浏览器影子事实源。
+新任务的 sandbox 与 approval 分别记录为“继承全局”或“本次覆盖”，model 与 effort 则是可选的本次覆盖。Web 的共享 Model Catalog actor 分页读取 `model/list`，创建页和任务设置面板共用纯选择模型与受支持 effort 投影，不维护两份硬编码模型清单。Actor 在进入模型选择界面以及 Codex 登录、更新或 app-server 重启完成后重新读取；新读取以 generation 取代尚未完成的旧读取，旧结果不得覆盖当前目录。这里不使用定时轮询，也不把模型目录持久化成浏览器事实源。Web 只在至少一个权限字段继承时于提交边界重读一次 `preferences/read`，把该次读取的 `expectedPreferencesRevision`、可选 model/effort 和仅含显式权限覆盖字段的 settings 交给 `thread/start`。Agent 使用状态库现有的跨进程 coordination lock，在锁内读取并校验 revision、解析所有继承字段，并一直持有到 app-server 接受 `thread/start`；`preferences/update` 使用同一把锁，因此不能插入读取与 Codex 接受之间。两个权限字段都显式覆盖时不读取或锁定默认偏好。这里不引入偏好轮询、跨页面字符串 RPC 或浏览器影子事实源。
 
 revision 冲突只保留仍与权威状态不同的最小 patch。patch 计算、权威 revision rebase 和失败恢复分类位于独立纯模型模块，React 对话框只持有草稿与展示反馈。尾随 `thread/open` 刷新必须继续在新 revision 上重放该 patch，直到权威值已经包含它、用户放弃或保存成功；若其他设备已经应用相同偏好，Web 直接同步并报告完成，不要求提交空 patch。
 

@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, rm } from "node:fs/promises";
+import { mkdtemp, mkdir, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -136,6 +136,54 @@ describe("ThreadService", () => {
     }
 
     expect(factory.client.methods).toEqual(["thread/resume", "thread/read"]);
+  });
+
+  it("returns the authoritative nested working directory only when requested", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "ce-thread-service-"));
+    directories.push(directory);
+    const workspacePath = join(directory, "workspace");
+    const workingDirectory = join(workspacePath, "nested", "project");
+    await mkdir(workingDirectory, { recursive: true });
+    const state = await UserStateDatabase.open(
+      join(directory, "state.sqlite"),
+      { create: true },
+    );
+    const scope = new Scope("thread-working-directory-test");
+    scopes.push(scope);
+    scope.defer(() => state.close());
+    const factory = new ThreadOpenFactory(workingDirectory);
+    const leases = new ThreadLeaseManager({ scope, clientFactory: factory });
+    const workspaces = new WorkspaceService(state.workspaces, {
+      home: directory,
+    });
+    await workspaces.add(workspacePath, "Workspace");
+    const service = new ThreadService({
+      scope,
+      clients: factory,
+      leases,
+      workspaces,
+      preferences: new PreferencesService(state.preferences),
+      settings: state.threadSettings,
+      titles: new AutoTitleService({ scope }),
+    });
+    const handle = await leases.acquire("thread-1", {
+      kind: "viewer",
+      id: "viewer-1",
+    });
+
+    try {
+      const legacy = await service.open(handle, { historyLimit: 100 });
+      const requested = await service.open(handle, {
+        historyLimit: 100,
+        includeWorkingDirectory: true,
+      });
+
+      expect(legacy).not.toHaveProperty("workingDirectory");
+      expect(requested.workingDirectory).toBe(await realpath(workingDirectory));
+      expect(requested.thread.workspaceId).toBe(legacy.thread.workspaceId);
+    } finally {
+      await handle.release();
+    }
   });
 
   it("resumes again when an idle task receives a new lease", async () => {

@@ -1,4 +1,5 @@
 import { Scope } from "@codex-everywhere/kernel";
+import type { CodexInstallProgressPhase } from "@codex-everywhere/protocol";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { HostConfig, HostConfigCoordination } from "../../host/config.js";
@@ -95,6 +96,51 @@ describe("SetupService", () => {
         .filter((event) => event.type === "setup/codex/install/progress")
         .map((event) => event.payload.phase),
     ).toEqual(["preparing", "installing", "verifying", "completed"]);
+    expect(fixture.supervisor.restart).toHaveBeenCalledOnce();
+  });
+
+  it("refuses an update before changing the binary when restart is unsafe", async () => {
+    const fixture = createFixture({ restartSafe: false });
+
+    await expect(
+      fixture.service.handlers["setup/codex/install"](
+        { version: 1 },
+        undefined as never,
+      ),
+    ).rejects.toThrow("active task");
+    expect(fixture.install).not.toHaveBeenCalled();
+    expect(fixture.supervisor.restart).not.toHaveBeenCalled();
+  });
+
+  it("does not update while an app-server task outside CE is active", async () => {
+    const fixture = createFixture();
+    fixture.runtime.threads = [
+      { id: "tui-task", status: { type: "active", activeFlags: [] } },
+    ];
+
+    await expect(
+      fixture.service.handlers["setup/codex/install"](
+        { version: 1 },
+        undefined as never,
+      ),
+    ).rejects.toMatchObject({ code: "APP_SERVER_BUSY" });
+    expect(fixture.install).not.toHaveBeenCalled();
+    expect(fixture.supervisor.restart).not.toHaveBeenCalled();
+  });
+
+  it("does not miss an active task in the archived catalog", async () => {
+    const fixture = createFixture();
+    fixture.runtime.archivedThreads = [
+      { id: "archived-task", status: { type: "active", activeFlags: [] } },
+    ];
+
+    await expect(
+      fixture.service.handlers["setup/app-server/restart"](
+        { version: 1 },
+        undefined as never,
+      ),
+    ).rejects.toMatchObject({ code: "APP_SERVER_BUSY" });
+    expect(fixture.supervisor.restart).not.toHaveBeenCalled();
   });
 
   it("owns device-code login until the matching completion notification", async () => {
@@ -184,9 +230,11 @@ function createFixture(options: { restartSafe?: boolean } = {}) {
     restart: vi.fn(async () => ({ started: true })),
   };
   const install = vi.fn(
-    async (input: { onProgress(phase: "installing" | "verifying"): void }) => {
+    async (input: { onProgress(phase: CodexInstallProgressPhase): void }) => {
+      input.onProgress("preparing");
       input.onProgress("installing");
       input.onProgress("verifying");
+      input.onProgress("completed");
       return {
         installed: true,
         binary: "/home/alice/.local/bin/codex",
@@ -241,6 +289,8 @@ function createFixture(options: { restartSafe?: boolean } = {}) {
 class FakeRuntime implements CodexClientFactoryPort {
   readonly clients: FakeClient[] = [];
   account: Record<string, unknown> | null = null;
+  threads: Record<string, unknown>[] = [];
+  archivedThreads: Record<string, unknown>[] = [];
 
   create(scope: Scope): Promise<CodexClient> {
     const client = new FakeClient(this);
@@ -261,7 +311,7 @@ class FakeClient implements CodexClient {
     this.#runtime = runtime;
   }
 
-  request<Result = unknown>(method: string): Promise<Result> {
+  request<Result = unknown>(method: string, params?: unknown): Promise<Result> {
     if (method === "account/read") {
       return Promise.resolve({
         account: this.#runtime.account,
@@ -274,6 +324,17 @@ class FakeClient implements CodexClient {
         loginId: "login-1",
         verificationUrl: "https://example.test/device",
         userCode: "ABCD-EFGH",
+      } as Result);
+    }
+    if (method === "thread/list") {
+      const archived =
+        typeof params === "object" &&
+        params !== null &&
+        "archived" in params &&
+        params.archived === true;
+      return Promise.resolve({
+        data: archived ? this.#runtime.archivedThreads : this.#runtime.threads,
+        nextCursor: null,
       } as Result);
     }
     return Promise.resolve({} as Result);
