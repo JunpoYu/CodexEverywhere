@@ -90,6 +90,13 @@ describe("Gateway API v2 method registry", () => {
     expectTypeOf<OutputOf<"thread/open">["workingDirectory"]>().toEqualTypeOf<
       string | undefined
     >();
+    expectTypeOf<InputOf<"setup/codex/version">>().toEqualTypeOf<{
+      version: 1;
+      includeRuntimeSwitchState?: true;
+    }>();
+    expectTypeOf<
+      OutputOf<"setup/codex/version">["runtimeSwitchState"]
+    >().toEqualTypeOf<"none" | "installing" | "restart-required" | undefined>();
   });
 
   it("fails closed for cached thread/start payloads without the revision guard", () => {

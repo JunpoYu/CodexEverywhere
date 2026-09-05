@@ -1,5 +1,6 @@
 import { Actor, type Scope } from "@codex-everywhere/kernel";
 import {
+  GatewayRemoteError,
   parseGatewayEventPayload,
   type GatewayEventEnvelopeV2,
   type OutputOf,
@@ -319,15 +320,10 @@ export function createThreadActor(scope: Scope, gateway: GatewayPort) {
           );
           if (!context.isCurrent()) return;
         }
-        const snapshot = await gateway.request(
-          "thread/open",
-          {
-            version: 1,
-            threadId: effect.threadId,
-            historyLimit: TIMELINE_PAGE_SIZE,
-            includeWorkingDirectory: true,
-          },
-          queryOptions(context.signal),
+        const snapshot = await openThreadWithWorkingDirectoryCompatibility(
+          gateway,
+          effect.threadId,
+          context.signal,
         );
         context.dispatch({ type: "OPENED", snapshot });
       } catch (error) {
@@ -348,6 +344,37 @@ export function createThreadActor(scope: Scope, gateway: GatewayPort) {
     },
     onEffectError: () => undefined,
   });
+}
+
+async function openThreadWithWorkingDirectoryCompatibility(
+  gateway: GatewayPort,
+  threadId: string,
+  signal: AbortSignal,
+): Promise<Snapshot> {
+  try {
+    return await gateway.request(
+      "thread/open",
+      {
+        version: 1,
+        threadId,
+        historyLimit: TIMELINE_PAGE_SIZE,
+        includeWorkingDirectory: true,
+      },
+      queryOptions(signal),
+    );
+  } catch (error) {
+    if (
+      !(error instanceof GatewayRemoteError) ||
+      error.code !== "INVALID_INPUT"
+    ) {
+      throw error;
+    }
+    return gateway.request(
+      "thread/open",
+      { version: 1, threadId, historyLimit: TIMELINE_PAGE_SIZE },
+      queryOptions(signal),
+    );
+  }
 }
 
 function appendNewHistoryIds(

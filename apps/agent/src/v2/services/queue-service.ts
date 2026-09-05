@@ -11,6 +11,7 @@ import type {
 import { QueueStateConflictError } from "../repositories/queue-repository.js";
 import type { AutoTitleServicePort } from "./auto-title-service.js";
 import { hasExplicitThreadName } from "./auto-title.js";
+import type { CodexRuntimeGatePort } from "./codex-runtime-gate.js";
 import type {
   ThreadLease,
   ThreadLeaseManager,
@@ -31,6 +32,7 @@ export interface QueueServiceOptions {
   readonly repository: QueueRepository;
   readonly leases: ThreadLeaseManager;
   readonly titles: AutoTitleServicePort;
+  readonly runtimeGate: CodexRuntimeGatePort;
   /** Resolves and authorizes a real workspace path without returning content. */
   readonly authorizeWorkspace: (path: string) => Promise<string>;
   readonly dispatchIntervalMs?: number;
@@ -43,6 +45,7 @@ export class QueueService {
   readonly #repository: QueueRepository;
   readonly #leases: ThreadLeaseManager;
   readonly #titles: AutoTitleServicePort;
+  readonly #runtimeGate: CodexRuntimeGatePort;
   readonly #authorizeWorkspace: (path: string) => Promise<string>;
   readonly #dispatchIntervalMs: number;
   #started = false;
@@ -53,6 +56,7 @@ export class QueueService {
     this.#repository = options.repository;
     this.#leases = options.leases;
     this.#titles = options.titles;
+    this.#runtimeGate = options.runtimeGate;
     this.#authorizeWorkspace = options.authorizeWorkspace;
     this.#dispatchIntervalMs = options.dispatchIntervalMs ?? 1_000;
     if (
@@ -114,6 +118,10 @@ export class QueueService {
   }
 
   async steer(itemId: string, replacementText: string): Promise<QueueRecord> {
+    return this.#runtimeGate.run(() => this.#steer(itemId, replacementText));
+  }
+
+  async #steer(itemId: string, replacementText: string): Promise<QueueRecord> {
     const current = await this.#repository.get(itemId);
     if (current === undefined) throw queueUnavailable(itemId);
     const handle = await this.#leases.acquire(current.threadId, {
@@ -189,6 +197,10 @@ export class QueueService {
   async #dispatchNext(): Promise<boolean> {
     const current = await this.#repository.nextPending();
     if (current === undefined) return false;
+    return this.#runtimeGate.run(() => this.#dispatchPending(current));
+  }
+
+  async #dispatchPending(current: QueueRecord): Promise<boolean> {
     const handle = await this.#leases.acquire(current.threadId, {
       kind: "queue",
       id: `queue-dispatch:${current.id}`,

@@ -21,6 +21,7 @@ import {
   type CodexSupervisorDependencies,
   type CodexSupervisorPort,
 } from "../services/codex-supervisor.js";
+import { CodexRuntimeGate } from "../services/codex-runtime-gate.js";
 import {
   IdentityService,
   type IdentityServiceConfiguration,
@@ -94,6 +95,7 @@ export interface AgentCompositionRoot {
   readonly threads: ThreadService;
   readonly workspaces: WorkspaceService;
   readonly preferences: PreferencesService;
+  readonly runtimeGate: CodexRuntimeGate;
   readonly identity?: IdentityService;
   readonly setup?: SetupService;
   readonly supervisor?: CodexSupervisorPort;
@@ -118,6 +120,7 @@ export const AGENT_SERVICE_TOKENS = {
   threads: createServiceToken<ThreadService>("agent.threads"),
   workspaces: createServiceToken<WorkspaceService>("agent.workspaces"),
   preferences: createServiceToken<PreferencesService>("agent.preferences"),
+  runtimeGate: createServiceToken<CodexRuntimeGate>("agent.codex-runtime-gate"),
   identity: createServiceToken<IdentityService>("agent.identity"),
   setup: createServiceToken<SetupService>("agent.setup"),
   supervisor: createServiceToken<CodexSupervisorPort>("agent.supervisor"),
@@ -138,6 +141,10 @@ export async function createAgentCompositionRoot(
       ...(options.home === undefined ? {} : { home: options.home }),
     });
     const preferences = new PreferencesService(options.state.preferences);
+    const runtimeGate = new CodexRuntimeGate({
+      scope,
+      coordination: options.state,
+    });
     const leases = new ThreadLeaseManager({
       scope,
       clientFactory: options.clients,
@@ -151,6 +158,7 @@ export async function createAgentCompositionRoot(
       repository: options.state.queue,
       leases,
       titles,
+      runtimeGate,
       authorizeWorkspace: (path) => workspaces.resolve(path),
     });
     const models = new ModelCatalogService({
@@ -165,12 +173,14 @@ export async function createAgentCompositionRoot(
       preferences,
       settings: options.state.threadSettings,
       titles,
+      runtimeGate,
       ...(options.appServerSocketPath === undefined
         ? {}
         : { appServerSocketPath: options.appServerSocketPath }),
     });
     registry.register(AGENT_SERVICE_TOKENS.workspaces, workspaces);
     registry.register(AGENT_SERVICE_TOKENS.preferences, preferences);
+    registry.register(AGENT_SERVICE_TOKENS.runtimeGate, runtimeGate);
     registry.register(AGENT_SERVICE_TOKENS.leases, leases);
     registry.register(AGENT_SERVICE_TOKENS.queue, queue);
     registry.register(AGENT_SERVICE_TOKENS.models, models);
@@ -227,6 +237,7 @@ export async function createAgentCompositionRoot(
             coordination: options.state,
             supervisor,
             clients: options.clients,
+            runtimeGate,
             ...(options.setup.userHome === undefined
               ? {}
               : { userHome: options.setup.userHome }),
@@ -353,6 +364,7 @@ export async function createAgentCompositionRoot(
       threads,
       workspaces,
       preferences,
+      runtimeGate,
       ...(identity === undefined ? {} : { identity }),
       ...(setup === undefined ? {} : { setup }),
       ...(supervisor === undefined ? {} : { supervisor }),

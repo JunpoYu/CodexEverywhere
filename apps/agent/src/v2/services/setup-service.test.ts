@@ -10,6 +10,7 @@ import type {
 } from "../../runtime/codex-app-server-client.js";
 import type { CodexClient } from "../codex/client.js";
 import type { CodexClientFactoryPort } from "../codex/client-factory.js";
+import { CodexRuntimeGate } from "./codex-runtime-gate.js";
 import { SetupService, type SetupServiceEvent } from "./setup-service.js";
 
 const scopes: Scope[] = [];
@@ -97,6 +98,53 @@ describe("SetupService", () => {
         .map((event) => event.payload.phase),
     ).toEqual(["preparing", "installing", "verifying", "completed"]);
     expect(fixture.supervisor.restart).toHaveBeenCalledOnce();
+    expect(fixture.runtimeSwitchState).toBeUndefined();
+    expect(fixture.restartSafetyLockDepths).toEqual([0, 1]);
+  });
+
+  it("persists an incomplete runtime switch when the final safety scan fails", async () => {
+    let safetyChecks = 0;
+    const fixture = createFixture({
+      assertRestartSafe: () => {
+        safetyChecks += 1;
+        if (safetyChecks === 2) throw new Error("late active task");
+      },
+    });
+    const events: SetupServiceEvent[] = [];
+    fixture.service.events.on("event", (event) => events.push(event));
+
+    await fixture.service.handlers["setup/codex/install"](
+      { version: 1 },
+      undefined as never,
+    );
+    await eventually(() =>
+      events.some(
+        (event) =>
+          event.type === "setup/codex/install/progress" &&
+          event.payload.phase === "failed",
+      ),
+    );
+
+    expect(fixture.supervisor.restart).not.toHaveBeenCalled();
+    expect(fixture.runtimeSwitchState).toMatchObject({
+      version: 1,
+      phase: "restart-required",
+      installedVersion: "1.4.0",
+    });
+    await expect(
+      fixture.service.handlers["setup/codex/version"](
+        { version: 1, includeRuntimeSwitchState: true },
+        undefined as never,
+      ),
+    ).resolves.toMatchObject({ runtimeSwitchState: "restart-required" });
+
+    await expect(
+      fixture.service.handlers["setup/app-server/restart"](
+        { version: 1 },
+        undefined as never,
+      ),
+    ).resolves.toEqual({ version: 1, restarted: true });
+    expect(fixture.runtimeSwitchState).toBeUndefined();
   });
 
   it("refuses an update before changing the binary when restart is unsafe", async () => {
@@ -202,7 +250,12 @@ describe("SetupService", () => {
   });
 });
 
-function createFixture(options: { restartSafe?: boolean } = {}) {
+function createFixture(
+  options: {
+    restartSafe?: boolean;
+    assertRestartSafe?: () => void;
+  } = {},
+) {
   const scope = new Scope("setup-test");
   scopes.push(scope);
   const paths = resolveHostPaths({
@@ -216,10 +269,20 @@ function createFixture(options: { restartSafe?: boolean } = {}) {
     network: { mode: "direct" },
   };
   const runtime = new FakeRuntime();
+  let runtimeLockDepth = 0;
+  const restartSafetyLockDepths: number[] = [];
   const coordination = {
-    acquireCoordinationLock: vi.fn(async () => ({
-      release: vi.fn(async () => undefined),
-    })),
+    acquireCoordinationLock: vi.fn(async (name: string) => {
+      if (name === "codex-runtime") runtimeLockDepth += 1;
+      let released = false;
+      return {
+        release: vi.fn(async () => {
+          if (released) return;
+          released = true;
+          if (name === "codex-runtime") runtimeLockDepth -= 1;
+        }),
+      };
+    }),
   } satisfies HostConfigCoordination;
   const supervisor = {
     inspect: vi.fn(async () => ({
@@ -227,10 +290,22 @@ function createFixture(options: { restartSafe?: boolean } = {}) {
       socketExists: true,
     })),
     ensure: vi.fn(async () => ({ started: false })),
-    restart: vi.fn(async () => ({ started: true })),
+    restart: vi.fn(async () => {
+      expect(runtimeLockDepth).toBe(1);
+      return { started: true };
+    }),
   };
+  let runtimeSwitchState:
+    | {
+        version: 1;
+        phase: "installing" | "restart-required";
+        createdAt: string;
+        installedVersion?: string;
+      }
+    | undefined;
   const install = vi.fn(
     async (input: { onProgress(phase: CodexInstallProgressPhase): void }) => {
+      expect(runtimeLockDepth).toBe(0);
       input.onProgress("preparing");
       input.onProgress("installing");
       input.onProgress("verifying");
@@ -249,7 +324,10 @@ function createFixture(options: { restartSafe?: boolean } = {}) {
     coordination,
     supervisor,
     clients: runtime,
+    runtimeGate: new CodexRuntimeGate({ scope, coordination }),
     assertRestartSafe: () => {
+      restartSafetyLockDepths.push(runtimeLockDepth);
+      options.assertRestartSafe?.();
       if (options.restartSafe === false) throw new Error("active task");
     },
     dependencies: {
@@ -272,6 +350,13 @@ function createFixture(options: { restartSafe?: boolean } = {}) {
       }),
       install,
       probeLatestVersion: async () => "1.2.3",
+      readRuntimeSwitchState: async () => runtimeSwitchState,
+      writeRuntimeSwitchState: async (_paths, state) => {
+        runtimeSwitchState = state;
+      },
+      clearRuntimeSwitchState: async () => {
+        runtimeSwitchState = undefined;
+      },
     },
   });
   return {
@@ -280,6 +365,10 @@ function createFixture(options: { restartSafe?: boolean } = {}) {
     coordination,
     supervisor,
     install,
+    restartSafetyLockDepths,
+    get runtimeSwitchState() {
+      return runtimeSwitchState;
+    },
     get config() {
       return config;
     },

@@ -17,6 +17,7 @@ import type { CodexClient } from "../codex/client.js";
 import type { CodexClientFactoryPort } from "../codex/client-factory.js";
 import { UserStateDatabase } from "../repositories/user-state-database.js";
 import { AutoTitleService } from "./auto-title-service.js";
+import type { CodexRuntimeGatePort } from "./codex-runtime-gate.js";
 import { PreferencesService } from "./preferences-service.js";
 import { ThreadLeaseManager } from "./thread-lease-manager.js";
 import { ThreadService } from "./thread-service.js";
@@ -24,6 +25,10 @@ import { WorkspaceService } from "./workspace-service.js";
 
 const directories: string[] = [];
 const scopes: Scope[] = [];
+const runtimeGate: CodexRuntimeGatePort = {
+  acquire: async () => ({ release: async () => undefined }),
+  run: (operation) => operation(),
+};
 
 afterEach(async () => {
   await Promise.allSettled(
@@ -63,6 +68,7 @@ describe("ThreadService", () => {
       preferences: new PreferencesService(state.preferences),
       settings: state.threadSettings,
       titles: new AutoTitleService({ scope }),
+      runtimeGate,
     });
 
     const result = await service.list({
@@ -111,6 +117,7 @@ describe("ThreadService", () => {
       preferences: new PreferencesService(state.preferences),
       settings: state.threadSettings,
       titles: new AutoTitleService({ scope }),
+      runtimeGate,
     });
     const first = await leases.acquire("thread-1", {
       kind: "viewer",
@@ -165,6 +172,7 @@ describe("ThreadService", () => {
       preferences: new PreferencesService(state.preferences),
       settings: state.threadSettings,
       titles: new AutoTitleService({ scope }),
+      runtimeGate,
     });
     const handle = await leases.acquire("thread-1", {
       kind: "viewer",
@@ -212,6 +220,7 @@ describe("ThreadService", () => {
       preferences: new PreferencesService(state.preferences),
       settings: state.threadSettings,
       titles: new AutoTitleService({ scope }),
+      runtimeGate,
     });
 
     const first = await leases.acquire("thread-1", {
@@ -264,6 +273,7 @@ describe("ThreadService", () => {
       preferences: new PreferencesService(state.preferences),
       settings: state.threadSettings,
       titles: new AutoTitleService({ scope }),
+      runtimeGate,
     });
     const handle = await leases.acquire("thread-1", {
       kind: "viewer",
@@ -311,6 +321,7 @@ describe("ThreadService", () => {
       preferences: new PreferencesService(state.preferences),
       settings: state.threadSettings,
       titles: new AutoTitleService({ scope }),
+      runtimeGate,
     });
     const handle = await leases.acquire("thread-1", {
       kind: "viewer",
@@ -401,6 +412,7 @@ describe("ThreadService", () => {
       preferences,
       settings: state.threadSettings,
       titles: new AutoTitleService({ scope }),
+      runtimeGate,
     });
 
     const result = await service.start({
@@ -488,6 +500,7 @@ describe("ThreadService", () => {
       preferences,
       settings: state.threadSettings,
       titles: new AutoTitleService({ scope }),
+      runtimeGate,
     });
 
     const start = service.start({
@@ -537,6 +550,7 @@ describe("ThreadService", () => {
       preferences,
       settings: state.threadSettings,
       titles: new AutoTitleService({ scope }),
+      runtimeGate,
     });
 
     const start = service.start({

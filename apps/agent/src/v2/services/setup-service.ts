@@ -25,10 +25,17 @@ import {
   probeLatestCodexVersion,
   type CodexInstallation,
 } from "../../runtime/codex-install.js";
+import {
+  clearCodexRuntimeSwitchState,
+  readCodexRuntimeSwitchState,
+  writeCodexRuntimeSwitchState,
+  type CodexRuntimeSwitchState,
+} from "../../runtime/codex-runtime-switch.js";
 import type { CodexClient } from "../codex/client.js";
 import type { CodexClientFactoryPort } from "../codex/client-factory.js";
 import type { SetupHandlerMap } from "../gateway/handler-types.js";
 import type { CodexSupervisorPort } from "./codex-supervisor.js";
+import type { CodexRuntimeGatePort } from "./codex-runtime-gate.js";
 
 const LOGIN_TTL_MS = 15 * 60_000;
 const LOGIN_POLL_INTERVAL_SECONDS = 5;
@@ -92,6 +99,14 @@ export interface SetupServiceDependencies {
   probeLatestVersion(options: {
     readonly env: NodeJS.ProcessEnv;
   }): Promise<string | undefined>;
+  readRuntimeSwitchState(
+    paths: HostPaths,
+  ): Promise<CodexRuntimeSwitchState | undefined>;
+  writeRuntimeSwitchState(
+    paths: HostPaths,
+    state: CodexRuntimeSwitchState,
+  ): Promise<void>;
+  clearRuntimeSwitchState(paths: HostPaths): Promise<void>;
 }
 
 const DEFAULT_DEPENDENCIES: SetupServiceDependencies = {
@@ -100,6 +115,9 @@ const DEFAULT_DEPENDENCIES: SetupServiceDependencies = {
   probeInstallation: probeCodexInstallation,
   install: installCodexForCurrentUser,
   probeLatestVersion: probeLatestCodexVersion,
+  readRuntimeSwitchState: readCodexRuntimeSwitchState,
+  writeRuntimeSwitchState: writeCodexRuntimeSwitchState,
+  clearRuntimeSwitchState: clearCodexRuntimeSwitchState,
 };
 
 type InstallOperation = {
@@ -128,6 +146,7 @@ export class SetupService {
   >;
   readonly #clients: CodexClientFactoryPort;
   readonly #dependencies: SetupServiceDependencies;
+  readonly #runtimeGate: CodexRuntimeGatePort;
   readonly #assertRestartSafe: () => void | Promise<void>;
   readonly #loginOperations = new Map<string, LoginOperation>();
   #installOperation: InstallOperation | undefined;
@@ -141,6 +160,7 @@ export class SetupService {
       "inspect" | "ensure" | "restart"
     >;
     readonly clients: CodexClientFactoryPort;
+    readonly runtimeGate: CodexRuntimeGatePort;
     readonly userHome?: string;
     readonly assertRestartSafe?: () => void | Promise<void>;
     readonly dependencies?: Partial<SetupServiceDependencies>;
@@ -150,6 +170,7 @@ export class SetupService {
     this.#coordination = options.coordination;
     this.#supervisor = options.supervisor;
     this.#clients = options.clients;
+    this.#runtimeGate = options.runtimeGate;
     this.#userHome = options.userHome ?? homedir();
     this.#assertRestartSafe = options.assertRestartSafe ?? (() => undefined);
     this.#dependencies = { ...DEFAULT_DEPENDENCIES, ...options.dependencies };
@@ -163,7 +184,8 @@ export class SetupService {
       "setup/network/configure": (input) => this.#configureNetwork(input),
       "setup/codex/install": (input) =>
         this.#startInstall(input.versionConstraint),
-      "setup/codex/version": () => this.#version(),
+      "setup/codex/version": (input) =>
+        this.#version(input.includeRuntimeSwitchState === true),
       "setup/codex/login/start": () => this.#startLogin(),
       "setup/codex/login/cancel": (input) =>
         this.#cancelLogin(input.operationId),
@@ -265,7 +287,13 @@ export class SetupService {
     this.#emitInstallProgress(operationId, "preparing");
     try {
       const config = await this.#dependencies.readConfig(this.#paths);
-      await this.#dependencies.install({
+      const createdAt = new Date().toISOString();
+      await this.#dependencies.writeRuntimeSwitchState(this.#paths, {
+        version: 1,
+        phase: "installing",
+        createdAt,
+      });
+      const installation = await this.#dependencies.install({
         userHome: this.#userHome,
         env: this.#environment(config),
         ...(versionConstraint === undefined ? {} : { versionConstraint }),
@@ -276,8 +304,20 @@ export class SetupService {
           }
         },
       });
-      await this.#assertRuntimeRestartSafe();
-      await this.#supervisor.restart();
+      const installedVersion = installation.version
+        ? (codexCliVersion(installation.version) ?? installation.version)
+        : undefined;
+      await this.#dependencies.writeRuntimeSwitchState(this.#paths, {
+        version: 1,
+        phase: "restart-required",
+        createdAt,
+        ...(installedVersion === undefined ? {} : { installedVersion }),
+      });
+      await this.#runtimeGate.run(async () => {
+        await this.#assertRuntimeRestartSafe();
+        await this.#supervisor.restart();
+        await this.#dependencies.clearRuntimeSwitchState(this.#paths);
+      });
       this.#emitInstallProgress(operationId, "completed");
     } catch (error) {
       this.#emitInstallProgress(operationId, "failed");
@@ -288,17 +328,22 @@ export class SetupService {
     }
   }
 
-  async #version() {
+  async #version(includeRuntimeSwitchState: boolean) {
     this.#scope.throwIfClosed();
     const config = await this.#dependencies.readConfig(this.#paths);
     const env = this.#environment(config);
-    const [installation, latestVersion] = await Promise.all([
-      this.#dependencies.probeInstallation({
-        userHome: this.#userHome,
-        env,
-      }),
-      this.#dependencies.probeLatestVersion({ env }),
-    ]);
+    const [installation, latestVersion, runtimeSwitchState] = await Promise.all(
+      [
+        this.#dependencies.probeInstallation({
+          userHome: this.#userHome,
+          env,
+        }),
+        this.#dependencies.probeLatestVersion({ env }),
+        includeRuntimeSwitchState
+          ? this.#dependencies.readRuntimeSwitchState(this.#paths)
+          : Promise.resolve(undefined),
+      ],
+    );
     const installedVersion = installation.version
       ? (codexCliVersion(installation.version) ?? installation.version)
       : undefined;
@@ -308,12 +353,17 @@ export class SetupService {
       relation =
         comparison < 0 ? "older" : comparison > 0 ? "newer" : "current";
     }
+    const runtimeSwitchPhase: "none" | "installing" | "restart-required" =
+      runtimeSwitchState?.phase ?? "none";
     return {
       version: 1 as const,
       installed: installation.installed,
       ...(installedVersion === undefined ? {} : { installedVersion }),
       ...(latestVersion === undefined ? {} : { latestVersion }),
       relation,
+      ...(includeRuntimeSwitchState
+        ? { runtimeSwitchState: runtimeSwitchPhase }
+        : {}),
     };
   }
 
@@ -389,16 +439,26 @@ export class SetupService {
   }
 
   async #logout() {
-    await this.#assertRestartSafe();
-    await this.#withClient(async (client) => {
-      await client.request("account/logout", {});
+    await this.#runtimeGate.run(async () => {
+      await this.#assertRestartSafe();
+      await this.#withClient(async (client) => {
+        await client.request("account/logout", {});
+      });
     });
     return { version: 1 as const, loggedOut: true as const };
   }
 
   async #restart() {
-    await this.#assertRuntimeRestartSafe();
-    await this.#supervisor.restart();
+    await this.#runtimeGate.run(async () => {
+      await this.#assertRuntimeRestartSafe();
+      await this.#supervisor.restart();
+      const pending = await this.#dependencies.readRuntimeSwitchState(
+        this.#paths,
+      );
+      if (pending?.phase === "restart-required") {
+        await this.#dependencies.clearRuntimeSwitchState(this.#paths);
+      }
+    });
     return { version: 1 as const, restarted: true as const };
   }
 

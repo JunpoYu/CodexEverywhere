@@ -21,6 +21,7 @@ export interface OnboardingState {
 type Event =
   | { readonly type: "INSPECT" }
   | { readonly type: "INSTALL_STARTED" }
+  | { readonly type: "RUNTIME_RESTARTED" }
   | { readonly type: "LOGIN_STARTED" }
   | { readonly type: "LOADED"; readonly status: OutputOf<"setup/status"> }
   | {
@@ -49,6 +50,11 @@ export function createOnboardingActor(scope: Scope, gateway: GatewayPort) {
           };
         case "INSTALL_STARTED":
           return { state: withoutInstallProgress(withoutError(state)) };
+        case "RUNTIME_RESTARTED":
+          return {
+            state: withoutInstallProgress(withoutError(state)),
+            preserveEffects: true,
+          };
         case "LOGIN_STARTED":
           return { state: withoutLoginCompletion(withoutError(state)) };
         case "LOADED": {

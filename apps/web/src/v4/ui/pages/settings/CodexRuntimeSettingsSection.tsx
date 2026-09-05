@@ -1,6 +1,7 @@
 import type { OutputOf } from "@codex-everywhere/protocol/v2";
 
 import type { OnboardingState } from "../../../actors/onboarding-actor.js";
+import { StatusMessage } from "../../components/StatusMessage.js";
 import styles from "./SettingsSections.module.css";
 
 export function CodexRuntimeSettingsSection(input: {
@@ -29,6 +30,14 @@ export function CodexRuntimeSettingsSection(input: {
           安装状态：
           {installPhaseLabel(input.onboarding.installProgress.phase)}
         </p>
+      )}
+      {input.version?.runtimeSwitchState === undefined ||
+      input.version.runtimeSwitchState === "none" ? null : (
+        <StatusMessage tone="warning">
+          {input.version.runtimeSwitchState === "restart-required"
+            ? "Codex 已更新，但 app-server 尚未切换到新版本。确认没有活动任务后点击重启。"
+            : "上次 Codex 更新未完整结束。请重新执行更新，完成前 app-server 可能仍使用旧版本。"}
+        </StatusMessage>
       )}
       <div className={styles.actions}>
         <button

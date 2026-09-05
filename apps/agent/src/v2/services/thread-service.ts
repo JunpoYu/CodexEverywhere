@@ -18,6 +18,7 @@ import {
 import type { ThreadSettingsRepository } from "../repositories/thread-settings-repository.js";
 import type { AutoTitleServicePort } from "./auto-title-service.js";
 import { hasExplicitThreadName } from "./auto-title.js";
+import type { CodexRuntimeGatePort } from "./codex-runtime-gate.js";
 import { InteractionAlreadyResolvedError } from "./interaction-broker.js";
 import type { PreferencesService } from "./preferences-service.js";
 import type {
@@ -48,6 +49,7 @@ export interface ThreadServiceOptions {
   readonly preferences: PreferencesService;
   readonly settings: ThreadSettingsRepository;
   readonly titles: AutoTitleServicePort;
+  readonly runtimeGate: CodexRuntimeGatePort;
   readonly appServerSocketPath?: string;
 }
 
@@ -59,6 +61,7 @@ export class ThreadService {
   readonly #workspaces: WorkspaceService;
   readonly #preferences: PreferencesService;
   readonly #titles: AutoTitleServicePort;
+  readonly #runtimeGate: CodexRuntimeGatePort;
   readonly #sessions: ThreadSessionCoordinator;
   readonly #appServerSocketPath: string | undefined;
 
@@ -69,6 +72,7 @@ export class ThreadService {
     this.#workspaces = options.workspaces;
     this.#preferences = options.preferences;
     this.#titles = options.titles;
+    this.#runtimeGate = options.runtimeGate;
     this.#sessions = new ThreadSessionCoordinator({
       scope: this.#scope,
       settings: options.settings,
@@ -189,6 +193,12 @@ export class ThreadService {
   }
 
   async start(
+    input: InputOf<"thread/start">,
+  ): Promise<OutputOf<"thread/start">> {
+    return this.#runtimeGate.run(() => this.#start(input));
+  }
+
+  async #start(
     input: InputOf<"thread/start">,
   ): Promise<OutputOf<"thread/start">> {
     const workspace = await this.#workspaces.get(input.workspaceId);
@@ -336,6 +346,13 @@ export class ThreadService {
   }
 
   async turnStart(
+    handle: ThreadLeaseHandle,
+    prompt: string,
+  ): Promise<OutputOf<"turn/start">> {
+    return this.#runtimeGate.run(() => this.#turnStart(handle, prompt));
+  }
+
+  async #turnStart(
     handle: ThreadLeaseHandle,
     prompt: string,
   ): Promise<OutputOf<"turn/start">> {

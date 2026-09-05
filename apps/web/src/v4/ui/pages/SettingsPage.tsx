@@ -17,6 +17,7 @@ import {
   rotateRecoveryCodes,
 } from "../../gateway/connect-host.js";
 import { durableMutation } from "../../gateway/durable-mutation.js";
+import { readCodexVersion } from "../../gateway/codex-version.js";
 import { mutationOptions, queryOptions } from "../../gateway/gateway-port.js";
 import { useActorState } from "../../actors/use-actor.js";
 import { StatusMessage } from "../components/StatusMessage.js";
@@ -85,8 +86,7 @@ export function SettingsPage() {
         if (!controller.signal.aborted) setAuth(nextAuth);
       })
       .catch(reportFailure);
-    void runtime.gateway
-      .request("setup/codex/version", { version: 1 }, options)
+    void readCodexVersion(runtime.gateway, controller.signal)
       .then((nextVersion) => {
         if (!controller.signal.aborted) setCodexVersion(nextVersion);
       })
@@ -98,12 +98,7 @@ export function SettingsPage() {
     const phase = onboarding.installProgress?.phase;
     if (phase !== "completed" && phase !== "failed") return;
     const controller = new AbortController();
-    void runtime.gateway
-      .request(
-        "setup/codex/version",
-        { version: 1 },
-        queryOptions(controller.signal),
-      )
+    void readCodexVersion(runtime.gateway, controller.signal)
       .then((nextVersion) => {
         if (!controller.signal.aborted) setCodexVersion(nextVersion);
       })
@@ -316,15 +311,14 @@ export function SettingsPage() {
   };
 
   const restartAppServer = () => {
-    void runLifecycle(
-      () =>
-        runtime.gateway.request(
-          "setup/app-server/restart",
-          { version: 1 },
-          mutationOptions(),
-        ),
-      "app-server 已重启；当前任务将从权威状态重新打开",
-    ).then((restarted) => {
+    void runLifecycle(async () => {
+      await runtime.gateway.request(
+        "setup/app-server/restart",
+        { version: 1 },
+        mutationOptions(),
+      );
+      runtime.onboarding.dispatch({ type: "RUNTIME_RESTARTED" });
+    }, "app-server 已重启；当前任务将从权威状态重新打开").then((restarted) => {
       const threadId = runtime.thread.getSnapshot().threadId;
       if (restarted && threadId !== undefined) {
         runtime.thread.dispatch({ type: "OPEN", threadId });

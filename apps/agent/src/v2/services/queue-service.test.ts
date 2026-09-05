@@ -13,12 +13,17 @@ import type { CodexClient } from "../codex/client.js";
 import type { CodexClientFactoryPort } from "../codex/client-factory.js";
 import { UserStateDatabase } from "../repositories/user-state-database.js";
 import { AutoTitleService } from "./auto-title-service.js";
+import type { CodexRuntimeGatePort } from "./codex-runtime-gate.js";
 import { QueueService } from "./queue-service.js";
 import { ThreadLeaseManager } from "./thread-lease-manager.js";
 
 const directories: string[] = [];
 const scopes: Scope[] = [];
 const databases: UserStateDatabase[] = [];
+const runtimeGate: CodexRuntimeGatePort = {
+  acquire: async () => ({ release: async () => undefined }),
+  run: (operation) => operation(),
+};
 
 afterEach(async () => {
   await Promise.allSettled(scopes.splice(0).map((scope) => scope.close()));
@@ -233,6 +238,7 @@ async function createFixture(): Promise<Fixture> {
     repository: database.queue,
     leases,
     titles,
+    runtimeGate,
     authorizeWorkspace: async (path) => path,
     dispatchIntervalMs: 60_000,
   });

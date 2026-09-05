@@ -43,6 +43,7 @@ import {
 } from "./runtime/app-server-supervisor.js";
 import { probeCodexInstallation } from "./runtime/codex-install.js";
 import { tuiArguments, tuiExitGuidance } from "./runtime/tui-launch.js";
+import { CODEX_RUNTIME_GATE_LOCK } from "./v2/services/codex-runtime-gate.js";
 import {
   startTuiPermissionProxy,
   tuiV4ThreadPermissionOptions,
@@ -449,6 +450,8 @@ program
           upstreamSocketPath: paths.appServerSocket,
           runtimeDir: paths.runtimeDir,
           ...tuiV4ThreadPermissionOptions(tuiState.threadSettings),
+          acquireRuntimeMutation: () =>
+            tuiState.acquireCoordinationLock(CODEX_RUNTIME_GATE_LOCK),
         });
         process.exitCode = await runInteractive(
           runtime.codexBinary,

@@ -67,7 +67,7 @@ CE 不重新实现 AgentLoop。thread、turn、工具活动、审批请求和执
 
 - 首次配对后可注册 Passkey；也可设置与 SSH 完全独立的 OPAQUE CE 密码。
 - 新设备可使用 Passkey、CE 密码或恢复码登录，不依赖 HPC CLI、旧设备批准或设备白名单。
-- PWA 内可配置直连/代理、安装或更新用户自己的 Codex、执行官方设备码登录、退出 Codex 账号和安全重启 app-server。Codex 更新完成表示新二进制已安全切换到长期 app-server；切换前后都会从 app-server 权威检查 Web、TUI、Exec、IDE 与 subagent 的活动任务，存在活动 turn 或设备码登录时拒绝切换而不会中断工作。
+- PWA 内可配置直连/代理、安装或更新用户自己的 Codex、执行官方设备码登录、退出 Codex 账号和安全重启 app-server。Codex 更新完成表示新二进制已安全切换到长期 app-server；同一用户的 Web、Queue 和 `ce tui` 启动请求与检查/重启共用跨进程栅栏，权威检查同时覆盖 TUI、Exec、IDE 与 subagent 的活动任务。存在活动 turn 或设备码登录时拒绝切换而不会中断工作；直接连接 app-server、绕过 CE 的外部客户端必须由用户先停止。
 - 临时模式不把 Host Profile、设备私钥、会话票据或业务缓存写入 IndexedDB/localStorage。
 - 恢复码只展示一次，宿主机只保存哈希；轮换会使旧码全部失效。
 

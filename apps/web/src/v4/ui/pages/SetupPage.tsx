@@ -7,6 +7,7 @@ import type {
 
 import { useActorState } from "../../actors/use-actor.js";
 import { durableMutation } from "../../gateway/durable-mutation.js";
+import { readCodexVersion } from "../../gateway/codex-version.js";
 import { mutationOptions, queryOptions } from "../../gateway/gateway-port.js";
 import { Icon } from "../components/Icon.js";
 import { StatusMessage } from "../components/StatusMessage.js";
@@ -30,8 +31,7 @@ export function SetupPage() {
   useEffect(() => {
     if (onboarding.status?.codexAuthenticated) setLogin(undefined);
     if (!onboarding.status?.codexInstalled) return;
-    void runtime.gateway
-      .request("setup/codex/version", { version: 1 }, queryOptions())
+    void readCodexVersion(runtime.gateway)
       .then(setVersion)
       .catch(() => undefined);
   }, [onboarding.status, runtime]);
@@ -155,12 +155,22 @@ export function SetupPage() {
             Codex CLI 安装在当前 Linux 用户的 <code>~/.local</code>。
           </p>
           {version === undefined ? null : (
-            <small>
-              已安装 {version.installedVersion ?? "未知版本"}
-              {version.latestVersion === undefined
-                ? ""
-                : ` · 最新 ${version.latestVersion} · ${version.relation}`}
-            </small>
+            <>
+              <small>
+                已安装 {version.installedVersion ?? "未知版本"}
+                {version.latestVersion === undefined
+                  ? ""
+                  : ` · 最新 ${version.latestVersion} · ${version.relation}`}
+              </small>
+              {version.runtimeSwitchState === undefined ||
+              version.runtimeSwitchState === "none" ? null : (
+                <StatusMessage tone="warning">
+                  {version.runtimeSwitchState === "restart-required"
+                    ? "Codex 已安装，但 app-server 尚未切换；请在没有活动任务时重启 app-server。"
+                    : "上次更新未完整结束，请重新执行 Codex 更新。"}
+                </StatusMessage>
+              )}
+            </>
           )}
           {onboarding.installProgress === undefined ? null : (
             <p role="status">
