@@ -70,8 +70,10 @@ type PendingPermissionRequest = {
     | "thread/fork"
     | "thread/settings/update"
     | "thread/delete"
+    | "thread/compact/start"
     | "turn/start"
-    | "turn/steer";
+    | "turn/steer"
+    | "review/start";
   params: Record<string, unknown>;
   observation?: ThreadSettingsObservation;
   lease?: ThreadSettingsMutationLease;
@@ -209,8 +211,10 @@ export async function startTuiPermissionProxy(options: {
                   pending = { method, params: message.params };
                   const needsRuntimeLease =
                     method === "thread/start" ||
+                    method === "thread/compact/start" ||
                     method === "turn/start" ||
-                    method === "turn/steer";
+                    method === "turn/steer" ||
+                    method === "review/start";
                   if (needsRuntimeLease && options.acquireRuntimeMutation) {
                     pending.runtimeLease =
                       await options.acquireRuntimeMutation();
@@ -503,8 +507,10 @@ function permissionRequestMethod(
     value === "thread/resume" ||
     value === "thread/fork" ||
     value === "thread/delete" ||
+    value === "thread/compact/start" ||
     value === "turn/start" ||
-    value === "turn/steer"
+    value === "turn/steer" ||
+    value === "review/start"
   ) {
     return value;
   }

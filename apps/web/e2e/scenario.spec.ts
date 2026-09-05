@@ -639,6 +639,22 @@ test("Codex 版本读取失败不会阻断偏好与身份设置", async ({ page 
   await expect(page.getByText(/app-server 健康/u)).toBeVisible();
 });
 
+test("手动重启后刷新运行时切换状态", async ({ page }) => {
+  await openScenario(page, "&scenarioRuntimeSwitchRequired=1");
+  await navigateTo(page, "/settings");
+
+  const pendingMessage = page.getByText(
+    "Codex 已更新，但 app-server 尚未切换到新版本。确认没有活动任务后点击重启。",
+  );
+  await expect(pendingMessage).toBeVisible();
+  await page.getByRole("button", { name: "重启 app-server" }).click();
+
+  await expect(
+    page.getByText("app-server 已重启；当前任务将从权威状态重新打开"),
+  ).toBeVisible();
+  await expect(pendingMessage).toBeHidden();
+});
+
 test("全局设置已由其他设备应用时直接收口为成功", async ({ page }) => {
   await openScenario(page, "&scenarioPreferencesAlreadyApplied=1");
   await navigateTo(page, "/settings");

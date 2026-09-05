@@ -75,7 +75,9 @@ describe("TUI permission inheritance proxy", () => {
         upstreamMessages.push(message);
         if (
           message.method === "thread/start" ||
-          message.method === "turn/start"
+          message.method === "thread/compact/start" ||
+          message.method === "turn/start" ||
+          message.method === "review/start"
         ) {
           runtimeDepthsAtUpstream.push(runtimeAcquisitions - runtimeReleases);
         }
@@ -205,6 +207,25 @@ describe("TUI permission inheritance proxy", () => {
         },
       }),
     );
+    await sendAndWait(
+      client,
+      JSON.stringify({
+        id: 6,
+        method: "review/start",
+        params: {
+          threadId: "thread-1",
+          target: { type: "uncommittedChanges" },
+        },
+      }),
+    );
+    await sendAndWait(
+      client,
+      JSON.stringify({
+        id: 7,
+        method: "thread/compact/start",
+        params: { threadId: "thread-1" },
+      }),
+    );
 
     expect(
       upstreamMessages
@@ -251,6 +272,8 @@ describe("TUI permission inheritance proxy", () => {
       },
       { id: 4, approvalPolicy: "on-request", sandbox: "read-only" },
       { id: 5, approvalPolicy: undefined, sandbox: undefined },
+      { id: 6, approvalPolicy: undefined, sandbox: undefined },
+      { id: 7, approvalPolicy: undefined, sandbox: undefined },
     ]);
     expect(firstResume.result).toMatchObject({
       approvalPolicy: "never",
@@ -285,9 +308,9 @@ describe("TUI permission inheritance proxy", () => {
         sandboxPolicy: { type: "readOnly", networkAccess: false },
       },
     ]);
-    expect(runtimeAcquisitions).toBe(2);
-    expect(runtimeReleases).toBe(2);
-    expect(runtimeDepthsAtUpstream).toEqual([1, 1]);
+    expect(runtimeAcquisitions).toBe(4);
+    expect(runtimeReleases).toBe(4);
+    expect(runtimeDepthsAtUpstream).toEqual([1, 1, 1, 1]);
     await expect(
       repository.applyToResume({ threadId: "thread-1" }),
     ).resolves.toMatchObject({
@@ -305,7 +328,7 @@ describe("TUI permission inheritance proxy", () => {
     await sendAndWait(
       client,
       JSON.stringify({
-        id: 6,
+        id: 8,
         method: "thread/delete",
         params: { threadId: "thread-new" },
       }),

@@ -39,6 +39,7 @@ export interface ScenarioGatewayOptions {
   readonly failWorkspaceListAfterMutationOnce?: boolean;
   readonly longConversation?: boolean;
   readonly longWorkspace?: boolean;
+  readonly runtimeSwitchRequired?: boolean;
   readonly preferencesAlreadyAppliedConflictOnce?: boolean;
   readonly preferencesConflictRefreshFailureOnce?: boolean;
   readonly threadSettingsConflictOnce?: boolean;
@@ -68,6 +69,7 @@ export class ScenarioGateway implements GatewayPort {
   #delaySecondPreferencesReadOnce: boolean;
   #failSecondCodexVersionReadOnce: boolean;
   #codexVersionReads = 0;
+  #runtimeSwitchState: "none" | "restart-required";
   #failFirstPreferencesReadOnce: boolean;
   #taskPrerequisiteFailureDisarmScheduled = false;
   #unmatchedWorkspaceReads = 0;
@@ -96,6 +98,9 @@ export class ScenarioGateway implements GatewayPort {
       options.delaySecondPreferencesReadOnce ?? false;
     this.#failSecondCodexVersionReadOnce =
       options.failSecondCodexVersionReadOnce ?? false;
+    this.#runtimeSwitchState = options.runtimeSwitchRequired
+      ? "restart-required"
+      : "none";
     this.#failFirstPreferencesReadOnce =
       options.failFirstPreferencesReadOnce ?? false;
     this.#failWorkspaceListAfterMutationOnce =
@@ -351,6 +356,9 @@ export class ScenarioGateway implements GatewayPort {
           ...(this.#codexInstalled ? { installedVersion: "scenario" } : {}),
           latestVersion: "scenario",
           relation: this.#codexInstalled ? "current" : "unknown",
+          ...(record.includeRuntimeSwitchState === true
+            ? { runtimeSwitchState: this.#runtimeSwitchState }
+            : {}),
         };
       case "setup/codex/login/start": {
         const operationId = crypto.randomUUID();
@@ -377,6 +385,7 @@ export class ScenarioGateway implements GatewayPort {
         this.#codexAuthenticated = false;
         return { version: 1, loggedOut: true };
       case "setup/app-server/restart":
+        this.#runtimeSwitchState = "none";
         return { version: 1, restarted: true };
       case "workspace/list":
         if (this.#workspaceListFailureArmed) {

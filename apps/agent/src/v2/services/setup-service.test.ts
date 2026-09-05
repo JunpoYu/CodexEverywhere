@@ -10,7 +10,10 @@ import type {
 } from "../../runtime/codex-app-server-client.js";
 import type { CodexClient } from "../codex/client.js";
 import type { CodexClientFactoryPort } from "../codex/client-factory.js";
-import { CodexRuntimeGate } from "./codex-runtime-gate.js";
+import {
+  CodexRuntimeGate,
+  type CodexRuntimeGatePort,
+} from "./codex-runtime-gate.js";
 import { SetupService, type SetupServiceEvent } from "./setup-service.js";
 
 const scopes: Scope[] = [];
@@ -225,6 +228,33 @@ describe("SetupService", () => {
     });
   });
 
+  it("fences device-login acceptance from an app-server restart", async () => {
+    const runtimeGate = new SerializedRuntimeGate();
+    const fixture = createFixture({ runtimeGate });
+    const resolveLoginStart = fixture.runtime.deferLoginStart();
+
+    const login = fixture.service.handlers["setup/codex/login/start"](
+      { version: 1 },
+      undefined as never,
+    );
+    await eventually(() => fixture.runtime.loginStartRequests === 1);
+
+    const restart = fixture.service.handlers["setup/app-server/restart"](
+      { version: 1 },
+      undefined as never,
+    );
+    const restartExpectation = expect(restart).rejects.toMatchObject({
+      code: "APP_SERVER_BUSY",
+    });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(fixture.supervisor.restart).not.toHaveBeenCalled();
+
+    resolveLoginStart();
+    await expect(login).resolves.toMatchObject({ operationId: "login-1" });
+    await restartExpectation;
+    expect(fixture.supervisor.restart).not.toHaveBeenCalled();
+  });
+
   it("checks active work before forcing an app-server restart", async () => {
     const fixture = createFixture({ restartSafe: false });
 
@@ -254,6 +284,7 @@ function createFixture(
   options: {
     restartSafe?: boolean;
     assertRestartSafe?: () => void;
+    runtimeGate?: CodexRuntimeGatePort;
   } = {},
 ) {
   const scope = new Scope("setup-test");
@@ -324,7 +355,8 @@ function createFixture(
     coordination,
     supervisor,
     clients: runtime,
-    runtimeGate: new CodexRuntimeGate({ scope, coordination }),
+    runtimeGate:
+      options.runtimeGate ?? new CodexRuntimeGate({ scope, coordination }),
     assertRestartSafe: () => {
       restartSafetyLockDepths.push(runtimeLockDepth);
       options.assertRestartSafe?.();
@@ -380,6 +412,22 @@ class FakeRuntime implements CodexClientFactoryPort {
   account: Record<string, unknown> | null = null;
   threads: Record<string, unknown>[] = [];
   archivedThreads: Record<string, unknown>[] = [];
+  loginStartRequests = 0;
+  #loginStartResponse: Promise<Record<string, unknown>> | undefined;
+  #resolveLoginStart: (() => void) | undefined;
+
+  deferLoginStart(): () => void {
+    this.#loginStartResponse = new Promise((resolve) => {
+      this.#resolveLoginStart = () => resolve(deviceLoginResponse());
+    });
+    return () => this.#resolveLoginStart?.();
+  }
+
+  loginStart<Result>(): Promise<Result> {
+    this.loginStartRequests += 1;
+    return (this.#loginStartResponse ??
+      Promise.resolve(deviceLoginResponse())) as Promise<Result>;
+  }
 
   create(scope: Scope): Promise<CodexClient> {
     const client = new FakeClient(this);
@@ -408,12 +456,7 @@ class FakeClient implements CodexClient {
       } as Result);
     }
     if (method === "account/login/start") {
-      return Promise.resolve({
-        type: "chatgptDeviceCode",
-        loginId: "login-1",
-        verificationUrl: "https://example.test/device",
-        userCode: "ABCD-EFGH",
-      } as Result);
+      return this.#runtime.loginStart<Result>();
     }
     if (method === "thread/list") {
       const archived =
@@ -455,6 +498,45 @@ class FakeClient implements CodexClient {
     for (const listener of [...this.#closes]) listener();
     return Promise.resolve();
   }
+}
+
+class SerializedRuntimeGate implements CodexRuntimeGatePort {
+  #tail = Promise.resolve();
+
+  async acquire(): Promise<{ release(): Promise<void> }> {
+    const previous = this.#tail;
+    let releaseNext!: () => void;
+    this.#tail = new Promise<void>((resolve) => {
+      releaseNext = resolve;
+    });
+    await previous;
+    let released = false;
+    return {
+      release: async () => {
+        if (released) return;
+        released = true;
+        releaseNext();
+      },
+    };
+  }
+
+  async run<Result>(operation: () => Promise<Result>): Promise<Result> {
+    const lease = await this.acquire();
+    try {
+      return await operation();
+    } finally {
+      await lease.release();
+    }
+  }
+}
+
+function deviceLoginResponse(): Record<string, unknown> {
+  return {
+    type: "chatgptDeviceCode",
+    loginId: "login-1",
+    verificationUrl: "https://example.test/device",
+    userCode: "ABCD-EFGH",
+  };
 }
 
 async function eventually(predicate: () => boolean): Promise<void> {

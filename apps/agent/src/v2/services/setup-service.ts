@@ -368,74 +368,78 @@ export class SetupService {
   }
 
   async #startLogin() {
-    this.#scope.throwIfClosed();
-    await this.#supervisor.ensure();
-    const operationScope = this.#scope.fork(`codex-login-${randomUUID()}`);
-    try {
-      const client = await this.#clients.create(operationScope);
-      let expectedLoginId: string | undefined;
-      operationScope.defer(
-        client.onNotification((notification) => {
-          if (notification.method !== "account/login/completed") return;
-          const completion = parseLoginCompletion(notification.params);
-          if (
-            completion === undefined ||
-            expectedLoginId === undefined ||
-            (completion.loginId !== null &&
-              completion.loginId !== expectedLoginId)
-          ) {
-            return;
-          }
-          void this.#completeLogin(
-            expectedLoginId,
-            completion.success,
-            completion.error,
-          );
-        }),
-      );
-      const response = parseLoginStart(
-        await client.request("account/login/start", {
-          type: "chatgptDeviceCode",
-        }),
-      );
-      expectedLoginId = response.loginId;
-      const operation: LoginOperation = {
-        id: response.loginId,
-        scope: operationScope,
-        client,
-      };
-      this.#loginOperations.set(operation.id, operation);
-      operationScope.setTimeout(() => {
-        void this.#expireLogin(operation.id);
-      }, LOGIN_TTL_MS);
-      return {
-        version: 1 as const,
-        operationId: operation.id,
-        verificationUri: response.verificationUrl,
-        userCode: response.userCode,
-        expiresAt: new Date(Date.now() + LOGIN_TTL_MS).toISOString(),
-        intervalSeconds: LOGIN_POLL_INTERVAL_SECONDS,
-      };
-    } catch (error) {
-      await operationScope.close("codex-login-start-failed");
-      throw error;
-    }
+    return this.#runtimeGate.run(async () => {
+      this.#scope.throwIfClosed();
+      await this.#supervisor.ensure();
+      const operationScope = this.#scope.fork(`codex-login-${randomUUID()}`);
+      try {
+        const client = await this.#clients.create(operationScope);
+        let expectedLoginId: string | undefined;
+        operationScope.defer(
+          client.onNotification((notification) => {
+            if (notification.method !== "account/login/completed") return;
+            const completion = parseLoginCompletion(notification.params);
+            if (
+              completion === undefined ||
+              expectedLoginId === undefined ||
+              (completion.loginId !== null &&
+                completion.loginId !== expectedLoginId)
+            ) {
+              return;
+            }
+            void this.#completeLogin(
+              expectedLoginId,
+              completion.success,
+              completion.error,
+            );
+          }),
+        );
+        const response = parseLoginStart(
+          await client.request("account/login/start", {
+            type: "chatgptDeviceCode",
+          }),
+        );
+        expectedLoginId = response.loginId;
+        const operation: LoginOperation = {
+          id: response.loginId,
+          scope: operationScope,
+          client,
+        };
+        this.#loginOperations.set(operation.id, operation);
+        operationScope.setTimeout(() => {
+          void this.#expireLogin(operation.id);
+        }, LOGIN_TTL_MS);
+        return {
+          version: 1 as const,
+          operationId: operation.id,
+          verificationUri: response.verificationUrl,
+          userCode: response.userCode,
+          expiresAt: new Date(Date.now() + LOGIN_TTL_MS).toISOString(),
+          intervalSeconds: LOGIN_POLL_INTERVAL_SECONDS,
+        };
+      } catch (error) {
+        await operationScope.close("codex-login-start-failed");
+        throw error;
+      }
+    });
   }
 
   async #cancelLogin(operationId: string) {
-    const operation = this.#loginOperations.get(operationId);
-    if (operation === undefined) {
+    return this.#runtimeGate.run(async () => {
+      const operation = this.#loginOperations.get(operationId);
+      if (operation === undefined) {
+        return { version: 1 as const, cancelled: true as const };
+      }
+      this.#loginOperations.delete(operationId);
+      try {
+        await operation.client.request("account/login/cancel", {
+          loginId: operationId,
+        });
+      } finally {
+        await operation.scope.close("codex-login-cancelled");
+      }
       return { version: 1 as const, cancelled: true as const };
-    }
-    this.#loginOperations.delete(operationId);
-    try {
-      await operation.client.request("account/login/cancel", {
-        loginId: operationId,
-      });
-    } finally {
-      await operation.scope.close("codex-login-cancelled");
-    }
-    return { version: 1 as const, cancelled: true as const };
+    });
   }
 
   async #logout() {

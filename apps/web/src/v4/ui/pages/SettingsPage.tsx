@@ -323,7 +323,12 @@ export function SettingsPage() {
       if (restarted && threadId !== undefined) {
         runtime.thread.dispatch({ type: "OPEN", threadId });
       }
-      if (restarted) runtime.models.dispatch({ type: "LOAD" });
+      if (restarted) {
+        runtime.models.dispatch({ type: "LOAD" });
+        void readCodexVersion(runtime.gateway, runtime.scope.signal)
+          .then(setCodexVersion)
+          .catch((reason: unknown) => setError(message(reason)));
+      }
     });
   };
 

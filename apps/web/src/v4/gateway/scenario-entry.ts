@@ -23,6 +23,7 @@ export function createScenarioConnection(kind: "user" | "admin"): {
       ),
       longConversation: search.has("scenarioLongConversation"),
       longWorkspace: search.has("scenarioLongWorkspace"),
+      runtimeSwitchRequired: search.has("scenarioRuntimeSwitchRequired"),
       preferencesAlreadyAppliedConflictOnce: search.has(
         "scenarioPreferencesAlreadyApplied",
       ),
