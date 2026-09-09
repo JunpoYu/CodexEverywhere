@@ -120,8 +120,16 @@ export class ThreadService {
             workspace !== undefined &&
             selected.some((candidate) => candidate.id === workspace.id)
           ) {
+            const summary = projectThreadSummary(
+              thread,
+              workspace,
+              input.archived,
+            );
+            const lease = this.#leases.get(summary.id);
             collected.push(
-              projectThreadSummary(thread, workspace, input.archived),
+              lease === undefined
+                ? summary
+                : { ...summary, state: lease.state },
             );
           }
         }

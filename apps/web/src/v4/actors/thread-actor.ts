@@ -37,6 +37,8 @@ export interface ThreadActorState {
   readonly snapshot?: Snapshot;
   /** Latest app-server usage projection for the visible thread; never persisted. */
   readonly contextUsage?: ThreadContextUsage;
+  /** Whether a newer usage event arrived after the current open began. */
+  readonly contextUsageChangedDuringOpen: boolean;
   /** Stable IDs introduced only by explicit backward pagination. */
   readonly loadedHistoryItemIds: readonly string[];
   readonly refreshing?: boolean;
@@ -87,6 +89,7 @@ export function createThreadActor(scope: Scope, gateway: GatewayPort) {
       status: "closed",
       historyStatus: "idle",
       loadedHistoryItemIds: [],
+      contextUsageChangedDuringOpen: false,
     },
     reducer: (state, event) => {
       switch (event.type) {
@@ -112,7 +115,11 @@ export function createThreadActor(scope: Scope, gateway: GatewayPort) {
               };
             }
             return {
-              state: { ...state, refreshing: true },
+              state: {
+                ...state,
+                refreshing: true,
+                contextUsageChangedDuringOpen: false,
+              },
               effects: [{ type: "FETCH", threadId: event.threadId }],
             };
           }
@@ -122,6 +129,7 @@ export function createThreadActor(scope: Scope, gateway: GatewayPort) {
               threadId: event.threadId,
               historyStatus: "idle",
               loadedHistoryItemIds: [],
+              contextUsageChangedDuringOpen: false,
             },
             effects: [
               {
@@ -146,7 +154,8 @@ export function createThreadActor(scope: Scope, gateway: GatewayPort) {
               );
           const contextUsage =
             event.snapshot.contextUsage ??
-            (state.threadId === event.snapshot.thread.id
+            (state.contextUsageChangedDuringOpen &&
+            state.threadId === event.snapshot.thread.id
               ? state.contextUsage
               : undefined);
           const nextState: ThreadActorState = {
@@ -159,6 +168,7 @@ export function createThreadActor(scope: Scope, gateway: GatewayPort) {
             refreshing: refreshAgain,
             historyStatus: state.historyStatus,
             refreshPending: false,
+            contextUsageChangedDuringOpen: false,
             replaceHistoryOnRefresh:
               replaceHistory && refreshAgain ? true : undefined,
             ...(contextUsage === undefined ? {} : { contextUsage }),
@@ -232,7 +242,11 @@ export function createThreadActor(scope: Scope, gateway: GatewayPort) {
           };
           if (state.refreshPending === true && state.threadId !== undefined) {
             return {
-              state: { ...nextState, refreshing: true },
+              state: {
+                ...nextState,
+                refreshing: true,
+                contextUsageChangedDuringOpen: false,
+              },
               effects: [{ type: "FETCH", threadId: state.threadId }],
             };
           }
@@ -249,7 +263,11 @@ export function createThreadActor(scope: Scope, gateway: GatewayPort) {
           };
           if (state.refreshPending === true && state.threadId !== undefined) {
             return {
-              state: { ...nextState, refreshing: true },
+              state: {
+                ...nextState,
+                refreshing: true,
+                contextUsageChangedDuringOpen: false,
+              },
               effects: [{ type: "FETCH", threadId: state.threadId }],
             };
           }
@@ -261,13 +279,18 @@ export function createThreadActor(scope: Scope, gateway: GatewayPort) {
             preserveEffects: true,
           };
         case "RECONNECTING":
+          const {
+            contextUsage: _staleContextUsage,
+            ...stateWithoutContextUsage
+          } = state;
           return {
             state: {
-              ...state,
+              ...stateWithoutContextUsage,
               status: "reconnecting",
               refreshing: false,
               historyStatus: "idle",
               refreshPending: false,
+              contextUsageChangedDuringOpen: false,
             },
           };
         case "CLOSE":
@@ -276,6 +299,7 @@ export function createThreadActor(scope: Scope, gateway: GatewayPort) {
               status: "closed",
               historyStatus: "idle",
               loadedHistoryItemIds: [],
+              contextUsageChangedDuringOpen: false,
             },
             effects: [
               {
@@ -435,7 +459,12 @@ function applyGatewayEvent(
       event.payload,
     );
     if (payload.threadId !== state.threadId) return state;
-    return { ...state, contextUsage: payload.usage };
+    return {
+      ...state,
+      contextUsage: payload.usage,
+      contextUsageChangedDuringOpen:
+        state.status === "opening" || state.refreshing === true,
+    };
   }
   if (state.snapshot === undefined) return state;
   if (event.type === "thread/state") {
@@ -520,10 +549,13 @@ function applyGatewayEvent(
   if (event.type === "thread/lease/failed") {
     const payload = parseGatewayEventPayload(event.type, event.payload);
     if (payload.threadId !== state.threadId) return state;
+    const { contextUsage: _staleContextUsage, ...stateWithoutContextUsage } =
+      state;
     return {
-      ...state,
+      ...stateWithoutContextUsage,
       status: "failed",
       refreshing: false,
+      contextUsageChangedDuringOpen: false,
       error: payload.reason,
     };
   }

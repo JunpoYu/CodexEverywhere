@@ -86,6 +86,28 @@ describe("ThreadLeaseManager", () => {
     expect(factory.clients[0]?.closed).toBe(true);
   });
 
+  it("publishes the first authoritative state even when it matches the lease default", async () => {
+    const { manager } = createManager();
+    const states: string[] = [];
+    manager.onState((change) => states.push(change.state));
+    const handle = await manager.acquire("thread-1", {
+      kind: "viewer",
+      id: "desktop",
+    });
+    const authoritativeThread = {
+      id: "thread-1",
+      cwd: "/workspace",
+      status: { type: "idle" },
+      turns: [],
+    };
+
+    handle.lease.adoptAuthoritativeThread(authoritativeThread);
+    handle.lease.adoptAuthoritativeThread(authoritativeThread);
+
+    expect(states).toEqual(["idle"]);
+    await handle.release();
+  });
+
   it("reference-counts repeated opens from the same viewer", async () => {
     const { manager } = createManager();
     const first = await manager.acquire("thread-1", {

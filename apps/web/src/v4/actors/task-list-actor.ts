@@ -154,7 +154,12 @@ export function createTaskListActor(scope: Scope, gateway: GatewayPort) {
         }
         case "FAILED":
           return {
-            state: { ...state, status: "failed", error: event.message },
+            state: {
+              ...state,
+              status: "failed",
+              error: event.message,
+              pendingStateChanges: {},
+            },
           };
       }
     },

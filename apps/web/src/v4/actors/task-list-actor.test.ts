@@ -65,6 +65,44 @@ describe("TaskListActor live state projection", () => {
     });
     expect(actor.getSnapshot().pendingStateChanges).toEqual({});
   });
+
+  it("discards an in-flight state buffer when pagination fails", async () => {
+    const gateway = new TaskListGateway();
+    const scope = new Scope("task-list-pagination-failure-test");
+    scopes.push(scope);
+    const actor = createTaskListActor(scope, gateway);
+
+    actor.dispatch({ type: "LOAD" });
+    await vi.waitFor(() => expect(actor.getSnapshot().status).toBe("ready"));
+    const failedPage = gateway.deferNextList();
+    actor.dispatch({ type: "MORE" });
+    await vi.waitFor(() =>
+      expect(actor.getSnapshot().status).toBe("paginating"),
+    );
+    actor.dispatch({
+      type: "THREAD_STATE_CHANGED",
+      threadId: "thread-1",
+      state: "running",
+    });
+    failedPage.reject(new Error("page unavailable"));
+    await vi.waitFor(() => expect(actor.getSnapshot().status).toBe("failed"));
+
+    expect(actor.getSnapshot().pendingStateChanges).toEqual({});
+    actor.dispatch({
+      type: "THREAD_STATE_CHANGED",
+      threadId: "thread-1",
+      state: "idle",
+    });
+    const retry = gateway.deferNextList();
+    actor.dispatch({ type: "MORE" });
+    retry.resolve(emptyThreadPage());
+    await vi.waitFor(() => expect(actor.getSnapshot().status).toBe("ready"));
+
+    expect(actor.getSnapshot().tasks[0]).toMatchObject({
+      id: "thread-1",
+      state: "idle",
+    });
+  });
 });
 
 class TaskListGateway implements GatewayPort {
@@ -73,6 +111,7 @@ class TaskListGateway implements GatewayPort {
     | {
         readonly promise: Promise<OutputOf<"thread/list">>;
         readonly resolve: (page: OutputOf<"thread/list">) => void;
+        readonly reject: (error: Error) => void;
       }
     | undefined;
 
@@ -94,13 +133,16 @@ class TaskListGateway implements GatewayPort {
 
   deferNextList(): {
     readonly resolve: (page: OutputOf<"thread/list">) => void;
+    readonly reject: (error: Error) => void;
   } {
     let resolve!: (page: OutputOf<"thread/list">) => void;
-    const promise = new Promise<OutputOf<"thread/list">>((complete) => {
+    let reject!: (error: Error) => void;
+    const promise = new Promise<OutputOf<"thread/list">>((complete, fail) => {
       resolve = complete;
+      reject = fail;
     });
-    this.#nextList = { promise, resolve };
-    return { resolve };
+    this.#nextList = { promise, resolve, reject };
+    return { resolve, reject };
   }
 
   onEvent(_listener: (event: GatewayEventEnvelopeV2) => void): () => void {
@@ -144,6 +186,11 @@ function threadPage(): OutputOf<"thread/list"> {
         updatedAt: now,
       },
     ],
-    hasMore: false,
+    nextCursor: "cursor-2",
+    hasMore: true,
   };
+}
+
+function emptyThreadPage(): OutputOf<"thread/list"> {
+  return { version: 1, threads: [], hasMore: false };
 }

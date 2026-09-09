@@ -87,6 +87,56 @@ describe("ThreadService", () => {
     expect(factory.client.closed).toBe(true);
   });
 
+  it("overlays an existing lease state onto the authoritative task list", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "ce-thread-service-"));
+    directories.push(directory);
+    const workspacePath = join(directory, "workspace");
+    await mkdir(workspacePath);
+    const state = await UserStateDatabase.open(
+      join(directory, "state.sqlite"),
+      { create: true },
+    );
+    const scope = new Scope("thread-list-lease-state-test");
+    scopes.push(scope);
+    scope.defer(() => state.close());
+    const factory = new ThreadListFactory(workspacePath, "Task preview");
+    const leases = new ThreadLeaseManager({ scope, clientFactory: factory });
+    const workspaces = new WorkspaceService(state.workspaces, {
+      home: directory,
+    });
+    await workspaces.add(workspacePath, "Workspace");
+    const service = new ThreadService({
+      scope,
+      clients: factory,
+      leases,
+      workspaces,
+      preferences: new PreferencesService(state.preferences),
+      settings: state.threadSettings,
+      titles: new AutoTitleService({ scope }),
+      runtimeGate,
+    });
+    const handle = await leases.acquire("thread-1", {
+      kind: "viewer",
+      id: "desktop",
+    });
+    handle.lease.adoptAuthoritativeThread({
+      ...thread(workspacePath),
+      status: { type: "active", activeFlags: [] },
+    });
+
+    const result = await service.list({
+      version: 1,
+      archived: false,
+      limit: 50,
+    });
+
+    expect(result.threads[0]).toMatchObject({
+      id: "thread-1",
+      state: "running",
+    });
+    await handle.release();
+  });
+
   it("resumes a shared lease once when two viewers open concurrently", async () => {
     const directory = await mkdtemp(join(tmpdir(), "ce-thread-service-"));
     directories.push(directory);

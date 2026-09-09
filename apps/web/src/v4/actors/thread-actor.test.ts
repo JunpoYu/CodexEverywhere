@@ -191,7 +191,7 @@ describe("v0.4 thread actor", () => {
     });
   });
 
-  it("keeps the latest context usage across a same-thread refresh", () => {
+  it("clears stale context usage when an authoritative reopen has no projection", () => {
     const scope = new Scope("context-usage-refresh-test");
     scopes.push(scope);
     const actor = createThreadActor(scope, new DeferredThreadGateway());
@@ -202,7 +202,26 @@ describe("v0.4 thread actor", () => {
     });
     actor.dispatch({ type: "OPENED", snapshot: snapshot("thread-a") });
 
-    expect(actor.getSnapshot().contextUsage?.currentTokens).toBe(48_000);
+    expect(actor.getSnapshot().contextUsage).toBeUndefined();
+  });
+
+  it("clears stale context usage as soon as the connection starts recovering", () => {
+    const scope = new Scope("context-usage-reconnect-test");
+    scopes.push(scope);
+    const actor = createThreadActor(scope, new DeferredThreadGateway());
+    actor.dispatch({ type: "OPENED", snapshot: snapshot("thread-a") });
+    actor.dispatch({
+      type: "GATEWAY_EVENT",
+      event: contextUsageEvent("thread-a", 48_000),
+    });
+
+    actor.dispatch({ type: "RECONNECTING" });
+
+    expect(actor.getSnapshot()).toMatchObject({
+      status: "reconnecting",
+      contextUsageChangedDuringOpen: false,
+    });
+    expect(actor.getSnapshot().contextUsage).toBeUndefined();
   });
 
   it("keeps the operational state while refreshing the same task", async () => {
@@ -491,6 +510,10 @@ describe("v0.4 thread actor", () => {
     scopes.push(scope);
     const actor = createThreadActor(scope, new DeferredThreadGateway());
     actor.dispatch({ type: "OPENED", snapshot: snapshot("thread-a") });
+    actor.dispatch({
+      type: "GATEWAY_EVENT",
+      event: contextUsageEvent("thread-a", 48_000),
+    });
 
     actor.dispatch({
       type: "GATEWAY_EVENT",
@@ -506,6 +529,7 @@ describe("v0.4 thread actor", () => {
       refreshing: false,
       error: "app-server-client-closed",
     });
+    expect(actor.getSnapshot().contextUsage).toBeUndefined();
   });
 });
 

@@ -116,6 +116,7 @@ export class ThreadLease {
   #turnStartResponseObservers = 0;
   #workspacePath: string | undefined;
   #contextUsage: ThreadContextUsage | undefined;
+  #hasAuthoritativeState = false;
   #closed = false;
 
   constructor(input: {
@@ -289,6 +290,8 @@ export class ThreadLease {
     this.#workspacePath = thread.cwd;
     const status = nestedObjectString(thread.status, "type");
     const previousState = this.#state;
+    const firstAuthoritativeState = !this.#hasAuthoritativeState;
+    this.#hasAuthoritativeState = true;
     this.#state =
       status === "active"
         ? this.#interactions.size > 0
@@ -298,7 +301,7 @@ export class ThreadLease {
           ? "failed"
           : "idle";
     this.#currentTurnId = activeTurnId(thread.turns);
-    if (this.#state !== previousState) {
+    if (firstAuthoritativeState || this.#state !== previousState) {
       this.#events.emit("state", this.#state);
     }
     return {
