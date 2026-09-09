@@ -1,6 +1,8 @@
 import { Scope } from "@codex-everywhere/kernel";
+import type { GatewayEventEnvelopeV2 } from "@codex-everywhere/protocol/v2";
 import { afterEach, describe, expect, it } from "vitest";
 
+import type { CodexNotification } from "../../runtime/codex-app-server-client.js";
 import type { CodexClient } from "../codex/client.js";
 import type { CodexClientFactoryPort } from "../codex/client-factory.js";
 import { ThreadLeaseManager } from "../services/thread-lease-manager.js";
@@ -90,6 +92,84 @@ describe("AgentGatewaySession", () => {
     expect(second.lease.closed).toBe(false);
     expect(factory.clients).toHaveLength(2);
   });
+
+  it("publishes the lease context projection as a typed Gateway event", async () => {
+    const { factory, session } = createSession();
+    const events: GatewayEventEnvelopeV2[] = [];
+    session.onEvent((event) => events.push(event));
+    const opening = session.openThread("thread-1");
+    await factory.creationRequested;
+    factory.allowCreation();
+    await opening;
+
+    factory.clients[0]!.notification("thread/tokenUsage/updated", {
+      threadId: "thread-1",
+      turnId: "turn-usage",
+      tokenUsage: {
+        total: tokenUsageBreakdown(180_000),
+        last: tokenUsageBreakdown(32_000),
+        modelContextWindow: 128_000,
+      },
+    });
+
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        type: "thread/context-usage",
+        payload: {
+          version: 1,
+          threadId: "thread-1",
+          usage: {
+            version: 1,
+            turnId: "turn-usage",
+            currentTokens: 32_000,
+            cumulativeTokens: 180_000,
+            modelContextWindow: 128_000,
+          },
+        },
+      }),
+    );
+  });
+
+  it("publishes a lease state change to authenticated sessions without requiring each session to open the task", async () => {
+    const { factory, manager, session } = createSession();
+    session.authenticate({
+      access: "user",
+      principalId: "user:phone",
+      temporary: false,
+    });
+    const observer = new AgentGatewaySession({
+      parentScope: scopes.at(-1)!,
+      leases: manager,
+    });
+    observer.authenticate({
+      access: "user",
+      principalId: "user:desktop",
+      temporary: false,
+    });
+    const observed: GatewayEventEnvelopeV2[] = [];
+    observer.onEvent((event) => observed.push(event));
+
+    const opening = session.openThread("thread-background");
+    await factory.creationRequested;
+    factory.allowCreation();
+    await opening;
+    factory.clients[0]!.notification("turn/started", {
+      threadId: "thread-background",
+      turn: { id: "turn-1", status: "inProgress" },
+    });
+
+    expect(observed).toEqual([
+      expect.objectContaining({
+        type: "thread/state",
+        payload: {
+          version: 1,
+          threadId: "thread-background",
+          state: "running",
+          currentTurnId: "turn-1",
+        },
+      }),
+    ]);
+  });
 });
 
 class GatedFactory implements CodexClientFactoryPort {
@@ -132,13 +212,19 @@ class FakeCodexClient implements CodexClient {
   closeRequested = false;
   #closeGate: Promise<void> = Promise.resolve();
   readonly #closeListeners = new Set<() => void>();
+  readonly #notificationListeners = new Set<
+    (notification: CodexNotification) => void
+  >();
 
   request<Result = unknown>(): Promise<Result> {
     return Promise.resolve({} as Result);
   }
 
-  onNotification(): () => void {
-    return () => undefined;
+  onNotification(
+    listener: (notification: CodexNotification) => void,
+  ): () => void {
+    this.#notificationListeners.add(listener);
+    return () => this.#notificationListeners.delete(listener);
   }
 
   onServerRequest(): () => void {
@@ -169,6 +255,23 @@ class FakeCodexClient implements CodexClient {
     this.closed = true;
     for (const listener of [...this.#closeListeners]) listener();
   }
+
+  notification(method: string, params: unknown): void {
+    for (const listener of [...this.#notificationListeners]) {
+      listener({ method, params });
+    }
+  }
+}
+
+function tokenUsageBreakdown(totalTokens: number) {
+  return {
+    totalTokens,
+    inputTokens: totalTokens,
+    cachedInputTokens: 0,
+    cacheWriteInputTokens: 0,
+    outputTokens: 0,
+    reasoningOutputTokens: 0,
+  };
 }
 
 function createSession(): {

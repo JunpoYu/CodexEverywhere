@@ -59,20 +59,10 @@ describe("contextUsagePresentation", () => {
   it("shows current context use rather than cumulative token spend", () => {
     expect(
       contextUsagePresentation({
-        last: {
-          totalTokens: 32_000,
-          inputTokens: 30_000,
-          cachedInputTokens: 20_000,
-          outputTokens: 1_000,
-          reasoningOutputTokens: 1_000,
-        },
-        total: {
-          totalTokens: 180_000,
-          inputTokens: 160_000,
-          cachedInputTokens: 100_000,
-          outputTokens: 10_000,
-          reasoningOutputTokens: 10_000,
-        },
+        version: 1,
+        turnId: "turn-1",
+        currentTokens: 32_000,
+        cumulativeTokens: 180_000,
         modelContextWindow: 128_000,
       }),
     ).toEqual({
@@ -94,20 +84,10 @@ describe("contextUsagePresentation", () => {
   it("classifies compact context warnings", () => {
     const usage = (used: number) =>
       contextUsagePresentation({
-        last: {
-          totalTokens: used,
-          inputTokens: used,
-          cachedInputTokens: 0,
-          outputTokens: 0,
-          reasoningOutputTokens: 0,
-        },
-        total: {
-          totalTokens: used,
-          inputTokens: used,
-          cachedInputTokens: 0,
-          outputTokens: 0,
-          reasoningOutputTokens: 0,
-        },
+        version: 1,
+        turnId: "turn-1",
+        currentTokens: used,
+        cumulativeTokens: used,
         modelContextWindow: 100_000,
       });
     expect(usage(70_000).level).toBe("warning");

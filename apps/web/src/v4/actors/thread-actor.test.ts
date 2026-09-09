@@ -35,7 +35,50 @@ describe("v0.4 thread actor", () => {
       threadId: "thread-a",
       historyLimit: 50,
       includeWorkingDirectory: true,
+      includeContextUsage: true,
+      includeCompactionCount: true,
     });
+  });
+
+  it("falls back when the deployed Agent predates compaction counts", async () => {
+    const gateway = new DeferredThreadGateway();
+    gateway.rejectCompactionCountInput = true;
+    const scope = new Scope("thread-open-compaction-compatibility-test");
+    scopes.push(scope);
+    const actor = createThreadActor(scope, gateway);
+
+    actor.dispatch({ type: "OPEN", threadId: "thread-a" });
+
+    await vi.waitFor(() => expect(gateway.openInputs).toHaveLength(2));
+    expect(gateway.openInputs[0]).toHaveProperty(
+      "includeCompactionCount",
+      true,
+    );
+    expect(gateway.openInputs[1]).not.toHaveProperty("includeCompactionCount");
+    expect(gateway.openInputs[1]).toHaveProperty("includeContextUsage", true);
+    gateway.resolve("thread-a", snapshot("thread-a"));
+    await vi.waitFor(() => expect(actor.getSnapshot().status).toBe("idle"));
+  });
+
+  it("falls back to the alpha.15 thread/open shape during a rolling update", async () => {
+    const gateway = new DeferredThreadGateway();
+    gateway.rejectContextUsageInput = true;
+    const scope = new Scope("thread-open-context-compatibility-test");
+    scopes.push(scope);
+    const actor = createThreadActor(scope, gateway);
+
+    actor.dispatch({ type: "OPEN", threadId: "thread-a" });
+
+    await vi.waitFor(() => expect(gateway.openInputs).toHaveLength(3));
+    expect(gateway.openInputs[0]).toHaveProperty("includeContextUsage", true);
+    expect(gateway.openInputs[1]).toHaveProperty("includeContextUsage", true);
+    expect(gateway.openInputs[2]).toHaveProperty(
+      "includeWorkingDirectory",
+      true,
+    );
+    expect(gateway.openInputs[2]).not.toHaveProperty("includeContextUsage");
+    gateway.resolve("thread-a", snapshot("thread-a"));
+    await vi.waitFor(() => expect(actor.getSnapshot().status).toBe("idle"));
   });
 
   it("falls back to the alpha.14 thread/open shape during a rolling update", async () => {
@@ -47,12 +90,20 @@ describe("v0.4 thread actor", () => {
 
     actor.dispatch({ type: "OPEN", threadId: "thread-a" });
 
-    await vi.waitFor(() => expect(gateway.openInputs).toHaveLength(2));
+    await vi.waitFor(() => expect(gateway.openInputs).toHaveLength(4));
     expect(gateway.openInputs[0]).toHaveProperty(
       "includeWorkingDirectory",
       true,
     );
-    expect(gateway.openInputs[1]).not.toHaveProperty("includeWorkingDirectory");
+    expect(gateway.openInputs[1]).toHaveProperty(
+      "includeWorkingDirectory",
+      true,
+    );
+    expect(gateway.openInputs[2]).toHaveProperty(
+      "includeWorkingDirectory",
+      true,
+    );
+    expect(gateway.openInputs[3]).not.toHaveProperty("includeWorkingDirectory");
     gateway.resolve("thread-a", snapshot("thread-a"));
     await vi.waitFor(() => expect(actor.getSnapshot().status).toBe("idle"));
   });
@@ -116,6 +167,61 @@ describe("v0.4 thread actor", () => {
     expect(actor.getSnapshot().snapshot?.interactions[0]?.id).toBe(
       "interaction-a",
     );
+  });
+
+  it("retains a live context update that arrives while thread/open is pending", () => {
+    const scope = new Scope("context-usage-race-test");
+    scopes.push(scope);
+    const actor = createThreadActor(scope, new DeferredThreadGateway());
+    actor.dispatch({ type: "OPEN", threadId: "thread-a" });
+
+    actor.dispatch({
+      type: "GATEWAY_EVENT",
+      event: contextUsageEvent("thread-a", 32_000),
+    });
+    actor.dispatch({
+      type: "GATEWAY_EVENT",
+      event: contextUsageEvent("thread-b", 90_000),
+    });
+    actor.dispatch({ type: "OPENED", snapshot: snapshot("thread-a") });
+
+    expect(actor.getSnapshot().contextUsage).toMatchObject({
+      currentTokens: 32_000,
+      modelContextWindow: 128_000,
+    });
+  });
+
+  it("clears stale context usage when an authoritative reopen has no projection", () => {
+    const scope = new Scope("context-usage-refresh-test");
+    scopes.push(scope);
+    const actor = createThreadActor(scope, new DeferredThreadGateway());
+    actor.dispatch({ type: "OPENED", snapshot: snapshot("thread-a") });
+    actor.dispatch({
+      type: "GATEWAY_EVENT",
+      event: contextUsageEvent("thread-a", 48_000),
+    });
+    actor.dispatch({ type: "OPENED", snapshot: snapshot("thread-a") });
+
+    expect(actor.getSnapshot().contextUsage).toBeUndefined();
+  });
+
+  it("clears stale context usage as soon as the connection starts recovering", () => {
+    const scope = new Scope("context-usage-reconnect-test");
+    scopes.push(scope);
+    const actor = createThreadActor(scope, new DeferredThreadGateway());
+    actor.dispatch({ type: "OPENED", snapshot: snapshot("thread-a") });
+    actor.dispatch({
+      type: "GATEWAY_EVENT",
+      event: contextUsageEvent("thread-a", 48_000),
+    });
+
+    actor.dispatch({ type: "RECONNECTING" });
+
+    expect(actor.getSnapshot()).toMatchObject({
+      status: "reconnecting",
+      contextUsageChangedDuringOpen: false,
+    });
+    expect(actor.getSnapshot().contextUsage).toBeUndefined();
   });
 
   it("keeps the operational state while refreshing the same task", async () => {
@@ -404,6 +510,10 @@ describe("v0.4 thread actor", () => {
     scopes.push(scope);
     const actor = createThreadActor(scope, new DeferredThreadGateway());
     actor.dispatch({ type: "OPENED", snapshot: snapshot("thread-a") });
+    actor.dispatch({
+      type: "GATEWAY_EVENT",
+      event: contextUsageEvent("thread-a", 48_000),
+    });
 
     actor.dispatch({
       type: "GATEWAY_EVENT",
@@ -419,6 +529,7 @@ describe("v0.4 thread actor", () => {
       refreshing: false,
       error: "app-server-client-closed",
     });
+    expect(actor.getSnapshot().contextUsage).toBeUndefined();
   });
 });
 
@@ -432,6 +543,8 @@ class DeferredThreadGateway implements GatewayPort {
   readonly closedThreadIds: string[] = [];
   readonly openInputs: InputOf<"thread/open">[] = [];
   readonly historyInputs: InputOf<"thread/history">[] = [];
+  rejectContextUsageInput = false;
+  rejectCompactionCountInput = false;
   rejectWorkingDirectoryInput = false;
   #historyPending:
     | {
@@ -465,6 +578,28 @@ class DeferredThreadGateway implements GatewayPort {
     this.signal = options.signal;
     const openInput = input as InputOf<"thread/open">;
     this.openInputs.push(openInput);
+    if (
+      this.rejectCompactionCountInput &&
+      openInput.includeCompactionCount === true
+    ) {
+      return Promise.reject(
+        new GatewayRemoteError({
+          code: "INVALID_INPUT",
+          message: "Gateway request input did not match its schema",
+        }),
+      ) as Promise<OutputOf<Method>>;
+    }
+    if (
+      this.rejectContextUsageInput &&
+      openInput.includeContextUsage === true
+    ) {
+      return Promise.reject(
+        new GatewayRemoteError({
+          code: "INVALID_INPUT",
+          message: "Gateway request input did not match its schema",
+        }),
+      ) as Promise<OutputOf<Method>>;
+    }
     if (
       this.rejectWorkingDirectoryInput &&
       openInput.includeWorkingDirectory === true
@@ -579,6 +714,23 @@ function interactionEvent(
       requestMethod: "item/commandExecution/requestApproval",
       createdAt: "2026-08-16T00:00:00.000Z",
       payload: { reason: "test" },
+    },
+  });
+}
+
+function contextUsageEvent(
+  threadId: string,
+  currentTokens: number,
+): GatewayEventEnvelopeV2 {
+  return gatewayEventEnvelopeV2("thread/context-usage", {
+    version: 1,
+    threadId,
+    usage: {
+      version: 1,
+      turnId: "turn-1",
+      currentTokens,
+      cumulativeTokens: currentTokens + 100_000,
+      modelContextWindow: 128_000,
     },
   });
 }

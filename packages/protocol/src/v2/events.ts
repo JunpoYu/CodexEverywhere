@@ -9,6 +9,7 @@ import {
 import {
   interactionSchema,
   queueItemSchema,
+  threadContextUsageSchema,
   threadStateSchema,
 } from "./domain-schemas.js";
 
@@ -40,6 +41,10 @@ export const gatewayEventDefinitions = {
     threadId: identifierSchema,
     state: threadStateSchema,
     currentTurnId: identifierSchema.optional(),
+  }),
+  "thread/context-usage": versioned({
+    threadId: identifierSchema,
+    usage: threadContextUsageSchema,
   }),
   "codex/notification": versioned({
     threadId: identifierSchema,

@@ -4,6 +4,7 @@ import {
   useEffect,
   useImperativeHandle,
   useLayoutEffect,
+  useMemo,
   useRef,
   useState,
 } from "react";
@@ -12,6 +13,8 @@ import {
   isUserTimelineItem,
   type TimelineItem,
 } from "./timeline-item-model.js";
+import { projectTimelinePresentation } from "./timeline-presentation-model.js";
+import { TurnActivityGroup } from "./TurnActivityGroup.js";
 import { TimelineItemView } from "./TimelineItemView.js";
 import styles from "./TimelineViewport.module.css";
 
@@ -34,6 +37,7 @@ export const TimelineViewport = forwardRef<
     readonly historyError?: string | undefined;
     readonly historyStatus: "idle" | "loading" | "failed";
     readonly items: readonly TimelineItem[];
+    readonly threadState: "idle" | "running" | "waiting-input" | "failed";
     readonly onActiveUserItemChange?:
       ((itemId: string | undefined) => void) | undefined;
     /** Returns whether the actor accepted or is already serving the request. */
@@ -62,6 +66,10 @@ export const TimelineViewport = forwardRef<
   const [mode, setModeState] = useState<ViewportMode>("initializing");
   const modeRef = useRef<ViewportMode>("initializing");
   const [jumpTargetId, setJumpTargetId] = useState<string | undefined>();
+  const presentation = useMemo(
+    () => projectTimelinePresentation(input.items, input.threadState),
+    [input.items, input.threadState],
+  );
 
   const setMode = useCallback((next: ViewportMode) => {
     modeRef.current = next;
@@ -286,6 +294,7 @@ export const TimelineViewport = forwardRef<
         aria-label="任务时间线"
         aria-live="polite"
         className={`timeline ${styles.viewport}`}
+        data-loaded-items={input.items.length}
         ref={containerRef}
         onScroll={scheduleViewportUpdate}
       >
@@ -312,20 +321,33 @@ export const TimelineViewport = forwardRef<
               {input.historyError}
             </p>
           )}
-          {input.items.map((item) => (
-            <TimelineItemView
-              className={`${styles.item}${jumpTargetId === item.id ? ` ${styles.jumpTarget}` : ""}`}
-              elementRef={(element) => {
-                if (element === null) itemElements.current.delete(item.id);
-                else itemElements.current.set(item.id, element);
-              }}
-              item={item}
-              key={item.id}
-              onAnimationEnd={() => {
-                if (jumpTargetId === item.id) setJumpTargetId(undefined);
-              }}
-            />
-          ))}
+          {presentation.map((entry) =>
+            entry.kind === "activity" ? (
+              <TurnActivityGroup
+                className={styles.item}
+                items={entry.items}
+                key={entry.id}
+              />
+            ) : (
+              <TimelineItemView
+                className={`${styles.item}${jumpTargetId === entry.item.id ? ` ${styles.jumpTarget}` : ""}`}
+                elementRef={(element) => {
+                  if (element === null) {
+                    itemElements.current.delete(entry.item.id);
+                  } else {
+                    itemElements.current.set(entry.item.id, element);
+                  }
+                }}
+                item={entry.item}
+                key={entry.id}
+                onAnimationEnd={() => {
+                  if (jumpTargetId === entry.item.id) {
+                    setJumpTargetId(undefined);
+                  }
+                }}
+              />
+            ),
+          )}
         </div>
       </section>
       {mode === "detached" || mode === "jumping" ? (

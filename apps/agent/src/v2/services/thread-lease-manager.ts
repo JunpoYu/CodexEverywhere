@@ -7,6 +7,7 @@ import {
   type CodexGenericEventPayload,
   type InteractionResponse,
   type JsonValue,
+  type ThreadContextUsage,
 } from "@codex-everywhere/protocol/v2";
 
 import type {
@@ -21,11 +22,16 @@ import {
   type InteractionBrokerEvents,
   type PendingInteraction,
 } from "./interaction-broker.js";
+import { projectThreadContextUsage } from "./thread-context-usage.js";
 
 export type ThreadLeaseState = "idle" | "running" | "waiting-input" | "failed";
 export type ThreadLeaseReferenceKind = "viewer" | "queue" | "effect";
 
 export type ThreadLeaseEvent =
+  | {
+      readonly type: "thread/context-usage";
+      readonly usage: ThreadContextUsage;
+    }
   | {
       readonly type: "codex/notification";
       readonly method: string;
@@ -53,6 +59,16 @@ export type ThreadLeaseEvent =
 interface ThreadLeaseEvents {
   readonly event: ThreadLeaseEvent;
   readonly state: ThreadLeaseState;
+}
+
+export interface ThreadLeaseStateChange {
+  readonly threadId: string;
+  readonly state: ThreadLeaseState;
+  readonly currentTurnId?: string;
+}
+
+interface ThreadLeaseManagerEvents {
+  readonly state: ThreadLeaseStateChange;
 }
 
 export interface ThreadLeaseHandle {
@@ -99,6 +115,8 @@ export class ThreadLease {
   readonly #terminalObservers = new Map<string, number>();
   #turnStartResponseObservers = 0;
   #workspacePath: string | undefined;
+  #contextUsage: ThreadContextUsage | undefined;
+  #hasAuthoritativeState = false;
   #closed = false;
 
   constructor(input: {
@@ -216,6 +234,10 @@ export class ThreadLease {
     return this.#workspacePath;
   }
 
+  get contextUsage(): ThreadContextUsage | undefined {
+    return this.#contextUsage;
+  }
+
   get closed(): boolean {
     return this.#closed;
   }
@@ -267,6 +289,9 @@ export class ThreadLease {
     }
     this.#workspacePath = thread.cwd;
     const status = nestedObjectString(thread.status, "type");
+    const previousState = this.#state;
+    const firstAuthoritativeState = !this.#hasAuthoritativeState;
+    this.#hasAuthoritativeState = true;
     this.#state =
       status === "active"
         ? this.#interactions.size > 0
@@ -276,7 +301,9 @@ export class ThreadLease {
           ? "failed"
           : "idle";
     this.#currentTurnId = activeTurnId(thread.turns);
-    this.#events.emit("state", this.#state);
+    if (firstAuthoritativeState || this.#state !== previousState) {
+      this.#events.emit("state", this.#state);
+    }
     return {
       thread,
       workspacePath: this.#workspacePath,
@@ -348,6 +375,16 @@ export class ThreadLease {
     }
     this.#updateState(notification.method, params.data);
     if (isKnownCodexNotification(notification)) {
+      if (notification.method === "thread/tokenUsage/updated") {
+        const usage = projectThreadContextUsage(notification.params);
+        if (usage !== undefined) {
+          this.#contextUsage = usage;
+          this.#events.emit("event", {
+            type: "thread/context-usage",
+            usage,
+          });
+        }
+      }
       this.#events.emit("event", {
         type: "codex/notification",
         method: notification.method,
@@ -493,6 +530,7 @@ export class ThreadLeaseManager {
   readonly #scope: Scope;
   readonly #factory: CodexClientFactoryPort;
   readonly #maximumLeases: number;
+  readonly #events = new TypedEventBus<ThreadLeaseManagerEvents>();
   readonly #leases = new Map<string, ThreadLease>();
   readonly #creating = new Map<string, Promise<ThreadLease>>();
   readonly #disposing = new Map<string, Promise<void>>();
@@ -520,6 +558,7 @@ export class ThreadLeaseManager {
         ...disposals,
       ]);
     });
+    this.#scope.defer(() => this.#events.clear());
   }
 
   get size(): number {
@@ -533,6 +572,10 @@ export class ThreadLeaseManager {
       )
       .map((lease) => lease.threadId)
       .sort();
+  }
+
+  onState(listener: (change: ThreadLeaseStateChange) => void): () => void {
+    return this.#events.on("state", listener);
   }
 
   async acquire(
@@ -584,6 +627,7 @@ export class ThreadLeaseManager {
         client,
         onDisposable: (candidate) => this.#dispose(candidate),
       });
+      this.#observeState(lease, scope);
       this.#leases.set(initialized.threadId, lease);
       this.#starting.delete(scope);
       const handle = await this.#attachReference(lease, reference, ownerScope);
@@ -678,6 +722,7 @@ export class ThreadLeaseManager {
         client,
         onDisposable: (candidate) => this.#dispose(candidate),
       });
+      this.#observeState(lease, scope);
       this.#leases.set(threadId, lease);
       return lease;
     } catch (error) {
@@ -699,6 +744,24 @@ export class ThreadLeaseManager {
     });
     this.#disposing.set(lease.threadId, disposal);
     await disposal;
+  }
+
+  #observeState(lease: ThreadLease, scope: Scope): void {
+    scope.defer(
+      lease.onState((state) => {
+        try {
+          this.#events.emit("state", {
+            threadId: lease.threadId,
+            state,
+            ...(lease.currentTurnId === undefined
+              ? {}
+              : { currentTurnId: lease.currentTurnId }),
+          });
+        } catch {
+          // A control-plane observer cannot alter the app-server lifecycle.
+        }
+      }),
+    );
   }
 }
 

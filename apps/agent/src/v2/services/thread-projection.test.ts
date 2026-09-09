@@ -68,6 +68,33 @@ describe("thread projection", () => {
       "History cursor is no longer present",
     );
   });
+
+  it("counts persisted compactions across the full authoritative history", () => {
+    const thread: CodexObject = {
+      turns: [
+        {
+          id: "turn-1",
+          items: [
+            { id: "compact-1", type: "contextCompaction" },
+            { id: "message-1", type: "agentMessage", text: "after first" },
+          ],
+        },
+        {
+          id: "turn-2",
+          items: [
+            { id: "compact-2", type: "contextCompaction" },
+            { id: "compact-1", type: "contextCompaction" },
+            { id: "message-2", type: "agentMessage", text: "after second" },
+          ],
+        },
+      ],
+    };
+
+    const latest = projectThreadHistory(thread, undefined, 1);
+
+    expect(latest.items.map((item) => item.id)).toEqual(["message-2"]);
+    expect(latest.compactionCount).toBe(2);
+  });
 });
 
 function authoritativeThread(): CodexObject {

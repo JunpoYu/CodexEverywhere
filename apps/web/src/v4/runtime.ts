@@ -69,7 +69,14 @@ export class UserWebRuntime {
     this.scope.defer(
       input.gateway.onEvent((event) => {
         this.thread.dispatch({ type: "GATEWAY_EVENT", event });
-        if (event.type === "queue/changed") {
+        if (event.type === "thread/state") {
+          const state = parseGatewayEventPayload("thread/state", event.payload);
+          this.tasks.dispatch({
+            type: "THREAD_STATE_CHANGED",
+            threadId: state.threadId,
+            state: state.state,
+          });
+        } else if (event.type === "queue/changed") {
           this.queue.dispatch({
             type: "CHANGED",
             item: parseGatewayEventPayload("queue/changed", event.payload).item,

@@ -1,3 +1,6 @@
+import type { CSSProperties } from "react";
+
+import type { ContextUsagePresentation } from "../../../session-controls.js";
 import { Icon } from "../components/Icon.js";
 import styles from "./TaskRuntimeSummary.module.css";
 
@@ -6,6 +9,8 @@ export function TaskRuntimeSummary(input: {
   readonly approvalNeedsAttention: boolean;
   readonly effort: string;
   readonly model: string;
+  readonly contextUsage: ContextUsagePresentation;
+  readonly compactionCount: number | undefined;
   readonly revision: number;
   readonly sandbox: string;
   readonly sandboxNeedsAttention: boolean;
@@ -64,7 +69,64 @@ export function TaskRuntimeSummary(input: {
           value={input.approval}
         />
       </dl>
+      <ContextUsage
+        compactionCount={input.compactionCount}
+        value={input.contextUsage}
+      />
     </section>
+  );
+}
+
+function ContextUsage(input: {
+  readonly compactionCount: number | undefined;
+  readonly value: ContextUsagePresentation;
+}) {
+  const value = input.value;
+  const compactionLabel =
+    input.compactionCount === undefined
+      ? undefined
+      : `已压缩 ${input.compactionCount.toLocaleString("zh-CN")} 次`;
+  return (
+    <div
+      aria-label={`上下文使用：${value.label}，${value.percentLabel}${compactionLabel === undefined ? "" : `，${compactionLabel}`}`}
+      className={styles.usage}
+      data-context-usage
+      data-level={value.level}
+      title={`${value.detail}${compactionLabel === undefined ? "" : `；${compactionLabel}`}`}
+    >
+      <div className={styles.usageHeader}>
+        <span>上下文</span>
+        <strong>{value.percentLabel}</strong>
+      </div>
+      <div
+        aria-label="上下文使用"
+        aria-valuemax={100}
+        aria-valuemin={0}
+        aria-valuenow={value.percent ?? undefined}
+        aria-valuetext={`${value.label}；${value.detail}`}
+        className={styles.usageTrack}
+        role="progressbar"
+      >
+        <span
+          style={
+            {
+              "--context-usage-percent": `${value.percent ?? 0}%`,
+            } as CSSProperties
+          }
+        />
+      </div>
+      <div className={styles.usageFooter}>
+        <span className={styles.usageCounts}>{value.label}</span>
+        {compactionLabel === undefined ? null : (
+          <span
+            className={styles.compactionCount}
+            data-context-compaction-count
+          >
+            {compactionLabel}
+          </span>
+        )}
+      </div>
+    </div>
   );
 }
 

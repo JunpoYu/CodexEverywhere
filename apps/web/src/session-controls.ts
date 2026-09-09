@@ -2,8 +2,8 @@ import type {
   McpServerElicitationRequestResponse,
   SandboxMode,
   SandboxPolicy,
-  ThreadTokenUsage,
 } from "@codex-everywhere/codex-app-server-schema/v2";
+import type { ThreadContextUsage } from "@codex-everywhere/protocol/v2";
 
 export type ApprovalPresentation = {
   title: string;
@@ -123,19 +123,19 @@ export type ContextUsagePresentation = {
 };
 
 export function contextUsagePresentation(
-  usage: ThreadTokenUsage | undefined,
+  usage: ThreadContextUsage | undefined,
 ): ContextUsagePresentation {
   if (!usage) {
     return {
       label: "等待数据",
       percent: null,
-      percentLabel: "上下文",
+      percentLabel: "—",
       windowLabel: "—",
       detail: "尚未收到 token usage",
       level: "unknown",
     };
   }
-  const used = usage.last.totalTokens;
+  const used = usage.currentTokens;
   const window = usage.modelContextWindow;
   if (!window || window <= 0) {
     return {
@@ -143,7 +143,7 @@ export function contextUsagePresentation(
       percent: null,
       percentLabel: "上下文",
       windowLabel: "—",
-      detail: `累计 ${formatTokenCount(usage.total.totalTokens)}`,
+      detail: `累计 ${formatTokenCount(usage.cumulativeTokens)}`,
       level: "unknown",
     };
   }
@@ -154,7 +154,7 @@ export function contextUsagePresentation(
     percent,
     percentLabel,
     windowLabel: formatTokenCount(window),
-    detail: `${percent.toFixed(1)}% · 累计 ${formatTokenCount(usage.total.totalTokens)}`,
+    detail: `${percent.toFixed(1)}% · 累计 ${formatTokenCount(usage.cumulativeTokens)}`,
     level: percent >= 90 ? "danger" : percent >= 70 ? "warning" : "normal",
   };
 }

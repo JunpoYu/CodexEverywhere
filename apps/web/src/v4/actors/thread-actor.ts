@@ -3,7 +3,9 @@ import {
   GatewayRemoteError,
   parseGatewayEventPayload,
   type GatewayEventEnvelopeV2,
+  type InputOf,
   type OutputOf,
+  type ThreadContextUsage,
 } from "@codex-everywhere/protocol/v2";
 
 import {
@@ -33,6 +35,10 @@ export interface ThreadActorState {
     | "failed";
   readonly threadId?: string;
   readonly snapshot?: Snapshot;
+  /** Latest app-server usage projection for the visible thread; never persisted. */
+  readonly contextUsage?: ThreadContextUsage;
+  /** Whether a newer usage event arrived after the current open began. */
+  readonly contextUsageChangedDuringOpen: boolean;
   /** Stable IDs introduced only by explicit backward pagination. */
   readonly loadedHistoryItemIds: readonly string[];
   readonly refreshing?: boolean;
@@ -83,6 +89,7 @@ export function createThreadActor(scope: Scope, gateway: GatewayPort) {
       status: "closed",
       historyStatus: "idle",
       loadedHistoryItemIds: [],
+      contextUsageChangedDuringOpen: false,
     },
     reducer: (state, event) => {
       switch (event.type) {
@@ -108,7 +115,11 @@ export function createThreadActor(scope: Scope, gateway: GatewayPort) {
               };
             }
             return {
-              state: { ...state, refreshing: true },
+              state: {
+                ...state,
+                refreshing: true,
+                contextUsageChangedDuringOpen: false,
+              },
               effects: [{ type: "FETCH", threadId: event.threadId }],
             };
           }
@@ -118,6 +129,7 @@ export function createThreadActor(scope: Scope, gateway: GatewayPort) {
               threadId: event.threadId,
               historyStatus: "idle",
               loadedHistoryItemIds: [],
+              contextUsageChangedDuringOpen: false,
             },
             effects: [
               {
@@ -140,6 +152,12 @@ export function createThreadActor(scope: Scope, gateway: GatewayPort) {
                 event.snapshot,
                 state.loadedHistoryItemIds,
               );
+          const contextUsage =
+            event.snapshot.contextUsage ??
+            (state.contextUsageChangedDuringOpen &&
+            state.threadId === event.snapshot.thread.id
+              ? state.contextUsage
+              : undefined);
           const nextState: ThreadActorState = {
             status: event.snapshot.state,
             threadId: event.snapshot.thread.id,
@@ -150,8 +168,10 @@ export function createThreadActor(scope: Scope, gateway: GatewayPort) {
             refreshing: refreshAgain,
             historyStatus: state.historyStatus,
             refreshPending: false,
+            contextUsageChangedDuringOpen: false,
             replaceHistoryOnRefresh:
               replaceHistory && refreshAgain ? true : undefined,
+            ...(contextUsage === undefined ? {} : { contextUsage }),
           };
           if (refreshAgain) {
             return {
@@ -222,7 +242,11 @@ export function createThreadActor(scope: Scope, gateway: GatewayPort) {
           };
           if (state.refreshPending === true && state.threadId !== undefined) {
             return {
-              state: { ...nextState, refreshing: true },
+              state: {
+                ...nextState,
+                refreshing: true,
+                contextUsageChangedDuringOpen: false,
+              },
               effects: [{ type: "FETCH", threadId: state.threadId }],
             };
           }
@@ -239,7 +263,11 @@ export function createThreadActor(scope: Scope, gateway: GatewayPort) {
           };
           if (state.refreshPending === true && state.threadId !== undefined) {
             return {
-              state: { ...nextState, refreshing: true },
+              state: {
+                ...nextState,
+                refreshing: true,
+                contextUsageChangedDuringOpen: false,
+              },
               effects: [{ type: "FETCH", threadId: state.threadId }],
             };
           }
@@ -251,13 +279,18 @@ export function createThreadActor(scope: Scope, gateway: GatewayPort) {
             preserveEffects: true,
           };
         case "RECONNECTING":
+          const {
+            contextUsage: _staleContextUsage,
+            ...stateWithoutContextUsage
+          } = state;
           return {
             state: {
-              ...state,
+              ...stateWithoutContextUsage,
               status: "reconnecting",
               refreshing: false,
               historyStatus: "idle",
               refreshPending: false,
+              contextUsageChangedDuringOpen: false,
             },
           };
         case "CLOSE":
@@ -266,6 +299,7 @@ export function createThreadActor(scope: Scope, gateway: GatewayPort) {
               status: "closed",
               historyStatus: "idle",
               loadedHistoryItemIds: [],
+              contextUsageChangedDuringOpen: false,
             },
             effects: [
               {
@@ -320,7 +354,7 @@ export function createThreadActor(scope: Scope, gateway: GatewayPort) {
           );
           if (!context.isCurrent()) return;
         }
-        const snapshot = await openThreadWithWorkingDirectoryCompatibility(
+        const snapshot = await openThreadWithCompatibility(
           gateway,
           effect.threadId,
           context.signal,
@@ -346,35 +380,47 @@ export function createThreadActor(scope: Scope, gateway: GatewayPort) {
   });
 }
 
-async function openThreadWithWorkingDirectoryCompatibility(
+async function openThreadWithCompatibility(
   gateway: GatewayPort,
   threadId: string,
   signal: AbortSignal,
 ): Promise<Snapshot> {
-  try {
-    return await gateway.request(
-      "thread/open",
-      {
-        version: 1,
-        threadId,
-        historyLimit: TIMELINE_PAGE_SIZE,
-        includeWorkingDirectory: true,
-      },
-      queryOptions(signal),
-    );
-  } catch (error) {
-    if (
-      !(error instanceof GatewayRemoteError) ||
-      error.code !== "INVALID_INPUT"
-    ) {
-      throw error;
+  const base = {
+    version: 1 as const,
+    threadId,
+    historyLimit: TIMELINE_PAGE_SIZE,
+  };
+  const candidates: InputOf<"thread/open">[] = [
+    {
+      ...base,
+      includeWorkingDirectory: true,
+      includeContextUsage: true,
+      includeCompactionCount: true,
+    },
+    {
+      ...base,
+      includeWorkingDirectory: true,
+      includeContextUsage: true,
+    },
+    { ...base, includeWorkingDirectory: true },
+    base,
+  ];
+
+  let compatibilityError: GatewayRemoteError | undefined;
+  for (const input of candidates) {
+    try {
+      return await gateway.request("thread/open", input, queryOptions(signal));
+    } catch (error) {
+      if (
+        !(error instanceof GatewayRemoteError) ||
+        error.code !== "INVALID_INPUT"
+      ) {
+        throw error;
+      }
+      compatibilityError = error;
     }
-    return gateway.request(
-      "thread/open",
-      { version: 1, threadId, historyLimit: TIMELINE_PAGE_SIZE },
-      queryOptions(signal),
-    );
   }
+  throw compatibilityError ?? new Error("No compatible thread/open request");
 }
 
 function appendNewHistoryIds(
@@ -406,8 +452,21 @@ function applyGatewayEvent(
   state: ThreadActorState,
   event: GatewayEventEnvelopeV2,
 ): ThreadActorState {
-  if (state.threadId === undefined || state.snapshot === undefined)
-    return state;
+  if (state.threadId === undefined) return state;
+  if (event.type === "thread/context-usage") {
+    const payload = parseGatewayEventPayload(
+      "thread/context-usage",
+      event.payload,
+    );
+    if (payload.threadId !== state.threadId) return state;
+    return {
+      ...state,
+      contextUsage: payload.usage,
+      contextUsageChangedDuringOpen:
+        state.status === "opening" || state.refreshing === true,
+    };
+  }
+  if (state.snapshot === undefined) return state;
   if (event.type === "thread/state") {
     const payload = parseGatewayEventPayload("thread/state", event.payload);
     if (payload.threadId !== state.threadId) return state;
@@ -490,10 +549,13 @@ function applyGatewayEvent(
   if (event.type === "thread/lease/failed") {
     const payload = parseGatewayEventPayload(event.type, event.payload);
     if (payload.threadId !== state.threadId) return state;
+    const { contextUsage: _staleContextUsage, ...stateWithoutContextUsage } =
+      state;
     return {
-      ...state,
+      ...stateWithoutContextUsage,
       status: "failed",
       refreshing: false,
+      contextUsageChangedDuringOpen: false,
       error: payload.reason,
     };
   }

@@ -120,8 +120,16 @@ export class ThreadService {
             workspace !== undefined &&
             selected.some((candidate) => candidate.id === workspace.id)
           ) {
+            const summary = projectThreadSummary(
+              thread,
+              workspace,
+              input.archived,
+            );
+            const lease = this.#leases.get(summary.id);
             collected.push(
-              projectThreadSummary(thread, workspace, input.archived),
+              lease === undefined
+                ? summary
+                : { ...summary, state: lease.state },
             );
           }
         }
@@ -142,7 +150,11 @@ export class ThreadService {
     handle: ThreadLeaseHandle,
     input: Pick<
       InputOf<"thread/open">,
-      "historyCursor" | "historyLimit" | "includeWorkingDirectory"
+      | "historyCursor"
+      | "historyLimit"
+      | "includeWorkingDirectory"
+      | "includeContextUsage"
+      | "includeCompactionCount"
     >,
   ): Promise<OutputOf<"thread/open">> {
     const { thread, state, settings } = await this.#sessions.open(handle);
@@ -170,6 +182,13 @@ export class ThreadService {
         : { historyCursor: page.nextCursor }),
       hasEarlierHistory: page.hasMore,
       settings,
+      ...(input.includeContextUsage === true &&
+      handle.lease.contextUsage !== undefined
+        ? { contextUsage: handle.lease.contextUsage }
+        : {}),
+      ...(input.includeCompactionCount === true
+        ? { compactionCount: page.compactionCount }
+        : {}),
     };
   }
 

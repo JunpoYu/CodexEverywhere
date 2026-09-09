@@ -51,6 +51,50 @@ describe("Gateway API v2 method registry", () => {
     }
   });
 
+  it("validates the optional authoritative compaction count", () => {
+    const definition = gatewayMethodDefinitions["thread/open"];
+    expect(
+      definition.input.safeParse({
+        version: 1,
+        threadId: "thread-1",
+        historyLimit: 50,
+        includeCompactionCount: true,
+      }).success,
+    ).toBe(true);
+    expect(
+      definition.input.safeParse({
+        version: 1,
+        threadId: "thread-1",
+        historyLimit: 50,
+        includeCompactionCount: false,
+      }).success,
+    ).toBe(false);
+
+    const snapshot = {
+      version: 1,
+      thread: {
+        version: 1,
+        id: "thread-1",
+        workspaceId: "workspace-1",
+        title: "Task",
+        state: "idle",
+        archived: false,
+        createdAt: "2026-09-09T00:00:00.000Z",
+        updatedAt: "2026-09-09T00:00:00.000Z",
+      },
+      state: "idle",
+      items: [],
+      interactions: [],
+      hasEarlierHistory: false,
+      settings: { version: 1, revision: 0 },
+      compactionCount: 2,
+    };
+    expect(definition.output.safeParse(snapshot).success).toBe(true);
+    expect(
+      definition.output.safeParse({ ...snapshot, compactionCount: -1 }).success,
+    ).toBe(false);
+  });
+
   it("derives precise inputs, outputs, and request options", () => {
     expectTypeOf<InputOf<"thread/start">>().toEqualTypeOf<{
       version: 2;
@@ -86,9 +130,24 @@ describe("Gateway API v2 method registry", () => {
       historyCursor?: string;
       historyLimit: number;
       includeWorkingDirectory?: true;
+      includeContextUsage?: true;
+      includeCompactionCount?: true;
     }>();
     expectTypeOf<OutputOf<"thread/open">["workingDirectory"]>().toEqualTypeOf<
       string | undefined
+    >();
+    expectTypeOf<OutputOf<"thread/open">["contextUsage"]>().toEqualTypeOf<
+      | {
+          version: 1;
+          turnId: string;
+          currentTokens: number;
+          cumulativeTokens: number;
+          modelContextWindow: number | null;
+        }
+      | undefined
+    >();
+    expectTypeOf<OutputOf<"thread/open">["compactionCount"]>().toEqualTypeOf<
+      number | undefined
     >();
     expectTypeOf<InputOf<"setup/codex/version">>().toEqualTypeOf<{
       version: 1;

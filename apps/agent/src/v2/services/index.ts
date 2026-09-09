@@ -47,6 +47,7 @@ export {
   type ThreadLeaseReferenceKind,
   type ThreadLeaseState,
 } from "./thread-lease-manager.js";
+export { projectThreadContextUsage } from "./thread-context-usage.js";
 export { ThreadService, type ThreadServiceOptions } from "./thread-service.js";
 export { WorkspaceService, type WorkspaceView } from "./workspace-service.js";
 export {
