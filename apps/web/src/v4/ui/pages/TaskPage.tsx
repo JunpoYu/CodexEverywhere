@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 
+import { contextUsagePresentation } from "../../../session-controls.js";
 import { useActorState } from "../../actors/use-actor.js";
 import { composerDraftFor } from "../../actors/composer-actor.js";
 import { durableMutation } from "../../gateway/durable-mutation.js";
@@ -362,6 +363,7 @@ export function TaskPage() {
           historyStatus={thread.historyStatus}
           items={snapshot.items}
           key={threadId}
+          threadState={snapshot.state}
           onActiveUserItemChange={setActiveOutlineItemId}
           onLoadEarlier={() => {
             runtime.thread.dispatch({ type: "LOAD_EARLIER" });
@@ -426,6 +428,8 @@ export function TaskPage() {
                   }
                   effort={reasoningEffortLabel(snapshot.settings.effort)}
                   model={snapshot.settings.model ?? "Codex 当前值"}
+                  contextUsage={contextUsagePresentation(thread.contextUsage)}
+                  compactionCount={snapshot.compactionCount}
                   revision={snapshot.settings.revision}
                   sandbox={sandboxSettingLabel(snapshot.settings.sandbox)}
                   sandboxNeedsAttention={

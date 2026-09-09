@@ -134,10 +134,93 @@
   vertical-align: 1px;
 }
 
+.usage {
+  min-width: 0;
+  margin-top: 5px;
+  padding-top: 6px;
+  border-top: 1px solid var(--border);
+  color: var(--accent-strong);
+}
+
+.usageHeader {
+  display: flex;
+  min-width: 0;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 6px;
+}
+
+.usageHeader span {
+  color: var(--text-subtle);
+  font-size: 8px;
+  font-weight: 620;
+}
+
+.usageHeader strong {
+  font-size: 9px;
+  font-weight: 720;
+}
+
+.usageTrack {
+  height: 3px;
+  margin-top: 4px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--surface-muted);
+}
+
+.usageTrack > span {
+  display: block;
+  width: var(--context-usage-percent);
+  height: 100%;
+  border-radius: inherit;
+  background: currentcolor;
+  transition: width 180ms ease;
+}
+
+.usageFooter {
+  display: flex;
+  min-width: 0;
+  margin-top: 3px;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 5px;
+}
+
+.usageCounts {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-muted);
+  font-size: 8px;
+  font-weight: 650;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.compactionCount {
+  flex: 0 0 auto;
+  color: var(--text-subtle);
+  font-size: 8px;
+  font-weight: 650;
+  white-space: nowrap;
+}
+
+.usage[data-level="unknown"] {
+  color: var(--text-subtle);
+}
+
+.usage[data-level="warning"] {
+  color: var(--warning);
+}
+
+.usage[data-level="danger"] {
+  color: var(--danger);
+}
+
 @container (min-width: 520px) {
   .card {
     display: grid;
-    grid-template-columns: auto minmax(0, 1fr);
+    grid-template-columns: auto minmax(0, 1fr) minmax(126px, 0.55fr);
     align-items: center;
     gap: 10px;
     padding: 6px 9px;
@@ -181,6 +264,13 @@
     padding-right: 0;
     border-right: 0;
   }
+
+  .usage {
+    margin: 0;
+    padding: 1px 0 1px 10px;
+    border-top: 0;
+    border-left: 1px solid var(--border);
+  }
 }
 
 @media (max-width: 760px) {
@@ -218,5 +308,13 @@
   .values > div:nth-child(even) {
     padding-right: 0;
     border-right: 0;
+  }
+
+  .usage {
+    margin-top: 4px;
+    padding-top: 5px;
+    padding-left: 0;
+    border-top: 1px solid var(--border);
+    border-left: 0;
   }
 }

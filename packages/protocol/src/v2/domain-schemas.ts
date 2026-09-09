@@ -170,6 +170,25 @@ export const modelCatalogEntrySchema = z
   })
   .strict();
 
+const tokenCountSchema = z
+  .number()
+  .int()
+  .nonnegative()
+  .max(Number.MAX_SAFE_INTEGER);
+
+/** Minimal CE-owned projection of app-server context-window usage. */
+export const threadContextUsageSchema = z
+  .object({
+    version: z.literal(1),
+    turnId: identifierSchema,
+    currentTokens: tokenCountSchema,
+    cumulativeTokens: tokenCountSchema,
+    modelContextWindow: tokenCountSchema.nullable(),
+  })
+  .strict();
+
+export type ThreadContextUsage = z.output<typeof threadContextUsageSchema>;
+
 export const threadSnapshotSchema = z
   .object({
     version: z.literal(1),
@@ -181,6 +200,13 @@ export const threadSnapshotSchema = z
     historyCursor: cursorSchema.optional(),
     hasEarlierHistory: z.boolean(),
     settings: threadSettingsSchema,
+    contextUsage: threadContextUsageSchema.optional(),
+    compactionCount: z
+      .number()
+      .int()
+      .nonnegative()
+      .max(Number.MAX_SAFE_INTEGER)
+      .optional(),
   })
   .strict();
 

@@ -11,6 +11,7 @@ import {
   type JsonValue,
   type OutputOf,
   type RequestOptionsOf,
+  type ThreadContextUsage,
 } from "@codex-everywhere/protocol/v2";
 
 import type { GatewayPort } from "./gateway-port.js";
@@ -29,6 +30,7 @@ type ThreadSettings = OutputOf<"thread/settings/update">;
 interface ScenarioThread {
   summary: Thread;
   items: TimelineItem[];
+  readonly compactionCount?: number;
 }
 
 export interface ScenarioGatewayOptions {
@@ -54,6 +56,7 @@ export class ScenarioGateway implements GatewayPort {
   readonly #workspaces = new Map<string, Workspace>();
   readonly #threads = new Map<string, ScenarioThread>();
   readonly #threadSettings = new Map<string, ThreadSettings>();
+  readonly #threadContextUsage = new Map<string, ThreadContextUsage>();
   readonly #interactions = new Map<string, Interaction>();
   readonly #interactionTurns = new Map<
     string,
@@ -146,10 +149,18 @@ export class ScenarioGateway implements GatewayPort {
           },
         },
       ],
+      compactionCount: 2,
     });
     this.#threadSettings.set("thread-welcome", {
       version: 1,
       revision: 0,
+    });
+    this.#threadContextUsage.set("thread-welcome", {
+      version: 1,
+      turnId: "turn-welcome",
+      currentTokens: 32_000,
+      cumulativeTokens: 180_000,
+      modelContextWindow: 128_000,
     });
     if (options.longConversation === true) {
       const longThread = longConversationThread(now);
@@ -527,6 +538,8 @@ export class ScenarioGateway implements GatewayPort {
             : undefined,
           Number(record.historyLimit),
           record.includeWorkingDirectory === true,
+          record.includeContextUsage === true,
+          record.includeCompactionCount === true,
         );
       case "thread/history": {
         const thread = this.#requiredThread(String(record.threadId));
@@ -983,6 +996,21 @@ export class ScenarioGateway implements GatewayPort {
           completedAtMs: Date.now(),
         },
       });
+      const previous = this.#threadContextUsage.get(threadId);
+      const addedTokens = 2_048;
+      const usage: ThreadContextUsage = {
+        version: 1,
+        turnId,
+        currentTokens: (previous?.currentTokens ?? 0) + addedTokens,
+        cumulativeTokens: (previous?.cumulativeTokens ?? 0) + addedTokens,
+        modelContextWindow: previous?.modelContextWindow ?? 128_000,
+      };
+      this.#threadContextUsage.set(threadId, usage);
+      this.#emit("thread/context-usage", {
+        version: 1,
+        threadId,
+        usage,
+      });
       this.#setThreadState(threadId, "idle");
     }, 250);
   }
@@ -1012,6 +1040,8 @@ export class ScenarioGateway implements GatewayPort {
     historyCursor: string | undefined,
     historyLimit: number,
     includeWorkingDirectory: boolean,
+    includeContextUsage: boolean,
+    includeCompactionCount: boolean,
   ) {
     const thread = this.#requiredThread(threadId);
     const workspace = this.#workspaces.get(thread.summary.workspaceId);
@@ -1033,6 +1063,12 @@ export class ScenarioGateway implements GatewayPort {
         version: 1,
         revision: 0,
       },
+      ...(includeContextUsage && this.#threadContextUsage.has(threadId)
+        ? { contextUsage: this.#threadContextUsage.get(threadId) }
+        : {}),
+      ...(includeCompactionCount
+        ? { compactionCount: thread.compactionCount ?? 0 }
+        : {}),
     };
   }
 
@@ -1046,6 +1082,7 @@ export class ScenarioGateway implements GatewayPort {
     this.#requiredThread(threadId);
     this.#threads.delete(threadId);
     this.#threadSettings.delete(threadId);
+    this.#threadContextUsage.delete(threadId);
     for (const interaction of this.#threadInteractions(threadId)) {
       this.#interactions.delete(interaction.id);
       this.#interactionTurns.delete(interaction.id);

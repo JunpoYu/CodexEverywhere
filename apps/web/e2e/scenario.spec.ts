@@ -195,6 +195,22 @@ test("任务权限可连续保存，并始终显示权威结果", async ({ page 
   await expect(page.getByLabel("推理：Codex 当前值")).toBeVisible();
   await expect(page.getByLabel("文件：Codex 当前值")).toBeVisible();
   await expect(page.getByLabel("审批：Codex 当前值")).toBeVisible();
+  const contextUsage = page.locator("[data-context-usage]");
+  await expect(contextUsage).toHaveAttribute("data-level", "normal");
+  await expect(
+    page.getByRole("progressbar", { name: "上下文使用" }),
+  ).toHaveAttribute("aria-valuenow", "25");
+  await expect(contextUsage).toContainText("32K / 128K");
+  await expect(page.locator("[data-context-compaction-count]")).toHaveText(
+    "已压缩 2 次",
+  );
+  await expect
+    .poll(() =>
+      page
+        .getByLabel("任务运行设置摘要")
+        .evaluate((element) => element.scrollWidth <= element.clientWidth),
+    )
+    .toBe(true);
   await expect
     .poll(() =>
       page
@@ -742,7 +758,7 @@ test("长会话分页、首开滚底、阅读保护与对话大纲协同工作",
   await openTaskCard(page, "长会话分页与大纲");
 
   const timeline = page.locator(".timeline");
-  await expect(timeline.locator(".timeline-item")).toHaveCount(50);
+  await expect(timeline).toHaveAttribute("data-loaded-items", "50");
   await expect
     .poll(() => timelineDistanceFromBottom(timeline))
     .toBeLessThanOrEqual(2);
@@ -750,6 +766,10 @@ test("长会话分页、首开滚底、阅读保护与对话大纲协同工作",
   await expect(
     page.getByText("SCENARIO_LARGE_OUTPUT_SENTINEL", { exact: true }),
   ).toHaveCount(0);
+  await expect(page.getByText("查看命令输出", { exact: true })).toHaveCount(0);
+  const processGroup = timeline.locator("[data-timeline-activity-group]");
+  await expect(processGroup).toHaveCount(1);
+  await processGroup.locator("summary").click();
   await page.getByText("查看命令输出", { exact: true }).click();
   await expect(
     page.getByText("SCENARIO_LARGE_OUTPUT_SENTINEL", { exact: true }),
@@ -766,7 +786,7 @@ test("长会话分页、首开滚底、阅读保护与对话大纲协同工作",
 
   const anchorBeforePagination = await firstVisibleTimelineAnchor(timeline);
   await outline.getByRole("button", { name: "加载更早大纲" }).click();
-  await expect(timeline.locator(".timeline-item")).toHaveCount(100);
+  await expect(timeline).toHaveAttribute("data-loaded-items", "100");
   await expect
     .poll(async () => {
       const anchorAfterPagination = await firstVisibleTimelineAnchor(timeline);

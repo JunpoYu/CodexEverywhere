@@ -13,6 +13,14 @@ export function isUserTimelineItem(item: TimelineItem): boolean {
   return item.type === "message" && timelineMessageRole(item) === "user";
 }
 
+export function isEmptyReasoningTimelineItem(item: TimelineItem): boolean {
+  return (
+    item.type === "message" &&
+    item.data.type === "reasoning" &&
+    timelineItemText(item.data) === undefined
+  );
+}
+
 export function timelineItemText(data: TimelineData): string | undefined {
   const direct = stringValue(data.text);
   if (direct !== undefined) return direct;
@@ -33,6 +41,8 @@ export function timelineItemText(data: TimelineData): string | undefined {
   if (contentText.length > 0) return contentText.join("\n\n");
   const summary = stringArray(data.summary);
   if (summary.length > 0) return summary.join("\n\n");
+  const textContent = stringArray(data.content);
+  if (textContent.length > 0) return textContent.join("\n\n");
   const fragments = objectArray(data.fragments)
     .map((fragment) => stringValue(fragment.text))
     .filter((value): value is string => value !== undefined);
@@ -45,7 +55,10 @@ function stringValue(value: unknown): string | undefined {
 
 function stringArray(value: unknown): readonly string[] {
   return Array.isArray(value)
-    ? value.filter((entry): entry is string => typeof entry === "string")
+    ? value.filter(
+        (entry): entry is string =>
+          typeof entry === "string" && entry.trim().length > 0,
+      )
     : [];
 }
 

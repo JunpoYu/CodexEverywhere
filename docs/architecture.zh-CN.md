@@ -172,22 +172,24 @@ Agent composition root 只构造服务、绑定 Scope、连接控制面事件并
 - 独立 app-server client；
 - notification/server-request 订阅；
 - `InteractionBroker`；
-- 当前 turn、thread 状态与 workspace path；
+- 当前 turn、thread 状态、workspace path 与最近一次 app-server 上下文用量投影；
 - viewer/Queue/短期 effect 引用计数和子 scope。
 
-浏览器断线立即释放 viewer；活动 turn、待处理 interaction 或 Queue 引用继续保留 lease。无引用且 idle 时立即关闭。Gateway session 会合并同一连接内并发的 `thread/open`，并在 close 完成后才允许同任务重新 open；viewer Scope 的异步释放必须一直等待到底层 app-server client 关闭。Manager 把正在释放的 lease 计入容量，同一任务的旧 client 未完成关闭前不得创建新 client。notification、interaction 和 client-close 等同步回调触发异步释放时，必须进入同一个受观察的后台清理入口；disposer 失败只能发出不含底层异常内容的控制面失败事件，不能形成未处理 Promise rejection。最多保留 128 个 lease，达到上限时拒绝创建，不驱逐活动任务。
+浏览器断线立即释放 viewer；活动 turn、待处理 interaction 或 Queue 引用继续保留 lease。无引用且 idle 时立即关闭。Gateway session 会合并同一连接内并发的 `thread/open`，并在 close 完成后才允许同任务重新 open；viewer Scope 的异步释放必须一直等待到底层 app-server client 关闭。Manager 把正在释放的 lease 计入容量，同一任务的旧 client 未完成关闭前不得创建新 client。Manager 还把 lease 的离散状态变化投影为面向该用户所有已认证 Gateway session 的瞬时 `thread/state` 事件；它不持久化状态、不转发高频 item delta，也不取代 app-server 权威读取。notification、interaction 和 client-close 等同步回调触发异步释放时，必须进入同一个受观察的后台清理入口；disposer 失败只能发出不含底层异常内容的控制面失败事件，不能形成未处理 Promise rejection。最多保留 128 个 lease，达到上限时拒绝创建，不驱逐活动任务。
 
 新任务先在 Manager 计入容量的 provisional Scope 中创建 client；app-server 返回 thread ID 后，必须把同一个 client 绑定为该 thread 的 lease，再发送第一轮。不得关闭创建 client 后立即对空 thread 执行 `thread/resume`：Codex 在第一轮前可能还没有可恢复 rollout；也不得先发送第一轮再补订阅，因为审批或用户问题可以在 `turn/start` 后立即到达。
 
 当已接受的 Web 或 Queue 消息具有可用标题且 app-server thread 尚无明确名称时，`AutoTitleService` 在 turn 完成前持有一个短期 effect 引用。只有收到相同 turn ID 的成功完成事件后，它才重新读取权威 `thread.name` 并在仍为空时调用 `thread/name/set`。每个 CE `turn/start` 调用都在发请求前显式建立短期 response observation，并在响应后的标题注册边界由 `finally` 释放；lease 只在该 observation 存在时按 turn ID 暂存提前到达的终态，TUI 等外部 client 的 turn 不进入缓存。Queue `turn/steer` 同样在请求前为当前 turn 建立引用计数的短期终态观察。这样既覆盖多个极短 turn 和 Steer 的乱序响应，又不缓存正文或重建连续事件 buffer。手动 Web 重命名会先等待已经发出的自动写入收口，再提交明确名称；TUI 或其他 client 的 `thread/name/updated` 在自动写入与冲突恢复期间也持续被观察，若连续出现多个明确名称则追踪到最新写入。成功的 service-owned 重命名只通过版本化 `thread/name/changed` 控制事件通知所有已认证任务列表重新读取权威摘要，事件不携带标题内容。通用短指令、失败或中断的 turn、已有名称以及任何自动命名错误都不得改写名称或改变原 mutation 结果；effect 释放后 lease 仍按正常 idle 规则关闭。
 
-`thread/open` 总是返回 app-server 权威快照、历史边界、当前状态、thread settings 和未解决 interaction。Web 可通过 `includeWorkingDirectory: true` 同时请求 lease 从 app-server 恢复并经 Workspace 授权校验后的真实工作目录；该字段必须来自 thread `cwd`，不能用所属 Workspace 根目录近似。Agent 只在客户端显式请求时返回可选 `workingDirectory`，避免缓存旧 Web 因严格 output schema 收到未知字段。alpha.15 Web 若在滚动切换窗口收到 alpha.14 Agent 的 `INVALID_INPUT`，只对这一只读查询去掉新增字段重试一次；其他错误、mutation 和 Gateway API 大版本均不降级。`setup/codex/version` 的可选运行时切换状态采用相同的只读回退规则。多个设备回答同一 interaction 时，broker 原子取出待处理项，第一个合法回答成功，其余设备收到 `interaction/resolved` 或明确失败。
+`thread/open` 总是返回 app-server 权威快照、历史边界、当前状态、thread settings 和未解决 interaction。Web 可通过 `includeWorkingDirectory: true` 同时请求 lease 从 app-server 恢复并经 Workspace 授权校验后的真实工作目录；该字段必须来自 thread `cwd`，不能用所属 Workspace 根目录近似。`includeContextUsage: true` 返回 lease 最近收到的上下文用量投影；`includeCompactionCount: true` 则返回完整权威 thread 中持久化 `contextCompaction` item 按稳定 ID 去重后的数量。压缩次数不能使用浏览器事件计数，因为断线、换设备和 Agent 重启会造成漏记；Web 也不能为此穷举分页历史。Agent 只在客户端显式请求时返回这些可选字段，避免缓存旧 Web 因严格 output schema 收到未知字段。滚动切换窗口内，新 Web 只对 `thread/open` 的 `INVALID_INPUT` 按压缩次数、上下文用量、工作目录的顺序逐级去掉只读请求字段；其他错误、mutation 和 Gateway API 大版本均不降级。`setup/codex/version` 的可选运行时切换状态采用相同的只读回退规则。多个设备回答同一 interaction 时，broker 原子取出待处理项，第一个合法回答成功，其余设备收到 `interaction/resolved` 或明确失败。
 
-Web Thread actor 不维护独立的 `openedThreadId` 影子变量；切换和关闭目标由 reducer 写入 generation-bound effect。旧 `thread/open` 即使在取消后才返回，也不能改写后续 close 目标或把旧任务重新暴露为当前任务。Composer actor 只保存按 thread ID 隔离的内存草稿及 mutation 对账状态；草稿不是会话事实源，不能跨任务复用，失败反馈也必须归属到原任务。
+Web Thread actor 不维护独立的 `openedThreadId` 影子变量；切换和关闭目标由 reducer 写入 generation-bound effect。旧 `thread/open` 即使在取消后才返回，也不能改写后续 close 目标或把旧任务重新暴露为当前任务。TaskList actor 以 `thread/list` 为初始化与重连后的权威快照，只对已加载任务合并低频 `thread/state` 变化；合并保持任务排序稳定且不发起查询，列表请求进行中收到的状态会暂存到响应落地后再覆盖，避免跨 client 的响应竞态把运行状态回退。Agent 将已校验的 `thread/tokenUsage/updated` 投影为最小、版本化的 `thread/context-usage` 事件，同时保留原始已知 notification；Thread actor 只在内存中保存当前任务的最近值，并能合并打开期间抢先到达的事件。该展示状态不写数据库、不触发 `thread/open` 轮询，也不把 token 用量变成第二个会话事实源。Composer actor 只保存按 thread ID 隔离的内存草稿及 mutation 对账状态；草稿不是会话事实源，不能跨任务复用，失败反馈也必须归属到原任务。
 
-Web 首开任务和每次向前分页都只请求 50 个 timeline item。历史加载使用独立的 `historyStatus`，不能把任务运行状态改成 `syncing` 或阻断 Composer。历史请求或权威刷新期间到达的同任务刷新只合并为一次尾随读取，不能取消当前分页，也不能丢失刷新。Thread actor 只记录用户显式向前分页时新增的稳定 item ID，不能把最新 50 项窗口自然老化掉的头部误认为已加载历史；权威刷新只保留这组显式 ID，重叠区域以最新权威项为准，因此未分页时浏览器 DOM 保持有界。完全无重叠时视为窗口漂移并替换为最新页，不能按正文猜测。收到明确的 `thread/compacted` notification 后，即使新旧窗口仍有稳定 ID 重叠，也必须在下一次权威读取时丢弃压缩前的历史前缀。
+Web 首开任务和每次向前分页都只请求 50 个 timeline item。Agent 在生成这一有界页面时已经读取完整权威 thread，因此压缩次数在同一次投影中统计，Web 只接收单个整数，不加载额外 item。历史加载使用独立的 `historyStatus`，不能把任务运行状态改成 `syncing` 或阻断 Composer。历史请求或权威刷新期间到达的同任务刷新只合并为一次尾随读取，不能取消当前分页，也不能丢失刷新。Thread actor 只记录用户显式向前分页时新增的稳定 item ID，不能把最新 50 项窗口自然老化掉的头部误认为已加载历史；权威刷新只保留这组显式 ID，重叠区域以最新权威项为准，因此未分页时浏览器 DOM 保持有界。完全无重叠时视为窗口漂移并替换为最新页，不能按正文猜测。收到明确的 `thread/compacted` notification 后，即使新旧窗口仍有稳定 ID 重叠，也必须在下一次权威读取时丢弃压缩前的历史前缀；新式 `contextCompaction` item 完成事件也会触发同一条权威刷新链并更新次数。
 
 `TimelineViewport` 只拥有页面级几何状态：首次进入滚底、接近底部时跟随最新、用户上滚后的 detached 状态、旧页插入锚点和大纲跳转。它不持久化消息，不解析 Gateway，也不成为会话事实源。异步 Markdown 布局变化只在 following 状态维持底部；detached 状态显示“回到最新”且不得抢夺阅读位置。命令输出、diff、MCP 结果和 generic payload 在原生 `details` 打开前不挂载大型 DOM。
+
+`TimelinePresentationModel` 是位于权威 snapshot 与 React 之间的纯展示投影，不修改、过滤或回写 actor 状态。用户消息、`agentMessage.phase = final_answer`、计划、turn 错误和 Review 最终输出直接进入主时间线；`commentary`、reasoning、命令、文件修改、MCP、subagent 与 generic item 按连续 turn 边界收进“处理过程”。缺少 phase 的兼容历史只在任务已经 idle 时保留每个 turn 最后一条 assistant 消息，活动或失败中的最新 turn 不猜测最终回答。处理过程默认折叠，展开前不挂载内部 item DOM；真正的错误 item 与 Composer 上方的 interaction 始终保持可见。该投影只决定信息层级，所有 item 仍保留在内存中的有界权威窗口并可由用户展开检查。
 
 对话大纲是当前已加载用户消息的纯展示投影，不是 Codex `plan`，也不能通过 `MutationObserver` 扫描渲染 DOM 反建状态。大纲条目使用稳定 item ID 跳转；桌面覆盖式抽屉和移动底部 Sheet 只保存打开、筛选和当前位置等局部 UI 状态。存在更早 cursor 时用户可显式加载下一页，大纲本身不得后台穷举历史。
 

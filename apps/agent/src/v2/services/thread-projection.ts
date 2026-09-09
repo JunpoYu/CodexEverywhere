@@ -23,6 +23,8 @@ export interface ThreadHistoryProjection {
   readonly items: TimelineItem[];
   readonly nextCursor?: string;
   readonly hasMore: boolean;
+  /** Number of persisted app-server context compaction items in the task. */
+  readonly compactionCount: number;
 }
 
 export function projectThreadHistory(
@@ -31,6 +33,11 @@ export function projectThreadHistory(
   limit: number,
 ): ThreadHistoryProjection {
   const items = projectThreadTimeline(thread);
+  const compactionCount = new Set(
+    items
+      .filter((item) => item.data.type === "contextCompaction")
+      .map((item) => item.id),
+  ).size;
   let end = items.length;
   if (cursor !== undefined) {
     const boundaryId = decodeHistoryCursor(cursor);
@@ -51,6 +58,7 @@ export function projectThreadHistory(
       ? {}
       : { nextCursor: encodeHistoryCursor(page[0]!.id) }),
     hasMore: start > 0,
+    compactionCount,
   };
 }
 

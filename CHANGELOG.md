@@ -4,6 +4,21 @@
 
 ## [Unreleased]
 
+## [0.4.0-alpha.16] - 2026-09-09
+
+### Added
+
+- 任务输入区旁的配置卡恢复显示 app-server 上下文窗口占用、当前/窗口 token 数和累计用量，并在 70%/90% 阈值显示警告/危险状态；同一区域还显示权威历史中持久化的上下文压缩次数。用量只作为 lease 与 Thread actor 中的实时投影，压缩次数则在 Agent 的有界历史投影过程中按稳定 item ID 去重统计；两者都不落库、不轮询，也不会让旧 Web 因严格快照 schema 拒绝连接。
+
+### Changed
+
+- 任务主时间线改为结果优先：用户消息、Codex 最终回答、计划和错误直接显示，commentary、推理摘要、命令、文件修改、MCP、subagent 与 generic event 按 turn 收进默认折叠的“处理过程”。旧模型缺少 message phase 时只在 turn 结束后保留最后一条 assistant 消息；折叠内容展开前不创建内部 DOM，但仍完整保留在权威历史窗口中供检查。
+
+### Fixed
+
+- 空的 Codex reasoning item 不再显示可展开但只有 `summary: []`、`content: []` 的原始 JSON；存在摘要时优先显示摘要，只有 content 有文本时仍提供可读回退。
+- 左侧最近任务和任务中心会把 Agent 已知 lease 的 `thread/state` 增量合并到 `thread/list` 权威快照；运行、等待操作、完成和失败会同步更新，不再长期停留在旧的灰色空闲点。状态事件不会触发列表轮询或重复读取，并且列表请求期间到达的新状态不会被较早的响应覆盖。
+
 ## [0.4.0-alpha.15] - 2026-09-05
 
 ### Added

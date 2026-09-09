@@ -9,6 +9,7 @@ import {
 
 import { Icon, type IconName } from "../components/Icon.js";
 import {
+  isEmptyReasoningTimelineItem,
   timelineItemText,
   timelineMessageRole,
   type TimelineData,
@@ -24,6 +25,7 @@ export function TimelineItemView(input: {
   readonly onAnimationEnd?: AnimationEventHandler<HTMLElement> | undefined;
 }) {
   const { item } = input;
+  if (isEmptyReasoningTimelineItem(item)) return null;
   const role = timelineMessageRole(item);
   return (
     <article

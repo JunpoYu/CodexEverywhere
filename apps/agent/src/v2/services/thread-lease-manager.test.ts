@@ -448,6 +448,45 @@ describe("ThreadLeaseManager", () => {
     await handle.release();
   });
 
+  it("projects app-server token usage without replacing the raw notification", async () => {
+    const { manager, factory } = createManager();
+    const handle = await manager.acquire("thread-1", {
+      kind: "viewer",
+      id: "desktop",
+    });
+    const events: ThreadLeaseEvent[] = [];
+    handle.lease.onEvent((event) => events.push(event));
+
+    factory.clients[0]!.notification("thread/tokenUsage/updated", {
+      threadId: "thread-1",
+      turnId: "turn-usage",
+      tokenUsage: {
+        total: tokenUsageBreakdown(180_000),
+        last: tokenUsageBreakdown(32_000),
+        modelContextWindow: 128_000,
+      },
+    });
+
+    expect(handle.lease.contextUsage).toEqual({
+      version: 1,
+      turnId: "turn-usage",
+      currentTokens: 32_000,
+      cumulativeTokens: 180_000,
+      modelContextWindow: 128_000,
+    });
+    expect(events).toContainEqual({
+      type: "thread/context-usage",
+      usage: handle.lease.contextUsage,
+    });
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        type: "codex/notification",
+        method: "thread/tokenUsage/updated",
+      }),
+    );
+    await handle.release();
+  });
+
   it("fails pending interactions when the app-server client disappears", async () => {
     const { manager, factory } = createManager();
     const handle = await manager.acquire("thread-1", {
@@ -585,6 +624,17 @@ class FakeCodexClient implements CodexClient {
     this.closed = true;
     for (const listener of [...this.#closeListeners]) listener();
   }
+}
+
+function tokenUsageBreakdown(totalTokens: number) {
+  return {
+    totalTokens,
+    inputTokens: totalTokens,
+    cachedInputTokens: 0,
+    cacheWriteInputTokens: 0,
+    outputTokens: 0,
+    reasoningOutputTokens: 0,
+  };
 }
 
 class FakeFactory implements CodexClientFactoryPort {

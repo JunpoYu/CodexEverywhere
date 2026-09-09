@@ -27,6 +27,7 @@ export {
   modelCatalogEntrySchema,
   preferencesSchema,
   queueItemSchema,
+  threadContextUsageSchema,
   threadSettingsSchema,
   threadSnapshotSchema,
   threadStateSchema,
@@ -34,6 +35,7 @@ export {
   timelineItemSchema,
   workspaceSchema,
   type InteractionResponse,
+  type ThreadContextUsage,
 } from "./domain-schemas.js";
 export {
   codexGenericEvent,

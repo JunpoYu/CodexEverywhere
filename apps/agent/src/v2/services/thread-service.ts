@@ -142,7 +142,11 @@ export class ThreadService {
     handle: ThreadLeaseHandle,
     input: Pick<
       InputOf<"thread/open">,
-      "historyCursor" | "historyLimit" | "includeWorkingDirectory"
+      | "historyCursor"
+      | "historyLimit"
+      | "includeWorkingDirectory"
+      | "includeContextUsage"
+      | "includeCompactionCount"
     >,
   ): Promise<OutputOf<"thread/open">> {
     const { thread, state, settings } = await this.#sessions.open(handle);
@@ -170,6 +174,13 @@ export class ThreadService {
         : { historyCursor: page.nextCursor }),
       hasEarlierHistory: page.hasMore,
       settings,
+      ...(input.includeContextUsage === true &&
+      handle.lease.contextUsage !== undefined
+        ? { contextUsage: handle.lease.contextUsage }
+        : {}),
+      ...(input.includeCompactionCount === true
+        ? { compactionCount: page.compactionCount }
+        : {}),
     };
   }
 

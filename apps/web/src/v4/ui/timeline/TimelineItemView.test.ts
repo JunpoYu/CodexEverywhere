@@ -47,6 +47,52 @@ describe("TimelineItemView", () => {
     expect(html).not.toContain("82 files passed");
   });
 
+  it("does not render empty reasoning placeholders as raw JSON", () => {
+    const html = render(
+      item({
+        type: "message",
+        data: {
+          type: "reasoning",
+          id: "reasoning-empty",
+          summary: [],
+          content: [],
+        },
+      }),
+    );
+
+    expect(html).toBe("");
+  });
+
+  it("prefers a reasoning summary and falls back to reasoning content", () => {
+    const summarized = render(
+      item({
+        type: "message",
+        data: {
+          type: "reasoning",
+          id: "reasoning-summary",
+          summary: ["先检查协议边界"],
+          content: ["不应优先显示的详细推理"],
+        },
+      }),
+    );
+    const contentOnly = render(
+      item({
+        type: "message",
+        data: {
+          type: "reasoning",
+          id: "reasoning-content",
+          summary: [],
+          content: ["检查运行状态"],
+        },
+      }),
+    );
+
+    expect(summarized).toContain("先检查协议边界");
+    expect(summarized).not.toContain("不应优先显示的详细推理");
+    expect(contentOnly).toContain("检查运行状态");
+    expect(contentOnly).not.toContain("&quot;type&quot;:&quot;reasoning&quot;");
+  });
+
   it("keeps the complete file path in a keyboard-scrollable code region", () => {
     const path =
       "/public/demo/a/very/long/path/that/must/remain/available/result.ts";

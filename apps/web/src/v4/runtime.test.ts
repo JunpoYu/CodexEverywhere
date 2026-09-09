@@ -59,6 +59,22 @@ describe("UserWebRuntime task refresh", () => {
     });
   });
 
+  it("projects thread state events into the task list without refetching it", async () => {
+    const gateway = new TaskListGateway();
+    gateway.threads = [threadSnapshot("thread-1").thread];
+    const runtime = new UserWebRuntime({ gateway, host: savedHost() });
+    runtimes.push(runtime);
+
+    runtime.tasks.dispatch({ type: "LOAD" });
+    await vi.waitFor(() =>
+      expect(runtime.tasks.getSnapshot().tasks[0]?.state).toBe("idle"),
+    );
+    gateway.stateChanged("thread-1", "running");
+
+    expect(runtime.tasks.getSnapshot().tasks[0]?.state).toBe("running");
+    expect(gateway.inputs).toHaveLength(1);
+  });
+
   it("ignores resume metadata and debounces timeline refreshes", async () => {
     const gateway = new ThreadRefreshGateway();
     const runtime = new UserWebRuntime({ gateway, host: savedHost() });
@@ -414,6 +430,8 @@ class ThreadRefreshGateway implements GatewayPort {
 
 class TaskListGateway implements GatewayPort {
   readonly inputs: InputOf<"thread/list">[] = [];
+  readonly #listeners = new Set<(event: GatewayEventEnvelopeV2) => void>();
+  threads: OutputOf<"thread/list">["threads"] = [];
 
   request<Method extends GatewayMethodName>(
     method: Method,
@@ -426,13 +444,26 @@ class TaskListGateway implements GatewayPort {
     this.inputs.push(input as InputOf<"thread/list">);
     return Promise.resolve({
       version: 1,
-      threads: [],
+      threads: this.threads,
       hasMore: false,
     }) as Promise<OutputOf<Method>>;
   }
 
-  onEvent(_listener: (event: GatewayEventEnvelopeV2) => void): () => void {
-    return () => undefined;
+  stateChanged(
+    threadId: string,
+    state: OutputOf<"thread/list">["threads"][number]["state"],
+  ): void {
+    const event = gatewayEventEnvelopeV2("thread/state", {
+      version: 1,
+      threadId,
+      state,
+    });
+    for (const listener of this.#listeners) listener(event);
+  }
+
+  onEvent(listener: (event: GatewayEventEnvelopeV2) => void): () => void {
+    this.#listeners.add(listener);
+    return () => this.#listeners.delete(listener);
   }
 
   onConnectionLost(_listener: (error: Error) => void): () => void {

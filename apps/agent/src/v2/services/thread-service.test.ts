@@ -158,7 +158,12 @@ describe("ThreadService", () => {
     const scope = new Scope("thread-working-directory-test");
     scopes.push(scope);
     scope.defer(() => state.close());
-    const factory = new ThreadOpenFactory(workingDirectory);
+    const factory = new ThreadOpenFactory(
+      workingDirectory,
+      Promise.resolve(),
+      "idle",
+      2,
+    );
     const leases = new ThreadLeaseManager({ scope, clientFactory: factory });
     const workspaces = new WorkspaceService(state.workspaces, {
       home: directory,
@@ -181,13 +186,32 @@ describe("ThreadService", () => {
 
     try {
       const legacy = await service.open(handle, { historyLimit: 100 });
+      factory.clients[0]!.notification("thread/tokenUsage/updated", {
+        threadId: "thread-1",
+        turnId: "turn-usage",
+        tokenUsage: {
+          total: tokenUsageBreakdown(180_000),
+          last: tokenUsageBreakdown(32_000),
+          modelContextWindow: 128_000,
+        },
+      });
       const requested = await service.open(handle, {
         historyLimit: 100,
         includeWorkingDirectory: true,
+        includeContextUsage: true,
+        includeCompactionCount: true,
       });
 
       expect(legacy).not.toHaveProperty("workingDirectory");
+      expect(legacy).not.toHaveProperty("contextUsage");
+      expect(legacy).not.toHaveProperty("compactionCount");
       expect(requested.workingDirectory).toBe(await realpath(workingDirectory));
+      expect(requested.contextUsage).toMatchObject({
+        currentTokens: 32_000,
+        cumulativeTokens: 180_000,
+        modelContextWindow: 128_000,
+      });
+      expect(requested.compactionCount).toBe(2);
       expect(requested.thread.workspaceId).toBe(legacy.thread.workspaceId);
     } finally {
       await handle.release();
@@ -597,6 +621,7 @@ class ThreadOpenFactory implements CodexClientFactoryPort {
     workspacePath: string,
     resumeGate: Promise<void> = Promise.resolve(),
     private readonly status: "idle" | "systemError" | "active" = "idle",
+    private readonly compactionCount = 0,
   ) {
     this.#workspacePath = workspacePath;
     this.#resumeGate = resumeGate;
@@ -618,6 +643,7 @@ class ThreadOpenFactory implements CodexClientFactoryPort {
       this.#workspacePath,
       this.#resumeGate,
       this.status,
+      this.compactionCount,
       this.#markResumeRequested,
     );
     this.clients.push(client);
@@ -628,12 +654,16 @@ class ThreadOpenFactory implements CodexClientFactoryPort {
 
 class ThreadOpenClient implements CodexClient {
   readonly methods: string[] = [];
+  readonly #notifications = new Set<
+    (notification: CodexNotification) => void
+  >();
   closed = false;
 
   constructor(
     private readonly workspacePath: string,
     private readonly resumeGate: Promise<void>,
     private readonly status: "idle" | "systemError" | "active",
+    private readonly compactionCount: number,
     private readonly markResumeRequested: () => void,
   ) {}
 
@@ -643,13 +673,15 @@ class ThreadOpenClient implements CodexClient {
       this.markResumeRequested();
       await this.resumeGate;
       return {
-        thread: thread(this.workspacePath, this.status),
+        thread: thread(this.workspacePath, this.status, this.compactionCount),
         approvalPolicy: "on-request",
         sandbox: workspaceWriteSandbox(),
       } as Result;
     }
     if (method === "thread/read") {
-      return { thread: thread(this.workspacePath, this.status) } as Result;
+      return {
+        thread: thread(this.workspacePath, this.status, this.compactionCount),
+      } as Result;
     }
     if (method === "turn/start") {
       return { turn: { id: "turn-retry" } } as Result;
@@ -657,8 +689,11 @@ class ThreadOpenClient implements CodexClient {
     throw new Error(`Unexpected request: ${method}`);
   }
 
-  onNotification(): () => void {
-    return () => undefined;
+  onNotification(
+    listener: (notification: CodexNotification) => void,
+  ): () => void {
+    this.#notifications.add(listener);
+    return () => this.#notifications.delete(listener);
   }
 
   onServerRequest(): () => void {
@@ -672,6 +707,12 @@ class ThreadOpenClient implements CodexClient {
   close(): Promise<void> {
     this.closed = true;
     return Promise.resolve();
+  }
+
+  notification(method: string, params: unknown): void {
+    for (const listener of [...this.#notifications]) {
+      listener({ method, params });
+    }
   }
 }
 
@@ -905,9 +946,21 @@ class FirstTurnClient implements CodexClient {
   }
 }
 
+function tokenUsageBreakdown(totalTokens: number) {
+  return {
+    totalTokens,
+    inputTokens: totalTokens,
+    cachedInputTokens: 0,
+    cacheWriteInputTokens: 0,
+    outputTokens: 0,
+    reasoningOutputTokens: 0,
+  };
+}
+
 function thread(
   workspacePath: string,
   status: "idle" | "systemError" | "active" = "idle",
+  compactionCount = 0,
 ) {
   return {
     id: "thread-1",
@@ -920,8 +973,17 @@ function thread(
       status === "active"
         ? { type: status, activeFlags: [] }
         : { type: status },
-    turns:
-      status === "systemError"
+    turns: [
+      ...Array.from({ length: compactionCount }, (_, index) => ({
+        id: `turn-compact-${index + 1}`,
+        items: [
+          {
+            id: `compact-${index + 1}`,
+            type: "contextCompaction",
+          },
+        ],
+      })),
+      ...(status === "systemError"
         ? [
             {
               id: "turn-failed",
@@ -932,7 +994,8 @@ function thread(
               },
             },
           ]
-        : [],
+        : []),
+    ],
   };
 }
 

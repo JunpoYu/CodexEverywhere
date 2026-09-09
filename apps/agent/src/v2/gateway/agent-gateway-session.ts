@@ -66,6 +66,21 @@ export class AgentGatewaySession implements IdentityGatewaySession {
     this.#temporary = input.temporary ?? true;
     this.device = input.device;
     this.#assertDeviceCurrent = input.assertDeviceCurrent;
+    this.scope.defer(
+      this.#leases.onState((change) => {
+        if (this.#access !== "user") return;
+        this.#publish(
+          gatewayEventEnvelopeV2("thread/state", {
+            version: 1,
+            threadId: change.threadId,
+            state: change.state,
+            ...(change.currentTurnId === undefined
+              ? {}
+              : { currentTurnId: change.currentTurnId }),
+          }),
+        );
+      }),
+    );
     if (input.subscribeGlobalEvents !== undefined) {
       this.scope.defer(
         input.subscribeGlobalEvents((event) => {
@@ -155,20 +170,6 @@ export class AgentGatewaySession implements IdentityGatewaySession {
       threadScope.defer(
         handle.lease.onEvent((event) => this.#threadEvent(threadId, event)),
       );
-      threadScope.defer(
-        handle.lease.onState((state) => {
-          this.#publish(
-            gatewayEventEnvelopeV2("thread/state", {
-              version: 1,
-              threadId,
-              state,
-              ...(handle.lease.currentTurnId === undefined
-                ? {}
-                : { currentTurnId: handle.lease.currentTurnId }),
-            }),
-          );
-        }),
-      );
       this.#threads.set(threadId, { handle, scope: threadScope });
       return handle;
     } catch (error) {
@@ -225,6 +226,15 @@ export class AgentGatewaySession implements IdentityGatewaySession {
     event: Parameters<Parameters<ThreadLeaseHandle["lease"]["onEvent"]>[0]>[0],
   ): void {
     switch (event.type) {
+      case "thread/context-usage":
+        this.#publish(
+          gatewayEventEnvelopeV2("thread/context-usage", {
+            version: 1,
+            threadId,
+            usage: event.usage,
+          }),
+        );
+        return;
       case "codex/notification":
         this.#publish(
           gatewayEventEnvelopeV2("codex/notification", {
