@@ -50,6 +50,7 @@ CREATE INDEX mutation_receipts_expiry ON mutation_receipts(expires_at);
 
 export const SIDE_CHAT_SCHEMA = `
 CREATE TABLE side_chats (
+  workspace_id TEXT NOT NULL,
   parent_thread_id TEXT PRIMARY KEY,
   thread_id TEXT UNIQUE,
   boundary_turn_id TEXT,

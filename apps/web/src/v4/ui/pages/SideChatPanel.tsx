@@ -248,11 +248,11 @@ export function SideChatPanel({
             </button>
           </div>
         </form>
-        {control.side?.creationKey && !threadId ? (
+        {control.side?.creationKey ? (
           <div>
             <p>
-              创建结果未知，Codex
-              中可能仍有遗留旁支。解除占用只清除关联，不会宣称已删除该会话；遗留会话需在宿主机核对处理。
+              操作结果未知，Codex
+              中可能仍有遗留旁支或正在运行的回答。解除占用只清除关联，不会停止或删除该会话；遗留任务需在任务列表或宿主机核对处理。
             </p>
             <label>
               <input

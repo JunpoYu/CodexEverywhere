@@ -163,6 +163,47 @@ describe("durable question side chats", () => {
     expect((await service.read("parent")).side).toBeNull();
   });
 
+  it("lets the user detach a known child after a successful delete loses its response", async () => {
+    const { service, native, state } = await setup();
+    await service.start("parent");
+    const row = (await state.sideChats.read("parent"))!;
+    await expect(
+      service.abandon("parent", row.operationKey),
+    ).rejects.toMatchObject({ code: "SIDE_UNAVAILABLE" });
+    native.loseDeleteResponse = true;
+    await expect(service.delete("parent")).rejects.toThrow(
+      "delete response lost",
+    );
+    await expect(service.delete("parent")).rejects.toThrow(
+      "child no longer exists",
+    );
+    const side = (await service.read("parent")).side!;
+    expect(side).toMatchObject({
+      status: "indeterminate",
+      threadId: "child",
+      creationKey: row.operationKey,
+    });
+    await service.abandon("parent", side.creationKey!);
+    expect((await service.read("parent")).side).toBeNull();
+    expect(await service.withoutSide("parent", async () => true)).toBe(true);
+  });
+
+  it("atomically retains workspace authorization while a side exists", async () => {
+    const { service, state, workspaces } = await setup();
+    const workspace = (await workspaces.list())[0]!;
+    await service.start("parent");
+    const row = (await state.sideChats.read("parent"))!;
+    await expect(
+      workspaces.remove(workspace.id, workspace.revision),
+    ).rejects.toMatchObject({ code: "WORKSPACE_IN_USE" });
+    await service.delete("parent");
+    await expect(
+      workspaces.remove(workspace.id, workspace.revision),
+    ).resolves.toBe(true);
+    expect(await state.sideChats.claim(row)).toBe(false);
+    expect(await state.sideChats.read("parent")).toBeUndefined();
+  });
+
   it("disables explicitly configured MCP servers and apps as well as defaults", async () => {
     const config = await questionConfig(
       {
@@ -222,7 +263,7 @@ async function setup() {
       run: (operation) => operation(),
     },
   });
-  return { service, state, leases, native, path };
+  return { service, state, leases, native, path, workspaces };
 }
 function turn(id: string, status = "completed") {
   return {
@@ -245,6 +286,8 @@ class NativeSide {
   failFork: Error | undefined;
   running = false;
   staleResume = false;
+  loseDeleteResponse = false;
+  deleted = false;
   readonly listeners = new Set<(notification: CodexNotification) => void>();
   constructor(private readonly cwd: string) {}
   client(): CodexClient {
@@ -270,6 +313,12 @@ class NativeSide {
     this.calls.push({ method, params });
     const id = method === "thread/fork" ? "child" : String(params.threadId);
     if (method === "thread/fork" && this.failFork) throw this.failFork;
+    if (
+      id === "child" &&
+      this.deleted &&
+      ["thread/read", "thread/resume"].includes(method)
+    )
+      throw new Error("child no longer exists");
     if (["thread/read", "thread/resume", "thread/fork"].includes(method))
       return {
         thread: {
@@ -316,6 +365,10 @@ class NativeSide {
     }
     if (method === "thread/delete") {
       expect(this.running).toBe(false);
+      if (this.loseDeleteResponse) {
+        this.deleted = true;
+        throw new Error("delete response lost");
+      }
       return {};
     }
     if (method === "thread/unsubscribe") return { status: "unsubscribed" };

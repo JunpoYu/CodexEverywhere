@@ -132,7 +132,6 @@ export class SideChatRuntime {
               !state.parentThreadId ||
               sideMutationBusy(state) ||
               state.side?.status !== "indeterminate" ||
-              state.side.threadId ||
               !state.side.creationKey
             )
               return preserve;

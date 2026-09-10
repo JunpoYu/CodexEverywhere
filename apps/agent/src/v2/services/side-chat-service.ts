@@ -96,14 +96,17 @@ export class SideChatService {
             completed.id,
             "side context boundary",
           );
+          const workspace = await this.options.workspaces.workspaceForPath(cwd);
           const config = await questionConfig(parent.lease, cwd);
           let row: SideChatStateRecord = {
             parentThreadId,
+            workspaceId: workspace.id,
             status: "creating",
             operationKey: randomUUID(),
             createdAt: new Date().toISOString(),
           };
-          await this.options.repository.save(row);
+          if (!(await this.options.repository.claim(row)))
+            throw unavailable("工作区已移除，请重新选择工作区后创建旁支。");
           let forkAccepted = false;
           try {
             const created = await this.options.leases.start(
@@ -323,13 +326,9 @@ export class SideChatService {
       await this.#authorize(parentThreadId);
       const row = await this.options.repository.read(parentThreadId);
       if (row !== undefined) {
-        if (
-          row.status !== "indeterminate" ||
-          row.threadId !== undefined ||
-          row.operationKey !== creationKey
-        )
+        if (row.status !== "indeterminate" || row.operationKey !== creationKey)
           throw unavailable(
-            "旁支状态已变化，请刷新后核对；已有会话须通过结束并删除处理。",
+            "旁支状态已变化，请刷新后核对；正常旁支须通过结束并删除处理。",
           );
         await this.options.repository.remove(parentThreadId);
         this.#changed(parentThreadId);
@@ -490,7 +489,7 @@ export function sideView(
     version: 1,
     parentThreadId: row.parentThreadId,
     status: row.status,
-    ...(row.status === "indeterminate" && row.threadId === undefined
+    ...(row.status === "indeterminate"
       ? { creationKey: row.operationKey }
       : {}),
     ...(row.threadId === undefined ? {} : { threadId: row.threadId }),

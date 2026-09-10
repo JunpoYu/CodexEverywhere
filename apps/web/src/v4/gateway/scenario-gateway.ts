@@ -564,7 +564,6 @@ export class ScenarioGateway implements GatewayPort {
         if (
           side &&
           (side.status !== "indeterminate" ||
-            side.threadId ||
             side.creationKey !== record.creationKey)
         )
           throw new Error("Side state changed");

@@ -32,6 +32,19 @@ export class SideChatRepository {
     return this.file.read(readSideChats);
   }
 
+  claim(record: SideChatStateRecord): Promise<boolean> {
+    return this.file.transaction((db) => {
+      if (
+        queryRows(db, "SELECT 1 FROM workspaces WHERE id = ?", [
+          record.workspaceId,
+        ]).length === 0
+      )
+        return false;
+      writeSideChat(db, record);
+      return true;
+    });
+  }
+
   save(record: SideChatStateRecord): Promise<void> {
     return this.file.transaction((db) => writeSideChat(db, record));
   }
@@ -69,6 +82,7 @@ export function readSideChats(db: Database): SideChatStateRecord[] {
     )
       throw new Error("Invalid side state");
     return {
+      workspaceId: text(row.workspace_id, "side workspace"),
       parentThreadId: text(row.parent_thread_id, "parent thread"),
       ...(threadId === undefined ? {} : { threadId }),
       ...(boundaryTurnId === undefined ? {} : { boundaryTurnId }),
@@ -81,7 +95,7 @@ export function readSideChats(db: Database): SideChatStateRecord[] {
 
 export function writeSideChat(db: Database, row: SideChatStateRecord): void {
   db.run(
-    "INSERT INTO side_chats (parent_thread_id, thread_id, boundary_turn_id, status, operation_key, created_at) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(parent_thread_id) DO UPDATE SET thread_id=excluded.thread_id, boundary_turn_id=excluded.boundary_turn_id, status=excluded.status, operation_key=excluded.operation_key, created_at=excluded.created_at",
+    "INSERT INTO side_chats (parent_thread_id, thread_id, boundary_turn_id, status, operation_key, created_at, workspace_id) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(parent_thread_id) DO UPDATE SET thread_id=excluded.thread_id, boundary_turn_id=excluded.boundary_turn_id, status=excluded.status, operation_key=excluded.operation_key, created_at=excluded.created_at",
     [
       row.parentThreadId,
       row.threadId ?? null,
@@ -89,6 +103,7 @@ export function writeSideChat(db: Database, row: SideChatStateRecord): void {
       row.status,
       row.operationKey,
       row.createdAt,
+      row.workspaceId,
     ],
   );
 }

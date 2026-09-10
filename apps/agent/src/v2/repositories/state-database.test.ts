@@ -70,6 +70,7 @@ describe("v0.4 state databases", () => {
     expect(await a.exportSnapshot()).toEqual(userSnapshot());
     const record = {
       parentThreadId: "parent",
+      workspaceId: "workspace-1",
       threadId: "child",
       boundaryTurnId: "boundary",
       status: "creating" as const,

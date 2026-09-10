@@ -117,6 +117,7 @@ export interface SecurityAuditStateRecord {
 }
 
 export interface SideChatStateRecord {
+  readonly workspaceId: string;
   readonly parentThreadId: string;
   readonly threadId?: string;
   readonly boundaryTurnId?: string;
