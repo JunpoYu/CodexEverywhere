@@ -20,7 +20,7 @@ CE 的目标是在 Linux/HPC 上提供最短路径的 Codex Web/PWA 控制面，
 - 第二套 AgentLoop、组织治理、计费、资源配额或复杂 RBAC；
 - Web Terminal 或第二套 HPC 调度器；
 - Cordis 或第三方插件加载器；
-- Side 临时支线、`thread/fork`、浏览器 `auth.json` 上传；
+- 旧版 ephemeral Side / continuity buffer、直接暴露的 Gateway `thread/fork`、浏览器 `auth.json` 上传；
 - v0.4 首版的 Schedule、Push 和完整文件管理。
 
 ## 2. 系统拓扑
@@ -104,6 +104,7 @@ Router 在 handler 前依次完成 envelope 版本、方法、input schema、当
 - `workspace/*`：授权 root、浏览、增删和默认项；
 - `model/list`：从 app-server 分页投影当前账号与版本可用的模型、默认推理强度和受支持档位；
 - `thread/*`：列表、打开、历史、创建、关闭、命名、归档、删除、设置和 TUI handoff；
+- `side/*`：旁支归属读取、创建与显式结束删除；
 - `turn/*`：发送与中断；
 - `interaction/*`：审批、用户问题和 MCP elicitation；
 - `queue/*`：全局/任务列表、添加、移除、Steer 和 indeterminate 确认；
@@ -111,7 +112,7 @@ Router 在 handler 前依次完成 envelope 版本、方法、input schema、当
 - `mutation/status`：durable mutation 权威对账；
 - `admin/*`：宿主状态、NSS 精确检查、登记、启停、移除、恢复交接和审计。
 
-v2 registry 永久排除 `thread/fork`、全部 `side/*` 和 `setup/codex/auth/import`。
+v2 registry 排除直接 `thread/fork`、旧版 `side/session/*` 和 `setup/codex/auth/import`。`side/read` 是只读查询；`side/start`、`side/delete` 是 payload version 1 的用户域 durable mutation。原生 `thread/fork` 仅允许由 `SideChatService` 封装，不能成为通用 Web fork 接口。
 
 ### 4.2 版本协商
 
@@ -232,6 +233,14 @@ CE 的 lease-owned app-server client 在 `initialize` 时显式声明 `capabilit
 
 Queue item 和 delivery claim 在同一用户库中。dispatcher 在 app-server 副作用前写入 claim；确定完成后记录 turn ID。若崩溃发生在外部副作用边界，恢复为 `indeterminate`，不重新调用 app-server。该状态会阻塞同任务后续派发，直到用户显式选择 retry 或 dismiss。Web Queue actor 在 mutation/receipt 对账期间拒绝启动第二个 Queue mutation；实时 `queue/changed` 可以合并展示，但页面刷新不得取消仍在跟踪的 mutation generation。用户在结果未知状态显式刷新权威 Queue 后，才能对具体 indeterminate item 选择 retry 或 dismiss。
 
+### 5.5 可恢复旁支问答
+
+`SideChatService` 在已授权主任务的最新已完成 turn 边界调用原生 durable `thread/fork`，携带 `lastTurnId`、`excludeTurns: true`。旁支使用原生 `thread/turns/list` 按轮分页；遇到持久化的继承边界即停止展示，不下载完整历史或建立 continuity buffer。每次打开与发送重新确认 Workspace realpath、只读 sandbox 与 never 审批，并覆盖禁用 shell、MCP（包括每个命名配置）、Apps、插件、hooks、子代理等执行入口。CE 仅允许旁支澄清问题，不允许执行审批、设置修改、Queue、归档或 TUI 接力；外部 Codex 客户端仍能看到该 durable thread，不能把 CE 限制视为对直接 TUI 使用的隔离沙箱。
+
+`SideChatRepository` 只保存 parent/child ID、继承边界、操作 key、创建时间及 `creating | ready | deleting | indeterminate`。同一父任务的跨进程协调锁串行化创建、发送、结束和主任务删除检查；创建 claim 先于 native fork 持久化，拿到 child ID 立即保存。停止中的旁支必须等权威停止事件后才删除，删除成功后移除归属并关闭 lease。恢复时将未完成状态置为 indeterminate；有 child ID 可显式重试清理，缺少 ID 必须先在宿主机核对，不猜测、不重建。`side/changed` 仅通知归属变化，客户端重新读权威 metadata；事件不携带正文。
+
+Web `SideChatRuntime` 只编排面板与 mutation 生命周期，消息和提问复用独立实例的既有 Thread/Composer actor。收起不释放会话，断线后权威重读，页面不会自动删除；主任务与旁支的草稿、operation key 和消息互不混用。桌面并列、窄屏单栏；带回主对话只追加草稿。用户库 schema 1→2 在既有文件锁和原子落盘边界新增 `side_chats`，旧状态及管理员库保持不变；回滚旧程序需恢复升级前的用户库备份。
+
 ## 6. 身份与隔离
 
 四类身份互不替代：
@@ -305,7 +314,7 @@ v0.3 切换采用整目录隔离和全新初始化，不导入旧数据库。规
 - React v4 不导入旧 monolith、Agent 或 SQL；
 - v2 非 repository 不直接 import `sql.js`；
 - raw Gateway envelope 只存在于 gateway adapter；
-- v2/v4 活跃源码不出现 Side、`thread/fork` 或 `auth/import` 方法。
+- v2/v4 禁止旧版 `side/session/*`、`auth/import`；原生 `thread/fork` 只允许在 SideChatService 中使用。
 - Agent composition root 不直接注册业务 handler；
 - Direct listener、Relay connector、单个加密 Socket 生命周期和公开 Host Discovery 保持独立；
 - Web 功能样式使用 CSS Modules，`global.css` 只有 bootstrap 可导入，已迁出的任务与设置 feature selector 不得回流；

@@ -102,6 +102,22 @@ export function AppShell(input: { readonly onDisconnect: () => void }) {
               全部
             </NavLink>
           </div>
+          {tasks.status === "loading" ? (
+            <span className={styles.noRecentTasks} role="status">
+              正在刷新任务…
+            </span>
+          ) : null}
+          {tasks.status === "failed" ? (
+            <div className={styles.listError} role="alert">
+              <span>
+                任务列表刷新失败
+                {tasks.tasks.length > 0 ? "，当前显示上次结果" : ""}。
+              </span>
+              <button type="button" onClick={() => runtime.refreshTasks()}>
+                重试任务列表
+              </button>
+            </div>
+          ) : null}
           {tasks.tasks.slice(0, 12).map((task) => (
             <NavLink
               className={({ isActive }) =>

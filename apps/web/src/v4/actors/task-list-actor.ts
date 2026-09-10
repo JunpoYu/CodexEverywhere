@@ -9,6 +9,8 @@ type TaskState = Task["state"];
 export interface TaskListState {
   readonly status: "loading" | "ready" | "paginating" | "failed";
   readonly tasks: readonly Task[];
+  readonly requestInFlight?: boolean;
+  readonly refreshPending?: boolean;
   readonly nextCursor?: string;
   readonly hasMore: boolean;
   readonly archived: boolean;
@@ -60,17 +62,34 @@ export function createTaskListActor(scope: Scope, gateway: GatewayPort) {
     },
     reducer: (state, event) => {
       switch (event.type) {
-        case "LOAD":
+        case "LOAD": {
+          const archived = event.archived ?? false;
+          const sameScope =
+            state.archived === archived &&
+            state.workspaceId === event.workspaceId;
+          if (sameScope && state.requestInFlight === true) {
+            return {
+              state: { ...state, refreshPending: true },
+              preserveEffects: true,
+            };
+          }
+          const { error: _error, ...previous } = state;
           return {
             state: {
+              ...(sameScope
+                ? previous
+                : {
+                    tasks: [],
+                    hasMore: false,
+                    archived,
+                    ...(event.workspaceId === undefined
+                      ? {}
+                      : { workspaceId: event.workspaceId }),
+                  }),
               status: "loading",
-              tasks: [],
-              hasMore: false,
-              archived: event.archived ?? false,
+              requestInFlight: true,
+              refreshPending: false,
               pendingStateChanges: {},
-              ...(event.workspaceId === undefined
-                ? {}
-                : { workspaceId: event.workspaceId }),
               ...(event.workspaceLabel === undefined
                 ? {}
                 : { workspaceLabel: event.workspaceLabel }),
@@ -79,19 +98,24 @@ export function createTaskListActor(scope: Scope, gateway: GatewayPort) {
               {
                 type: "FETCH",
                 append: false,
-                archived: event.archived ?? false,
+                archived,
                 ...(event.workspaceId === undefined
                   ? {}
                   : { workspaceId: event.workspaceId }),
               },
             ],
           };
+        }
         case "MORE":
-          if (!state.hasMore || state.nextCursor === undefined) {
+          if (
+            state.requestInFlight === true ||
+            !state.hasMore ||
+            state.nextCursor === undefined
+          ) {
             return { state, preserveEffects: true };
           }
           return {
-            state: { ...state, status: "paginating" },
+            state: { ...state, status: "paginating", requestInFlight: true },
             effects: [
               {
                 type: "FETCH",
@@ -105,7 +129,12 @@ export function createTaskListActor(scope: Scope, gateway: GatewayPort) {
             ],
           };
         case "LOADED": {
-          const { nextCursor: _previousCursor, ...stateWithoutCursor } = state;
+          const {
+            nextCursor: _previousCursor,
+            error: _error,
+            ...stateWithoutCursor
+          } = state;
+          const refreshAgain = state.refreshPending === true;
           const tasks = applyPendingStateChanges(
             event.append
               ? mergeTasks(state.tasks, event.page.threads)
@@ -115,14 +144,17 @@ export function createTaskListActor(scope: Scope, gateway: GatewayPort) {
           return {
             state: {
               ...stateWithoutCursor,
-              status: "ready",
+              status: refreshAgain ? "loading" : "ready",
               tasks,
+              requestInFlight: refreshAgain,
+              refreshPending: false,
               pendingStateChanges: {},
               ...(event.page.nextCursor === undefined
                 ? {}
                 : { nextCursor: event.page.nextCursor }),
               hasMore: event.page.hasMore,
             },
+            ...(refreshAgain ? { effects: [refreshEffect(state)] } : {}),
           };
         }
         case "THREAD_STATE_CHANGED": {
@@ -131,8 +163,7 @@ export function createTaskListActor(scope: Scope, gateway: GatewayPort) {
             event.threadId,
             event.state,
           );
-          const requestInFlight =
-            state.status === "loading" || state.status === "paginating";
+          const requestInFlight = state.requestInFlight === true;
           if (!requestInFlight && tasks === state.tasks) {
             return { state, preserveEffects: true };
           }
@@ -153,10 +184,23 @@ export function createTaskListActor(scope: Scope, gateway: GatewayPort) {
           };
         }
         case "FAILED":
+          if (state.refreshPending === true)
+            return {
+              state: {
+                ...state,
+                status: "loading",
+                requestInFlight: true,
+                refreshPending: false,
+                pendingStateChanges: {},
+              },
+              effects: [refreshEffect(state)],
+            };
           return {
             state: {
               ...state,
               status: "failed",
+              requestInFlight: false,
+              refreshPending: false,
               error: event.message,
               pendingStateChanges: {},
             },
@@ -187,6 +231,17 @@ export function createTaskListActor(scope: Scope, gateway: GatewayPort) {
     },
     onEffectError: () => undefined,
   });
+}
+
+function refreshEffect(state: TaskListState): Effect {
+  return {
+    type: "FETCH",
+    append: false,
+    archived: state.archived,
+    ...(state.workspaceId === undefined
+      ? {}
+      : { workspaceId: state.workspaceId }),
+  };
 }
 
 function mergeTasks(current: readonly Task[], next: readonly Task[]): Task[] {

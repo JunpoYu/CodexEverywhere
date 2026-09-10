@@ -145,6 +145,39 @@ test("额度类 turn 失败结束后可以直接发送新消息重试", async ({
   await expectScenarioReply(page);
 });
 
+test("重命名后列表读取失败时保留侧栏并可重试更新名称", async ({
+  page,
+  isMobile,
+}) => {
+  test.skip(isMobile, "最近任务侧栏仅在桌面显示");
+  await openScenario(page, "&scenarioThreadListRenameFailure=1");
+  await createTask(page, "重命名前的任务");
+  await expectScenarioReply(page);
+  await expect(
+    page.getByRole("link", { name: /重命名前的任务/u }),
+  ).toBeVisible();
+  await openTaskActions(page);
+  await page.getByRole("button", { name: "重命名", exact: true }).click();
+  await page.getByLabel("任务名称").fill("重命名后的任务");
+  await page.getByRole("button", { name: "保存", exact: true }).click();
+  await expect(
+    page.getByRole("heading", { name: "重命名后的任务" }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("link", { name: /重命名前的任务/u }),
+  ).toBeVisible();
+  await expect(
+    page.getByText("任务列表刷新失败，当前显示上次结果。", { exact: true }),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "重试任务列表" }).click();
+  await expect(
+    page.getByRole("link", { name: /重命名后的任务/u }),
+  ).toBeVisible();
+  await expect(page.getByRole("button", { name: "重试任务列表" })).toHaveCount(
+    0,
+  );
+});
+
 test("任务可重命名、归档、取消归档并删除", async ({ page }) => {
   await openScenario(page);
   await createTask(page, "任务生命周期原始名称");

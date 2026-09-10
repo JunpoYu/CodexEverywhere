@@ -8,6 +8,7 @@ import {
   type OutputOf,
 } from "@codex-everywhere/protocol/v2";
 
+import type { SideChatService } from "../services/side-chat-service.js";
 import type { AgentMutationMiddleware } from "../services/mutation-middleware.js";
 import type { ModelCatalogService } from "../services/model-catalog-service.js";
 import type { PreferencesService } from "../services/preferences-service.js";
@@ -18,6 +19,7 @@ import type { AgentGatewayContext } from "./agent-gateway-session.js";
 import { IDENTITY_METHODS, SETUP_METHODS } from "./handler-types.js";
 
 export interface AgentCoreHandlerServices {
+  readonly sides: SideChatService;
   readonly hostId: string;
   readonly mutationMiddleware: AgentMutationMiddleware;
   readonly workspaces: WorkspaceService;
@@ -31,6 +33,15 @@ export function registerAgentCoreHandlers(
   router: GatewayV2Router<AgentGatewayContext>,
   services: AgentCoreHandlerServices,
 ): void {
+  router.register("side/read", (input) =>
+    services.sides.read(input.parentThreadId),
+  );
+  router.register("side/start", (input) =>
+    services.sides.start(input.parentThreadId),
+  );
+  router.register("side/delete", (input) =>
+    services.sides.delete(input.parentThreadId),
+  );
   registerHostHandlers(router, services);
   registerWorkspaceHandlers(router, services);
   registerModelHandlers(router, services);

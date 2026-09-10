@@ -1,9 +1,17 @@
-import { copyFile, mkdir, mkdtemp, rm } from "node:fs/promises";
+import {
+  appendFile,
+  copyFile,
+  mkdir,
+  mkdtemp,
+  rm,
+  writeFile,
+} from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
+import { questionConfig } from "../v2/services/side-chat-service.js";
 import { UserStateDatabase } from "../v2/repositories/user-state-database.js";
 import { CodexAppServerClient } from "./codex-app-server-client.js";
 import { CodexAppServerProcess } from "./codex-app-server-process.js";
@@ -50,7 +58,9 @@ afterEach(async () => {
   }
 });
 
-async function startServer(options: { withAuth?: boolean } = {}): Promise<{
+async function startServer(
+  options: { withAuth?: boolean; config?: string } = {},
+): Promise<{
   processHandle: CodexAppServerProcess;
   socketPath: string;
   workspace: string;
@@ -64,6 +74,11 @@ async function startServer(options: { withAuth?: boolean } = {}): Promise<{
   const codexHome = join(directory, "codex-home");
   await mkdir(workspace);
   await mkdir(codexHome, { mode: 0o700 });
+
+  if (options.config)
+    await writeFile(join(codexHome, "config.toml"), options.config, {
+      mode: 0o600,
+    });
 
   if (options.withAuth) {
     const sourceCodexHome = process.env.CODEX_HOME ?? join(homedir(), ".codex");
@@ -95,6 +110,204 @@ async function connect(
 }
 
 describe("real Codex app-server contract", () => {
+  it("forks a durable question thread and recovers it through a separate client", async () => {
+    const { socketPath, workspace } = await startServer({
+      config:
+        '[mcp_servers.synthetic]\nurl = "https://example.invalid/mcp"\nenabled = false\n',
+    });
+    const client = await connect(socketPath, "ce_side_contract");
+    const ids: string[] = [];
+    try {
+      const parent = await client.request<ThreadStartResponse>("thread/start", {
+        cwd: workspace,
+        approvalPolicy: "never",
+        sandbox: "read-only",
+        ephemeral: false,
+      });
+      ids.push(parent.thread.id);
+      await client.request("thread/name/set", {
+        threadId: parent.thread.id,
+        name: "Side Contract Parent",
+      });
+      const fork = await client.request<ThreadStartResponse>("thread/fork", {
+        threadId: parent.thread.id,
+        ephemeral: false,
+        excludeTurns: true,
+        sandbox: "read-only",
+        approvalPolicy: "never",
+        config: await questionConfig(
+          { request: (method, params) => client.request(method, params) },
+          workspace,
+        ),
+      });
+      ids.push(fork.thread.id);
+      expect(fork.thread.id).not.toBe(parent.thread.id);
+      expect(fork.sandbox?.type).toBe("readOnly");
+      const second = await connect(socketPath, "ce_side_contract_reconnect");
+      const recovered = await second.request<ThreadStartResponse>(
+        "thread/resume",
+        {
+          threadId: fork.thread.id,
+          excludeTurns: true,
+        },
+      );
+      expect(recovered.thread.id).toBe(fork.thread.id);
+      const history = await second.request<{ data: unknown[] }>(
+        "thread/turns/list",
+        {
+          threadId: fork.thread.id,
+          limit: 3,
+          itemsView: "full",
+          sortDirection: "desc",
+        },
+      );
+      expect(history.data).toEqual([]);
+    } finally {
+      for (const threadId of ids.reverse())
+        await client.request("thread/delete", { threadId });
+    }
+  });
+
+  it("forks through a completed persisted turn without inheriting the following turn", async () => {
+    const { processHandle, socketPath, workspace, directory, codexHome } =
+      await startServer();
+    const writer = await connect(socketPath, "ce_side_boundary_writer");
+    const parent = await writer.request<ThreadStartResponse>("thread/start", {
+      cwd: workspace,
+      sandbox: "read-only",
+      approvalPolicy: "never",
+      ephemeral: false,
+    });
+    await writer.request("thread/name/set", {
+      threadId: parent.thread.id,
+      name: "Synthetic Boundary Contract",
+    });
+    await writer.close();
+    await processHandle.stop();
+    await mkdir(join(codexHome, "sessions"), { recursive: true });
+    await mkdir(join(codexHome, "archived_sessions"), { recursive: true });
+    const rollout = join(
+      codexHome,
+      "sessions",
+      `rollout-2026-09-10T00-00-00-${parent.thread.id}.jsonl`,
+    );
+    await appendFile(
+      rollout,
+      JSON.stringify({
+        timestamp: new Date().toISOString(),
+        type: "session_meta",
+        payload: {
+          id: parent.thread.id,
+          timestamp: new Date().toISOString(),
+          cwd: workspace,
+          originator: "codex_cli_rs",
+          cli_version: "0.153.4",
+          source: "cli",
+          model_provider: "openai",
+        },
+      }) + "\n",
+    );
+    const records = ["boundary", "later"].flatMap((id) => [
+      {
+        type: "event_msg",
+        payload: {
+          type: "task_started",
+          turn_id: id,
+          model_context_window: 128000,
+          collaboration_mode_kind: "default",
+        },
+      },
+      {
+        type: "response_item",
+        payload: {
+          type: "message",
+          role: "user",
+          content: [{ type: "input_text", text: `synthetic user ${id}` }],
+        },
+      },
+      {
+        type: "response_item",
+        payload: {
+          type: "message",
+          role: "assistant",
+          phase: "final_answer",
+          content: [{ type: "output_text", text: `synthetic answer ${id}` }],
+        },
+      },
+      {
+        type: "event_msg",
+        payload: {
+          type: "task_complete",
+          turn_id: id,
+          last_agent_message: `synthetic answer ${id}`,
+        },
+      },
+    ]);
+    await appendFile(
+      rollout,
+      records
+        .map((record) =>
+          JSON.stringify({ timestamp: new Date().toISOString(), ...record }),
+        )
+        .join("\n") + "\n",
+    );
+    await rm(socketPath, { force: true });
+    processes.push(
+      await CodexAppServerProcess.start({
+        socketPath,
+        cwd: directory,
+        env: { ...process.env, CODEX_HOME: codexHome },
+      }),
+    );
+    const reader = await connect(socketPath, "ce_side_boundary_reader");
+    let childId: string | undefined;
+    try {
+      await reader.request("thread/resume", {
+        threadId: parent.thread.id,
+        path: rollout,
+        excludeTurns: true,
+      });
+      const parentTurns = await reader.request<{
+        data: Array<{ id: string; status: string }>;
+      }>("thread/turns/list", {
+        threadId: parent.thread.id,
+        limit: 3,
+        itemsView: "full",
+        sortDirection: "desc",
+      });
+      expect(parentTurns.data.map((turn) => turn.id)).toEqual([
+        "later",
+        "boundary",
+      ]);
+      const fork = await reader.request<ThreadStartResponse>("thread/fork", {
+        threadId: parent.thread.id,
+        lastTurnId: "boundary",
+        excludeTurns: true,
+        ephemeral: false,
+        sandbox: "read-only",
+        approvalPolicy: "never",
+        config: await questionConfig(
+          { request: (method, params) => reader.request(method, params) },
+          workspace,
+        ),
+      });
+      childId = fork.thread.id;
+      const inherited = await reader.request<{ data: Array<{ id: string }> }>(
+        "thread/turns/list",
+        {
+          threadId: childId,
+          limit: 3,
+          itemsView: "full",
+          sortDirection: "desc",
+        },
+      );
+      expect(inherited.data.map((turn) => turn.id)).toEqual(["boundary"]);
+    } finally {
+      if (childId) await reader.request("thread/delete", { threadId: childId });
+      await reader.request("thread/delete", { threadId: parent.thread.id });
+    }
+  });
+
   it("keeps explicit thread permissions after a complete app-server restart", async () => {
     const { processHandle, socketPath, workspace, directory, codexHome } =
       await startServer();

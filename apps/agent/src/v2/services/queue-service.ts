@@ -35,6 +35,7 @@ export interface QueueServiceOptions {
   readonly runtimeGate: CodexRuntimeGatePort;
   /** Resolves and authorizes a real workspace path without returning content. */
   readonly authorizeWorkspace: (path: string) => Promise<string>;
+  readonly assertQueueAllowed?: (threadId: string) => Promise<void>;
   readonly dispatchIntervalMs?: number;
 }
 
@@ -47,12 +48,15 @@ export class QueueService {
   readonly #titles: AutoTitleServicePort;
   readonly #runtimeGate: CodexRuntimeGatePort;
   readonly #authorizeWorkspace: (path: string) => Promise<string>;
+  readonly #assertQueueAllowed:
+    ((threadId: string) => Promise<void>) | undefined;
   readonly #dispatchIntervalMs: number;
   #started = false;
   #draining: Promise<boolean> | undefined;
 
   constructor(options: QueueServiceOptions) {
     this.#scope = options.scope.fork("queue");
+    this.#assertQueueAllowed = options.assertQueueAllowed;
     this.#repository = options.repository;
     this.#leases = options.leases;
     this.#titles = options.titles;
@@ -88,6 +92,7 @@ export class QueueService {
     readonly threadId: string;
     readonly text: string;
   }): Promise<QueueRecord> {
+    await this.#assertQueueAllowed?.(input.threadId);
     const referenceId = `queue-add:${randomUUID()}`;
     const handle = await this.#leases.acquire(input.threadId, {
       kind: "queue",
@@ -124,6 +129,7 @@ export class QueueService {
   async #steer(itemId: string, replacementText: string): Promise<QueueRecord> {
     const current = await this.#repository.get(itemId);
     if (current === undefined) throw queueUnavailable(itemId);
+    await this.#assertQueueAllowed?.(current.threadId);
     const handle = await this.#leases.acquire(current.threadId, {
       kind: "queue",
       id: `queue-steer:${itemId}`,
@@ -201,6 +207,14 @@ export class QueueService {
   }
 
   async #dispatchPending(current: QueueRecord): Promise<boolean> {
+    try {
+      await this.#assertQueueAllowed?.(current.threadId);
+    } catch {
+      const paused = await this.#repository.pause(current.id);
+      this.events.emit("changed", paused);
+      this.#deliveryEvent(paused, "paused");
+      return false;
+    }
     const handle = await this.#leases.acquire(current.threadId, {
       kind: "queue",
       id: `queue-dispatch:${current.id}`,

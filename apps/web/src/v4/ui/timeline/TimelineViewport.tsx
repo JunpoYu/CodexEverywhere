@@ -194,6 +194,7 @@ export const TimelineViewport = forwardRef<
       updateActiveItem();
     });
     observer.observe(content);
+    if (containerRef.current !== null) observer.observe(containerRef.current);
     return () => observer.disconnect();
   }, [updateActiveItem]);
 

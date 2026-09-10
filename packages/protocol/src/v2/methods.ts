@@ -153,6 +153,16 @@ const adminMutationBase = {
   expectedRevision: z.number().int().nonnegative(),
 } as const;
 
+const sideChatSchema = z
+  .object({
+    version: z.literal(1),
+    parentThreadId: identifierSchema,
+    threadId: identifierSchema.optional(),
+    boundaryTurnId: identifierSchema.optional(),
+    status: z.enum(["creating", "ready", "deleting", "indeterminate"]),
+  })
+  .strict();
+
 export const gatewayMethodDefinitions = {
   "host/ping": query(
     "pre-auth",
@@ -422,6 +432,23 @@ export const gatewayMethodDefinitions = {
       items: z.array(timelineItemSchema),
       ...pageResultFields,
     }),
+  ),
+  "side/read": query(
+    "user",
+    versionedResult({ parentThreadId: identifierSchema }),
+    versionedResult({ side: sideChatSchema.nullable() }),
+  ),
+  "side/start": mutation(
+    "user",
+    "durable",
+    versionedResult({ parentThreadId: identifierSchema }),
+    versionedResult({ side: sideChatSchema }),
+  ),
+  "side/delete": mutation(
+    "user",
+    "durable",
+    versionedResult({ parentThreadId: identifierSchema }),
+    booleanResult("deleted"),
   ),
   "thread/start": mutation(
     "user",

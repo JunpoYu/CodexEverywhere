@@ -17,6 +17,7 @@ export interface SqliteStateSpec {
   readonly applicationId: number;
   readonly schemaVersion: number;
   readonly schema: string;
+  readonly migrations?: Readonly<Record<number, string>>;
   readonly requiredTables: readonly string[];
 }
 
@@ -104,6 +105,27 @@ export class SqliteStateFile {
         options.owner,
       );
       try {
+        const previousVersion = pragmaNumber(database, "user_version");
+        const migration = spec.migrations?.[previousVersion];
+        if (
+          migration !== undefined &&
+          pragmaNumber(database, "application_id") === spec.applicationId
+        ) {
+          database.run("BEGIN IMMEDIATE");
+          try {
+            database.run(migration);
+            state.#validate();
+            database.run("COMMIT");
+            await state.#persist(lock);
+          } catch (error) {
+            try {
+              database.run("ROLLBACK");
+            } catch {
+              /* Commit may have succeeded. */
+            }
+            throw error;
+          }
+        }
         state.#validate();
         return state;
       } catch (error) {

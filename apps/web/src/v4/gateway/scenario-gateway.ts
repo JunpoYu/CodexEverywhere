@@ -39,6 +39,7 @@ export interface ScenarioGatewayOptions {
   readonly failSecondCodexVersionReadOnce?: boolean;
   readonly failFirstPreferencesReadOnce?: boolean;
   readonly failWorkspaceListAfterMutationOnce?: boolean;
+  readonly failThreadListAfterRenameOnce?: boolean;
   readonly longConversation?: boolean;
   readonly longWorkspace?: boolean;
   readonly runtimeSwitchRequired?: boolean;
@@ -54,6 +55,10 @@ export class ScenarioGateway implements GatewayPort {
   readonly #connectionListeners = new Set<(error: Error) => void>();
   readonly #restoredListeners = new Set<() => void>();
   readonly #workspaces = new Map<string, Workspace>();
+  readonly #sides = new Map<
+    string,
+    NonNullable<OutputOf<"side/read">["side"]>
+  >();
   readonly #threads = new Map<string, ScenarioThread>();
   readonly #threadSettings = new Map<string, ThreadSettings>();
   readonly #threadContextUsage = new Map<string, ThreadContextUsage>();
@@ -66,6 +71,8 @@ export class ScenarioGateway implements GatewayPort {
   readonly #adminUsers = new Map<string, AdminUser>();
   readonly #adminAudit: AdminAudit[] = [];
   readonly #mutationStatuses = new Map<string, MutationStatus>();
+  #failThreadListAfterRenameOnce: boolean;
+  #threadListFailureArmed = false;
   #failWorkspaceListAfterMutationOnce: boolean;
   #workspaceListFailureArmed = false;
   #changePreferencesAfterInitialRead: boolean;
@@ -95,6 +102,8 @@ export class ScenarioGateway implements GatewayPort {
   };
 
   constructor(options: ScenarioGatewayOptions = {}) {
+    this.#failThreadListAfterRenameOnce =
+      options.failThreadListAfterRenameOnce ?? false;
     this.#changePreferencesAfterInitialRead =
       options.changePreferencesAfterInitialRead ?? false;
     this.#delaySecondPreferencesReadOnce =
@@ -496,7 +505,58 @@ export class ScenarioGateway implements GatewayPort {
           ],
           hasMore: false,
         };
+      case "side/read":
+        this.#requiredThread(String(record.parentThreadId));
+        return {
+          version: 1,
+          side: this.#sides.get(String(record.parentThreadId)) ?? null,
+        };
+      case "side/start": {
+        const parentThreadId = String(record.parentThreadId);
+        const parent = this.#requiredThread(parentThreadId);
+        const existing = this.#sides.get(parentThreadId);
+        if (existing) return { version: 1, side: existing };
+        const id = crypto.randomUUID();
+        const side = {
+          version: 1 as const,
+          parentThreadId,
+          threadId: id,
+          status: "ready" as const,
+          boundaryTurnId: "inherited-boundary",
+        };
+        this.#threads.set(id, {
+          summary: {
+            ...parent.summary,
+            id,
+            title: "旁支问答",
+            state: "idle",
+            archived: false,
+          },
+          items: [],
+        });
+        this.#threadSettings.set(id, {
+          version: 1,
+          revision: 0,
+          sandbox: "read-only",
+          approvalPolicy: "never",
+        });
+        this.#sides.set(parentThreadId, side);
+        this.#emit("side/changed", { version: 1, parentThreadId });
+        return { version: 1, side };
+      }
+      case "side/delete": {
+        const parentThreadId = String(record.parentThreadId);
+        const side = this.#sides.get(parentThreadId);
+        if (side?.threadId) this.#deleteThread(side.threadId);
+        this.#sides.delete(parentThreadId);
+        this.#emit("side/changed", { version: 1, parentThreadId });
+        return { version: 1, deleted: true };
+      }
       case "thread/list": {
+        if (this.#threadListFailureArmed) {
+          this.#threadListFailureArmed = false;
+          throw new Error("Scenario task list refresh failed");
+        }
         const archived = Boolean(record.archived);
         const workspaceId =
           typeof record.workspaceId === "string"
@@ -508,6 +568,9 @@ export class ScenarioGateway implements GatewayPort {
             .map((thread) => thread.summary)
             .filter(
               (thread) =>
+                ![...this.#sides.values()].some(
+                  (side) => side.threadId === thread.id,
+                ) &&
                 thread.archived === archived &&
                 (workspaceId === undefined ||
                   thread.workspaceId === workspaceId),
@@ -566,6 +629,10 @@ export class ScenarioGateway implements GatewayPort {
       case "thread/close":
         return { version: 1, closed: true };
       case "thread/rename": {
+        if (this.#failThreadListAfterRenameOnce) {
+          this.#failThreadListAfterRenameOnce = false;
+          this.#threadListFailureArmed = true;
+        }
         const thread = this.#requiredThread(String(record.threadId));
         thread.summary = {
           ...thread.summary,
@@ -942,6 +1009,15 @@ export class ScenarioGateway implements GatewayPort {
     const turnId = crypto.randomUUID();
     thread.items.push(messageItem("user", prompt, turnId));
     this.#setThreadState(threadId, "running", turnId);
+    this.#emit("codex/notification", {
+      version: 1,
+      threadId,
+      method: "turn/started",
+      params: {
+        threadId,
+        turn: { id: turnId, items: [], status: "inProgress", error: null },
+      },
+    });
     const interactionKind = scenarioInteractionKind(prompt);
     if (interactionKind !== undefined) {
       this.#createScenarioInteraction(threadId, turnId, interactionKind);

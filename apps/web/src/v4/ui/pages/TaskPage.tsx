@@ -22,6 +22,9 @@ import {
   TimelineViewport,
   type TimelineViewportHandle,
 } from "../timeline/TimelineViewport.js";
+import { SideChatPanel } from "./SideChatPanel.js";
+import sideStyles from "./SideChatPanel.module.css";
+import { sideMutationBusy } from "../../actors/side-chat-runtime.js";
 import composerDockStyles from "./TaskComposerDock.module.css";
 import { TaskRuntimeSummary } from "./TaskRuntimeSummary.js";
 import { ThreadSettingsPanel } from "./ThreadSettingsPanel.js";
@@ -33,6 +36,18 @@ export function TaskPage() {
   const thread = useActorState(runtime.thread);
   const composer = useActorState(runtime.composer);
   const queue = useActorState(runtime.queue);
+  const side = useActorState(runtime.side.actor);
+  const sideComposer = useActorState(runtime.side.composer);
+  const sideSelected = side.parentThreadId === threadId;
+  const sideVisible = sideSelected && side.visible;
+  const canOpenSide =
+    sideSelected &&
+    !sideMutationBusy(side) &&
+    side.status !== "loading" &&
+    side.status !== "unsupported";
+  useEffect(() => {
+    runtime.side.select(threadId);
+  }, [runtime, threadId, side.status, sideComposer.status]);
   const [handoff, setHandoff] = useState<string>();
   const [actionError, setActionError] = useState<string>();
   const [renameTitle, setRenameTitle] = useState<string>();
@@ -47,6 +62,7 @@ export function TaskPage() {
   const activeThreadId = useRef(threadId);
   activeThreadId.current = threadId;
   const composerDraft = composerDraftFor(composer, threadId);
+  const sideCommand = /^\/side(?:\s|$)/u.test(composerDraft.trim());
   const retryableTurnFailure =
     thread.status === "failed" && thread.error === undefined;
   const canStartTurn = thread.status === "idle" || retryableTurnFailure;
@@ -70,6 +86,12 @@ export function TaskPage() {
   const submit = (event: FormEvent) => {
     event.preventDefault();
     if (composer.status !== "idle" || composerDraft.trim().length === 0) {
+      return;
+    }
+    if (sideCommand) {
+      if (!canOpenSide) return;
+      if (runtime.side.show(composerDraft.trim().slice(5).trim()))
+        runtime.composer.dispatch({ type: "DRAFT", threadId, value: "" });
       return;
     }
     if (thread.status === "running" || thread.status === "waiting-input") {
@@ -238,7 +260,7 @@ export function TaskPage() {
 
   return (
     <main
-      className="conversation-page"
+      className={`conversation-page ${sideVisible ? sideStyles.layout : ""}`}
       aria-busy={
         taskMutating ||
         composer.status === "submitting" ||
@@ -246,7 +268,9 @@ export function TaskPage() {
         composer.status === "reconciling"
       }
     >
-      <section className="conversation-main">
+      <section
+        className={`conversation-main ${sideVisible ? sideStyles.parent : ""}`}
+      >
         <header className="conversation-header">
           <div className="conversation-title">
             <p className="eyebrow">任务</p>
@@ -441,6 +465,28 @@ export function TaskPage() {
                 />
               </div>
               <div className={composerDockStyles.main}>
+                {!sideSelected && side.parentThreadId ? (
+                  <StatusMessage tone="warning">
+                    另一个任务的旁支请求仍待处理。
+                    <Link
+                      to={`/tasks/${encodeURIComponent(side.parentThreadId)}`}
+                    >
+                      返回处理
+                    </Link>
+                  </StatusMessage>
+                ) : null}
+                <button
+                  className={sideStyles.entry}
+                  type="button"
+                  disabled={!canOpenSide}
+                  aria-expanded={sideVisible}
+                  onClick={() => runtime.side.show()}
+                >
+                  {sideSelected && side.side !== null
+                    ? "继续旁支问答"
+                    : "旁支问答"}{" "}
+                  <span>/side</span>
+                </button>
                 <form className="composer" onSubmit={submit}>
                   <textarea
                     aria-label="给 Codex 的消息"
@@ -472,7 +518,7 @@ export function TaskPage() {
                     }}
                   />
                   <div>
-                    {taskActive ? (
+                    {taskActive && !sideCommand ? (
                       <button
                         disabled={
                           composer.status !== "idle" ||
@@ -493,13 +539,17 @@ export function TaskPage() {
                       className="primary"
                       disabled={
                         composer.status !== "idle" ||
-                        !canStartTurn ||
+                        (sideCommand ? !canOpenSide : !canStartTurn) ||
                         composerDraft.trim().length === 0
                       }
                       type="submit"
                     >
                       <Icon name="send" />
-                      {composer.status === "submitting" ? "发送中…" : "发送"}
+                      {sideCommand
+                        ? "打开旁支"
+                        : composer.status === "submitting"
+                          ? "发送中…"
+                          : "发送"}
                     </button>
                   </div>
                 </form>
@@ -538,6 +588,12 @@ export function TaskPage() {
           </div>
         </section>
       </section>
+      {sideVisible ? (
+        <SideChatPanel
+          parentThreadId={threadId}
+          parentStatus={threadStateLabel(thread.status)}
+        />
+      ) : null}
       {settingsOpen ? (
         <ThreadSettingsPanel
           settings={snapshot.settings}

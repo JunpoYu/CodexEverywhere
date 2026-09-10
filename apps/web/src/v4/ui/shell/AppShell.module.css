@@ -399,3 +399,15 @@
     animation: none;
   }
 }
+
+.listError {
+  display: grid;
+  gap: 8px;
+  margin: 8px 0;
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+.listError button {
+  justify-self: start;
+}

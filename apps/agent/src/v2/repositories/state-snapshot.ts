@@ -116,7 +116,17 @@ export interface SecurityAuditStateRecord {
   readonly createdAt: string;
 }
 
+export interface SideChatStateRecord {
+  readonly parentThreadId: string;
+  readonly threadId?: string;
+  readonly boundaryTurnId?: string;
+  readonly status: "creating" | "ready" | "deleting" | "indeterminate";
+  readonly operationKey: string;
+  readonly createdAt: string;
+}
+
 export interface UserStateRecords {
+  readonly sideChats?: readonly SideChatStateRecord[];
   readonly createdAt: string;
   readonly sourceSchema: number;
   readonly workspaceAuthorizationRevision: number;

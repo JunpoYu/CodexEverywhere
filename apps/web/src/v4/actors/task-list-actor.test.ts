@@ -18,6 +18,98 @@ afterEach(async () => {
 });
 
 describe("TaskListActor live state projection", () => {
+  it("retains the previous list on refresh failure and replaces it on explicit retry", async () => {
+    const gateway = new TaskListGateway();
+    const scope = new Scope("task-list-refresh-failure");
+    scopes.push(scope);
+    const actor = createTaskListActor(scope, gateway);
+    actor.dispatch({ type: "LOAD" });
+    await vi.waitFor(() => expect(actor.getSnapshot().status).toBe("ready"));
+    const previous = actor.getSnapshot().tasks;
+    const failed = gateway.deferNextList();
+    actor.dispatch({ type: "LOAD" });
+    expect(actor.getSnapshot().tasks).toBe(previous);
+    failed.reject(new Error("list unavailable"));
+    await vi.waitFor(() => expect(actor.getSnapshot().status).toBe("failed"));
+    expect(actor.getSnapshot().tasks).toBe(previous);
+    const retry = gateway.deferNextList();
+    actor.dispatch({ type: "LOAD" });
+    retry.resolve(renamedPage());
+    await vi.waitFor(() =>
+      expect(actor.getSnapshot().tasks[0]?.title).toBe("Renamed"),
+    );
+    expect(actor.getSnapshot().error).toBeUndefined();
+  });
+
+  it("coalesces rename notifications without cancelling an in-flight read or losing the trailing refresh", async () => {
+    const gateway = new TaskListGateway();
+    const scope = new Scope("task-list-rename-race");
+    scopes.push(scope);
+    const actor = createTaskListActor(scope, gateway);
+    const first = gateway.deferNextList();
+    actor.dispatch({ type: "LOAD" });
+    actor.dispatch({ type: "LOAD" });
+    actor.dispatch({ type: "LOAD" });
+    expect(gateway.listCalls).toBe(1);
+    expect(gateway.signals[0]?.aborted).toBe(false);
+    const trailing = gateway.deferNextList();
+    actor.dispatch({
+      type: "THREAD_STATE_CHANGED",
+      threadId: "thread-1",
+      state: "running",
+    });
+    first.resolve(threadPage());
+    await vi.waitFor(() => expect(gateway.listCalls).toBe(2));
+    expect(actor.getSnapshot().status).toBe("loading");
+    expect(actor.getSnapshot().tasks[0]?.state).toBe("running");
+    expect(actor.getSnapshot().pendingStateChanges).toEqual({});
+    trailing.resolve(renamedPage());
+    await vi.waitFor(() => expect(actor.getSnapshot().status).toBe("ready"));
+    expect(actor.getSnapshot().tasks[0]).toMatchObject({
+      title: "Renamed",
+      state: "idle",
+    });
+    expect(gateway.listCalls).toBe(2);
+  });
+
+  it("honors a pending refresh even when the earlier request fails", async () => {
+    const gateway = new TaskListGateway();
+    const scope = new Scope("task-list-pending-refresh");
+    scopes.push(scope);
+    const actor = createTaskListActor(scope, gateway);
+    const first = gateway.deferNextList();
+    actor.dispatch({ type: "LOAD" });
+    actor.dispatch({ type: "LOAD" });
+    const trailing = gateway.deferNextList();
+    first.reject(new Error("earlier read failed"));
+    await vi.waitFor(() => expect(gateway.listCalls).toBe(2));
+    trailing.resolve(renamedPage());
+    await vi.waitFor(() => expect(actor.getSnapshot().status).toBe("ready"));
+    expect(actor.getSnapshot().tasks[0]?.title).toBe("Renamed");
+  });
+
+  it("cancels old filter reads and ignores duplicate pagination clicks", async () => {
+    const gateway = new TaskListGateway();
+    const scope = new Scope("task-list-filter-race");
+    scopes.push(scope);
+    const actor = createTaskListActor(scope, gateway);
+    actor.dispatch({ type: "LOAD", workspaceId: "workspace-1" });
+    await vi.waitFor(() => expect(actor.getSnapshot().status).toBe("ready"));
+    const oldPage = gateway.deferNextList();
+    actor.dispatch({ type: "MORE" });
+    actor.dispatch({ type: "MORE" });
+    expect(gateway.listCalls).toBe(2);
+    const newScope = gateway.deferNextList();
+    actor.dispatch({ type: "LOAD", workspaceId: "workspace-2" });
+    expect(actor.getSnapshot().tasks).toEqual([]);
+    expect(gateway.signals[1]?.aborted).toBe(true);
+    newScope.resolve(emptyThreadPage());
+    oldPage.resolve(threadPage());
+    await vi.waitFor(() => expect(actor.getSnapshot().status).toBe("ready"));
+    expect(actor.getSnapshot().tasks).toEqual([]);
+    expect(actor.getSnapshot().workspaceId).toBe("workspace-2");
+  });
+
   it("updates only the matching loaded task without another list request", async () => {
     const gateway = new TaskListGateway();
     const scope = new Scope("task-list-test");
@@ -107,6 +199,7 @@ describe("TaskListActor live state projection", () => {
 
 class TaskListGateway implements GatewayPort {
   listCalls = 0;
+  readonly signals: Array<AbortSignal | undefined> = [];
   #nextList:
     | {
         readonly promise: Promise<OutputOf<"thread/list">>;
@@ -124,6 +217,7 @@ class TaskListGateway implements GatewayPort {
       return Promise.reject(new Error(`Unexpected method: ${method}`));
     }
     this.listCalls += 1;
+    this.signals.push(_options.signal);
     const pending = this.#nextList;
     this.#nextList = undefined;
     return (pending?.promise ?? Promise.resolve(threadPage())) as Promise<
@@ -193,4 +287,14 @@ function threadPage(): OutputOf<"thread/list"> {
 
 function emptyThreadPage(): OutputOf<"thread/list"> {
   return { version: 1, threads: [], hasMore: false };
+}
+
+function renamedPage(): OutputOf<"thread/list"> {
+  const page = threadPage();
+  return {
+    ...page,
+    threads: page.threads.map((task) =>
+      task.id === "thread-1" ? { ...task, title: "Renamed" } : task,
+    ),
+  };
 }

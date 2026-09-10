@@ -18,6 +18,9 @@ export function createScenarioConnection(kind: "user" | "admin"): {
       failFirstPreferencesReadOnce: search.has(
         "scenarioTaskPrerequisiteFailure",
       ),
+      failThreadListAfterRenameOnce: search.has(
+        "scenarioThreadListRenameFailure",
+      ),
       failWorkspaceListAfterMutationOnce: search.has(
         "scenarioWorkspaceRefreshFailure",
       ),

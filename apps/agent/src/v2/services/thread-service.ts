@@ -1,3 +1,4 @@
+import type { SideChatService } from "./side-chat-service.js";
 import { randomUUID } from "node:crypto";
 
 import { Scope } from "@codex-everywhere/kernel";
@@ -50,11 +51,13 @@ export interface ThreadServiceOptions {
   readonly settings: ThreadSettingsRepository;
   readonly titles: AutoTitleServicePort;
   readonly runtimeGate: CodexRuntimeGatePort;
+  readonly sides?: SideChatService;
   readonly appServerSocketPath?: string;
 }
 
 /** Maps authoritative Codex threads into CE task views without owning Agent state. */
 export class ThreadService {
+  readonly #sides: SideChatService | undefined;
   readonly #scope: Scope;
   readonly #clients: CodexClientFactoryPort;
   readonly #leases: ThreadLeaseManager;
@@ -67,6 +70,7 @@ export class ThreadService {
 
   constructor(options: ThreadServiceOptions) {
     this.#scope = options.scope.fork("threads");
+    this.#sides = options.sides;
     this.#clients = options.clients;
     this.#leases = options.leases;
     this.#workspaces = options.workspaces;
@@ -82,6 +86,7 @@ export class ThreadService {
   }
 
   async list(input: InputOf<"thread/list">): Promise<OutputOf<"thread/list">> {
+    const hidden = await this.#sides?.hiddenThreadIds();
     const workspaces = await this.#workspaces.list();
     const selected =
       input.workspaceId === undefined
@@ -113,6 +118,7 @@ export class ThreadService {
           }),
         );
         for (const thread of result.threads) {
+          if (typeof thread.id === "string" && hidden?.has(thread.id)) continue;
           const workspace = await this.#authorizedWorkspace(
             requireCodexString(thread.cwd, "thread cwd"),
           );
@@ -158,6 +164,8 @@ export class ThreadService {
       | "includeCompactionCount"
     >,
   ): Promise<OutputOf<"thread/open">> {
+    if (await this.#sides?.forThread(handle.threadId))
+      return this.#sides!.open(handle);
     const { thread, state, settings } = await this.#sessions.open(handle);
     const workingDirectory =
       input.includeWorkingDirectory === true
@@ -201,6 +209,8 @@ export class ThreadService {
       "cursor" | "limit" | "historyTurnLimit"
     >,
   ): Promise<OutputOf<"thread/history">> {
+    if (await this.#sides?.forThread(handle.threadId))
+      return this.#sides!.history(handle, input.cursor);
     const state = await handle.lease.synchronize(true);
     await this.#workspaces.resolve(state.workspacePath);
     const page = projectThreadHistory(
@@ -374,6 +384,8 @@ export class ThreadService {
     handle: ThreadLeaseHandle,
     prompt: string,
   ): Promise<OutputOf<"turn/start">> {
+    if (await this.#sides?.forThread(handle.threadId))
+      return this.#sides!.send(handle, prompt);
     return this.#runtimeGate.run(() => this.#turnStart(handle, prompt));
   }
 
@@ -442,6 +454,15 @@ export class ThreadService {
     interactionId: string,
     response: InteractionResponse,
   ): Promise<OutputOf<"interaction/respond">> {
+    const side = await this.#sides?.forThread(handle.threadId);
+    if (side !== undefined) {
+      if (side.status !== "ready" || response.kind !== "user-input")
+        throw new GatewayV2Error(
+          "SIDE_UNAVAILABLE",
+          "旁支只允许回答澄清问题，不能批准执行操作。",
+        );
+      await this.#sides!.read(side.parentThreadId);
+    }
     try {
       await handle.lease.respondToInteraction(interactionId, response);
     } catch (error) {
@@ -457,6 +478,7 @@ export class ThreadService {
   }
 
   async rename(threadId: string, title: string): Promise<ThreadSummary> {
+    await this.#sides?.assertOrdinary(threadId);
     return this.#withAuthorizedLease(
       threadId,
       "rename",
@@ -473,6 +495,7 @@ export class ThreadService {
   }
 
   async archive(threadId: string): Promise<ThreadSummary> {
+    await this.#sides?.assertOrdinary(threadId);
     return this.#withAuthorizedLease(
       threadId,
       "archive",
@@ -489,6 +512,7 @@ export class ThreadService {
   }
 
   async unarchive(threadId: string): Promise<ThreadSummary> {
+    await this.#sides?.assertOrdinary(threadId);
     return this.#withAuthorizedLease(
       threadId,
       "unarchive",
@@ -505,23 +529,31 @@ export class ThreadService {
   }
 
   async delete(threadId: string): Promise<boolean> {
-    await this.#titles.cancel(threadId);
-    await this.#withAuthorizedLease(threadId, "delete", async (lease) => {
-      await lease.request("thread/delete", { threadId });
-    });
-    await this.#sessions.remove(threadId);
-    await this.#leases.closeThread(threadId, "thread-deleted");
-    return true;
+    const side = await this.#sides?.forThread(threadId);
+    if (side !== undefined)
+      return (await this.#sides!.delete(side.parentThreadId)).deleted;
+    const remove = async () => {
+      await this.#titles.cancel(threadId);
+      await this.#withAuthorizedLease(threadId, "delete", async (lease) => {
+        await lease.request("thread/delete", { threadId });
+      });
+      await this.#sessions.remove(threadId);
+      await this.#leases.closeThread(threadId, "thread-deleted");
+      return true;
+    };
+    return this.#sides ? this.#sides.withoutSide(threadId, remove) : remove();
   }
 
   async updateSettings(
     handle: ThreadLeaseHandle,
     input: InputOf<"thread/settings/update">,
   ): Promise<ThreadSettingsView> {
+    await this.#sides?.assertOrdinary(handle.threadId);
     return this.#sessions.updateSettings(handle, input);
   }
 
   async tuiHandoff(threadId: string): Promise<OutputOf<"thread/tui/handoff">> {
+    await this.#sides?.assertOrdinary(threadId);
     if (this.#appServerSocketPath === undefined) {
       throw new GatewayV2Error(
         "CAPABILITY_UNAVAILABLE",

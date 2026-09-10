@@ -15,6 +15,7 @@ import {
 import type { HostPaths } from "../../host/paths.js";
 import type { CodexClientFactoryPort } from "../codex/client-factory.js";
 import type { UserStateDatabase } from "../repositories/user-state-database.js";
+import { SideChatService } from "../services/side-chat-service.js";
 import { AutoTitleService } from "../services/auto-title-service.js";
 import {
   CodexSupervisor,
@@ -153,7 +154,16 @@ export async function createAgentCompositionRoot(
         : { maximumLeases: options.maximumThreadLeases }),
     });
     const titles = new AutoTitleService({ scope });
+    const sides = new SideChatService({
+      scope,
+      repository: options.state.sideChats,
+      leases,
+      workspaces,
+      runtimeGate,
+    });
+    await options.state.sideChats.recover();
     const queue = new QueueService({
+      assertQueueAllowed: (threadId) => sides.assertOrdinary(threadId),
       scope,
       repository: options.state.queue,
       leases,
@@ -166,6 +176,7 @@ export async function createAgentCompositionRoot(
       clients: options.clients,
     });
     const threads = new ThreadService({
+      sides,
       scope,
       clients: options.clients,
       leases,
@@ -289,6 +300,16 @@ export async function createAgentCompositionRoot(
       }
     };
     scope.defer(
+      sides.events.on("changed", ({ parentThreadId }) =>
+        publish(
+          gatewayEventEnvelopeV2("side/changed", {
+            version: 1,
+            parentThreadId,
+          }),
+        ),
+      ),
+    );
+    scope.defer(
       queue.events.on("changed", (item) =>
         publish(
           gatewayEventEnvelopeV2("queue/changed", {
@@ -342,6 +363,7 @@ export async function createAgentCompositionRoot(
     registerAgentHandlerMap(router, identityHandlers, IDENTITY_METHODS);
     registerAgentHandlerMap(router, setupHandlers, SETUP_METHODS);
     registerAgentCoreHandlers(router, {
+      sides,
       hostId: options.hostId,
       mutationMiddleware,
       workspaces,
