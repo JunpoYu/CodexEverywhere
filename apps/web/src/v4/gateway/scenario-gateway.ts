@@ -41,6 +41,7 @@ export interface ScenarioGatewayOptions {
   readonly failWorkspaceListAfterMutationOnce?: boolean;
   readonly failThreadListAfterRenameOnce?: boolean;
   readonly childlessSideOnce?: boolean;
+  readonly failParentOpenWithSide?: boolean;
   readonly longConversation?: boolean;
   readonly longWorkspace?: boolean;
   readonly runtimeSwitchRequired?: boolean;
@@ -74,6 +75,8 @@ export class ScenarioGateway implements GatewayPort {
   readonly #mutationStatuses = new Map<string, MutationStatus>();
   #failThreadListAfterRenameOnce: boolean;
   #childlessSideOnce: boolean;
+  #failParentOpenWithSide: boolean;
+  readonly #missingParents = new Set<string>();
   #threadListFailureArmed = false;
   #failWorkspaceListAfterMutationOnce: boolean;
   #workspaceListFailureArmed = false;
@@ -104,6 +107,7 @@ export class ScenarioGateway implements GatewayPort {
   };
 
   constructor(options: ScenarioGatewayOptions = {}) {
+    this.#failParentOpenWithSide = options.failParentOpenWithSide ?? false;
     this.#childlessSideOnce = options.childlessSideOnce ?? false;
     this.#failThreadListAfterRenameOnce =
       options.failThreadListAfterRenameOnce ?? false;
@@ -621,6 +625,13 @@ export class ScenarioGateway implements GatewayPort {
         return this.#startThread(record);
       }
       case "thread/open":
+        if (
+          this.#failParentOpenWithSide &&
+          this.#sides.has(String(record.threadId))
+        )
+          this.#missingParents.add(String(record.threadId));
+        if (this.#missingParents.has(String(record.threadId)))
+          throw new Error("主任务已不存在");
         return this.#openThread(
           String(record.threadId),
           typeof record.historyCursor === "string"

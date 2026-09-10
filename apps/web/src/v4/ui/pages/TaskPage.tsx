@@ -238,6 +238,26 @@ export function TaskPage() {
   };
 
   if (thread.threadId !== threadId || thread.snapshot === undefined) {
+    if (thread.threadId === threadId && thread.error) {
+      return (
+        <main
+          className={`conversation-page ${sideVisible ? sideStyles.layout : ""}`}
+        >
+          <section className={`page ${sideStyles.parent}`}>
+            <StatusMessage tone="error">{thread.error}</StatusMessage>
+            <Link to="/tasks">返回任务列表</Link>
+            {sideSelected && side.side !== null ? (
+              <button type="button" onClick={() => runtime.side.show()}>
+                继续旁支问答 /side
+              </button>
+            ) : null}
+          </section>
+          {sideVisible ? (
+            <SideChatPanel parentThreadId={threadId} parentStatus="暂不可用" />
+          ) : null}
+        </main>
+      );
+    }
     return (
       <main className="page loading-page">
         <span className="spinner" />

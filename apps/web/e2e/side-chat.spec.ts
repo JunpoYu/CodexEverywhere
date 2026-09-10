@@ -134,3 +134,35 @@ test("创建结果未知时显式解除占用并重新创建旁支", async ({ pa
     .click();
   await expect(side.getByLabel("旁支问题")).toBeEnabled();
 });
+
+test("主任务无法打开时仍可进入和清理已有旁支", async ({ page }) => {
+  await page.goto("/?scenario=1&scenarioMissingParent");
+  await page.getByRole("button", { name: "打开 ScenarioGateway" }).click();
+  await page
+    .getByPlaceholder("描述你希望 Codex 完成的工作…")
+    .fill("父任务消失测试");
+  await page.getByRole("button", { name: "新建任务" }).click();
+  await page
+    .getByRole("button", { name: "旁支问答 /side", exact: true })
+    .click();
+  const side = page.getByRole("complementary", { name: "旁支问答" });
+  await expect(side.getByLabel("旁支问题")).toBeEnabled();
+  await side.getByRole("button", { name: "收起 / 返回" }).click();
+  await page
+    .getByRole("link", { name: /工作区/u })
+    .first()
+    .click();
+  await expect(
+    page.getByRole("heading", { name: "工作区", exact: true }),
+  ).toBeVisible();
+  await page.goBack();
+  await expect(page.getByText("主任务已不存在")).toBeVisible();
+  await page
+    .getByRole("button", { name: "继续旁支问答 /side", exact: true })
+    .click();
+  await side.getByRole("button", { name: "结束并删除" }).click();
+  await expect(side).toHaveCount(0);
+  await expect(
+    page.getByRole("link", { name: "返回任务列表", exact: true }),
+  ).toBeVisible();
+});

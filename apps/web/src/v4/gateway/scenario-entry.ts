@@ -10,6 +10,7 @@ export function createScenarioConnection(kind: "user" | "admin"): {
   const search = new URLSearchParams(window.location.search);
   return {
     gateway: new ScenarioGateway({
+      failParentOpenWithSide: search.has("scenarioMissingParent"),
       childlessSideOnce: search.has("scenarioChildlessSide"),
       changePreferencesAfterInitialRead: search.has("scenarioDefaultsChange"),
       delaySecondPreferencesReadOnce: search.has(
