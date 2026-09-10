@@ -27,10 +27,10 @@
     "verify:v0.4": "node scripts/run-v0.4-candidate-checks.mjs"
   },
   "devDependencies": {
-    "@playwright/test": "^1.62.1",
+    "@playwright/test": "^1.63.0",
     "@types/node": "^20.19.0",
     "prettier": "^3.6.0",
-    "tsx": "^4.20.0",
+    "tsx": "^4.23.13",
     "typescript": "^5.9.0",
     "vitest": "^4.0.0"
   }
