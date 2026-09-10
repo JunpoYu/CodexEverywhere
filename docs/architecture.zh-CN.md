@@ -322,3 +322,5 @@ v0.3 切换采用整目录隔离和全新初始化，不导入旧数据库。规
 - 生产 Web manifest 不包含 ScenarioGateway 或故障注入入口。
 
 发布前必须通过 format、architecture、typecheck、unit/protocol、build、Direct/Relay integration 和真实 app-server contract。模型调用测试使用显式环境开关。用户路由初始 JS gzip 上限 250 KiB，CSS gzip 上限 40 KiB；Markdown/KaTeX 必须保持独立懒加载。
+
+旁支创建结果未知且没有 child ID 时，`side/abandon` 提供用户明确确认后的解除入口。请求携带该次创建的 creation key，并在父任务协调锁内核对状态，拒绝过期确认或已有 child ID 的关联；只移除 CE 元数据，不声称已删除原生会话，不自动重试 fork。

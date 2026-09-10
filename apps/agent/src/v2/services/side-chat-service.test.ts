@@ -99,7 +99,7 @@ describe("durable question side chats", () => {
   });
 
   it("does not duplicate a fork after transport loss and retains an accepted child for cleanup", async () => {
-    const { service, native, state } = await setup();
+    const { service, native } = await setup();
     native.failFork = new Error("connection lost");
     await expect(service.start("parent")).rejects.toThrow("connection lost");
     expect((await service.read("parent")).side?.status).toBe("indeterminate");
@@ -112,7 +112,15 @@ describe("durable question side chats", () => {
     expect(
       native.calls.filter((call) => call.method === "thread/fork"),
     ).toHaveLength(1);
-    await state.sideChats.remove("parent");
+    const creationKey = (await service.read("parent")).side!.creationKey!;
+    await expect(service.abandon("parent", "stale-key")).rejects.toMatchObject({
+      code: "SIDE_UNAVAILABLE",
+    });
+    await service.abandon("parent", creationKey);
+    expect((await service.read("parent")).side).toBeNull();
+    expect(await service.withoutSide("parent", async () => "unblocked")).toBe(
+      "unblocked",
+    );
     native.failFork = undefined;
     native.sandbox = "workspaceWrite";
     await expect(service.start("parent")).rejects.toMatchObject({
@@ -122,6 +130,12 @@ describe("durable question side chats", () => {
       threadId: "child",
       status: "indeterminate",
     });
+    await expect(service.abandon("parent", creationKey)).rejects.toMatchObject({
+      code: "SIDE_UNAVAILABLE",
+    });
+    expect(native.calls.some((call) => call.method === "thread/delete")).toBe(
+      false,
+    );
     await service.delete("parent");
     expect((await service.read("parent")).side).toBeNull();
   });

@@ -25,6 +25,8 @@ export function SideChatPanel({
   const thread = useActorState(runtime.side.thread);
   const composer = useActorState(runtime.side.composer);
   const [copied, setCopied] = useState(false);
+  const [acknowledgeOrphan, setAcknowledgeOrphan] = useState(false);
+  useEffect(() => setAcknowledgeOrphan(false), [control.side?.creationKey]);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const threadId = control.side?.threadId;
   const snapshot = thread.threadId === threadId ? thread.snapshot : undefined;
@@ -246,6 +248,29 @@ export function SideChatPanel({
             </button>
           </div>
         </form>
+        {control.side?.creationKey && !threadId ? (
+          <div>
+            <p>
+              创建结果未知，Codex
+              中可能仍有遗留旁支。解除占用只清除关联，不会宣称已删除该会话；遗留会话需在宿主机核对处理。
+            </p>
+            <label>
+              <input
+                type="checkbox"
+                checked={acknowledgeOrphan}
+                onChange={(event) => setAcknowledgeOrphan(event.target.checked)}
+              />
+              我已了解可能存在遗留会话
+            </label>
+            <button
+              type="button"
+              disabled={busy || !acknowledgeOrphan || !!control.initialQuestion}
+              onClick={() => runtime.side.actor.dispatch({ type: "ABANDON" })}
+            >
+              解除旁支占用
+            </button>
+          </div>
+        ) : null}
         <footer className={styles.footer}>
           <span>收起后保留，结束后删除。</span>
           {control.status === "failed" ||

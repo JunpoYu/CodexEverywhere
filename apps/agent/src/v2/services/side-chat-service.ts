@@ -311,6 +311,35 @@ export class SideChatService {
     });
   }
 
+  async abandon(
+    parentThreadId: string,
+    creationKey: string,
+  ): Promise<OutputOf<"side/abandon">> {
+    const lock = await this.options.repository.lock(
+      parentThreadId,
+      this.#scope.signal,
+    );
+    try {
+      await this.#authorize(parentThreadId);
+      const row = await this.options.repository.read(parentThreadId);
+      if (row !== undefined) {
+        if (
+          row.status !== "indeterminate" ||
+          row.threadId !== undefined ||
+          row.operationKey !== creationKey
+        )
+          throw unavailable(
+            "旁支状态已变化，请刷新后核对；已有会话须通过结束并删除处理。",
+          );
+        await this.options.repository.remove(parentThreadId);
+        this.#changed(parentThreadId);
+      }
+      return { version: 1, abandoned: true };
+    } finally {
+      await lock.release();
+    }
+  }
+
   async delete(parentThreadId: string): Promise<OutputOf<"side/delete">> {
     return this.options.runtimeGate.run(() => this.#delete(parentThreadId));
   }
@@ -461,6 +490,9 @@ export function sideView(
     version: 1,
     parentThreadId: row.parentThreadId,
     status: row.status,
+    ...(row.status === "indeterminate" && row.threadId === undefined
+      ? { creationKey: row.operationKey }
+      : {}),
     ...(row.threadId === undefined ? {} : { threadId: row.threadId }),
     ...(row.boundaryTurnId === undefined
       ? {}

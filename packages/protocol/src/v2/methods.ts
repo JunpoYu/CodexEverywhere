@@ -159,6 +159,7 @@ const sideChatSchema = z
     parentThreadId: identifierSchema,
     threadId: identifierSchema.optional(),
     boundaryTurnId: identifierSchema.optional(),
+    creationKey: identifierSchema.optional(),
     status: z.enum(["creating", "ready", "deleting", "indeterminate"]),
   })
   .strict();
@@ -443,6 +444,16 @@ export const gatewayMethodDefinitions = {
     "durable",
     versionedResult({ parentThreadId: identifierSchema }),
     versionedResult({ side: sideChatSchema }),
+  ),
+  "side/abandon": mutation(
+    "user",
+    "durable",
+    versionedResult({
+      parentThreadId: identifierSchema,
+      creationKey: identifierSchema,
+      acknowledgeOrphan: z.literal(true),
+    }),
+    booleanResult("abandoned"),
   ),
   "side/delete": mutation(
     "user",

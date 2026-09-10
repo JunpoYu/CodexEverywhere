@@ -23,6 +23,25 @@ function setup(gateway = new ScenarioGateway()) {
 }
 
 describe("side chat lifecycle", () => {
+  it("unblocks an unknown childless creation only through explicit abandonment", async () => {
+    const { runtime } = setup(new ScenarioGateway({ childlessSideOnce: true }));
+    runtime.select("thread-welcome");
+    await vi.waitFor(() =>
+      expect(runtime.actor.getSnapshot().status).toBe("idle"),
+    );
+    runtime.show();
+    await vi.waitFor(() =>
+      expect(runtime.actor.getSnapshot().side?.status).toBe("indeterminate"),
+    );
+    expect(runtime.actor.getSnapshot().side?.creationKey).toBeDefined();
+    runtime.actor.dispatch({ type: "ABANDON" });
+    await vi.waitFor(() => expect(runtime.actor.getSnapshot().side).toBeNull());
+    runtime.show();
+    await vi.waitFor(() =>
+      expect(runtime.actor.getSnapshot().side?.status).toBe("ready"),
+    );
+  });
+
   it("keeps a hidden side and its draft, appends another question, and reopens from authoritative metadata", async () => {
     const { runtime, gateway, scope } = setup();
     runtime.select("thread-welcome");

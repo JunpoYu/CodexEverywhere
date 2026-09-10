@@ -40,6 +40,7 @@ export interface ScenarioGatewayOptions {
   readonly failFirstPreferencesReadOnce?: boolean;
   readonly failWorkspaceListAfterMutationOnce?: boolean;
   readonly failThreadListAfterRenameOnce?: boolean;
+  readonly childlessSideOnce?: boolean;
   readonly longConversation?: boolean;
   readonly longWorkspace?: boolean;
   readonly runtimeSwitchRequired?: boolean;
@@ -72,6 +73,7 @@ export class ScenarioGateway implements GatewayPort {
   readonly #adminAudit: AdminAudit[] = [];
   readonly #mutationStatuses = new Map<string, MutationStatus>();
   #failThreadListAfterRenameOnce: boolean;
+  #childlessSideOnce: boolean;
   #threadListFailureArmed = false;
   #failWorkspaceListAfterMutationOnce: boolean;
   #workspaceListFailureArmed = false;
@@ -102,6 +104,7 @@ export class ScenarioGateway implements GatewayPort {
   };
 
   constructor(options: ScenarioGatewayOptions = {}) {
+    this.#childlessSideOnce = options.childlessSideOnce ?? false;
     this.#failThreadListAfterRenameOnce =
       options.failThreadListAfterRenameOnce ?? false;
     this.#changePreferencesAfterInitialRead =
@@ -516,6 +519,17 @@ export class ScenarioGateway implements GatewayPort {
         const parent = this.#requiredThread(parentThreadId);
         const existing = this.#sides.get(parentThreadId);
         if (existing) return { version: 1, side: existing };
+        if (this.#childlessSideOnce) {
+          this.#childlessSideOnce = false;
+          const side = {
+            version: 1 as const,
+            parentThreadId,
+            status: "indeterminate" as const,
+            creationKey: crypto.randomUUID(),
+          };
+          this.#sides.set(parentThreadId, side);
+          return { version: 1, side };
+        }
         const id = crypto.randomUUID();
         const side = {
           version: 1 as const,
@@ -543,6 +557,20 @@ export class ScenarioGateway implements GatewayPort {
         this.#sides.set(parentThreadId, side);
         this.#emit("side/changed", { version: 1, parentThreadId });
         return { version: 1, side };
+      }
+      case "side/abandon": {
+        const parentThreadId = String(record.parentThreadId);
+        const side = this.#sides.get(parentThreadId);
+        if (
+          side &&
+          (side.status !== "indeterminate" ||
+            side.threadId ||
+            side.creationKey !== record.creationKey)
+        )
+          throw new Error("Side state changed");
+        this.#sides.delete(parentThreadId);
+        this.#emit("side/changed", { version: 1, parentThreadId });
+        return { version: 1, abandoned: true };
       }
       case "side/delete": {
         const parentThreadId = String(record.parentThreadId);

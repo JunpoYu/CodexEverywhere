@@ -36,6 +36,7 @@ type Event =
   | { type: "HIDE" }
   | { type: "START"; question?: string }
   | { type: "DELETE" }
+  | { type: "ABANDON" }
   | { type: "RELOAD" }
   | { type: "CONSUMED" }
   | { type: "LOADED"; side: Side }
@@ -43,7 +44,9 @@ type Event =
   | { type: "DELETED" }
   | { type: "UNKNOWN"; operationKey: string }
   | { type: "FAILED"; message: string; review: boolean; unsupported: boolean };
-type Effect = { type: "READ" | "START" | "DELETE"; parentThreadId: string };
+type Effect =
+  | { type: "READ" | "START" | "DELETE"; parentThreadId: string }
+  | { type: "ABANDON"; parentThreadId: string; creationKey: string };
 
 /** Owns side UI lifetime across routes; execution and history use existing actors. */
 export class SideChatRuntime {
@@ -122,6 +125,25 @@ export class SideChatRuntime {
               },
               effects: [
                 { type: "START", parentThreadId: state.parentThreadId },
+              ],
+            };
+          case "ABANDON":
+            if (
+              !state.parentThreadId ||
+              sideMutationBusy(state) ||
+              state.side?.status !== "indeterminate" ||
+              state.side.threadId ||
+              !state.side.creationKey
+            )
+              return preserve;
+            return {
+              state: { ...state, status: "deleting" },
+              effects: [
+                {
+                  type: "ABANDON",
+                  parentThreadId: state.parentThreadId,
+                  creationKey: state.side.creationKey,
+                },
               ],
             };
           case "DELETE":
@@ -206,6 +228,21 @@ export class SideChatRuntime {
                 context.dispatch({ type: "UNKNOWN", operationKey }),
             });
             context.dispatch({ type: "CREATED", side: result.side });
+          } else if (effect.type === "ABANDON") {
+            await durableMutation({
+              owner: this.scope,
+              gateway,
+              method: "side/abandon",
+              payload: {
+                version: 1,
+                parentThreadId: effect.parentThreadId,
+                creationKey: effect.creationKey,
+                acknowledgeOrphan: true,
+              },
+              onOutcomeUnknown: (operationKey) =>
+                context.dispatch({ type: "UNKNOWN", operationKey }),
+            });
+            context.dispatch({ type: "DELETED" });
           } else {
             await durableMutation({
               owner: this.scope,

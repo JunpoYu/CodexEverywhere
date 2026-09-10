@@ -39,6 +39,9 @@ export function registerAgentCoreHandlers(
   router.register("side/start", (input) =>
     services.sides.start(input.parentThreadId),
   );
+  router.register("side/abandon", (input) =>
+    services.sides.abandon(input.parentThreadId, input.creationKey),
+  );
   router.register("side/delete", (input) =>
     services.sides.delete(input.parentThreadId),
   );
@@ -177,8 +180,8 @@ function registerThreadHandlers(
     thread: await services.threads.unarchive(input.threadId),
   }));
   router.register("thread/delete", async (input, context) => {
-    await context.session.closeThread(input.threadId);
     await services.threads.delete(input.threadId);
+    await context.session.closeThread(input.threadId);
     return { version: 1, deleted: true };
   });
   router.register("thread/settings/update", (input, context) =>

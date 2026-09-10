@@ -24,6 +24,22 @@ describe("Gateway API v2 method registry", () => {
     );
   });
 
+  it("requires explicit acknowledgement and a creation key to abandon an unknown side", () => {
+    const schema = gatewayMethodDefinitions["side/abandon"].input;
+    const input = {
+      version: 1,
+      parentThreadId: "parent",
+      creationKey: "creation-key",
+    };
+    expect(schema.safeParse(input).success).toBe(false);
+    expect(
+      schema.safeParse({ ...input, acknowledgeOrphan: false }).success,
+    ).toBe(false);
+    expect(
+      schema.safeParse({ ...input, acknowledgeOrphan: true }).success,
+    ).toBe(true);
+  });
+
   it("gives every method schemas and coherent metadata", () => {
     for (const method of gatewayMethodNames) {
       const definition = gatewayMethodDefinitions[method];

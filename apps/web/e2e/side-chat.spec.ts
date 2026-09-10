@@ -107,3 +107,30 @@ test("主任务等待审批时旁支仍可提问，停止旁支不影响主任�
     page.getByText("[approval] 主任务等待批准", { exact: true }),
   ).toBeVisible();
 });
+
+test("创建结果未知时显式解除占用并重新创建旁支", async ({ page }) => {
+  await page.goto("/?scenario=1&scenarioChildlessSide");
+  await page.getByRole("button", { name: "打开 ScenarioGateway" }).click();
+  await page
+    .getByPlaceholder("描述你希望 Codex 完成的工作…")
+    .fill("旁支恢复测试");
+  await page.getByRole("button", { name: "新建任务" }).click();
+  await expect(
+    page.getByText(
+      "Scenario 回复已完成。真实连接会在同一位置呈现 Codex 流式事件。",
+    ),
+  ).toBeVisible();
+  await page
+    .getByRole("button", { name: "旁支问答 /side", exact: true })
+    .click();
+  const side = page.getByRole("complementary", { name: "旁支问答" });
+  const abandon = side.getByRole("button", { name: "解除旁支占用" });
+  await expect(abandon).toBeDisabled();
+  await side.getByRole("checkbox").check();
+  await abandon.click();
+  await expect(side).toHaveCount(0);
+  await page
+    .getByRole("button", { name: "旁支问答 /side", exact: true })
+    .click();
+  await expect(side.getByLabel("旁支问题")).toBeEnabled();
+});
