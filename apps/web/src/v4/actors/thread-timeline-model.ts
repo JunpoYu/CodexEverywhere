@@ -6,6 +6,7 @@ type TimelineItem = Snapshot["items"][number];
 
 /** Keep browser history requests bounded independently of the protocol maximum. */
 export const TIMELINE_PAGE_SIZE = 50;
+export const TIMELINE_TURN_PAGE_SIZE = 3;
 
 export function prependAuthoritativeHistoryPage(
   snapshot: Snapshot,
@@ -40,10 +41,17 @@ export function mergeAuthoritativeTimelineWindow(
     return replaceAuthoritativeTimelineWindow(current, authoritative);
   }
 
-  const loadedHistory = new Set(loadedHistoryItemIds);
-  const retainedEarlier = current.items.filter((item) =>
-    loadedHistory.has(item.id),
+  // Once the user paginates, retain the entire contiguous loaded range,
+  // including the bridge between that prefix and a moving latest window.
+  // Without explicit pagination, both items and cursor follow the latest page.
+  if (loadedHistoryItemIds.length === 0) {
+    return replaceAuthoritativeTimelineWindow(current, authoritative);
+  }
+  const authoritativeIds = new Set(authoritative.items.map((item) => item.id));
+  const boundary = current.items.findIndex((item) =>
+    authoritativeIds.has(item.id),
   );
+  const retainedEarlier = current.items.slice(0, boundary);
   const transient = current.items.filter(isTransientGenericItem);
   const items = mergeTimelinePages(retainedEarlier, [
     ...authoritative.items,

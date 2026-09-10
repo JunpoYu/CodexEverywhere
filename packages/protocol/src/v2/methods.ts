@@ -404,6 +404,7 @@ export const gatewayMethodDefinitions = {
       threadId: identifierSchema,
       historyCursor: z.string().min(1).max(2_048).optional(),
       historyLimit: z.number().int().min(1).max(200).default(50),
+      historyTurnLimit: z.number().int().min(1).max(10).optional(),
       includeWorkingDirectory: z.literal(true).optional(),
       includeContextUsage: z.literal(true).optional(),
       includeCompactionCount: z.literal(true).optional(),
@@ -412,7 +413,11 @@ export const gatewayMethodDefinitions = {
   ),
   "thread/history": query(
     "user",
-    versionedResult({ threadId: identifierSchema, ...pageInputFields }),
+    versionedResult({
+      threadId: identifierSchema,
+      ...pageInputFields,
+      historyTurnLimit: z.number().int().min(1).max(10).optional(),
+    }),
     versionedResult({
       items: z.array(timelineItemSchema),
       ...pageResultFields,

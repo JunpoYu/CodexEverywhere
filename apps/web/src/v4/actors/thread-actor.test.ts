@@ -34,10 +34,43 @@ describe("v0.4 thread actor", () => {
     expect(gateway.openInputs[0]).toMatchObject({
       threadId: "thread-a",
       historyLimit: 50,
+      historyTurnLimit: 3,
       includeWorkingDirectory: true,
       includeContextUsage: true,
       includeCompactionCount: true,
     });
+  });
+
+  it("falls back to item pages for an Agent without turn pagination", async () => {
+    const gateway = new DeferredThreadGateway();
+    gateway.rejectTurnLimitInput = true;
+    const scope = new Scope("thread-turn-pagination-compatibility");
+    scopes.push(scope);
+    const actor = createThreadActor(scope, gateway);
+    actor.dispatch({ type: "OPEN", threadId: "thread-a" });
+    await vi.waitFor(() => expect(gateway.openInputs).toHaveLength(2));
+    expect(gateway.openInputs[0]?.historyTurnLimit).toBe(3);
+    expect(gateway.openInputs[1]).not.toHaveProperty("historyTurnLimit");
+    gateway.resolve(
+      "thread-a",
+      snapshot("thread-a", ["item-3"], {
+        historyCursor: "cursor-3",
+        hasEarlierHistory: true,
+      }),
+    );
+    await vi.waitFor(() => expect(actor.getSnapshot().status).toBe("idle"));
+    actor.dispatch({ type: "LOAD_EARLIER" });
+    await vi.waitFor(() => expect(gateway.historyInputs).toHaveLength(2));
+    expect(gateway.historyInputs[0]?.historyTurnLimit).toBe(3);
+    expect(gateway.historyInputs[1]).not.toHaveProperty("historyTurnLimit");
+    gateway.resolveHistory({
+      version: 1,
+      items: [timelineItem("item-2")],
+      hasMore: false,
+    });
+    await vi.waitFor(() =>
+      expect(actor.getSnapshot().snapshot?.items).toHaveLength(2),
+    );
   });
 
   it("falls back when the deployed Agent predates compaction counts", async () => {
@@ -49,13 +82,13 @@ describe("v0.4 thread actor", () => {
 
     actor.dispatch({ type: "OPEN", threadId: "thread-a" });
 
-    await vi.waitFor(() => expect(gateway.openInputs).toHaveLength(2));
+    await vi.waitFor(() => expect(gateway.openInputs).toHaveLength(3));
     expect(gateway.openInputs[0]).toHaveProperty(
       "includeCompactionCount",
       true,
     );
-    expect(gateway.openInputs[1]).not.toHaveProperty("includeCompactionCount");
-    expect(gateway.openInputs[1]).toHaveProperty("includeContextUsage", true);
+    expect(gateway.openInputs[2]).not.toHaveProperty("includeCompactionCount");
+    expect(gateway.openInputs[2]).toHaveProperty("includeContextUsage", true);
     gateway.resolve("thread-a", snapshot("thread-a"));
     await vi.waitFor(() => expect(actor.getSnapshot().status).toBe("idle"));
   });
@@ -69,14 +102,14 @@ describe("v0.4 thread actor", () => {
 
     actor.dispatch({ type: "OPEN", threadId: "thread-a" });
 
-    await vi.waitFor(() => expect(gateway.openInputs).toHaveLength(3));
+    await vi.waitFor(() => expect(gateway.openInputs).toHaveLength(4));
     expect(gateway.openInputs[0]).toHaveProperty("includeContextUsage", true);
-    expect(gateway.openInputs[1]).toHaveProperty("includeContextUsage", true);
-    expect(gateway.openInputs[2]).toHaveProperty(
+    expect(gateway.openInputs[2]).toHaveProperty("includeContextUsage", true);
+    expect(gateway.openInputs[3]).toHaveProperty(
       "includeWorkingDirectory",
       true,
     );
-    expect(gateway.openInputs[2]).not.toHaveProperty("includeContextUsage");
+    expect(gateway.openInputs[3]).not.toHaveProperty("includeContextUsage");
     gateway.resolve("thread-a", snapshot("thread-a"));
     await vi.waitFor(() => expect(actor.getSnapshot().status).toBe("idle"));
   });
@@ -90,12 +123,8 @@ describe("v0.4 thread actor", () => {
 
     actor.dispatch({ type: "OPEN", threadId: "thread-a" });
 
-    await vi.waitFor(() => expect(gateway.openInputs).toHaveLength(4));
+    await vi.waitFor(() => expect(gateway.openInputs).toHaveLength(5));
     expect(gateway.openInputs[0]).toHaveProperty(
-      "includeWorkingDirectory",
-      true,
-    );
-    expect(gateway.openInputs[1]).toHaveProperty(
       "includeWorkingDirectory",
       true,
     );
@@ -103,7 +132,11 @@ describe("v0.4 thread actor", () => {
       "includeWorkingDirectory",
       true,
     );
-    expect(gateway.openInputs[3]).not.toHaveProperty("includeWorkingDirectory");
+    expect(gateway.openInputs[3]).toHaveProperty(
+      "includeWorkingDirectory",
+      true,
+    );
+    expect(gateway.openInputs[4]).not.toHaveProperty("includeWorkingDirectory");
     gateway.resolve("thread-a", snapshot("thread-a"));
     await vi.waitFor(() => expect(actor.getSnapshot().status).toBe("idle"));
   });
@@ -352,6 +385,54 @@ describe("v0.4 thread actor", () => {
     ]);
   });
 
+  it("loads from the refreshed boundary and preserves the bridge on later refreshes", async () => {
+    const gateway = new DeferredThreadGateway();
+    const scope = new Scope("thread-history-continuity");
+    scopes.push(scope);
+    const actor = createThreadActor(scope, gateway);
+    actor.dispatch({
+      type: "OPENED",
+      snapshot: snapshot("thread-a", ["item-3", "item-4"], {
+        historyCursor: "cursor-3",
+        hasEarlierHistory: true,
+      }),
+    });
+    actor.dispatch({
+      type: "OPENED",
+      snapshot: snapshot("thread-a", ["item-4", "item-5"], {
+        historyCursor: "cursor-4",
+        hasEarlierHistory: true,
+      }),
+    });
+    actor.dispatch({ type: "LOAD_EARLIER" });
+    await vi.waitFor(() => expect(gateway.historyInputs).toHaveLength(1));
+    expect(gateway.historyInputs[0]?.cursor).toBe("cursor-4");
+    gateway.resolveHistory({
+      version: 1,
+      items: [timelineItem("item-2"), timelineItem("item-3")],
+      nextCursor: "cursor-2",
+      hasMore: true,
+    });
+    await vi.waitFor(() =>
+      expect(actor.getSnapshot().historyStatus).toBe("idle"),
+    );
+    actor.dispatch({
+      type: "OPENED",
+      snapshot: snapshot("thread-a", ["item-5", "item-6"], {
+        historyCursor: "cursor-5",
+        hasEarlierHistory: true,
+      }),
+    });
+    expect(actor.getSnapshot().snapshot?.items.map((item) => item.id)).toEqual([
+      "item-2",
+      "item-3",
+      "item-4",
+      "item-5",
+      "item-6",
+    ]);
+    expect(actor.getSnapshot().snapshot?.historyCursor).toBe("cursor-2");
+  });
+
   it("reports history failure without failing the open task", async () => {
     const scope = new Scope("thread-history-failure-test");
     scopes.push(scope);
@@ -543,6 +624,7 @@ class DeferredThreadGateway implements GatewayPort {
   readonly closedThreadIds: string[] = [];
   readonly openInputs: InputOf<"thread/open">[] = [];
   readonly historyInputs: InputOf<"thread/history">[] = [];
+  rejectTurnLimitInput = false;
   rejectContextUsageInput = false;
   rejectCompactionCountInput = false;
   rejectWorkingDirectoryInput = false;
@@ -568,6 +650,17 @@ class DeferredThreadGateway implements GatewayPort {
     if (method === "thread/history") {
       this.historySignal = options.signal;
       this.historyInputs.push(input as InputOf<"thread/history">);
+      if (
+        this.rejectTurnLimitInput &&
+        (input as InputOf<"thread/history">).historyTurnLimit !== undefined
+      ) {
+        return Promise.reject(
+          new GatewayRemoteError({
+            code: "INVALID_INPUT",
+            message: "unsupported field",
+          }),
+        );
+      }
       return new Promise<OutputOf<"thread/history">>((resolve, reject) => {
         this.#historyPending = { resolve, reject };
       }) as Promise<OutputOf<Method>>;
@@ -578,6 +671,14 @@ class DeferredThreadGateway implements GatewayPort {
     this.signal = options.signal;
     const openInput = input as InputOf<"thread/open">;
     this.openInputs.push(openInput);
+    if (this.rejectTurnLimitInput && openInput.historyTurnLimit !== undefined) {
+      return Promise.reject(
+        new GatewayRemoteError({
+          code: "INVALID_INPUT",
+          message: "unsupported field",
+        }),
+      );
+    }
     if (
       this.rejectCompactionCountInput &&
       openInput.includeCompactionCount === true

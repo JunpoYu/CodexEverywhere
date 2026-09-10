@@ -60,6 +60,42 @@ describe("thread projection", () => {
     expect(first.nextCursor).toBeUndefined();
   });
 
+  it("pages complete recent turns even when tools alone exceed the item limit", () => {
+    const thread: CodexObject = {
+      turns: Array.from({ length: 8 }, (_, turn) => ({
+        id: `turn-${turn}`,
+        items: [
+          { id: `user-${turn}`, type: "userMessage", text: "request" },
+          ...Array.from({ length: 75 }, (_, item) => ({
+            id: `tool-${turn}-${item}`,
+            type: "commandExecution",
+            status: "completed",
+          })),
+          {
+            id: `answer-${turn}`,
+            type: "agentMessage",
+            text: "answer",
+            phase: "final_answer",
+          },
+        ],
+      })),
+    };
+    const latest = projectThreadHistory(thread, undefined, 50, 3);
+    expect(latest.items[0]?.id).toBe("user-5");
+    expect(latest.items.at(-1)?.id).toBe("answer-7");
+    expect(latest.items).toHaveLength(3 * 77);
+    const earlier = projectThreadHistory(thread, latest.nextCursor, 50, 3);
+    expect(earlier.items[0]?.id).toBe("user-2");
+    expect(earlier.items.at(-1)?.id).toBe("answer-4");
+    const first = projectThreadHistory(thread, earlier.nextCursor, 50, 3);
+    expect(first.items[0]?.id).toBe("user-0");
+    expect(first.hasMore).toBe(false);
+    expect(first.nextCursor).toBeUndefined();
+    expect([...first.items, ...earlier.items, ...latest.items]).toEqual(
+      projectThreadTimeline(thread),
+    );
+  });
+
   it("rejects a cursor whose authoritative boundary disappeared", () => {
     const page = projectThreadHistory(authoritativeThread(), undefined, 1);
     const changed: CodexObject = { turns: [] };

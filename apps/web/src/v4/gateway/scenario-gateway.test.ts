@@ -190,7 +190,7 @@ describe("ScenarioGateway", () => {
     expect(events).toContain("setup/codex/login/completed");
   });
 
-  it("paginates a long conversation at stable item boundaries", async () => {
+  it("paginates complete turns without letting tool records consume the page", async () => {
     const gateway = new ScenarioGateway({ longConversation: true });
     gateways.push(gateway);
 
@@ -200,14 +200,15 @@ describe("ScenarioGateway", () => {
         version: 1,
         threadId: "thread-long-conversation",
         historyLimit: 50,
+        historyTurnLimit: 3,
       },
       queryOptions(),
     );
 
-    expect(latest.items).toHaveLength(50);
+    expect(latest.items).toHaveLength(67);
     expect(latest.items.at(-1)?.id).toBe("long-command-output");
     expect(latest.hasEarlierHistory).toBe(true);
-    expect(latest.historyCursor).toBe("long-assistant-46");
+    expect(latest.historyCursor).toBe("long-user-68");
 
     const earlier = await gateway.request(
       "thread/history",
@@ -216,13 +217,14 @@ describe("ScenarioGateway", () => {
         threadId: "thread-long-conversation",
         cursor: latest.historyCursor!,
         limit: 50,
+        historyTurnLimit: 3,
       },
       queryOptions(),
     );
 
-    expect(earlier.items).toHaveLength(50);
-    expect(earlier.items.at(-1)?.id).toBe("long-user-46");
-    expect(earlier.nextCursor).toBe("long-assistant-21");
+    expect(earlier.items).toHaveLength(6);
+    expect(earlier.items.at(-1)?.id).toBe("long-assistant-67");
+    expect(earlier.nextCursor).toBe("long-user-65");
     expect(earlier.hasMore).toBe(true);
   });
 });

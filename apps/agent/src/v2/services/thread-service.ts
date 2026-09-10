@@ -152,6 +152,7 @@ export class ThreadService {
       InputOf<"thread/open">,
       | "historyCursor"
       | "historyLimit"
+      | "historyTurnLimit"
       | "includeWorkingDirectory"
       | "includeContextUsage"
       | "includeCompactionCount"
@@ -169,6 +170,7 @@ export class ThreadService {
       thread,
       input.historyCursor,
       input.historyLimit,
+      input.historyTurnLimit,
     );
     return {
       version: 1,
@@ -194,7 +196,10 @@ export class ThreadService {
 
   async history(
     handle: ThreadLeaseHandle,
-    input: Pick<InputOf<"thread/history">, "cursor" | "limit">,
+    input: Pick<
+      InputOf<"thread/history">,
+      "cursor" | "limit" | "historyTurnLimit"
+    >,
   ): Promise<OutputOf<"thread/history">> {
     const state = await handle.lease.synchronize(true);
     await this.#workspaces.resolve(state.workspacePath);
@@ -202,6 +207,7 @@ export class ThreadService {
       requireCodexObject(state.thread, "thread"),
       input.cursor,
       input.limit,
+      input.historyTurnLimit,
     );
     return {
       version: 1,

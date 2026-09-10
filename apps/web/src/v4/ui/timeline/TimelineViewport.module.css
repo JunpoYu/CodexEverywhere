@@ -31,8 +31,7 @@
 }
 
 .item {
-  content-visibility: auto;
-  contain-intrinsic-size: auto 120px;
+  min-width: 0;
 }
 
 .jumpTarget {

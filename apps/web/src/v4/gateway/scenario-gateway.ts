@@ -540,6 +540,9 @@ export class ScenarioGateway implements GatewayPort {
           record.includeWorkingDirectory === true,
           record.includeContextUsage === true,
           record.includeCompactionCount === true,
+          typeof record.historyTurnLimit === "number"
+            ? record.historyTurnLimit
+            : undefined,
         );
       case "thread/history": {
         const thread = this.#requiredThread(String(record.threadId));
@@ -547,6 +550,9 @@ export class ScenarioGateway implements GatewayPort {
           thread.items,
           typeof record.cursor === "string" ? record.cursor : undefined,
           Number(record.limit),
+          typeof record.historyTurnLimit === "number"
+            ? record.historyTurnLimit
+            : undefined,
         );
         return {
           version: 1,
@@ -1042,10 +1048,16 @@ export class ScenarioGateway implements GatewayPort {
     includeWorkingDirectory: boolean,
     includeContextUsage: boolean,
     includeCompactionCount: boolean,
+    historyTurnLimit?: number,
   ) {
     const thread = this.#requiredThread(threadId);
     const workspace = this.#workspaces.get(thread.summary.workspaceId);
-    const page = scenarioHistoryPage(thread.items, historyCursor, historyLimit);
+    const page = scenarioHistoryPage(
+      thread.items,
+      historyCursor,
+      historyLimit,
+      historyTurnLimit,
+    );
     return {
       version: 1,
       thread: thread.summary,
@@ -1263,6 +1275,21 @@ function longConversationThread(now: string): ScenarioThread {
       },
     );
   }
+  items.splice(
+    items.length - 1,
+    0,
+    ...Array.from({ length: 60 }, (_, index): TimelineItem => ({
+      version: 1,
+      id: `long-tool-${index}`,
+      turnId: "long-turn-70",
+      type: "command",
+      data: {
+        type: "commandExecution",
+        command: "scenario-tool",
+        status: "completed",
+      },
+    })),
+  );
   items.push({
     version: 1,
     id: "long-command-output",
@@ -1295,6 +1322,7 @@ function scenarioHistoryPage(
   items: readonly TimelineItem[],
   cursor: string | undefined,
   limit: number,
+  turnLimit?: number,
 ): {
   readonly items: TimelineItem[];
   readonly nextCursor?: string;
@@ -1306,7 +1334,20 @@ function scenarioHistoryPage(
     if (boundary < 0) throw new Error("Scenario history cursor is stale");
     end = boundary;
   }
-  const start = Math.max(0, end - limit);
+  let start = Math.max(0, end - limit);
+  if (turnLimit !== undefined) {
+    const turns: string[] = [];
+    start = end;
+    while (start > 0) {
+      const item = items[start - 1]!;
+      const key = item.turnId ?? item.id;
+      if (turns.at(-1) !== key) {
+        if (turns.length === turnLimit) break;
+        turns.push(key);
+      }
+      start -= 1;
+    }
+  }
   const page = items.slice(start, end);
   return {
     items: page,

@@ -51,6 +51,22 @@ describe("Gateway API v2 method registry", () => {
     }
   });
 
+  it("accepts bounded opt-in turn pagination and preserves legacy item inputs", () => {
+    for (const method of ["thread/open", "thread/history"] as const) {
+      const schema = gatewayMethodDefinitions[method].input;
+      const input = { version: 1, threadId: "thread-1" };
+      expect(schema.safeParse(input).success).toBe(true);
+      expect(schema.safeParse({ ...input, historyTurnLimit: 3 }).success).toBe(
+        true,
+      );
+      for (const historyTurnLimit of [0, 11, 1.5, "3"]) {
+        expect(schema.safeParse({ ...input, historyTurnLimit }).success).toBe(
+          false,
+        );
+      }
+    }
+  });
+
   it("validates the optional authoritative compaction count", () => {
     const definition = gatewayMethodDefinitions["thread/open"];
     expect(
@@ -129,6 +145,7 @@ describe("Gateway API v2 method registry", () => {
       threadId: string;
       historyCursor?: string;
       historyLimit: number;
+      historyTurnLimit?: number;
       includeWorkingDirectory?: true;
       includeContextUsage?: true;
       includeCompactionCount?: true;
