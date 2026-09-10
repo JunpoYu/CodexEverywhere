@@ -31,6 +31,7 @@ export function projectThreadHistory(
   thread: CodexObject,
   cursor: string | undefined,
   limit: number,
+  turnLimit?: number,
 ): ThreadHistoryProjection {
   const items = projectThreadTimeline(thread);
   const compactionCount = new Set(
@@ -50,7 +51,22 @@ export function projectThreadHistory(
     }
     end = boundary;
   }
-  const start = Math.max(0, end - limit);
+  let start = Math.max(0, end - limit);
+  if (turnLimit !== undefined) {
+    start = end;
+    let turns = 0;
+    let previousTurn: string | undefined;
+    while (start > 0) {
+      const item = items[start - 1]!;
+      const turn = item.turnId ?? item.id;
+      if (turn !== previousTurn) {
+        if (turns === turnLimit) break;
+        turns += 1;
+        previousTurn = turn;
+      }
+      start -= 1;
+    }
+  }
   const page = items.slice(start, end);
   return {
     items: page,

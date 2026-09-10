@@ -28,7 +28,7 @@ export class WorkspaceRevisionConflictError extends Error {
 
 export class WorkspaceInUseError extends Error {
   constructor(readonly workspaceId: string) {
-    super("Workspace has unfinished Queue items");
+    super("Workspace has unfinished Queue items or side chats");
     this.name = "WorkspaceInUseError";
   }
 }
@@ -100,6 +100,11 @@ export class WorkspaceRepository {
           database,
           "SELECT 1 FROM queue_items WHERE workspace_path = ? AND status <> 'completed' LIMIT 1",
           [current.path],
+        ).length > 0 ||
+        queryRows(
+          database,
+          "SELECT 1 FROM side_chats WHERE workspace_id = ? LIMIT 1",
+          [id],
         ).length > 0
       ) {
         throw new WorkspaceInUseError(id);

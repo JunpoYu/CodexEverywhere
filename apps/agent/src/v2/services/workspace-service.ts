@@ -73,7 +73,7 @@ export class WorkspaceService {
       if (error instanceof WorkspaceInUseError) {
         throw new GatewayV2Error(
           "WORKSPACE_IN_USE",
-          "Workspace has unfinished Queue items",
+          "Workspace has unfinished Queue items or side chats",
         );
       }
       throw error;

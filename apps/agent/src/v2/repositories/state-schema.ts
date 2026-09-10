@@ -48,9 +48,21 @@ CREATE TABLE mutation_receipts (
 CREATE INDEX mutation_receipts_expiry ON mutation_receipts(expires_at);
 `;
 
+export const SIDE_CHAT_SCHEMA = `
+CREATE TABLE side_chats (
+  workspace_id TEXT NOT NULL,
+  parent_thread_id TEXT PRIMARY KEY,
+  thread_id TEXT UNIQUE,
+  boundary_turn_id TEXT,
+  status TEXT NOT NULL CHECK (status IN ('creating', 'ready', 'deleting', 'indeterminate')),
+  operation_key TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+`;
+
 export const USER_STATE_SCHEMA = `
 PRAGMA application_id = ${USER_STATE_APPLICATION_ID};
-PRAGMA user_version = ${V4_STATE_SCHEMA_VERSION};
+PRAGMA user_version = 2;
 PRAGMA foreign_keys = ON;
 PRAGMA secure_delete = ON;
 CREATE TABLE metadata (
@@ -90,6 +102,7 @@ CREATE TABLE thread_permission_observations (
   thread_id TEXT PRIMARY KEY,
   generation INTEGER NOT NULL CHECK (generation >= 0)
 );
+${SIDE_CHAT_SCHEMA}
 ${COMMON_IDENTITY_SCHEMA}
 CREATE TABLE recovery_handoffs (
   hash BLOB PRIMARY KEY,
@@ -164,6 +177,7 @@ CREATE INDEX admin_audit_created_at ON admin_audit(created_at DESC);
 `;
 
 export const USER_STATE_TABLES = [
+  "side_chats",
   "metadata",
   "workspaces",
   "preferences",
@@ -196,7 +210,8 @@ export const ADMIN_STATE_TABLES = [
 export const USER_STATE_SPEC = {
   kind: "user",
   applicationId: USER_STATE_APPLICATION_ID,
-  schemaVersion: V4_STATE_SCHEMA_VERSION,
+  schemaVersion: 2,
+  migrations: { 1: SIDE_CHAT_SCHEMA + "PRAGMA user_version = 2;" },
   schema: USER_STATE_SCHEMA,
   requiredTables: USER_STATE_TABLES,
 } as const;

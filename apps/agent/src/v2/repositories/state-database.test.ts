@@ -1,4 +1,12 @@
-import { chmod, mkdtemp, rm, stat, symlink } from "node:fs/promises";
+import {
+  chmod,
+  mkdtemp,
+  readFile,
+  rm,
+  stat,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -41,6 +49,50 @@ describe("v0.4 state databases", () => {
       "State database kind mismatch",
     );
     expect(USER_STATE_APPLICATION_ID).not.toBe(ADMIN_STATE_APPLICATION_ID);
+  });
+
+  it("atomically upgrades a v0.4 schema 1 user database while preserving its records", async () => {
+    const path = join(await temporaryDirectory(), "state.sqlite");
+    const database = await UserStateDatabase.createFromSnapshot(
+      path,
+      userSnapshot(),
+    );
+    await database.close();
+    const SQL = await loadSqliteRuntime();
+    const old = new SQL.Database(await readFile(path));
+    old.run("DROP TABLE side_chats; PRAGMA user_version = 1;");
+    await writeFile(path, old.export(), { mode: 0o600 });
+    old.close();
+    const [a, b] = await Promise.all([
+      UserStateDatabase.open(path),
+      UserStateDatabase.open(path),
+    ]);
+    expect(await a.exportSnapshot()).toEqual(userSnapshot());
+    const record = {
+      parentThreadId: "parent",
+      workspaceId: "workspace-1",
+      threadId: "child",
+      boundaryTurnId: "boundary",
+      status: "creating" as const,
+      operationKey: "operation",
+      createdAt: "2026-09-10T00:00:00Z",
+    };
+    await a.sideChats.save(record);
+    await b.sideChats.recover();
+    expect(await a.sideChats.read("parent")).toEqual({
+      ...record,
+      status: "indeterminate",
+    });
+    await expect(
+      b.sideChats.save({ ...record, parentThreadId: "other" }),
+    ).rejects.toThrow();
+    expect(await a.sideChats.read("parent")).toMatchObject({
+      threadId: "child",
+    });
+    await Promise.all([a.close(), b.close()]);
+    const upgraded = new SQL.Database(await readFile(path));
+    expect(upgraded.exec("PRAGMA user_version")[0]?.values[0]?.[0]).toBe(2);
+    upgraded.close();
   });
 
   it("round-trips every user snapshot domain without a JSON export", async () => {

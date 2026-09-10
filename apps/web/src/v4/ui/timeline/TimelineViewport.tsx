@@ -131,6 +131,7 @@ export const TimelineViewport = forwardRef<
     if (container === null) return;
     const anchor = prependAnchorRef.current;
     if (anchor !== undefined) {
+      if (input.historyStatus === "loading") return;
       const element =
         anchor.itemId === undefined
           ? undefined
@@ -164,7 +165,13 @@ export const TimelineViewport = forwardRef<
       container.scrollTop = container.scrollHeight;
       updateActiveItem();
     }
-  }, [input.items, scrollToLatest, setMode, updateActiveItem]);
+  }, [
+    input.items,
+    input.historyStatus,
+    scrollToLatest,
+    setMode,
+    updateActiveItem,
+  ]);
 
   useLayoutEffect(() => {
     if (
@@ -187,6 +194,7 @@ export const TimelineViewport = forwardRef<
       updateActiveItem();
     });
     observer.observe(content);
+    if (containerRef.current !== null) observer.observe(containerRef.current);
     return () => observer.disconnect();
   }, [updateActiveItem]);
 

@@ -37,6 +37,7 @@ const versioned = <Shape extends z.ZodRawShape>(shape: Shape) =>
   z.object({ version: z.literal(1), ...shape }).strict();
 
 export const gatewayEventDefinitions = {
+  "side/changed": versioned({ parentThreadId: identifierSchema }),
   "thread/state": versioned({
     threadId: identifierSchema,
     state: threadStateSchema,

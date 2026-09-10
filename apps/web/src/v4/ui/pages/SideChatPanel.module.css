@@ -1,0 +1,104 @@
+.layout {
+  grid-template-columns: minmax(0, 1fr) minmax(340px, 38%);
+}
+.panel {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  border-left: 1px solid var(--border);
+  background: var(--surface);
+}
+.header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex: 0 0 auto;
+  gap: 12px;
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--border);
+}
+.header h2 {
+  margin: 0 0 4px;
+  font-size: 16px;
+}
+.header span,
+.context,
+.footer,
+.entry span {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+.header button {
+  flex-shrink: 0;
+}
+.context {
+  flex: 0 0 auto;
+  margin: 0;
+  padding: 10px 16px;
+  line-height: 1.6;
+  border-bottom: 1px solid var(--border);
+}
+.notice {
+  margin: 0;
+  padding: 8px 16px;
+}
+.empty {
+  flex: 1;
+  padding: 24px 16px;
+  color: var(--text-muted);
+}
+.bottom {
+  flex: 0 0 auto;
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  border-top: 1px solid var(--border);
+  max-height: 50%;
+  overflow-y: auto;
+}
+.bottom > button {
+  justify-self: start;
+}
+.bottom form {
+  min-width: 0;
+  grid-template-columns: minmax(0, 1fr);
+}
+.bottom form > div {
+  display: flex;
+  flex-direction: row;
+  justify-content: space-between;
+  gap: 8px;
+  align-items: center;
+}
+.bottom form span {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+.footer {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 6px;
+}
+.entry {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+  padding: 5px 9px;
+  font-size: 12px;
+}
+@media (max-width: 1100px) {
+  .layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .layout .parent {
+    display: none;
+  }
+  .panel {
+    border-left: 0;
+  }
+}

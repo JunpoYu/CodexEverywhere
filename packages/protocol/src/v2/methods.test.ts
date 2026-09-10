@@ -10,6 +10,9 @@ import {
 describe("Gateway API v2 method registry", () => {
   it("contains the planned surface and permanently excludes removed methods", () => {
     expect(gatewayMethodNames).toContain("thread/open");
+    expect(gatewayMethodNames).toContain("side/read");
+    expect(gatewayMethodNames).toContain("side/start");
+    expect(gatewayMethodNames).toContain("side/delete");
     expect(gatewayMethodNames).toContain("model/list");
     expect(gatewayMethodNames).toContain("interaction/respond");
     expect(gatewayMethodNames).toContain("mutation/status");
@@ -19,6 +22,22 @@ describe("Gateway API v2 method registry", () => {
     expect(gatewayMethodNames).not.toContain(
       "setup/codex/auth/import" as never,
     );
+  });
+
+  it("requires explicit acknowledgement and a creation key to abandon an unknown side", () => {
+    const schema = gatewayMethodDefinitions["side/abandon"].input;
+    const input = {
+      version: 1,
+      parentThreadId: "parent",
+      creationKey: "creation-key",
+    };
+    expect(schema.safeParse(input).success).toBe(false);
+    expect(
+      schema.safeParse({ ...input, acknowledgeOrphan: false }).success,
+    ).toBe(false);
+    expect(
+      schema.safeParse({ ...input, acknowledgeOrphan: true }).success,
+    ).toBe(true);
   });
 
   it("gives every method schemas and coherent metadata", () => {
@@ -48,6 +67,22 @@ describe("Gateway API v2 method registry", () => {
       expect(gatewayMethodDefinitions[method].idempotency, method).toBe(
         "ephemeral",
       );
+    }
+  });
+
+  it("accepts bounded opt-in turn pagination and preserves legacy item inputs", () => {
+    for (const method of ["thread/open", "thread/history"] as const) {
+      const schema = gatewayMethodDefinitions[method].input;
+      const input = { version: 1, threadId: "thread-1" };
+      expect(schema.safeParse(input).success).toBe(true);
+      expect(schema.safeParse({ ...input, historyTurnLimit: 3 }).success).toBe(
+        true,
+      );
+      for (const historyTurnLimit of [0, 11, 1.5, "3"]) {
+        expect(schema.safeParse({ ...input, historyTurnLimit }).success).toBe(
+          false,
+        );
+      }
     }
   });
 
@@ -129,6 +164,7 @@ describe("Gateway API v2 method registry", () => {
       threadId: string;
       historyCursor?: string;
       historyLimit: number;
+      historyTurnLimit?: number;
       includeWorkingDirectory?: true;
       includeContextUsage?: true;
       includeCompactionCount?: true;

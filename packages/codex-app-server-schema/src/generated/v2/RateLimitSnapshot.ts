@@ -10,6 +10,10 @@ import type { SpendControlLimitSnapshot } from "./SpendControlLimitSnapshot";
 export type RateLimitSnapshot = {
   limitId: string | null;
   limitName: string | null;
+  /**
+   * Normal model whose display name and reasoning options describe this quota alias.
+   */
+  normalModelSlug: string | null;
   primary: RateLimitWindow | null;
   secondary: RateLimitWindow | null;
   credits: CreditsSnapshot | null;

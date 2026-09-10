@@ -1,5 +1,10 @@
 import type { Database } from "sql.js";
 
+import {
+  SideChatRepository,
+  readSideChats,
+  writeSideChat,
+} from "./side-chat-repository.js";
 import { IdentityRepository } from "./identity-repository.js";
 import { MutationReceiptRepository } from "./mutation-receipt-repository.js";
 import { PreferencesRepository } from "./preferences-repository.js";
@@ -34,6 +39,7 @@ import type {
 
 export class UserStateDatabase {
   readonly #file: SqliteStateFile;
+  readonly sideChats: SideChatRepository;
   readonly mutationReceipts: MutationReceiptRepository;
   readonly identity: IdentityRepository;
   readonly preferences: PreferencesRepository;
@@ -43,6 +49,7 @@ export class UserStateDatabase {
 
   private constructor(file: SqliteStateFile) {
     this.#file = file;
+    this.sideChats = new SideChatRepository(file);
     this.mutationReceipts = new MutationReceiptRepository(file);
     this.identity = new IdentityRepository(file);
     this.preferences = new PreferencesRepository(file);
@@ -176,7 +183,9 @@ function readUserRecords(database: Database): UserStateRecords {
       ? {}
       : { usedAt: nullableText(row.used_at, "recovery handoff used_at")! }),
   }));
+  const sideChats = readSideChats(database);
   return {
+    ...(sideChats.length === 0 ? {} : { sideChats }),
     createdAt: text(metadata.created_at, "user metadata created_at"),
     sourceSchema: integer(metadata.source_schema, "user source schema"),
     workspaceAuthorizationRevision: integer(
@@ -341,6 +350,7 @@ function insertUserRecords(
       records.defaultWorkspaceId ?? null,
     ],
   );
+  for (const record of records.sideChats ?? []) writeSideChat(database, record);
   for (const record of records.workspaces) {
     database.run(
       "INSERT INTO workspaces (id, path, label, created_at, revision) VALUES (?, ?, ?, ?, ?)",
@@ -428,6 +438,7 @@ function insertUserRecords(
 
 function clearUserState(database: Database): void {
   for (const table of [
+    "side_chats",
     "queue_delivery_claims",
     "queue_items",
     "mutation_receipts",

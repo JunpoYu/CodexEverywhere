@@ -4,6 +4,7 @@
 import type { BrowserUseOriginPolicy } from "./BrowserUseOriginPolicy";
 
 export type BrowserUseRequirements = {
+  allowWebmcp: boolean | null;
   allowHistoryAccess: boolean | null;
   disableAutoReview: boolean | null;
   allowGlobalPersistentApproval: boolean | null;

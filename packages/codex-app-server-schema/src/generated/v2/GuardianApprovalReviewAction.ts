@@ -12,7 +12,7 @@ export type GuardianApprovalReviewAction =
       type: "command";
       source: GuardianCommandSource;
       command: string;
-      cwd: AbsolutePathBuf;
+      cwd: LegacyAppPathString;
     }
   | {
       type: "execve";
@@ -28,7 +28,11 @@ export type GuardianApprovalReviewAction =
       stdin: string;
       cwd: LegacyAppPathString;
     }
-  | { type: "applyPatch"; cwd: AbsolutePathBuf; files: Array<AbsolutePathBuf> }
+  | {
+      type: "applyPatch";
+      cwd: LegacyAppPathString;
+      files: Array<LegacyAppPathString>;
+    }
   | {
       type: "networkAccess";
       target: string;

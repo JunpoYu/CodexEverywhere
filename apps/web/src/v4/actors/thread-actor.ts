@@ -19,6 +19,7 @@ import {
   prependAuthoritativeHistoryPage,
   replaceAuthoritativeTimelineWindow,
   TIMELINE_PAGE_SIZE,
+  TIMELINE_TURN_PAGE_SIZE,
 } from "./thread-timeline-model.js";
 
 type Snapshot = OutputOf<"thread/open">;
@@ -39,7 +40,7 @@ export interface ThreadActorState {
   readonly contextUsage?: ThreadContextUsage;
   /** Whether a newer usage event arrived after the current open began. */
   readonly contextUsageChangedDuringOpen: boolean;
-  /** Stable IDs introduced only by explicit backward pagination. */
+  /** IDs in the contiguous window established by explicit backward pagination. */
   readonly loadedHistoryItemIds: readonly string[];
   readonly refreshing?: boolean;
   readonly historyStatus: "idle" | "loading" | "failed";
@@ -333,16 +334,32 @@ export function createThreadActor(scope: Scope, gateway: GatewayPort) {
           return;
         }
         if (effect.type === "HISTORY") {
-          const page = await gateway.request(
-            "thread/history",
-            {
-              version: 1,
-              threadId: effect.threadId,
-              cursor: effect.cursor,
-              limit: TIMELINE_PAGE_SIZE,
-            },
-            queryOptions(context.signal),
-          );
+          const input: InputOf<"thread/history"> = {
+            version: 1,
+            threadId: effect.threadId,
+            cursor: effect.cursor,
+            limit: TIMELINE_PAGE_SIZE,
+          };
+          let page: OutputOf<"thread/history">;
+          try {
+            page = await gateway.request(
+              "thread/history",
+              { ...input, historyTurnLimit: TIMELINE_TURN_PAGE_SIZE },
+              queryOptions(context.signal),
+            );
+          } catch (error) {
+            if (
+              !(error instanceof GatewayRemoteError) ||
+              error.code !== "INVALID_INPUT"
+            ) {
+              throw error;
+            }
+            page = await gateway.request(
+              "thread/history",
+              input,
+              queryOptions(context.signal),
+            );
+          }
           context.dispatch({ type: "HISTORY_LOADED", page });
           return;
         }
@@ -393,6 +410,13 @@ async function openThreadWithCompatibility(
   const candidates: InputOf<"thread/open">[] = [
     {
       ...base,
+      historyTurnLimit: TIMELINE_TURN_PAGE_SIZE,
+      includeWorkingDirectory: true,
+      includeContextUsage: true,
+      includeCompactionCount: true,
+    },
+    {
+      ...base,
       includeWorkingDirectory: true,
       includeContextUsage: true,
       includeCompactionCount: true,
@@ -428,15 +452,14 @@ function appendNewHistoryIds(
   current: Snapshot,
   page: OutputOf<"thread/history">,
 ): readonly string[] {
-  const currentIds = new Set(current.items.map((item) => item.id));
-  const loadedIds = new Set(loadedHistoryItemIds);
-  const result = [...loadedHistoryItemIds];
-  for (const item of page.items) {
-    if (currentIds.has(item.id) || loadedIds.has(item.id)) continue;
-    loadedIds.add(item.id);
-    result.push(item.id);
-  }
-  return result;
+  if (page.items.length === 0) return loadedHistoryItemIds;
+  return [
+    ...new Set([
+      ...loadedHistoryItemIds,
+      ...page.items.map((item) => item.id),
+      ...current.items.map((item) => item.id),
+    ]),
+  ];
 }
 
 function retainPresentIds(

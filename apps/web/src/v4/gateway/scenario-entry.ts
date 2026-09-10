@@ -10,6 +10,8 @@ export function createScenarioConnection(kind: "user" | "admin"): {
   const search = new URLSearchParams(window.location.search);
   return {
     gateway: new ScenarioGateway({
+      failParentOpenWithSide: search.has("scenarioMissingParent"),
+      childlessSideOnce: search.has("scenarioChildlessSide"),
       changePreferencesAfterInitialRead: search.has("scenarioDefaultsChange"),
       delaySecondPreferencesReadOnce: search.has(
         "scenarioPreferenceValidationDelay",
@@ -17,6 +19,9 @@ export function createScenarioConnection(kind: "user" | "admin"): {
       failSecondCodexVersionReadOnce: search.has("scenarioCodexVersionFailure"),
       failFirstPreferencesReadOnce: search.has(
         "scenarioTaskPrerequisiteFailure",
+      ),
+      failThreadListAfterRenameOnce: search.has(
+        "scenarioThreadListRenameFailure",
       ),
       failWorkspaceListAfterMutationOnce: search.has(
         "scenarioWorkspaceRefreshFailure",

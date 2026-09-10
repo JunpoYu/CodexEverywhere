@@ -2,6 +2,7 @@ import { Scope } from "@codex-everywhere/kernel";
 import { parseGatewayEventPayload } from "@codex-everywhere/protocol/v2";
 
 import type { SavedHost } from "../storage.js";
+import { SideChatRuntime } from "./actors/side-chat-runtime.js";
 import { createComposerActor } from "./actors/composer-actor.js";
 import { createConnectionActor } from "./actors/connection-actor.js";
 import { createModelCatalogActor } from "./actors/model-catalog-actor.js";
@@ -20,6 +21,7 @@ export class UserWebRuntime {
   readonly tasks;
   readonly thread;
   readonly composer;
+  readonly side;
   readonly queue;
   readonly gateway: GatewayPort;
   readonly host: SavedHost;
@@ -40,6 +42,7 @@ export class UserWebRuntime {
     this.tasks = createTaskListActor(this.scope, input.gateway);
     this.thread = createThreadActor(this.scope, input.gateway);
     this.composer = createComposerActor(this.scope, input.gateway);
+    this.side = new SideChatRuntime(this.scope, input.gateway);
     this.queue = createQueueActor(this.scope, input.gateway);
     this.scope.defer(
       this.thread.subscribe(() => this.#flushPendingSettingsRefresh()),
@@ -114,7 +117,10 @@ export class UserWebRuntime {
               }
             }
           }
-        } else if (event.type === "thread/name/changed") {
+        } else if (
+          event.type === "thread/name/changed" ||
+          event.type === "side/changed"
+        ) {
           this.refreshTasks();
         }
         if (event.type === "codex/notification") {

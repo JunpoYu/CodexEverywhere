@@ -39,6 +39,9 @@ export interface ScenarioGatewayOptions {
   readonly failSecondCodexVersionReadOnce?: boolean;
   readonly failFirstPreferencesReadOnce?: boolean;
   readonly failWorkspaceListAfterMutationOnce?: boolean;
+  readonly failThreadListAfterRenameOnce?: boolean;
+  readonly childlessSideOnce?: boolean;
+  readonly failParentOpenWithSide?: boolean;
   readonly longConversation?: boolean;
   readonly longWorkspace?: boolean;
   readonly runtimeSwitchRequired?: boolean;
@@ -54,6 +57,10 @@ export class ScenarioGateway implements GatewayPort {
   readonly #connectionListeners = new Set<(error: Error) => void>();
   readonly #restoredListeners = new Set<() => void>();
   readonly #workspaces = new Map<string, Workspace>();
+  readonly #sides = new Map<
+    string,
+    NonNullable<OutputOf<"side/read">["side"]>
+  >();
   readonly #threads = new Map<string, ScenarioThread>();
   readonly #threadSettings = new Map<string, ThreadSettings>();
   readonly #threadContextUsage = new Map<string, ThreadContextUsage>();
@@ -66,6 +73,11 @@ export class ScenarioGateway implements GatewayPort {
   readonly #adminUsers = new Map<string, AdminUser>();
   readonly #adminAudit: AdminAudit[] = [];
   readonly #mutationStatuses = new Map<string, MutationStatus>();
+  #failThreadListAfterRenameOnce: boolean;
+  #childlessSideOnce: boolean;
+  #failParentOpenWithSide: boolean;
+  readonly #missingParents = new Set<string>();
+  #threadListFailureArmed = false;
   #failWorkspaceListAfterMutationOnce: boolean;
   #workspaceListFailureArmed = false;
   #changePreferencesAfterInitialRead: boolean;
@@ -95,6 +107,10 @@ export class ScenarioGateway implements GatewayPort {
   };
 
   constructor(options: ScenarioGatewayOptions = {}) {
+    this.#failParentOpenWithSide = options.failParentOpenWithSide ?? false;
+    this.#childlessSideOnce = options.childlessSideOnce ?? false;
+    this.#failThreadListAfterRenameOnce =
+      options.failThreadListAfterRenameOnce ?? false;
     this.#changePreferencesAfterInitialRead =
       options.changePreferencesAfterInitialRead ?? false;
     this.#delaySecondPreferencesReadOnce =
@@ -496,7 +512,82 @@ export class ScenarioGateway implements GatewayPort {
           ],
           hasMore: false,
         };
+      case "side/read":
+        this.#requiredThread(String(record.parentThreadId));
+        return {
+          version: 1,
+          side: this.#sides.get(String(record.parentThreadId)) ?? null,
+        };
+      case "side/start": {
+        const parentThreadId = String(record.parentThreadId);
+        const parent = this.#requiredThread(parentThreadId);
+        const existing = this.#sides.get(parentThreadId);
+        if (existing) return { version: 1, side: existing };
+        if (this.#childlessSideOnce) {
+          this.#childlessSideOnce = false;
+          const side = {
+            version: 1 as const,
+            parentThreadId,
+            status: "indeterminate" as const,
+            creationKey: crypto.randomUUID(),
+          };
+          this.#sides.set(parentThreadId, side);
+          return { version: 1, side };
+        }
+        const id = crypto.randomUUID();
+        const side = {
+          version: 1 as const,
+          parentThreadId,
+          threadId: id,
+          status: "ready" as const,
+          boundaryTurnId: "inherited-boundary",
+        };
+        this.#threads.set(id, {
+          summary: {
+            ...parent.summary,
+            id,
+            title: "旁支问答",
+            state: "idle",
+            archived: false,
+          },
+          items: [],
+        });
+        this.#threadSettings.set(id, {
+          version: 1,
+          revision: 0,
+          sandbox: "read-only",
+          approvalPolicy: "never",
+        });
+        this.#sides.set(parentThreadId, side);
+        this.#emit("side/changed", { version: 1, parentThreadId });
+        return { version: 1, side };
+      }
+      case "side/abandon": {
+        const parentThreadId = String(record.parentThreadId);
+        const side = this.#sides.get(parentThreadId);
+        if (
+          side &&
+          (side.status !== "indeterminate" ||
+            side.creationKey !== record.creationKey)
+        )
+          throw new Error("Side state changed");
+        this.#sides.delete(parentThreadId);
+        this.#emit("side/changed", { version: 1, parentThreadId });
+        return { version: 1, abandoned: true };
+      }
+      case "side/delete": {
+        const parentThreadId = String(record.parentThreadId);
+        const side = this.#sides.get(parentThreadId);
+        if (side?.threadId) this.#deleteThread(side.threadId);
+        this.#sides.delete(parentThreadId);
+        this.#emit("side/changed", { version: 1, parentThreadId });
+        return { version: 1, deleted: true };
+      }
       case "thread/list": {
+        if (this.#threadListFailureArmed) {
+          this.#threadListFailureArmed = false;
+          throw new Error("Scenario task list refresh failed");
+        }
         const archived = Boolean(record.archived);
         const workspaceId =
           typeof record.workspaceId === "string"
@@ -508,6 +599,9 @@ export class ScenarioGateway implements GatewayPort {
             .map((thread) => thread.summary)
             .filter(
               (thread) =>
+                ![...this.#sides.values()].some(
+                  (side) => side.threadId === thread.id,
+                ) &&
                 thread.archived === archived &&
                 (workspaceId === undefined ||
                   thread.workspaceId === workspaceId),
@@ -531,6 +625,13 @@ export class ScenarioGateway implements GatewayPort {
         return this.#startThread(record);
       }
       case "thread/open":
+        if (
+          this.#failParentOpenWithSide &&
+          this.#sides.has(String(record.threadId))
+        )
+          this.#missingParents.add(String(record.threadId));
+        if (this.#missingParents.has(String(record.threadId)))
+          throw new Error("主任务已不存在");
         return this.#openThread(
           String(record.threadId),
           typeof record.historyCursor === "string"
@@ -540,6 +641,9 @@ export class ScenarioGateway implements GatewayPort {
           record.includeWorkingDirectory === true,
           record.includeContextUsage === true,
           record.includeCompactionCount === true,
+          typeof record.historyTurnLimit === "number"
+            ? record.historyTurnLimit
+            : undefined,
         );
       case "thread/history": {
         const thread = this.#requiredThread(String(record.threadId));
@@ -547,6 +651,9 @@ export class ScenarioGateway implements GatewayPort {
           thread.items,
           typeof record.cursor === "string" ? record.cursor : undefined,
           Number(record.limit),
+          typeof record.historyTurnLimit === "number"
+            ? record.historyTurnLimit
+            : undefined,
         );
         return {
           version: 1,
@@ -560,6 +667,10 @@ export class ScenarioGateway implements GatewayPort {
       case "thread/close":
         return { version: 1, closed: true };
       case "thread/rename": {
+        if (this.#failThreadListAfterRenameOnce) {
+          this.#failThreadListAfterRenameOnce = false;
+          this.#threadListFailureArmed = true;
+        }
         const thread = this.#requiredThread(String(record.threadId));
         thread.summary = {
           ...thread.summary,
@@ -936,6 +1047,15 @@ export class ScenarioGateway implements GatewayPort {
     const turnId = crypto.randomUUID();
     thread.items.push(messageItem("user", prompt, turnId));
     this.#setThreadState(threadId, "running", turnId);
+    this.#emit("codex/notification", {
+      version: 1,
+      threadId,
+      method: "turn/started",
+      params: {
+        threadId,
+        turn: { id: turnId, items: [], status: "inProgress", error: null },
+      },
+    });
     const interactionKind = scenarioInteractionKind(prompt);
     if (interactionKind !== undefined) {
       this.#createScenarioInteraction(threadId, turnId, interactionKind);
@@ -1042,10 +1162,16 @@ export class ScenarioGateway implements GatewayPort {
     includeWorkingDirectory: boolean,
     includeContextUsage: boolean,
     includeCompactionCount: boolean,
+    historyTurnLimit?: number,
   ) {
     const thread = this.#requiredThread(threadId);
     const workspace = this.#workspaces.get(thread.summary.workspaceId);
-    const page = scenarioHistoryPage(thread.items, historyCursor, historyLimit);
+    const page = scenarioHistoryPage(
+      thread.items,
+      historyCursor,
+      historyLimit,
+      historyTurnLimit,
+    );
     return {
       version: 1,
       thread: thread.summary,
@@ -1263,6 +1389,21 @@ function longConversationThread(now: string): ScenarioThread {
       },
     );
   }
+  items.splice(
+    items.length - 1,
+    0,
+    ...Array.from({ length: 60 }, (_, index): TimelineItem => ({
+      version: 1,
+      id: `long-tool-${index}`,
+      turnId: "long-turn-70",
+      type: "command",
+      data: {
+        type: "commandExecution",
+        command: "scenario-tool",
+        status: "completed",
+      },
+    })),
+  );
   items.push({
     version: 1,
     id: "long-command-output",
@@ -1295,6 +1436,7 @@ function scenarioHistoryPage(
   items: readonly TimelineItem[],
   cursor: string | undefined,
   limit: number,
+  turnLimit?: number,
 ): {
   readonly items: TimelineItem[];
   readonly nextCursor?: string;
@@ -1306,7 +1448,20 @@ function scenarioHistoryPage(
     if (boundary < 0) throw new Error("Scenario history cursor is stale");
     end = boundary;
   }
-  const start = Math.max(0, end - limit);
+  let start = Math.max(0, end - limit);
+  if (turnLimit !== undefined) {
+    const turns: string[] = [];
+    start = end;
+    while (start > 0) {
+      const item = items[start - 1]!;
+      const key = item.turnId ?? item.id;
+      if (turns.at(-1) !== key) {
+        if (turns.length === turnLimit) break;
+        turns.push(key);
+      }
+      start -= 1;
+    }
+  }
   const page = items.slice(start, end);
   return {
     items: page,

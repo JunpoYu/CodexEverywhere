@@ -20,7 +20,7 @@ CE 的目标是在 Linux/HPC 上提供最短路径的 Codex Web/PWA 控制面，
 - 第二套 AgentLoop、组织治理、计费、资源配额或复杂 RBAC；
 - Web Terminal 或第二套 HPC 调度器；
 - Cordis 或第三方插件加载器；
-- Side 临时支线、`thread/fork`、浏览器 `auth.json` 上传；
+- 旧版 ephemeral Side / continuity buffer、直接暴露的 Gateway `thread/fork`、浏览器 `auth.json` 上传；
 - v0.4 首版的 Schedule、Push 和完整文件管理。
 
 ## 2. 系统拓扑
@@ -104,6 +104,7 @@ Router 在 handler 前依次完成 envelope 版本、方法、input schema、当
 - `workspace/*`：授权 root、浏览、增删和默认项；
 - `model/list`：从 app-server 分页投影当前账号与版本可用的模型、默认推理强度和受支持档位；
 - `thread/*`：列表、打开、历史、创建、关闭、命名、归档、删除、设置和 TUI handoff；
+- `side/*`：旁支归属读取、创建与显式结束删除；
 - `turn/*`：发送与中断；
 - `interaction/*`：审批、用户问题和 MCP elicitation；
 - `queue/*`：全局/任务列表、添加、移除、Steer 和 indeterminate 确认；
@@ -111,7 +112,7 @@ Router 在 handler 前依次完成 envelope 版本、方法、input schema、当
 - `mutation/status`：durable mutation 权威对账；
 - `admin/*`：宿主状态、NSS 精确检查、登记、启停、移除、恢复交接和审计。
 
-v2 registry 永久排除 `thread/fork`、全部 `side/*` 和 `setup/codex/auth/import`。
+v2 registry 排除直接 `thread/fork`、旧版 `side/session/*` 和 `setup/codex/auth/import`。`side/read` 是只读查询；`side/start`、`side/delete` 是 payload version 1 的用户域 durable mutation。原生 `thread/fork` 仅允许由 `SideChatService` 封装，不能成为通用 Web fork 接口。
 
 ### 4.2 版本协商
 
@@ -181,11 +182,11 @@ Agent composition root 只构造服务、绑定 Scope、连接控制面事件并
 
 当已接受的 Web 或 Queue 消息具有可用标题且 app-server thread 尚无明确名称时，`AutoTitleService` 在 turn 完成前持有一个短期 effect 引用。只有收到相同 turn ID 的成功完成事件后，它才重新读取权威 `thread.name` 并在仍为空时调用 `thread/name/set`。每个 CE `turn/start` 调用都在发请求前显式建立短期 response observation，并在响应后的标题注册边界由 `finally` 释放；lease 只在该 observation 存在时按 turn ID 暂存提前到达的终态，TUI 等外部 client 的 turn 不进入缓存。Queue `turn/steer` 同样在请求前为当前 turn 建立引用计数的短期终态观察。这样既覆盖多个极短 turn 和 Steer 的乱序响应，又不缓存正文或重建连续事件 buffer。手动 Web 重命名会先等待已经发出的自动写入收口，再提交明确名称；TUI 或其他 client 的 `thread/name/updated` 在自动写入与冲突恢复期间也持续被观察，若连续出现多个明确名称则追踪到最新写入。成功的 service-owned 重命名只通过版本化 `thread/name/changed` 控制事件通知所有已认证任务列表重新读取权威摘要，事件不携带标题内容。通用短指令、失败或中断的 turn、已有名称以及任何自动命名错误都不得改写名称或改变原 mutation 结果；effect 释放后 lease 仍按正常 idle 规则关闭。
 
-`thread/open` 总是返回 app-server 权威快照、历史边界、当前状态、thread settings 和未解决 interaction。Web 可通过 `includeWorkingDirectory: true` 同时请求 lease 从 app-server 恢复并经 Workspace 授权校验后的真实工作目录；该字段必须来自 thread `cwd`，不能用所属 Workspace 根目录近似。`includeContextUsage: true` 返回 lease 最近收到的上下文用量投影；`includeCompactionCount: true` 则返回完整权威 thread 中持久化 `contextCompaction` item 按稳定 ID 去重后的数量。压缩次数不能使用浏览器事件计数，因为断线、换设备和 Agent 重启会造成漏记；Web 也不能为此穷举分页历史。Agent 只在客户端显式请求时返回这些可选字段，避免缓存旧 Web 因严格 output schema 收到未知字段。滚动切换窗口内，新 Web 只对 `thread/open` 的 `INVALID_INPUT` 按压缩次数、上下文用量、工作目录的顺序逐级去掉只读请求字段；其他错误、mutation 和 Gateway API 大版本均不降级。`setup/codex/version` 的可选运行时切换状态采用相同的只读回退规则。多个设备回答同一 interaction 时，broker 原子取出待处理项，第一个合法回答成功，其余设备收到 `interaction/resolved` 或明确失败。
+`thread/open` 总是返回 app-server 权威快照、历史边界、当前状态、thread settings 和未解决 interaction。Web 可通过 `includeWorkingDirectory: true` 同时请求 lease 从 app-server 恢复并经 Workspace 授权校验后的真实工作目录；该字段必须来自 thread `cwd`，不能用所属 Workspace 根目录近似。`includeContextUsage: true` 返回 lease 最近收到的上下文用量投影；`includeCompactionCount: true` 则返回完整权威 thread 中持久化 `contextCompaction` item 按稳定 ID 去重后的数量。压缩次数不能使用浏览器事件计数，因为断线、换设备和 Agent 重启会造成漏记；Web 也不能为此穷举分页历史。Agent 只在客户端显式请求时返回这些可选字段，避免缓存旧 Web 因严格 output schema 收到未知字段。滚动切换窗口内，新 Web 只对 `thread/open` 的 `INVALID_INPUT` 按历史轮数、压缩次数、上下文用量、工作目录的顺序逐级去掉只读请求字段；其他错误、mutation 和 Gateway API 大版本均不降级。`setup/codex/version` 的可选运行时切换状态采用相同的只读回退规则。多个设备回答同一 interaction 时，broker 原子取出待处理项，第一个合法回答成功，其余设备收到 `interaction/resolved` 或明确失败。
 
 Web Thread actor 不维护独立的 `openedThreadId` 影子变量；切换和关闭目标由 reducer 写入 generation-bound effect。旧 `thread/open` 即使在取消后才返回，也不能改写后续 close 目标或把旧任务重新暴露为当前任务。TaskList actor 以 `thread/list` 为初始化与重连后的权威快照；Agent 在该快照上覆盖当前 lease 状态，随后 Web 只对已加载任务合并低频 `thread/state` 变化。每个替换 lease 的第一次权威读取即使仍为 idle 也必须发布，避免旧 failed 状态残留；合并保持任务排序稳定且不发起查询，列表请求进行中收到的状态会暂存到响应落地后再覆盖，请求失败则清空该次缓冲，避免跨 client 的响应竞态把运行状态回退。Agent 将已校验的 `thread/tokenUsage/updated` 投影为最小、版本化的 `thread/context-usage` 事件，同时保留原始已知 notification；Thread actor 只在内存中保存当前任务的最近值，并能合并打开期间抢先到达的事件。重连、lease 失败或权威打开没有投影时必须清除旧值；只有打开请求期间到达的更新可以优先于该次响应。该展示状态不写数据库、不触发 `thread/open` 轮询，也不把 token 用量变成第二个会话事实源。Composer actor 只保存按 thread ID 隔离的内存草稿及 mutation 对账状态；草稿不是会话事实源，不能跨任务复用，失败反馈也必须归属到原任务。
 
-Web 首开任务和每次向前分页都只请求 50 个 timeline item。Agent 在生成这一有界页面时已经读取完整权威 thread，因此压缩次数在同一次投影中统计，Web 只接收单个整数，不加载额外 item。历史加载使用独立的 `historyStatus`，不能把任务运行状态改成 `syncing` 或阻断 Composer。历史请求或权威刷新期间到达的同任务刷新只合并为一次尾随读取，不能取消当前分页，也不能丢失刷新。Thread actor 只记录用户显式向前分页时新增的稳定 item ID，不能把最新 50 项窗口自然老化掉的头部误认为已加载历史；权威刷新只保留这组显式 ID，重叠区域以最新权威项为准，因此未分页时浏览器 DOM 保持有界。完全无重叠时视为窗口漂移并替换为最新页，不能按正文猜测。收到明确的 `thread/compacted` notification 后，即使新旧窗口仍有稳定 ID 重叠，也必须在下一次权威读取时丢弃压缩前的历史前缀；新式 `contextCompaction` item 完成事件也会触发同一条权威刷新链并更新次数。
+Web 首开任务和每次向前分页都请求最近 3 个完整 turn，通过 `thread/open` 与 `thread/history` 的可选 `historyTurnLimit`（1–10）启用；存在该字段时覆盖 item 数量限制，保留所选轮次全部 item，避免工具活动挤掉用户提问。轮数有界，单个长 turn 的 item 数可能较大，处理过程仍延迟挂载。旧客户端省略字段时保持每页 50 个 item；新 Web 只对 `INVALID_INPUT` 去掉该只读字段后回退。Agent 在生成这一按轮分页的页面时已经读取完整权威 thread，因此压缩次数在同一次投影中统计，Web 只接收单个整数，不加载额外 item。历史加载使用独立的 `historyStatus`，不能把任务运行状态改成 `syncing` 或阻断 Composer。历史请求或权威刷新期间到达的同任务刷新只合并为一次尾随读取，不能取消当前分页，也不能丢失刷新。未显式分页时，Thread actor 使用最新权威窗口及其游标，不能保留指向已丢弃头部的旧游标。用户显式向前分页后保留整个连续已加载区间，包含旧页到最新窗口之间的桥接 item；重叠区域以最新权威项为准。完全无重叠时视为窗口漂移并替换为最新页，不能按正文猜测。收到明确的 `thread/compacted` notification 后，即使新旧窗口仍有稳定 ID 重叠，也必须在下一次权威读取时丢弃压缩前的历史前缀；新式 `contextCompaction` item 完成事件也会触发同一条权威刷新链并更新次数。
 
 `TimelineViewport` 只拥有页面级几何状态：首次进入滚底、接近底部时跟随最新、用户上滚后的 detached 状态、旧页插入锚点和大纲跳转。它不持久化消息，不解析 Gateway，也不成为会话事实源。异步 Markdown 布局变化只在 following 状态维持底部；detached 状态显示“回到最新”且不得抢夺阅读位置。命令输出、diff、MCP 结果和 generic payload 在原生 `details` 打开前不挂载大型 DOM。
 
@@ -231,6 +232,14 @@ CE 的 lease-owned app-server client 在 `initialize` 时显式声明 `capabilit
 ### 5.3 Queue
 
 Queue item 和 delivery claim 在同一用户库中。dispatcher 在 app-server 副作用前写入 claim；确定完成后记录 turn ID。若崩溃发生在外部副作用边界，恢复为 `indeterminate`，不重新调用 app-server。该状态会阻塞同任务后续派发，直到用户显式选择 retry 或 dismiss。Web Queue actor 在 mutation/receipt 对账期间拒绝启动第二个 Queue mutation；实时 `queue/changed` 可以合并展示，但页面刷新不得取消仍在跟踪的 mutation generation。用户在结果未知状态显式刷新权威 Queue 后，才能对具体 indeterminate item 选择 retry 或 dismiss。
+
+### 5.5 可恢复旁支问答
+
+`SideChatService` 在已授权主任务的最新已完成 turn 边界调用原生 durable `thread/fork`，携带 `lastTurnId`、`excludeTurns: true`。旁支使用原生 `thread/turns/list` 按轮分页；遇到持久化的继承边界即停止展示，不下载完整历史或建立 continuity buffer。每次打开与发送重新确认 Workspace realpath、只读 sandbox 与 never 审批，并覆盖禁用 shell、MCP（包括每个命名配置）、Apps、插件、hooks、子代理等执行入口。CE 仅允许旁支澄清问题，不允许执行审批、设置修改、Queue、归档或 TUI 接力；外部 Codex 客户端仍能看到该 durable thread，不能把 CE 限制视为对直接 TUI 使用的隔离沙箱。
+
+`SideChatRepository` 只保存 parent/child ID、继承边界、操作 key、创建时间及 `creating | ready | deleting | indeterminate`。同一父任务的跨进程协调锁串行化创建、发送、结束和主任务删除检查；创建 claim 先于 native fork 持久化，拿到 child ID 立即保存。停止中的旁支必须等权威停止事件后才删除，删除成功后移除归属并关闭 lease。恢复时将未完成状态置为 indeterminate；有 child ID 可显式重试清理，缺少 ID 必须先在宿主机核对，不猜测、不重建。`side/changed` 仅通知归属变化，客户端重新读权威 metadata；事件不携带正文。
+
+Web `SideChatRuntime` 只编排面板与 mutation 生命周期，消息和提问复用独立实例的既有 Thread/Composer actor。收起不释放会话，断线后权威重读，页面不会自动删除；主任务与旁支的草稿、operation key 和消息互不混用。桌面并列、窄屏单栏；带回主对话只追加草稿。用户库 schema 1→2 在既有文件锁和原子落盘边界新增 `side_chats`，旧状态及管理员库保持不变；回滚旧程序需恢复升级前的用户库备份。
 
 ## 6. 身份与隔离
 
@@ -305,7 +314,7 @@ v0.3 切换采用整目录隔离和全新初始化，不导入旧数据库。规
 - React v4 不导入旧 monolith、Agent 或 SQL；
 - v2 非 repository 不直接 import `sql.js`；
 - raw Gateway envelope 只存在于 gateway adapter；
-- v2/v4 活跃源码不出现 Side、`thread/fork` 或 `auth/import` 方法。
+- v2/v4 禁止旧版 `side/session/*`、`auth/import`；原生 `thread/fork` 只允许在 SideChatService 中使用。
 - Agent composition root 不直接注册业务 handler；
 - Direct listener、Relay connector、单个加密 Socket 生命周期和公开 Host Discovery 保持独立；
 - Web 功能样式使用 CSS Modules，`global.css` 只有 bootstrap 可导入，已迁出的任务与设置 feature selector 不得回流；
@@ -313,3 +322,5 @@ v0.3 切换采用整目录隔离和全新初始化，不导入旧数据库。规
 - 生产 Web manifest 不包含 ScenarioGateway 或故障注入入口。
 
 发布前必须通过 format、architecture、typecheck、unit/protocol、build、Direct/Relay integration 和真实 app-server contract。模型调用测试使用显式环境开关。用户路由初始 JS gzip 上限 250 KiB，CSS gzip 上限 40 KiB；Markdown/KaTeX 必须保持独立懒加载。
+
+旁支创建或删除结果未知时，`side/abandon` 提供用户明确确认后的解除入口。请求携带该次创建的 creation key，并在父任务协调锁内核对状态，拒绝过期确认或仍为 ready 的关联；只移除 CE 元数据，不声称已停止或删除原生会话，不自动重试 fork。旁支初始占用与工作区移除在 repository 同一原子事务边界检查 workspace ID，存在任何旁支状态时拒绝移除所属工作区。

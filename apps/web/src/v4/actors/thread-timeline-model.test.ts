@@ -80,7 +80,57 @@ describe("thread timeline window model", () => {
       authoritative.items.map((item) => item.id),
     );
     expect(merged.items).toHaveLength(50);
-    expect(merged.historyCursor).toBe("cursor-51");
+    expect(merged.historyCursor).toBe("cursor-52");
+  });
+
+  it("keeps the bridge to a loaded prefix as the latest page advances", () => {
+    const current = snapshot(["item-1", "item-2", "item-3", "item-4"], {
+      historyCursor: "cursor-1",
+      hasEarlierHistory: true,
+    });
+    const merged = mergeAuthoritativeTimelineWindow(
+      current,
+      snapshot(["item-4", "item-5"], {
+        historyCursor: "cursor-4",
+        hasEarlierHistory: true,
+      }),
+      ["item-1", "item-2"],
+    );
+    expect(merged.items.map((item) => item.id)).toEqual([
+      "item-1",
+      "item-2",
+      "item-3",
+      "item-4",
+      "item-5",
+    ]);
+    expect(merged.historyCursor).toBe("cursor-1");
+  });
+
+  it("lets an authoritative suffix replacement remove stale items", () => {
+    const current = snapshot(["item-1", "item-2", "stale-item", "item-3"]);
+    const merged = mergeAuthoritativeTimelineWindow(
+      current,
+      snapshot(["item-2", "item-3"]),
+      ["item-1"],
+    );
+    expect(merged.items.map((item) => item.id)).toEqual([
+      "item-1",
+      "item-2",
+      "item-3",
+    ]);
+  });
+
+  it("restores pagination when a formerly complete latest window moves", () => {
+    const current = snapshot(["item-1", "item-2"]);
+    const merged = mergeAuthoritativeTimelineWindow(
+      current,
+      snapshot(["item-2", "item-3"], {
+        historyCursor: "cursor-2",
+        hasEarlierHistory: true,
+      }),
+    );
+    expect(merged.hasEarlierHistory).toBe(true);
+    expect(merged.historyCursor).toBe("cursor-2");
   });
 
   it("replaces a window with no stable overlap while retaining generic events", () => {

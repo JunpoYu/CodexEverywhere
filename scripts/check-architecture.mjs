@@ -321,11 +321,20 @@ for (const file of files) {
     (file.startsWith("apps/agent/src/v2/") ||
       file.startsWith("apps/web/src/v4/") ||
       file.startsWith("packages/protocol/src/v2/")) &&
-    /(["'`])(?:side\/[^"'`]*|thread\/fork|setup\/codex\/auth\/import)\1/u.test(
+    /(["'`])(?:side\/session\/[^"'`]*|setup\/codex\/auth\/import)\1/u.test(
       content,
     )
   ) {
     failures.push(`${file}: removed Gateway v1 method leaked into v0.4 source`);
+  }
+  if (
+    /(["'`])thread\/fork\1/u.test(content) &&
+    (file.startsWith("apps/agent/src/v2/") ||
+      file.startsWith("apps/web/src/v4/") ||
+      file.startsWith("packages/protocol/src/v2/")) &&
+    file !== "apps/agent/src/v2/services/side-chat-service.ts"
+  ) {
+    failures.push(`${file}: native fork is restricted to SideChatService`);
   }
 }
 

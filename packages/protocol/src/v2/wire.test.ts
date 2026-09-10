@@ -104,7 +104,7 @@ describe("Gateway API v2 wire", () => {
         parseGatewayRequestEnvelopeV2({
           version: 2,
           requestId,
-          method: "side/start",
+          method: "side/session/start",
           input: { version: 1 },
         }),
       "METHOD_NOT_FOUND",

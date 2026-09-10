@@ -34,8 +34,8 @@ schemaVersion: 1
 operation: inspect | fresh-install | patch-upgrade | clean-v0.4-cutover | rollback
 environment: staging | production
 repository: example/CodexEverywhere
-targetTag: v0.4.0-alpha.16
-rollbackTag: v0.4.0-alpha.15
+targetTag: v0.4.0-alpha.17
+rollbackTag: v0.4.0-alpha.16
 approvedManifestSha256: <64 个小写十六进制字符>
 pwaOrigin: https://codex.example.com
 relayEndpoint: wss://codex.example.com/relay
@@ -403,7 +403,16 @@ Passkey Origin 必须是稳定 HTTPS Origin。Direct/FRP 将每个 Agent 的 loo
 
 ## 7. 普通补丁升级
 
-补丁升级不迁移状态，但仍必须保留回滚 release。推荐顺序：
+补丁是否迁移状态以目标 Release 说明为准，不能默认仅切换程序即可回退。`alpha.17` 首次启动会将用户数据库从 schema 1 升级到 schema 2，`alpha.16` 无法打开新库；管理员数据库仍为 schema 1。
+
+从 alpha.16 升级 alpha.17 时，在安装新 release 前逐用户完成以下步骤：
+
+1. 以用户本人的身份暂停 CE Agent watchdog/cron 的自动拉起，停止 Agent，并退出该用户的旧 `ce tui`；保持 Codex app-server 运行。确认没有其他 CE 进程写入用户状态库。
+2. 对该用户 `~/.codex-everywhere/state.sqlite` 创建一致性备份；禁止输出数据库内容。备份保存在程序和源码目录之外的受限目录，目录为 0700，文件为 0600，并加密保存；解密密钥单独保管。校验备份可解密、SQLite integrity check 通过且 `user_version = 1`，记录精确备份位置与校验摘要。不能完成备份验证时停止升级。
+3. 记录原数据库所有者、权限与用户 watchdog/cron 恢复方式。不得复制其他用户状态或将 `~/.codex` 纳入 CE 状态恢复。
+4. 新版 Agent 启动后确认用户库为 schema 2，并恢复该用户的常驻服务策略。观察窗结束前保留升级前备份。
+
+然后按以下顺序升级，始终保留回滚 release：
 
 1. 完成第 4、5 节预检，确认旧 tag 的 rootless/privileged/Web/Relay 目录和 inventory 可用；
 2. 在维护窗口安装新的 rootless release；这会原子切换 `<rootlessRoot>/current`；
@@ -474,7 +483,9 @@ sudo -iu <username> /usr/local/bin/ce device pair
 
 ### 9.1 普通补丁回滚
 
-先停止对应服务，再从本地已安装且 inventory 完整的旧 release 原子切回：
+先停止对应服务。对于 alpha.17 回退 alpha.16，必须先暂停该用户 watchdog/cron 和所有 CE 状态写入进程，保留当前 schema-2 数据库作为受限加密恢复副本，再验证并解密升级前 schema-1 备份到同一文件系统内的临时文件，校验 integrity、schema、用户所有者和 0600 权限后原子替换用户 `state.sqlite`。没有有效 schema-1 备份时停止回滚，不得让 alpha.16 打开 schema-2 数据库。
+
+恢复仅覆盖升级前 CE 数据库：升级后新增的 CE 元数据不会出现在旧库中；原生 Codex 会话（包括新建旁支）仍保留，需用户核对，不自动删除或合并。`~/.codex` 和健康 app-server 不得改动。完成数据库恢复后，再从本地已安装且 inventory 完整的旧 release 原子切回：
 
 ```bash
 sudo -iu <deployUser> <root-owned-hpc-tools>/activate-rootless-release.sh \

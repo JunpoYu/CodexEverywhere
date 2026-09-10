@@ -153,6 +153,17 @@ const adminMutationBase = {
   expectedRevision: z.number().int().nonnegative(),
 } as const;
 
+const sideChatSchema = z
+  .object({
+    version: z.literal(1),
+    parentThreadId: identifierSchema,
+    threadId: identifierSchema.optional(),
+    boundaryTurnId: identifierSchema.optional(),
+    creationKey: identifierSchema.optional(),
+    status: z.enum(["creating", "ready", "deleting", "indeterminate"]),
+  })
+  .strict();
+
 export const gatewayMethodDefinitions = {
   "host/ping": query(
     "pre-auth",
@@ -404,6 +415,7 @@ export const gatewayMethodDefinitions = {
       threadId: identifierSchema,
       historyCursor: z.string().min(1).max(2_048).optional(),
       historyLimit: z.number().int().min(1).max(200).default(50),
+      historyTurnLimit: z.number().int().min(1).max(10).optional(),
       includeWorkingDirectory: z.literal(true).optional(),
       includeContextUsage: z.literal(true).optional(),
       includeCompactionCount: z.literal(true).optional(),
@@ -412,11 +424,42 @@ export const gatewayMethodDefinitions = {
   ),
   "thread/history": query(
     "user",
-    versionedResult({ threadId: identifierSchema, ...pageInputFields }),
+    versionedResult({
+      threadId: identifierSchema,
+      ...pageInputFields,
+      historyTurnLimit: z.number().int().min(1).max(10).optional(),
+    }),
     versionedResult({
       items: z.array(timelineItemSchema),
       ...pageResultFields,
     }),
+  ),
+  "side/read": query(
+    "user",
+    versionedResult({ parentThreadId: identifierSchema }),
+    versionedResult({ side: sideChatSchema.nullable() }),
+  ),
+  "side/start": mutation(
+    "user",
+    "durable",
+    versionedResult({ parentThreadId: identifierSchema }),
+    versionedResult({ side: sideChatSchema }),
+  ),
+  "side/abandon": mutation(
+    "user",
+    "durable",
+    versionedResult({
+      parentThreadId: identifierSchema,
+      creationKey: identifierSchema,
+      acknowledgeOrphan: z.literal(true),
+    }),
+    booleanResult("abandoned"),
+  ),
+  "side/delete": mutation(
+    "user",
+    "durable",
+    versionedResult({ parentThreadId: identifierSchema }),
+    booleanResult("deleted"),
   ),
   "thread/start": mutation(
     "user",

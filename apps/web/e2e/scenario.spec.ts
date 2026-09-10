@@ -145,6 +145,39 @@ test("额度类 turn 失败结束后可以直接发送新消息重试", async ({
   await expectScenarioReply(page);
 });
 
+test("重命名后列表读取失败时保留侧栏并可重试更新名称", async ({
+  page,
+  isMobile,
+}) => {
+  test.skip(isMobile, "最近任务侧栏仅在桌面显示");
+  await openScenario(page, "&scenarioThreadListRenameFailure=1");
+  await createTask(page, "重命名前的任务");
+  await expectScenarioReply(page);
+  await expect(
+    page.getByRole("link", { name: /重命名前的任务/u }),
+  ).toBeVisible();
+  await openTaskActions(page);
+  await page.getByRole("button", { name: "重命名", exact: true }).click();
+  await page.getByLabel("任务名称").fill("重命名后的任务");
+  await page.getByRole("button", { name: "保存", exact: true }).click();
+  await expect(
+    page.getByRole("heading", { name: "重命名后的任务" }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("link", { name: /重命名前的任务/u }),
+  ).toBeVisible();
+  await expect(
+    page.getByText("任务列表刷新失败，当前显示上次结果。", { exact: true }),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "重试任务列表" }).click();
+  await expect(
+    page.getByRole("link", { name: /重命名后的任务/u }),
+  ).toBeVisible();
+  await expect(page.getByRole("button", { name: "重试任务列表" })).toHaveCount(
+    0,
+  );
+});
+
 test("任务可重命名、归档、取消归档并删除", async ({ page }) => {
   await openScenario(page);
   await createTask(page, "任务生命周期原始名称");
@@ -758,7 +791,7 @@ test("长会话分页、首开滚底、阅读保护与对话大纲协同工作",
   await openTaskCard(page, "长会话分页与大纲");
 
   const timeline = page.locator(".timeline");
-  await expect(timeline).toHaveAttribute("data-loaded-items", "50");
+  await expect(timeline).toHaveAttribute("data-loaded-items", "67");
   await expect
     .poll(() => timelineDistanceFromBottom(timeline))
     .toBeLessThanOrEqual(2);
@@ -768,8 +801,8 @@ test("长会话分页、首开滚底、阅读保护与对话大纲协同工作",
   ).toHaveCount(0);
   await expect(page.getByText("查看命令输出", { exact: true })).toHaveCount(0);
   const processGroup = timeline.locator("[data-timeline-activity-group]");
-  await expect(processGroup).toHaveCount(1);
-  await processGroup.locator("summary").click();
+  await expect(processGroup).toHaveCount(2);
+  await processGroup.last().locator("summary").click();
   await page.getByText("查看命令输出", { exact: true }).click();
   await expect(
     page.getByText("SCENARIO_LARGE_OUTPUT_SENTINEL", { exact: true }),
@@ -778,15 +811,15 @@ test("长会话分页、首开滚底、阅读保护与对话大纲协同工作",
   await page.getByRole("button", { name: /打开对话大纲/u }).click();
   const outline = page.getByRole("dialog", { name: "对话大纲" });
   await expect(outline).toBeVisible();
-  await expect(outline.getByText("当前已加载 24 条请求")).toBeVisible();
-  await expect(outline.getByText("历史请求 47", { exact: true })).toBeVisible();
+  await expect(outline.getByText("当前已加载 3 条请求")).toBeVisible();
+  await expect(outline.getByText("历史请求 68", { exact: true })).toBeVisible();
   await expect(outline.getByText("历史请求 01", { exact: true })).toHaveCount(
     0,
   );
 
   const anchorBeforePagination = await firstVisibleTimelineAnchor(timeline);
   await outline.getByRole("button", { name: "加载更早大纲" }).click();
-  await expect(timeline).toHaveAttribute("data-loaded-items", "100");
+  await expect(timeline).toHaveAttribute("data-loaded-items", "73");
   await expect
     .poll(async () => {
       const anchorAfterPagination = await firstVisibleTimelineAnchor(timeline);
@@ -798,13 +831,32 @@ test("长会话分页、首开滚底、阅读保护与对话大纲协同工作",
       );
     })
     .toBeLessThanOrEqual(TIMELINE_ANCHOR_TOLERANCE_PX);
-  await expect(outline.getByText("当前已加载 49 条请求")).toBeVisible();
-  await outline.getByText("历史请求 22", { exact: true }).click();
+  await expect(outline.getByText("当前已加载 6 条请求")).toBeVisible();
+  await outline.getByText("历史请求 65", { exact: true }).click();
   await expect(outline).toHaveCount(0);
   await expect(
-    timeline.getByText("历史请求 22", { exact: true }),
+    timeline.getByText("历史请求 65", { exact: true }),
   ).toBeInViewport();
   await expect(page.getByRole("button", { name: "回到最新" })).toBeVisible();
+
+  // Exercise the timeline button too: newly loaded turns must remain visible,
+  // not merely increase the item count inside a collapsed activity group.
+  await timeline.evaluate((element) => {
+    element.scrollTop = 0;
+  });
+  await timeline
+    .getByRole("button", { name: "加载更早记录", exact: true })
+    .click();
+  await expect(timeline).toHaveAttribute("data-loaded-items", "79");
+  await expect(timeline.getByText("历史请求 62", { exact: true })).toHaveCount(
+    1,
+  );
+  await timeline.evaluate((element) => {
+    element.scrollTop = 0;
+  });
+  await expect(
+    timeline.getByText("历史请求 62", { exact: true }),
+  ).toBeInViewport();
 
   await page.getByRole("button", { name: "回到最新" }).click();
   await expect
