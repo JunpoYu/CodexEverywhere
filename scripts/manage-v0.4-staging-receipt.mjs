@@ -45,6 +45,10 @@ const REQUIRED_CHECKS = [
   "cutover.codex-home-untouched",
   "cutover.artifact-rollback",
   "cutover.v0.4-reactivation",
+  "upgrade.schema-1-backup-verified",
+  "upgrade.schema-1-to-2",
+  "upgrade.schema-1-rollback-restored",
+  "upgrade.schema-2-reactivated",
   "security.logs-sanitized",
   "model.real-subscription-call",
 ];

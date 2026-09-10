@@ -55,6 +55,17 @@ describe("v0.4 staging receipt", () => {
     expect(stdout).toContain("Staging receipt passed");
   });
 
+  it("rejects approval without the schema upgrade rollback exercise", async () => {
+    const path = await initializeReceipt();
+    await writePassingReceipt(path);
+    const receipt = JSON.parse(await readFile(path, "utf8"));
+    receipt.checks["upgrade.schema-1-rollback-restored"] = false;
+    await writeFile(path, JSON.stringify(receipt));
+    await expect(
+      execFileAsync(process.execPath, [manager, "validate", path]),
+    ).rejects.toThrow();
+  });
+
   it("rejects a receipt without a real staging user", async () => {
     const path = await initializeReceipt();
     await writePassingReceipt(path, { testUserCount: 0 });

@@ -42,8 +42,9 @@ export class SideChatService {
   }
 
   async read(parentThreadId: string): Promise<OutputOf<"side/read">> {
-    await this.#authorize(parentThreadId);
     const row = await this.options.repository.read(parentThreadId);
+    if (row) await this.options.workspaces.get(row.workspaceId);
+    else await this.#authorize(parentThreadId);
     return { version: 1, side: row === undefined ? null : sideView(row) };
   }
 
@@ -323,9 +324,9 @@ export class SideChatService {
       this.#scope.signal,
     );
     try {
-      await this.#authorize(parentThreadId);
       const row = await this.options.repository.read(parentThreadId);
       if (row !== undefined) {
+        await this.options.workspaces.get(row.workspaceId);
         if (row.status !== "indeterminate" || row.operationKey !== creationKey)
           throw unavailable(
             "旁支状态已变化，请刷新后核对；正常旁支须通过结束并删除处理。",
@@ -349,9 +350,9 @@ export class SideChatService {
       this.#scope.signal,
     );
     try {
-      await this.#authorize(parentThreadId);
       const row = await this.options.repository.read(parentThreadId);
       if (row === undefined) return { version: 1, deleted: true };
+      await this.options.workspaces.get(row.workspaceId);
       if (row.threadId === undefined)
         throw unavailable(
           "旁支创建结果未知，需要先在宿主机核对，不能假定已删除。",
@@ -372,11 +373,19 @@ export class SideChatService {
           );
           if (active === undefined)
             throw unavailable("无法确认正在运行的旁支，请刷新后重试。");
-          const stopped = waitUntilStopped(handle.lease, this.#scope);
+          const activeTurnId = requireCodexString(
+            active.id,
+            "active side turn",
+          );
+          const stopped = waitUntilStopped(
+            handle.lease,
+            activeTurnId,
+            this.#scope,
+          );
           try {
             await handle.lease.request("turn/interrupt", {
               threadId: row.threadId,
-              turnId: requireCodexString(active.id, "active side turn"),
+              turnId: activeTurnId,
             });
             await stopped.done;
           } finally {
@@ -440,7 +449,7 @@ export class SideChatService {
     const row = await this.forThread(threadId);
     if (row === undefined || row.status !== "ready")
       throw unavailable("旁支不可用或操作结果待核对。");
-    await this.#authorize(row.parentThreadId);
+    await this.options.workspaces.get(row.workspaceId);
     return row;
   }
 
@@ -581,14 +590,26 @@ function unavailable(message: string) {
 const SIDE_INSTRUCTIONS =
   "This is a side conversation for questions and explanations only. Answer using inherited context. Do not modify files, invoke external actions, spawn agents, or continue the parent task. If context is insufficient, ask the user. Do not send anything to the parent conversation.";
 
-function waitUntilStopped(lease: ThreadLease, parent: Scope) {
+function waitUntilStopped(lease: ThreadLease, turnId: string, parent: Scope) {
   const scope = parent.fork("side-interrupt");
+  scope.defer(lease.observeTerminalTurn(turnId));
   const done = new Promise<void>((resolve, reject) => {
+    const check = () => {
+      if (
+        ["completed", "interrupted", "failed"].includes(
+          lease.terminalTurnStatus(turnId) ?? "",
+        )
+      )
+        resolve();
+    };
     scope.defer(
-      lease.onState((state) => {
-        if (state === "idle" || state === "failed") resolve();
+      lease.onEvent((event) => {
+        if (event.type === "lease/failed")
+          reject(unavailable("Codex 连接中断，无法确认旁支已停止。"));
+        else check();
       }),
     );
+    check();
     scope.defer(() =>
       reject(unavailable("旁支停止等待已结束，请核对会话状态。")),
     );

@@ -4,7 +4,10 @@ import { join } from "node:path";
 import { Scope } from "@codex-everywhere/kernel";
 import { GatewayV2Error, type JsonValue } from "@codex-everywhere/protocol/v2";
 import { afterEach, describe, expect, it } from "vitest";
-import type { CodexNotification } from "../../runtime/codex-app-server-client.js";
+import type {
+  CodexNotification,
+  CodexServerRequest,
+} from "../../runtime/codex-app-server-client.js";
 import type { CodexClient } from "../codex/client.js";
 import { UserStateDatabase } from "../repositories/user-state-database.js";
 import { SideChatService, questionConfig } from "./side-chat-service.js";
@@ -204,6 +207,62 @@ describe("durable question side chats", () => {
     expect(await state.sideChats.read("parent")).toBeUndefined();
   });
 
+  it("cleans a side using persisted workspace ownership after its parent disappears", async () => {
+    const { service, native, state, workspaces } = await setup();
+    await service.start("parent");
+    native.parentGone = true;
+    expect((await service.read("parent")).side?.threadId).toBe("child");
+    await service.delete("parent");
+    expect(await state.sideChats.read("parent")).toBeUndefined();
+    const workspace = (await workspaces.list())[0]!;
+    await expect(
+      workspaces.remove(workspace.id, workspace.revision),
+    ).resolves.toBe(true);
+  });
+
+  it("detaches an unknown creation after its parent disappears", async () => {
+    const { service, native, state } = await setup();
+    native.failFork = new Error("response lost");
+    await expect(service.start("parent")).rejects.toThrow();
+    native.parentGone = true;
+    const side = (await service.read("parent")).side!;
+    await service.abandon("parent", side.creationKey!);
+    expect(await state.sideChats.read("parent")).toBeUndefined();
+  });
+
+  it("deletes after authoritative interruption while clarification remains pending", async () => {
+    const { service, native, leases } = await setup();
+    await service.start("parent");
+    const child = await leases.acquire("child", {
+      kind: "viewer",
+      id: "clarification",
+    });
+    cleanup.push(() => child.release());
+    native.running = true;
+    native.turns = [turn("active", "inProgress"), turn("boundary")];
+    let rejected = false;
+    for (const listener of native.requests)
+      listener({
+        id: "question",
+        method: "item/tool/requestUserInput",
+        params: {
+          threadId: "child",
+          turnId: "active",
+          itemId: "question",
+          questions: [],
+        },
+        respond: () => undefined,
+        reject: () => {
+          rejected = true;
+        },
+      });
+    expect(child.lease.listInteractions()).toHaveLength(1);
+    await service.delete("parent");
+    expect(rejected).toBe(true);
+    expect(child.lease.listInteractions()).toHaveLength(0);
+    expect((await service.read("parent")).side).toBeNull();
+  });
+
   it("disables explicitly configured MCP servers and apps as well as defaults", async () => {
     const config = await questionConfig(
       {
@@ -288,6 +347,8 @@ class NativeSide {
   staleResume = false;
   loseDeleteResponse = false;
   deleted = false;
+  parentGone = false;
+  readonly requests = new Set<(request: CodexServerRequest) => void>();
   readonly listeners = new Set<(notification: CodexNotification) => void>();
   constructor(private readonly cwd: string) {}
   client(): CodexClient {
@@ -301,7 +362,12 @@ class NativeSide {
         this.listeners.add(listener);
         return () => this.listeners.delete(listener);
       },
-      onServerRequest: () => () => undefined,
+      onServerRequest: (listener) => {
+        this.requests.add(listener);
+        return () => {
+          this.requests.delete(listener);
+        };
+      },
       onClose: () => () => undefined,
       close: async () => undefined,
     };
@@ -312,6 +378,8 @@ class NativeSide {
   ): Promise<unknown> {
     this.calls.push({ method, params });
     const id = method === "thread/fork" ? "child" : String(params.threadId);
+    if (id === "parent" && this.parentGone)
+      throw new Error("parent no longer exists");
     if (method === "thread/fork" && this.failFork) throw this.failFork;
     if (
       id === "child" &&
@@ -358,8 +426,16 @@ class NativeSide {
       this.running = false;
       for (const listener of this.listeners)
         listener({
-          method: "thread/status/changed",
-          params: { threadId: "child", status: { type: "idle" } },
+          method: "turn/completed",
+          params: {
+            threadId: "child",
+            turn: {
+              id: "active",
+              status: "interrupted",
+              items: [],
+              error: null,
+            },
+          },
         });
       return {};
     }

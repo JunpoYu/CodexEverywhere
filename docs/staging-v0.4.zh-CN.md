@@ -58,7 +58,20 @@ pnpm staging:receipt -- init "${CE_STAGING_EVIDENCE_DIR}/staging.json"
 - `candidateReceiptSha256` 来自上一节 candidate receipt；
 - 只有完成对应步骤后才把 `checks` 设为 `true`，不得新增自由文本字段。
 
-## 5. 全新切换演练
+## 5. alpha.16 → alpha.17 数据库升级演练（本次必做）
+
+全新初始化不能替代本节。只使用测试用户自己的 alpha.16 数据库，不复制生产用户状态：
+
+1. 在 alpha.16 创建测试 CE 身份、工作区和 Queue，记录必要的布尔/计数基线及 app-server PID，不输出业务正文或秘密。
+2. 按操作手册暂停该用户 CE watchdog、Agent 与 TUI 写入，保持 app-server 运行。加密备份 schema-1 数据库，验证可解密、SQLite integrity check 与 `user_version = 1`。
+3. 使用已验证的 alpha.17 Release 制品启动同一测试用户、同一个 CE 状态目录，不能隔离旧目录后重新初始化。确认 schema 升级为 2，原身份、工作区和 Queue 保留，创建/收起/删除旁支正常，app-server PID 未变。
+4. 暂停 CE 写入，保留 schema-2 数据库的加密副本；按操作手册原子恢复升级前 schema-1 备份，再切回 alpha.16 制品。验证旧身份、工作区和 Queue 可用。
+5. 再次暂停 CE 写入，保留旧库后原子恢复刚才留存的 schema-2 数据库，切回同一 alpha.17 制品，验证身份、工作区、Queue 和旁支元数据一致。两份数据库不得合并，`~/.codex` 不得恢复或清理。
+6. 分别完成后才能设置 `upgrade.schema-1-backup-verified`、`upgrade.schema-1-to-2`、`upgrade.schema-1-rollback-restored`、`upgrade.schema-2-reactivated` 为 true。receipt 校验器将拒绝缺少或未完成这些检查的记录。
+
+### 5.1 v0.3 → v0.4 全新初始化演练
+
+下面保留跨协议代际的全新初始化检查；它不能作为上方 schema 1 → 2 升级的证据。
 
 对测试用户：
 
@@ -95,9 +108,9 @@ pnpm staging:receipt -- init "${CE_STAGING_EVIDENCE_DIR}/staging.json"
 
 Queue crash window 由同 commit 的确定性测试覆盖；staging 还要在 Queue 工作存在时重启一次 Agent，确认没有静默重复。日志检查只记录“未发现敏感字段”的布尔结论。
 
-## 7. 制品指针回滚与再激活
+## 7. 全新初始化观察窗的制品指针回滚与再激活
 
-本步骤只验证部署制品和观察窗口恢复路径，不转换数据：
+本步骤针对全新初始化观察窗；alpha.16 → alpha.17 的升级回退必须额外完成第 5 节数据库恢复演练，不能只切换指针：
 
 1. 停止 v0.4 Agent/Controller；
 2. 将 v0.4 CE 目录改名留存；
