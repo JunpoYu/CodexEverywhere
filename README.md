@@ -21,7 +21,7 @@ CodexEverywhere（CE）是面向 Linux/HPC 的自托管 Codex Web/PWA 控制平�
 CE 不重新实现 AgentLoop。thread、turn、工具活动、审批请求和执行状态始终以官方 [Codex app-server](https://developers.openai.com/codex/app-server) 为唯一事实源；CE 只负责安全连接、Web 身份、移动端产品体验、持久 Queue 和 HPC 生命周期。
 
 > [!WARNING]
-> 当前代码线为 `v0.4.0-alpha.16` 架构重建版。Gateway API v2 和新状态库不兼容 v0.3；v0.4 采用全新初始化，不迁移 v0.3 CE 状态。`v0.3.0-alpha.14` 是已完成实机验证的最后维护基线，只用于观察窗内恢复已保留的旧 CE 目录；已经运行 v0.4 的环境可将 `v0.4.0-alpha.15` 作为本次补丁升级的制品回退点。`~/.codex`、Codex 登录和 app-server 任务不属于清理范围。v0.4 Alpha tag/Prerelease 冻结待验收制品；当前 production 门槛先要求一个真实用户完成 staging。多用户并发、跨用户隔离和管理员控制面的实机验收延后，不阻塞当前单用户版本。
+> 当前代码线为 `v0.4.0-alpha.17` 架构重建版。Gateway API v2 和新状态库不兼容 v0.3；v0.4 采用全新初始化，不迁移 v0.3 CE 状态。`v0.3.0-alpha.14` 是已完成实机验证的最后维护基线，只用于观察窗内恢复已保留的旧 CE 目录；已经运行 v0.4 的环境可将 `v0.4.0-alpha.16` 作为本次补丁升级的制品回退点。`~/.codex`、Codex 登录和 app-server 任务不属于清理范围。v0.4 Alpha tag/Prerelease 冻结待验收制品；当前 production 门槛先要求一个真实用户完成 staging。多用户并发、跨用户隔离和管理员控制面的实机验收延后，不阻塞当前单用户版本。
 
 > [!NOTE]
 > 这是独立的非官方开源项目，与 OpenAI 没有关联或背书。Codex 是 OpenAI 的产品。
@@ -61,7 +61,7 @@ CE 不重新实现 AgentLoop。thread、turn、工具活动、审批请求和执
 - “收起 / 返回”保留旁支，之后从输入框旁的入口继续；关闭页面、断线和换设备不会删除。“结束并删除”才调用 app-server 删除；正在回答时先停止再删除。删除主任务前须先结束旁支。
 - “带回主对话”把已完成回答追加到主输入框草稿，不覆盖已有草稿、不自动发送。草稿仍只保存在当前 Web 运行时内存。
 - 旁支以只读权限运行，关闭 shell、MCP、Apps、插件、hooks 和子代理等执行入口；允许澄清问答，不提供权限调整、Queue 或 TUI 接力。底层为可恢复的原生 durable fork，因此在官方 TUI 列表中可能可见；不在 TUI 中改变旁支用途或权限。
-- 需要支持 `thread/fork.lastTurnId` 和 `thread/turns/list` 的 Codex（契约测试基线 0.153.4）。不兼容时明确失败，不退回旧版 ephemeral/continuity buffer。创建或删除结果无法证明时保留待核对状态，不自动重复副作用。
+- 需要支持 `thread/fork.lastTurnId` 和 `thread/turns/list` 的 Codex（契约测试基线 0.154.0）。不兼容时明确失败，不退回旧版 ephemeral/continuity buffer。创建或删除结果无法证明时保留待核对状态，不自动重复副作用。
 - 用户状态库从 schema 1 原子升级至 schema 2，仅新增旁支归属、上下文边界和操作状态，不保存对话副本；管理员库不变。升级前备份 CE 用户状态库，回退旧制品时需同时恢复升级前的 CE 状态库，不能只回退程序文件。`~/.codex` 不属于回滚清理范围。
 
 ### 断线恢复与副作用安全

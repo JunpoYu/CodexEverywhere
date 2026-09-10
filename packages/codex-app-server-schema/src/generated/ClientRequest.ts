@@ -35,6 +35,7 @@ import type { FsUnwatchParams } from "./v2/FsUnwatchParams";
 import type { FsWatchParams } from "./v2/FsWatchParams";
 import type { FsWriteFileParams } from "./v2/FsWriteFileParams";
 import type { GetAccountParams } from "./v2/GetAccountParams";
+import type { GetAccountRateLimitsParams } from "./v2/GetAccountRateLimitsParams";
 import type { GetAccountTokenUsageParams } from "./v2/GetAccountTokenUsageParams";
 import type { HooksListParams } from "./v2/HooksListParams";
 import type { ListMcpServerStatusParams } from "./v2/ListMcpServerStatusParams";
@@ -325,7 +326,11 @@ export type ClientRequest =
       params: CancelLoginAccountParams;
     }
   | { method: "account/logout"; id: RequestId; params: undefined }
-  | { method: "account/rateLimits/read"; id: RequestId; params: undefined }
+  | {
+      method: "account/rateLimits/read";
+      id: RequestId;
+      params?: GetAccountRateLimitsParams | undefined;
+    }
   | {
       method: "account/rateLimitResetCredit/consume";
       id: RequestId;
