@@ -1,10 +1,12 @@
 # CodexEverywhere v0.4 staging 验收手册
 
-本文把 `v0.4.0-alpha.17` 上线前仍需真实基础设施的单用户门槛转换为可执行流程和严格 receipt。v0.4 采用全新初始化，不进行 v0.3 数据库正向或反向迁移。多用户并发、跨用户隔离和 Administrator Controller 的实机验收延后，不阻塞当前单用户版本。
+本文把 `v0.4.0-alpha.18` 上线前仍需真实基础设施的单用户门槛转换为可执行流程和严格 receipt。v0.4 采用全新初始化，不进行 v0.3 数据库正向或反向迁移。多用户并发、跨用户隔离和 Administrator Controller 的实机验收延后，不阻塞当前单用户版本。
 
 ## alpha.18 补丁验收范围
 
 alpha.17 → alpha.18 不迁移数据库，用户库保持 schema 2。本次使用 alpha.17 作为回退制品：在隔离的测试用户状态目录中验证同一 schema-2 数据库可依次由 alpha.17、alpha.18、alpha.17、alpha.18 打开，数据与权限不变；记录目标制品 manifest 摘要。手机端验证配置折叠、展开设置和触控发送，部署后检查 Web 静态资源、Service Worker、Relay 与原 app-server 健康状态。下文 schema 1→2 及加密数据库恢复步骤仅适用于仍从 alpha.16 升级的环境；不得为 alpha.18 的无迁移补丁伪造 schema 1→2 检查通过记录。
+
+本路径使用 `pnpm staging:receipt -- init-patch <仓库外 receipt.json>` 创建专用 version-2 补丁记录，再用 `pnpm staging:receipt -- validate <receipt.json>` 验证。它只接受 alpha.17/schema 2 → alpha.18/schema 2，要求制品校验、同库升级/回退/再激活、生产状态未触碰及同一 candidate 的桌面/手机检查证据。补丁演练可由现有用户在独立的 `CE_HOME`、`CE_RUNTIME_DIR` 中使用测试数据执行，不启动或连接生产 app-server；它不声称全新账号、Direct 或 schema 1 迁移已完成实机验收。以下完整初始化环境要求适用于原 `init` 路径，不能混用两种记录的检查项。
 
 ## 1. 安全边界
 
@@ -24,7 +26,7 @@ alpha.17 → alpha.18 不迁移数据库，用户库保持 schema 2。本次使�
 4. Direct HTTPS/WSS 入口和无状态 Relay；
 5. 桌面与 390px 移动端浏览器；
 6. staging 专用 Codex 订阅登录；
-7. verified `v0.4.0-alpha.16` 回退制品与目标 `v0.4.0-alpha.17` Release 制品，可原子切换 release 指针。
+7. verified `v0.4.0-alpha.17` 回退制品与目标 `v0.4.0-alpha.18` Release 制品，可原子切换 release 指针。
 
 浏览器、Agent 宿主机与 Relay 必须使用健康时间源，任意两者实测 UTC 偏差不超过 30 秒。CentOS 7 检查 `timedatectl status`、`chronyc tracking` 和 `chronyc sources`；不能只依据 `chronyd` 进程存在。
 
@@ -62,7 +64,7 @@ pnpm staging:receipt -- init "${CE_STAGING_EVIDENCE_DIR}/staging.json"
 - `candidateReceiptSha256` 来自上一节 candidate receipt；
 - 只有完成对应步骤后才把 `checks` 设为 `true`，不得新增自由文本字段。
 
-## 5. alpha.16 → alpha.17 数据库升级演练（本次必做）
+## 5. alpha.16 → alpha.17 数据库升级演练（仅从 alpha.16 升级时必做）
 
 全新初始化不能替代本节。只使用测试用户自己的 alpha.16 数据库，不复制生产用户状态：
 
@@ -118,9 +120,9 @@ Queue crash window 由同 commit 的确定性测试覆盖；staging 还要在 Qu
 
 1. 停止 v0.4 Agent/Controller；
 2. 将 v0.4 CE 目录改名留存；
-3. 原子恢复对应的 alpha.15 CE 保留目录；
-4. 切回 alpha.15 rootless/privileged/Web 指针并验证旧状态可用；
-5. 再次停止 alpha.15，将旧目录重新归档；
+3. 原子恢复对应的 alpha.17 CE 保留目录；
+4. 切回 alpha.17 rootless/privileged/Web 指针并验证旧状态可用；
+5. 再次停止 alpha.17，将旧目录重新归档；
 6. 恢复之前留存的 v0.4 CE 目录并切回同一 v0.4 Release；
 7. 验证 v0.4 身份、Workspace、任务打开和 Queue 状态仍一致。
 

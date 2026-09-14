@@ -464,6 +464,7 @@ export function TaskPage() {
             <div className={composerDockStyles.layout}>
               <div className={composerDockStyles.summary}>
                 <TaskRuntimeSummary
+                  key={threadId}
                   approval={approvalSettingLabel(
                     snapshot.settings.approvalPolicy,
                   )}

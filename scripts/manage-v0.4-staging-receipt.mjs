@@ -52,6 +52,16 @@ const REQUIRED_CHECKS = [
   "security.logs-sanitized",
   "model.real-subscription-call",
 ];
+const PATCH_CHECKS = [
+  "environment.clock-synchronized",
+  "release.artifacts-verified",
+  "candidate.desktop-mobile",
+  "upgrade.schema-2-preserved",
+  "upgrade.alpha17-rollback",
+  "upgrade.alpha18-reactivated",
+  "upgrade.production-state-untouched",
+  "security.logs-sanitized",
+];
 const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
 const COMMIT_PATTERN = /^[0-9a-f]{40}$/u;
@@ -62,12 +72,17 @@ try {
   const [command, path, ...rest] = process.argv
     .slice(2)
     .filter((argument) => argument !== "--");
-  if (rest.length > 0 || !["init", "validate"].includes(command) || !path) {
+  if (
+    rest.length > 0 ||
+    !["init", "init-patch", "validate"].includes(command) ||
+    !path
+  ) {
     throw new Error(
-      "usage: manage-v0.4-staging-receipt.mjs <init|validate> <receipt.json>",
+      "usage: manage-v0.4-staging-receipt.mjs <init|init-patch|validate> <receipt.json>",
     );
   }
-  if (command === "init") await initialize(resolve(path));
+  if (command !== "validate")
+    await initialize(resolve(path), command === "init-patch");
   else await validate(resolve(path));
 } catch (error) {
   process.stderr.write(
@@ -76,11 +91,25 @@ try {
   process.exitCode = 1;
 }
 
-async function initialize(path) {
+async function initialize(path, patch) {
+  if (patch && project.version !== "0.4.0-alpha.18") {
+    throw new Error("patch staging is only defined for alpha.17 to alpha.18");
+  }
   const commit = (await capture("git", ["rev-parse", "HEAD"])).trim();
   const receipt = {
-    version: 1,
-    kind: "codex-everywhere-v0.4-staging",
+    version: patch ? 2 : 1,
+    kind: patch
+      ? "codex-everywhere-v0.4-patch-staging"
+      : "codex-everywhere-v0.4-staging",
+    ...(patch
+      ? {
+          upgrade: {
+            fromVersion: "0.4.0-alpha.17",
+            fromSchema: 2,
+            toSchema: 2,
+          },
+        }
+      : {}),
     runId: randomUUID(),
     projectVersion: project.version,
     releaseCommit: commit,
@@ -100,7 +129,9 @@ async function initialize(path) {
       manifestSha256: "",
       candidateReceiptSha256: "",
     },
-    checks: Object.fromEntries(REQUIRED_CHECKS.map((check) => [check, false])),
+    checks: Object.fromEntries(
+      (patch ? PATCH_CHECKS : REQUIRED_CHECKS).map((check) => [check, false]),
+    ),
   };
   await writeFile(path, `${JSON.stringify(receipt, null, 2)}\n`, {
     flag: "wx",
@@ -120,6 +151,7 @@ async function validate(path) {
     throw new Error("staging receipt must have mode 0600");
   }
   const receipt = JSON.parse(await readFile(path, "utf8"));
+  const patch = receipt.kind === "codex-everywhere-v0.4-patch-staging";
   assertExactKeys(
     receipt,
     [
@@ -135,12 +167,15 @@ async function validate(path) {
       "environment",
       "evidence",
       "checks",
+      ...(patch ? ["upgrade"] : []),
     ],
     "receipt",
   );
   if (
-    receipt.version !== 1 ||
-    receipt.kind !== "codex-everywhere-v0.4-staging"
+    patch
+      ? receipt.version !== 2
+      : receipt.version !== 1 ||
+        receipt.kind !== "codex-everywhere-v0.4-staging"
   ) {
     throw new Error("unsupported staging receipt kind or version");
   }
@@ -148,6 +183,21 @@ async function validate(path) {
     throw new Error(
       `receipt project version ${String(receipt.projectVersion)} does not match ${project.version}`,
     );
+  }
+  if (patch) {
+    assertExactKeys(
+      receipt.upgrade,
+      ["fromVersion", "fromSchema", "toSchema"],
+      "upgrade",
+    );
+    if (
+      project.version !== "0.4.0-alpha.18" ||
+      receipt.upgrade.fromVersion !== "0.4.0-alpha.17" ||
+      receipt.upgrade.fromSchema !== 2 ||
+      receipt.upgrade.toSchema !== 2
+    ) {
+      throw new Error("unsupported patch upgrade path");
+    }
   }
   const currentCommit = (await capture("git", ["rev-parse", "HEAD"])).trim();
   if (receipt.releaseCommit !== currentCommit) {
@@ -167,8 +217,9 @@ async function validate(path) {
 
   validateEnvironment(receipt.environment);
   validateEvidence(receipt.evidence);
-  assertExactKeys(receipt.checks, REQUIRED_CHECKS, "checks");
-  const incomplete = REQUIRED_CHECKS.filter(
+  const requiredChecks = patch ? PATCH_CHECKS : REQUIRED_CHECKS;
+  assertExactKeys(receipt.checks, requiredChecks, "checks");
+  const incomplete = requiredChecks.filter(
     (check) => receipt.checks[check] !== true,
   );
   if (incomplete.length > 0) {
