@@ -25,7 +25,7 @@
 
 1. 所有项目 package 的 `version`；
 2. [CHANGELOG.md](../CHANGELOG.md)；
-3. README 中的公开版本和兼容性说明；
+3. README 中的公开版本和兼容性说明；Web 发布还必须同步推进 `entry.ts` 与 `public/sw.js` 的缓存代号，确保已安装 PWA 能发现新 worker，并运行对应更新测试；
 4. 使用发布时的 npm 最新稳定版 Codex 重新生成 schema、更新基线版本并运行集成测试。
 
 ## 发布前检查

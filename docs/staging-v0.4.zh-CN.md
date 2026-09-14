@@ -8,7 +8,32 @@ alpha.17 → alpha.18 不迁移数据库，用户库保持 schema 2。本次使�
 
 本路径使用 `pnpm staging:receipt -- init-patch <仓库外 receipt.json>` 创建专用 version-2 补丁记录，再用 `pnpm staging:receipt -- validate <receipt.json>` 验证。它只接受 alpha.17/schema 2 → alpha.18/schema 2，要求制品校验、同库升级/回退/再激活、生产状态未触碰及同一 candidate 的桌面/手机检查证据。补丁演练可由现有用户在独立的 `CE_HOME`、`CE_RUNTIME_DIR` 中使用测试数据执行，不启动或连接生产 app-server；它不声称全新账号、Direct 或 schema 1 迁移已完成实机验收。以下完整初始化环境要求适用于原 `init` 路径，不能混用两种记录的检查项。
 
-## 1. 安全边界
+## 1. alpha.17 → alpha.18 补丁执行步骤
+
+1. 在目标 main commit 完成 `pnpm verify:v0.4 -- --with-model --receipt <仓库外 candidate.json>`，确认同 commit 的 CI 与代码审查通过，记录 candidate 文件 SHA-256。
+2. 下载该 commit 的不可变 alpha.18 Release，验证 SHA256SUMS、manifest 和 provenance 的 workflow/tag/commit；保留 verified alpha.17 回退制品。检查 CentOS 7、glibc 2.17、Node.js 20 与宿主机时钟。
+3. 创建专用补丁记录：
+
+   ```bash
+   pnpm staging:receipt -- init-patch /absolute/private/staging-alpha18.json
+   ```
+
+4. 在独立 `CE_HOME`、`CE_RUNTIME_DIR` 中以 alpha.17 创建测试数据，依次使用 alpha.18、alpha.17、alpha.18 的真实制品打开同一状态目录。每次验证 schema 2、SQLite integrity、所有者、0600 权限、身份及工作区/旁支测试数据不变；不触碰生产状态，不连接生产 app-server。
+5. 将已完成的证据写入补丁记录：`operatorAlias` 使用匿名短名，`environment.testUserCount` 至少 1，`evidence` 填实际 manifest 和 candidate 文件的 SHA-256。逐项确认 `checks` 后设为 true，填写规范 ISO `completedAt` 和 `status: "passed"`。禁止填写未执行的 schema 1 迁移、Direct 或全新账号验收项。
+6. 验证记录并部署同一组字节：
+
+   ```bash
+   chmod 0600 /absolute/private/staging-alpha18.json
+   pnpm staging:receipt -- validate /absolute/private/staging-alpha18.json
+   ```
+
+   通过后按操作手册切换 alpha.18，检查 Agent、Relay、Web、Service Worker 和原 app-server 健康。需要回退时停止 CE 写入、切回 alpha.17 制品并重启 CE 服务；本路径不恢复数据库。保留回退制品与验收记录。
+
+## 附录：完整初始化与 schema 1 迁移验收
+
+以下 A1–A8 仅用于完整初始化或从 alpha.16 开始的 schema 1 迁移，使用 version-1 完整记录。已经运行 alpha.17 的本次补丁只执行上面的步骤 1–6，不执行下面的 `init` 命令，也不复制这些检查结果到补丁记录。
+
+## A1. 安全边界
 
 - 使用一个非生产测试用户和 staging 专用 Codex 登录，不复制生产数据库。
 - candidate receipt 与 staging receipt 位于源码仓库、Issue、CI artifact 和公开日志之外，权限为 0600。
@@ -16,7 +41,7 @@ alpha.17 → alpha.18 不迁移数据库，用户库保持 schema 2。本次使�
 - 旧 CE 目录只在对应宿主机改名保留，不导入 v0.4，也不写入 receipt。
 - `~/.codex`、Codex 登录和 app-server 任务不属于 CE 状态重建范围。
 
-## 2. 真实环境
+## A2. 真实环境
 
 开始前需要：
 
@@ -30,7 +55,7 @@ alpha.17 → alpha.18 不迁移数据库，用户库保持 schema 2。本次使�
 
 浏览器、Agent 宿主机与 Relay 必须使用健康时间源，任意两者实测 UTC 偏差不超过 30 秒。CentOS 7 检查 `timedatectl status`、`chronyc tracking` 和 `chronyc sources`；不能只依据 `chronyd` 进程存在。
 
-## 3. candidate 自动门禁
+## A3. candidate 自动门禁
 
 在干净 checkout 中运行：
 
@@ -50,7 +75,7 @@ sha256sum "${CE_STAGING_EVIDENCE_DIR}/candidate.json"
 
 该命令依次执行公开仓库检查、格式、架构、本地 listener 能力、类型、unit/protocol、构建、Web bundle 预算、Playwright、真实 app-server contract、部署脚本语法和 diff 检查。`--allow-dirty` 只用于开发核对；生成的 receipt 不能作为发布证据。未使用 `--with-model` 时会保留订阅模型外部门槛。
 
-## 4. staging receipt
+## A4. 完整初始化记录（不适用于本次 alpha.18 补丁路径）
 
 ```bash
 pnpm staging:receipt -- init "${CE_STAGING_EVIDENCE_DIR}/staging.json"
@@ -64,7 +89,7 @@ pnpm staging:receipt -- init "${CE_STAGING_EVIDENCE_DIR}/staging.json"
 - `candidateReceiptSha256` 来自上一节 candidate receipt；
 - 只有完成对应步骤后才把 `checks` 设为 `true`，不得新增自由文本字段。
 
-## 5. alpha.16 → alpha.17 数据库升级演练（仅从 alpha.16 升级时必做）
+## A5. alpha.16 → alpha.17 数据库升级演练（仅从 alpha.16 升级时必做）
 
 全新初始化不能替代本节。只使用测试用户自己的 alpha.16 数据库，不复制生产用户状态：
 
@@ -75,7 +100,7 @@ pnpm staging:receipt -- init "${CE_STAGING_EVIDENCE_DIR}/staging.json"
 5. 再次暂停 CE 写入，保留旧库后原子恢复刚才留存的 schema-2 数据库，切回同一 alpha.17 制品，验证身份、工作区、Queue 和旁支元数据一致。两份数据库不得合并，`~/.codex` 不得恢复或清理。
 6. 分别完成后才能设置 `upgrade.schema-1-backup-verified`、`upgrade.schema-1-to-2`、`upgrade.schema-1-rollback-restored`、`upgrade.schema-2-reactivated` 为 true。receipt 校验器将拒绝缺少或未完成这些检查的记录。
 
-### 5.1 v0.3 → v0.4 全新初始化演练
+### A5.1 v0.3 → v0.4 全新初始化演练
 
 下面保留跨协议代际的全新初始化检查；它不能作为上方 schema 1 → 2 升级的证据。
 
@@ -99,7 +124,7 @@ pnpm staging:receipt -- init "${CE_STAGING_EVIDENCE_DIR}/staging.json"
 - `cutover.v0.4-state-fresh`；
 - `cutover.codex-home-untouched`。
 
-## 6. 产品与故障场景
+## A6. 产品与故障场景
 
 同一测试用户依次覆盖 Direct/Relay、桌面/390px 移动端，并完成：
 
@@ -114,7 +139,7 @@ pnpm staging:receipt -- init "${CE_STAGING_EVIDENCE_DIR}/staging.json"
 
 Queue crash window 由同 commit 的确定性测试覆盖；staging 还要在 Queue 工作存在时重启一次 Agent，确认没有静默重复。日志检查只记录“未发现敏感字段”的布尔结论。
 
-## 7. 全新初始化观察窗的制品指针回滚与再激活
+## A7. 全新初始化观察窗的制品指针回滚与再激活
 
 本步骤针对全新初始化观察窗；alpha.16 → alpha.17 的升级回退必须额外完成第 5 节数据库恢复演练，不能只切换指针：
 
@@ -128,7 +153,7 @@ Queue crash window 由同 commit 的确定性测试覆盖；staging 还要在 Qu
 
 两份目录不得合并，任一旧二进制不得打开另一版本数据库。完成后设置 `cutover.artifact-rollback` 与 `cutover.v0.4-reactivation`。
 
-## 8. 验证 receipt
+## A8. 验证 receipt
 
 填写 `completedAt` 和 `status: "passed"` 后运行：
 
