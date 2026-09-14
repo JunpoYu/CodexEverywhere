@@ -19,7 +19,7 @@
     "typecheck": "tsc -b --pretty false"
   },
   "dependencies": {
-    "b4a": "1.7.3",
+    "b4a": "1.8.1",
     "noise-handshake": "4.2.0"
   },
   "devDependencies": {
