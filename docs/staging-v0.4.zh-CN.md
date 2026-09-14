@@ -31,7 +31,7 @@ alpha.17 → alpha.18 不迁移数据库，用户库保持 schema 2。本次使�
 
 ## 附录：完整初始化与 schema 1 迁移验收
 
-以下 A1–A8 仅用于完整初始化或从 alpha.16 开始的 schema 1 迁移，使用 version-1 完整记录。已经运行 alpha.17 的本次补丁只执行上面的步骤 1–6，不执行下面的 `init` 命令，也不复制这些检查结果到补丁记录。
+以下 A1–A8 仅用于 v0.3 全新切换或从 alpha.16 开始的 schema 1 迁移，分别使用 `init-fresh`、`init-migration` 创建 version-2 来源专用记录。已经运行 alpha.17 的本次补丁只执行上面的步骤 1–6，不复制附录检查结果到补丁记录。旧 `init` 仅保留为完整兼容性测试套件入口，必须在不同测试目录中同时完成全新切换与迁移两组演练，不能用作单一升级来源的记录。
 
 ## A1. 安全边界
 
@@ -78,8 +78,13 @@ sha256sum "${CE_STAGING_EVIDENCE_DIR}/candidate.json"
 ## A4. 完整初始化记录（不适用于本次 alpha.18 补丁路径）
 
 ```bash
-pnpm staging:receipt -- init "${CE_STAGING_EVIDENCE_DIR}/staging.json"
+# v0.3.0-alpha.14 -> v0.4.0-alpha.18: fresh CE state
+pnpm staging:receipt -- init-fresh "${CE_STAGING_EVIDENCE_DIR}/staging-fresh.json"
+# v0.4.0-alpha.16 -> v0.4.0-alpha.18: schema 1 -> 2
+pnpm staging:receipt -- init-migration "${CE_STAGING_EVIDENCE_DIR}/staging-migration.json"
 ```
+
+根据实际来源只执行对应命令。全新切换执行 A7，不执行 A5；数据库迁移执行 A5，不执行 A7。全新记录没有 `upgrade.schema-*` 检查，迁移记录没有 `cutover.*` 检查，校验器拒绝混填。`fromSchema: null` 表示全新创建 CE 数据库，不表示读取或转换 v0.3 数据库。下文 `staging.json` 是所选记录文件的占位名。
 
 填写规则：
 

@@ -96,6 +96,48 @@ describe("v0.4 staging receipt", () => {
     ).rejects.toThrow();
   });
 
+  it.each(["init-fresh", "init-migration"])(
+    "accepts source-specific evidence for %s",
+    async (command) => {
+      const path = await initializeReceipt(command);
+      const receipt = JSON.parse(await readFile(path, "utf8"));
+      if (command === "init-fresh")
+        expect(receipt.checks["upgrade.schema-1-to-2"]).toBeUndefined();
+      else
+        expect(receipt.checks["cutover.v0.3-state-retained"]).toBeUndefined();
+      await writePassingReceipt(path);
+      await expect(
+        execFileAsync(process.execPath, [manager, "validate", path]),
+      ).resolves.toMatchObject({
+        stdout: expect.stringContaining("Staging receipt passed"),
+      });
+    },
+  );
+
+  it.each(["init-fresh", "init-migration"])(
+    "rejects mixed or wrong-source evidence for %s",
+    async (command) => {
+      const path = await initializeReceipt(command);
+      await writePassingReceipt(path);
+      const receipt = JSON.parse(await readFile(path, "utf8"));
+      const key =
+        command === "init-fresh"
+          ? "upgrade.schema-1-to-2"
+          : "cutover.v0.3-state-retained";
+      receipt.checks[key] = true;
+      await writeFile(path, JSON.stringify(receipt));
+      await expect(
+        execFileAsync(process.execPath, [manager, "validate", path]),
+      ).rejects.toThrow();
+      delete receipt.checks[key];
+      receipt.upgrade.fromVersion = "0.4.0-alpha.17";
+      await writeFile(path, JSON.stringify(receipt));
+      await expect(
+        execFileAsync(process.execPath, [manager, "validate", path]),
+      ).rejects.toThrow();
+    },
+  );
+
   it("rejects approval without the schema upgrade rollback exercise", async () => {
     const path = await initializeReceipt();
     await writePassingReceipt(path);
