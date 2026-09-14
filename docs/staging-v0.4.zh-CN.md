@@ -6,7 +6,7 @@
 
 alpha.17 → alpha.18 不迁移数据库，用户库保持 schema 2。本次使用 alpha.17 作为回退制品：在隔离的测试用户状态目录中验证同一 schema-2 数据库可依次由 alpha.17、alpha.18、alpha.17、alpha.18 打开，数据与权限不变；记录目标制品 manifest 摘要。手机端验证配置折叠、展开设置和触控发送，部署后检查 Web 静态资源、Service Worker、Relay 与原 app-server 健康状态。下文 schema 1→2 及加密数据库恢复步骤仅适用于仍从 alpha.16 升级的环境；不得为 alpha.18 的无迁移补丁伪造 schema 1→2 检查通过记录。
 
-本路径使用 `pnpm staging:receipt -- init-patch <仓库外 receipt.json>` 创建专用 version-2 补丁记录，再用 `pnpm staging:receipt -- validate <receipt.json>` 验证。它只接受 alpha.17/schema 2 → alpha.18/schema 2，要求制品校验、同库升级/回退/再激活、生产状态未触碰及同一 candidate 的桌面/手机检查证据。补丁演练可由现有用户在独立的 `CE_HOME`、`CE_RUNTIME_DIR`、`CODEX_HOME` 中使用测试数据执行，不启动或连接生产 app-server；它不声称全新账号、Direct 或 schema 1 迁移已完成实机验收。以下完整初始化环境要求适用于原 `init` 路径，不能混用两种记录的检查项。
+本路径使用 `pnpm staging:receipt -- init-patch <仓库外 receipt.json>` 创建专用 version-2 补丁记录，再用 `pnpm staging:receipt -- validate <receipt.json>` 验证。它只接受 alpha.17/schema 2 → alpha.18/schema 2，要求制品校验、同库升级/回退/再激活、生产状态未触碰及同一 candidate 的桌面/手机检查证据。补丁演练可由现有用户在独立的 `CE_HOME`、`CE_RUNTIME_DIR`、`CODEX_HOME` 中使用测试数据执行，不启动或连接生产 app-server；它不声称全新账号、Direct 或 schema 1 迁移已完成实机验收。附录环境要求适用于相应的完整验收路径，各来源的检查项不得混填。
 
 ## 1. alpha.17 → alpha.18 补丁执行步骤
 
@@ -38,7 +38,7 @@ alpha.17 → alpha.18 不迁移数据库，用户库保持 schema 2。本次使�
 - 使用一个非生产测试用户和 staging 专用 Codex 登录，不复制生产数据库。
 - candidate receipt 与 staging receipt 位于源码仓库、Issue、CI artifact 和公开日志之外，权限为 0600。
 - receipt 只保存版本、commit、受限 operator alias、布尔结果和 SHA-256；不保存主机名、Unix 用户名、真实路径、prompt、Queue 文本、恢复码或日志正文。
-- 旧 CE 目录只在对应宿主机改名保留，不导入 v0.4，也不写入 receipt。
+- 全新切换时旧 CE 目录只在对应宿主机改名保留，不导入 v0.4；schema 1 迁移则按 A5 使用同一测试状态目录。目录路径不写入 receipt。
 - `~/.codex`、Codex 登录和 app-server 任务不属于 CE 状态重建范围。
 
 ## A2. 真实环境
@@ -84,7 +84,7 @@ pnpm staging:receipt -- init-fresh "${CE_STAGING_EVIDENCE_DIR}/staging-fresh.jso
 pnpm staging:receipt -- init-migration "${CE_STAGING_EVIDENCE_DIR}/staging-migration.json"
 ```
 
-根据实际来源只执行对应命令。全新切换执行 A7，不执行 A5；数据库迁移执行 A5，不执行 A7。全新记录没有 `upgrade.schema-*` 检查，迁移记录没有 `cutover.*` 检查，校验器拒绝混填。`fromSchema: null` 表示全新创建 CE 数据库，不表示读取或转换 v0.3 数据库。下文 `staging.json` 是所选记录文件的占位名。
+根据实际来源只执行对应命令。全新切换执行 A5F 和 A7，不执行 A5；数据库迁移执行 A5，不执行 A7。全新记录没有 `upgrade.schema-*` 检查，迁移记录没有 `cutover.*` 检查，校验器拒绝混填。`fromSchema: null` 表示全新创建 CE 数据库，不表示读取或转换 v0.3 数据库。下文 `staging.json` 是所选记录文件的占位名。
 
 填写规则：
 
@@ -94,28 +94,28 @@ pnpm staging:receipt -- init-migration "${CE_STAGING_EVIDENCE_DIR}/staging-migra
 - `candidateReceiptSha256` 来自上一节 candidate receipt；
 - 只有完成对应步骤后才把 `checks` 设为 `true`，不得新增自由文本字段。
 
-## A5. alpha.16 → alpha.17 数据库升级演练（仅从 alpha.16 升级时必做）
+## A5. alpha.16 → alpha.18 数据库升级演练（仅从 alpha.16 升级时必做）
 
 全新初始化不能替代本节。只使用测试用户自己的 alpha.16 数据库，不复制生产用户状态：
 
 1. 在 alpha.16 创建测试 CE 身份、工作区和 Queue，记录必要的布尔/计数基线及 app-server PID，不输出业务正文或秘密。
 2. 按操作手册暂停该用户 CE watchdog、Agent 与 TUI 写入，保持 app-server 运行。加密备份 schema-1 数据库，验证可解密、SQLite integrity check 与 `user_version = 1`。
-3. 使用已验证的 alpha.17 Release 制品启动同一测试用户、同一个 CE 状态目录，不能隔离旧目录后重新初始化。确认 schema 升级为 2，原身份、工作区和 Queue 保留，创建/收起/删除旁支正常，app-server PID 未变。
+3. 使用已验证的 alpha.18 Release 制品启动同一测试用户、同一个 CE 状态目录，不能隔离旧目录后重新初始化。确认 schema 升级为 2，原身份、工作区和 Queue 保留，创建/收起/删除旁支正常，app-server PID 未变。
 4. 暂停 CE 写入，保留 schema-2 数据库的加密副本；按操作手册原子恢复升级前 schema-1 备份，再切回 alpha.16 制品。验证旧身份、工作区和 Queue 可用。
-5. 再次暂停 CE 写入，保留旧库后原子恢复刚才留存的 schema-2 数据库，切回同一 alpha.17 制品，验证身份、工作区、Queue 和旁支元数据一致。两份数据库不得合并，`~/.codex` 不得恢复或清理。
+5. 再次暂停 CE 写入，保留旧库后原子恢复刚才留存的 schema-2 数据库，切回同一 alpha.18 制品，验证身份、工作区、Queue 和旁支元数据一致。两份数据库不得合并，`~/.codex` 不得恢复或清理。
 6. 分别完成后才能设置 `upgrade.schema-1-backup-verified`、`upgrade.schema-1-to-2`、`upgrade.schema-1-rollback-restored`、`upgrade.schema-2-reactivated` 为 true。receipt 校验器将拒绝缺少或未完成这些检查的记录。
 
-### A5.1 v0.3 → v0.4 全新初始化演练
+## A5F. v0.3 → v0.4 全新初始化演练
 
 下面保留跨协议代际的全新初始化检查；它不能作为上方 schema 1 → 2 升级的证据。
 
 对测试用户：
 
-1. 在 `v0.4.0-alpha.16` 记录 app-server PID 和健康状态；
+1. 在 `v0.3.0-alpha.14` 记录 app-server PID 和健康状态；
 2. 确认 turn、interaction、Queue delivery、mutation 与登录流程静止；
 3. 停止 Agent，但保持 app-server；
 4. 将完整 `~/.codex-everywhere` 改名为唯一的保留目录；
-5. 切换 v0.4 rootless/privileged release 与 Web；
+5. 切换 v0.4.0-alpha.18 rootless/privileged release 与 Web；
 6. 运行 `ce device pair`，重新注册 Web 身份与恢复码；
 7. 重新添加 Workspace 并启动 Agent；
 8. 确认 app-server PID 未变化，已有任务可从 app-server 重新打开；
@@ -146,7 +146,7 @@ Queue crash window 由同 commit 的确定性测试覆盖；staging 还要在 Qu
 
 ## A7. 全新初始化观察窗的制品指针回滚与再激活
 
-本步骤针对全新初始化观察窗；alpha.16 → alpha.17 的升级回退必须额外完成第 5 节数据库恢复演练，不能只切换指针：
+本步骤仅针对 v0.3 全新初始化观察窗；alpha.16 → alpha.18 的迁移路径跳过本节，使用 A5 中的 schema-1 恢复与 alpha.16 制品回退，不能只切换指针：
 
 1. 停止 v0.4 Agent/Controller；
 2. 将 v0.4 CE 目录改名留存；
