@@ -6,7 +6,7 @@
 
 alpha.17 → alpha.18 不迁移数据库，用户库保持 schema 2。本次使用 alpha.17 作为回退制品：在隔离的测试用户状态目录中验证同一 schema-2 数据库可依次由 alpha.17、alpha.18、alpha.17、alpha.18 打开，数据与权限不变；记录目标制品 manifest 摘要。手机端验证配置折叠、展开设置和触控发送，部署后检查 Web 静态资源、Service Worker、Relay 与原 app-server 健康状态。下文 schema 1→2 及加密数据库恢复步骤仅适用于仍从 alpha.16 升级的环境；不得为 alpha.18 的无迁移补丁伪造 schema 1→2 检查通过记录。
 
-本路径使用 `pnpm staging:receipt -- init-patch <仓库外 receipt.json>` 创建专用 version-2 补丁记录，再用 `pnpm staging:receipt -- validate <receipt.json>` 验证。它只接受 alpha.17/schema 2 → alpha.18/schema 2，要求制品校验、同库升级/回退/再激活、生产状态未触碰及同一 candidate 的桌面/手机检查证据。补丁演练可由现有用户在独立的 `CE_HOME`、`CE_RUNTIME_DIR` 中使用测试数据执行，不启动或连接生产 app-server；它不声称全新账号、Direct 或 schema 1 迁移已完成实机验收。以下完整初始化环境要求适用于原 `init` 路径，不能混用两种记录的检查项。
+本路径使用 `pnpm staging:receipt -- init-patch <仓库外 receipt.json>` 创建专用 version-2 补丁记录，再用 `pnpm staging:receipt -- validate <receipt.json>` 验证。它只接受 alpha.17/schema 2 → alpha.18/schema 2，要求制品校验、同库升级/回退/再激活、生产状态未触碰及同一 candidate 的桌面/手机检查证据。补丁演练可由现有用户在独立的 `CE_HOME`、`CE_RUNTIME_DIR`、`CODEX_HOME` 中使用测试数据执行，不启动或连接生产 app-server；它不声称全新账号、Direct 或 schema 1 迁移已完成实机验收。以下完整初始化环境要求适用于原 `init` 路径，不能混用两种记录的检查项。
 
 ## 1. alpha.17 → alpha.18 补丁执行步骤
 
@@ -18,16 +18,16 @@ alpha.17 → alpha.18 不迁移数据库，用户库保持 schema 2。本次使�
    pnpm staging:receipt -- init-patch /absolute/private/staging-alpha18.json
    ```
 
-4. 在独立 `CE_HOME`、`CE_RUNTIME_DIR` 中以 alpha.17 创建测试数据，依次使用 alpha.18、alpha.17、alpha.18 的真实制品打开同一状态目录。每次验证 schema 2、SQLite integrity、所有者、0600 权限、身份及工作区/旁支测试数据不变；不触碰生产状态，不连接生产 app-server。
-5. 将已完成的证据写入补丁记录：`operatorAlias` 使用匿名短名，`environment.testUserCount` 至少 1，`evidence` 填实际 manifest 和 candidate 文件的 SHA-256。逐项确认 `checks` 后设为 true，填写规范 ISO `completedAt` 和 `status: "passed"`。禁止填写未执行的 schema 1 迁移、Direct 或全新账号验收项。
-6. 验证记录并部署同一组字节：
+4. 在独立 `CE_HOME`、`CE_RUNTIME_DIR`、`CODEX_HOME` 中以 alpha.17 创建测试数据，依次使用 alpha.18、alpha.17、alpha.18 的真实制品打开同一状态目录。每次验证 schema 2、SQLite integrity、所有者、0600 权限、身份及工作区/旁支测试数据不变；不触碰生产状态，不连接生产 app-server。
+5. 在上述隔离目录中部署真实 Agent，并在独立 `CE_RELAY_HOME` 中启动真实 Relay；只监听空闲 loopback 端口，不安装生产 watchdog/cron。验证 Agent 存活和 Gateway 连接、Relay WebSocket，以及独立 Codex app-server 的健康状态。必须显式设置临时 `CODEX_HOME`，不得复制生产凭据；记录并仅清理本次创建的临时进程，确认原生产 app-server PID 未变。用真实 Web 制品验证桌面/手机页面、Service Worker 及 alpha.17 → alpha.18 的等待更新行为。任何组件启动或检查失败，保持记录未通过，停止后续发布。
+6. 将已完成的证据写入补丁记录：`operatorAlias` 使用匿名短名，`environment.testUserCount` 至少 1，`evidence` 填实际 manifest 和 candidate 文件的 SHA-256。仅在步骤 4–5 全部成功后设置对应 `upgrade.*`、`deployment.*` 等检查为 true，填写规范 ISO `completedAt` 和 `status: "passed"`。禁止填写未执行的 schema 1 迁移、公开 Direct 或全新账号验收项。最后验证：
 
    ```bash
    chmod 0600 /absolute/private/staging-alpha18.json
    pnpm staging:receipt -- validate /absolute/private/staging-alpha18.json
    ```
 
-   通过后按操作手册切换 alpha.18，检查 Agent、Relay、Web、Service Worker 和原 app-server 健康。需要回退时停止 CE 写入、切回 alpha.17 制品并重启 CE 服务；本路径不恢复数据库。保留回退制品与验收记录。
+   通过后才允许 production 按操作手册部署同一组字节，并重复检查 Agent、Relay、Web、Service Worker 和原 app-server 健康；生产失败则停止并回退，不能引用 staging 记录声称 production 成功。需要回退时停止 CE 写入、切回 alpha.17 制品并重启 CE 服务；本路径不恢复数据库。保留回退制品与验收记录。
 
 ## 附录：完整初始化与 schema 1 迁移验收
 
@@ -51,7 +51,7 @@ alpha.17 → alpha.18 不迁移数据库，用户库保持 schema 2。本次使�
 4. Direct HTTPS/WSS 入口和无状态 Relay；
 5. 桌面与 390px 移动端浏览器；
 6. staging 专用 Codex 订阅登录；
-7. verified `v0.4.0-alpha.17` 回退制品与目标 `v0.4.0-alpha.18` Release 制品，可原子切换 release 指针。
+7. 目标 `v0.4.0-alpha.18` Release 制品；v0.3 全新切换保留 verified `v0.3.0-alpha.14` 与对应归档状态，schema 1 迁移演练另保留 `v0.4.0-alpha.16`。这两条旧版验收路径与当前 alpha.17 补丁回退不同。
 
 浏览器、Agent 宿主机与 Relay 必须使用健康时间源，任意两者实测 UTC 偏差不超过 30 秒。CentOS 7 检查 `timedatectl status`、`chronyc tracking` 和 `chronyc sources`；不能只依据 `chronyd` 进程存在。
 
@@ -145,9 +145,9 @@ Queue crash window 由同 commit 的确定性测试覆盖；staging 还要在 Qu
 
 1. 停止 v0.4 Agent/Controller；
 2. 将 v0.4 CE 目录改名留存；
-3. 原子恢复对应的 alpha.17 CE 保留目录；
-4. 切回 alpha.17 rootless/privileged/Web 指针并验证旧状态可用；
-5. 再次停止 alpha.17，将旧目录重新归档；
+3. 原子恢复对应的 v0.3.0-alpha.14 CE 保留目录；
+4. 切回 v0.3.0-alpha.14 rootless/privileged/Web 指针并验证旧状态可用；
+5. 再次停止 v0.3.0-alpha.14，将旧目录重新归档；
 6. 恢复之前留存的 v0.4 CE 目录并切回同一 v0.4 Release；
 7. 验证 v0.4 身份、Workspace、任务打开和 Queue 状态仍一致。
 

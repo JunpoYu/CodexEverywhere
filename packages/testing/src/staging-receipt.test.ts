@@ -74,6 +74,7 @@ describe("v0.4 staging receipt", () => {
     "missing-rollback",
     "false-rollback",
     "migration-claim",
+    "failed-deployment",
   ])("rejects invalid patch evidence: %s", async (failure) => {
     const path = await initializeReceipt("init-patch");
     await writePassingReceipt(path);
@@ -87,6 +88,8 @@ describe("v0.4 staging receipt", () => {
       receipt.checks["upgrade.alpha17-rollback"] = false;
     if (failure === "migration-claim")
       receipt.checks["upgrade.schema-1-to-2"] = true;
+    if (failure === "failed-deployment")
+      receipt.checks["deployment.agent-start"] = false;
     await writeFile(path, JSON.stringify(receipt));
     await expect(
       execFileAsync(process.execPath, [manager, "validate", path]),

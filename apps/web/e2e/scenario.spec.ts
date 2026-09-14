@@ -224,7 +224,7 @@ test("任务权限可连续保存，并始终显示权威结果", async ({ page 
 
   await expect(page.getByLabel("任务运行设置摘要")).toBeVisible();
   if (mobile)
-    await page.getByRole("button", { name: "展开任务配置摘要" }).click();
+    await page.getByRole("button", { name: /^展开任务配置摘要/u }).click();
   await expect(page.locator("aside.task-context")).toHaveCount(0);
   await expect(page.getByLabel("模型：Codex 当前值")).toBeVisible();
   await expect(page.getByLabel("推理：Codex 当前值")).toBeVisible();
@@ -1027,9 +1027,9 @@ test("手机紧凑输入区展开配置后仍可触控发送", async ({ page }, 
   const dock = page.locator(".composer-dock");
   expect((await dock.boundingBox())!.height).toBeLessThan(210);
   await expect(page.getByLabel("模型：Codex 当前值")).toBeHidden();
-  await page.getByRole("button", { name: "展开任务配置摘要" }).tap();
+  await page.getByRole("button", { name: /^展开任务配置摘要/u }).tap();
   await expect(page.getByLabel("模型：Codex 当前值")).toBeVisible();
-  await page.getByRole("button", { name: "收起任务配置摘要" }).tap();
+  await page.getByRole("button", { name: /^收起任务配置摘要/u }).tap();
   const composer = page.getByLabel("给 Codex 的消息");
   const prompt = "验证手机触控发送";
   await composer.fill(prompt);

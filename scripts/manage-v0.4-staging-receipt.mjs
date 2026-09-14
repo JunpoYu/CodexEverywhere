@@ -60,6 +60,10 @@ const PATCH_CHECKS = [
   "upgrade.alpha17-rollback",
   "upgrade.alpha18-reactivated",
   "upgrade.production-state-untouched",
+  "deployment.agent-start",
+  "deployment.relay-websocket",
+  "deployment.web-pwa",
+  "deployment.app-server-isolated",
   "security.logs-sanitized",
 ];
 const UUID_PATTERN =

@@ -39,7 +39,7 @@ export function TaskRuntimeSummary(input: {
             className={styles.toggle}
             data-level={input.contextUsage.level}
             title={`${input.model} · 上下文 ${input.contextUsage.percentLabel}`}
-            aria-label={expanded ? "收起任务配置摘要" : "展开任务配置摘要"}
+            aria-label={`${expanded ? "收起任务配置摘要" : "展开任务配置摘要"}：${input.model}，上下文 ${input.contextUsage.percentLabel}${input.contextUsage.level === "danger" ? "，接近上限" : input.contextUsage.level === "warning" ? "，占用较高" : ""}`}
             aria-expanded={expanded}
             aria-controls={detailsId}
             onClick={() => setExpanded(!expanded)}
