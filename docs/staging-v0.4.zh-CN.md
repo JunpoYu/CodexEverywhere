@@ -103,7 +103,7 @@ pnpm staging:receipt -- init-migration "${CE_STAGING_EVIDENCE_DIR}/staging-migra
 3. 使用已验证的 alpha.18 Release 制品启动同一测试用户、同一个 CE 状态目录，不能隔离旧目录后重新初始化。确认 schema 升级为 2，原身份、工作区和 Queue 保留，创建/收起/删除旁支正常，app-server PID 未变。
 4. 暂停 CE 写入，保留 schema-2 数据库的加密副本；按操作手册原子恢复升级前 schema-1 备份，再切回 alpha.16 制品。验证旧身份、工作区和 Queue 可用。
 5. 再次暂停 CE 写入，保留旧库后原子恢复刚才留存的 schema-2 数据库，切回同一 alpha.18 制品，验证身份、工作区、Queue 和旁支元数据一致。两份数据库不得合并，`~/.codex` 不得恢复或清理。
-6. 分别完成后才能设置 `upgrade.schema-1-backup-verified`、`upgrade.schema-1-to-2`、`upgrade.schema-1-rollback-restored`、`upgrade.schema-2-reactivated` 为 true。receipt 校验器将拒绝缺少或未完成这些检查的记录。
+6. 分别完成后才能设置 `upgrade.schema-1-backup-verified`、`upgrade.schema-1-to-2`、`upgrade.schema-1-rollback-restored`、`upgrade.schema-2-reactivated` 为 true。`init-migration` 记录还必须确认 `upgrade.codex-home-untouched`，明确演练未恢复、清理或改动 `~/.codex`；旧 `init` 兼容性套件使用已有的 `cutover.codex-home-untouched` 记录同一保护。校验器将拒绝对应记录中缺少或未完成的检查。
 
 ## A5F. v0.3 → v0.4 全新初始化演练
 

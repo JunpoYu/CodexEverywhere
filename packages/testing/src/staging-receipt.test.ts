@@ -138,6 +138,18 @@ describe("v0.4 staging receipt", () => {
     },
   );
 
+  it("requires the Codex-home protection in migration evidence", async () => {
+    const path = await initializeReceipt("init-migration");
+    await writePassingReceipt(path);
+    const receipt = JSON.parse(await readFile(path, "utf8"));
+    expect(receipt.checks["upgrade.codex-home-untouched"]).toBe(true);
+    receipt.checks["upgrade.codex-home-untouched"] = false;
+    await writeFile(path, JSON.stringify(receipt));
+    await expect(
+      execFileAsync(process.execPath, [manager, "validate", path]),
+    ).rejects.toThrow();
+  });
+
   it("rejects approval without the schema upgrade rollback exercise", async () => {
     const path = await initializeReceipt();
     await writePassingReceipt(path);

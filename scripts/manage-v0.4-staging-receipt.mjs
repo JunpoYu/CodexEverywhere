@@ -80,7 +80,10 @@ const PROFILES = {
   "init-migration": {
     kind: "codex-everywhere-v0.4-migration-staging",
     upgrade: { fromVersion: "0.4.0-alpha.16", fromSchema: 1, toSchema: 2 },
-    checks: REQUIRED_CHECKS.filter((check) => !check.startsWith("cutover.")),
+    checks: [
+      ...REQUIRED_CHECKS.filter((check) => !check.startsWith("cutover.")),
+      "upgrade.codex-home-untouched",
+    ],
   },
 };
 const UUID_PATTERN =
