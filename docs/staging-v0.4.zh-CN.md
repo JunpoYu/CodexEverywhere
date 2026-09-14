@@ -2,6 +2,10 @@
 
 本文把 `v0.4.0-alpha.17` 上线前仍需真实基础设施的单用户门槛转换为可执行流程和严格 receipt。v0.4 采用全新初始化，不进行 v0.3 数据库正向或反向迁移。多用户并发、跨用户隔离和 Administrator Controller 的实机验收延后，不阻塞当前单用户版本。
 
+## alpha.18 补丁验收范围
+
+alpha.17 → alpha.18 不迁移数据库，用户库保持 schema 2。本次使用 alpha.17 作为回退制品：在隔离的测试用户状态目录中验证同一 schema-2 数据库可依次由 alpha.17、alpha.18、alpha.17、alpha.18 打开，数据与权限不变；记录目标制品 manifest 摘要。手机端验证配置折叠、展开设置和触控发送，部署后检查 Web 静态资源、Service Worker、Relay 与原 app-server 健康状态。下文 schema 1→2 及加密数据库恢复步骤仅适用于仍从 alpha.16 升级的环境；不得为 alpha.18 的无迁移补丁伪造 schema 1→2 检查通过记录。
+
 ## 1. 安全边界
 
 - 使用一个非生产测试用户和 staging 专用 Codex 登录，不复制生产数据库。

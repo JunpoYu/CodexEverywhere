@@ -223,6 +223,8 @@ test("任务权限可连续保存，并始终显示权威结果", async ({ page 
   await openTaskCard(page, "欢迎使用 CodexEverywhere");
 
   await expect(page.getByLabel("任务运行设置摘要")).toBeVisible();
+  if (mobile)
+    await page.getByRole("button", { name: "展开任务配置摘要" }).click();
   await expect(page.locator("aside.task-context")).toHaveCount(0);
   await expect(page.getByLabel("模型：Codex 当前值")).toBeVisible();
   await expect(page.getByLabel("推理：Codex 当前值")).toBeVisible();
@@ -1017,3 +1019,27 @@ async function firstVisibleTimelineAnchor(
     };
   });
 }
+
+test("手机紧凑输入区展开配置后仍可触控发送", async ({ page }, testInfo) => {
+  test.skip(!testInfo.project.name.includes("mobile"));
+  await openScenario(page);
+  await openTaskCard(page, "欢迎使用 CodexEverywhere");
+  const dock = page.locator(".composer-dock");
+  expect((await dock.boundingBox())!.height).toBeLessThan(210);
+  await expect(page.getByLabel("模型：Codex 当前值")).toBeHidden();
+  await page.getByRole("button", { name: "展开任务配置摘要" }).tap();
+  await expect(page.getByLabel("模型：Codex 当前值")).toBeVisible();
+  await page.getByRole("button", { name: "收起任务配置摘要" }).tap();
+  const composer = page.getByLabel("给 Codex 的消息");
+  const prompt = "验证手机触控发送";
+  await composer.fill(prompt);
+  const send = page.getByRole("button", { name: "发送", exact: true });
+  const beforeBlur = await send.boundingBox();
+  await composer.blur();
+  expect((await send.boundingBox())!.y).toBe(beforeBlur!.y);
+  await send.tap();
+  await expect(composer).toHaveValue("");
+  await expect(
+    page.locator(".timeline").getByText(prompt, { exact: true }),
+  ).toBeVisible();
+});
