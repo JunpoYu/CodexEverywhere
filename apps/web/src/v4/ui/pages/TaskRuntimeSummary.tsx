@@ -22,6 +22,13 @@ export function TaskRuntimeSummary(input: {
   const detailsId = useId();
   const elevatedAccess =
     input.sandboxNeedsAttention && input.approvalNeedsAttention;
+  const permissionWarning = elevatedAccess
+    ? "高权限"
+    : input.sandboxNeedsAttention
+      ? input.sandbox
+      : input.approvalNeedsAttention
+        ? input.approval
+        : undefined;
 
   return (
     <section
@@ -49,12 +56,12 @@ export function TaskRuntimeSummary(input: {
             </span>
             <Icon name="chevron-down" />
           </button>
-          {elevatedAccess ? (
+          {permissionWarning ? (
             <span
               className={styles.risk}
-              title="当前任务同时使用完全文件访问和从不询问"
+              title={`当前任务：${input.sandbox}；${input.approval}`}
             >
-              高权限
+              {permissionWarning}
             </span>
           ) : null}
           <span className={`${styles.mobileState} state-pill ${input.status}`}>

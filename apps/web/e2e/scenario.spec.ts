@@ -302,6 +302,36 @@ test("任务权限可连续保存，并始终显示权威结果", async ({ page 
   await expect(page.getByLabel("文件：只读")).toBeVisible();
   await expect(page.getByLabel("审批：按需询问")).toBeVisible();
 
+  if (mobile) {
+    await page.keyboard.press("Escape");
+    await page.getByRole("button", { name: /^收起任务配置摘要/u }).click();
+    await page.getByRole("button", { name: "任务设置" }).click();
+  }
+  await dialog.getByRole("radio", { name: /从不询问/u }).click();
+  await save.click();
+  await expect(save).toBeDisabled();
+  await expect(
+    page
+      .getByLabel("任务运行设置摘要")
+      .locator("header")
+      .getByText("从不询问", { exact: true }),
+  ).toBeVisible();
+  await dialog.getByRole("radio", { name: /按需询问/u }).click();
+  await dialog.getByRole("radio", { name: /完全访问/u }).click();
+  await save.click();
+  await expect(save).toBeDisabled();
+  await expect(
+    page
+      .getByLabel("任务运行设置摘要")
+      .locator("header")
+      .getByText("完全访问", { exact: true }),
+  ).toBeVisible();
+  if (mobile) {
+    await page.keyboard.press("Escape");
+    await page.getByRole("button", { name: /^展开任务配置摘要/u }).click();
+    await page.getByRole("button", { name: "任务设置" }).click();
+  }
+
   await dialog.getByRole("radio", { name: /完全访问/u }).click();
   await dialog.getByRole("radio", { name: /从不询问/u }).click();
   await save.click();
