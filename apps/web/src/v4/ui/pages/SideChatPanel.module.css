@@ -87,7 +87,7 @@
   display: inline-flex;
   align-items: center;
   gap: 8px;
-  margin-bottom: 8px;
+  margin-bottom: 0;
   padding: 5px 9px;
   font-size: 12px;
 }

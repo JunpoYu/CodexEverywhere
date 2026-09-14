@@ -464,6 +464,7 @@ export function TaskPage() {
             <div className={composerDockStyles.layout}>
               <div className={composerDockStyles.summary}>
                 <TaskRuntimeSummary
+                  key={threadId}
                   approval={approvalSettingLabel(
                     snapshot.settings.approvalPolicy,
                   )}
@@ -495,22 +496,14 @@ export function TaskPage() {
                     </Link>
                   </StatusMessage>
                 ) : null}
-                <button
-                  className={sideStyles.entry}
-                  type="button"
-                  disabled={!canOpenSide}
-                  aria-expanded={sideVisible}
-                  onClick={() => runtime.side.show()}
+                <form
+                  className="composer"
+                  data-has-draft={composerDraft.length > 0}
+                  onSubmit={submit}
                 >
-                  {sideSelected && side.side !== null
-                    ? "继续旁支问答"
-                    : "旁支问答"}{" "}
-                  <span>/side</span>
-                </button>
-                <form className="composer" onSubmit={submit}>
                   <textarea
                     aria-label="给 Codex 的消息"
-                    rows={3}
+                    rows={2}
                     placeholder={
                       taskActive
                         ? "任务运行中；可添加到 Queue…"
@@ -538,6 +531,18 @@ export function TaskPage() {
                     }}
                   />
                   <div>
+                    <button
+                      className={sideStyles.entry}
+                      type="button"
+                      disabled={!canOpenSide}
+                      aria-expanded={sideVisible}
+                      onClick={() => runtime.side.show()}
+                    >
+                      {sideSelected && side.side !== null
+                        ? "继续旁支问答"
+                        : "旁支问答"}{" "}
+                      <span>/side</span>
+                    </button>
                     {taskActive && !sideCommand ? (
                       <button
                         disabled={

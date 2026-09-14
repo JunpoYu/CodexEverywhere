@@ -1,6 +1,6 @@
 # 发布流程
 
-本文档定义 CodexEverywhere 的公开发布流程。当前准备发布的版本为 `v0.4.0-alpha.17`。GitHub Release 从 tag 的干净 checkout 构建 Web、Agent、Relay 和 HPC 部署工具，不发布 npm 包；生产环境只消费这些不可变制品，不从开发工作区重新构建。
+本文档定义 CodexEverywhere 的公开发布流程。当前准备发布的版本为 `v0.4.0-alpha.18`。GitHub Release 从 tag 的干净 checkout 构建 Web、Agent、Relay 和 HPC 部署工具，不发布 npm 包；生产环境只消费这些不可变制品，不从开发工作区重新构建。
 
 发布与部署是两个阶段：公开仓库负责把源码变成可验证制品，生产运维环境负责选择版本、保存部署秘密并消费制品。真实域名、主机、SSH 参数、credential 和环境 inventory 不进入公开仓库。
 
@@ -25,7 +25,7 @@
 
 1. 所有项目 package 的 `version`；
 2. [CHANGELOG.md](../CHANGELOG.md)；
-3. README 中的公开版本和兼容性说明；
+3. README 中的公开版本和兼容性说明；Web 发布还必须同步推进 `entry.ts` 与 `public/sw.js` 的缓存代号，确保已安装 PWA 能发现新 worker，并运行对应更新测试；
 4. 使用发布时的 npm 最新稳定版 Codex 重新生成 schema、更新基线版本并运行集成测试。
 
 ## 发布前检查
@@ -53,7 +53,7 @@ git diff --check
 pnpm verify:v0.4 -- --with-model --receipt /absolute/private/path/candidate.json
 ```
 
-不带 `--with-model` 的运行会明确保留订阅模型门槛；`--allow-dirty` 只允许本地开发核对，其 receipt 不能作为发布证据。完整单用户实机证据必须另行通过 `pnpm staging:receipt -- validate <receipt>`，流程见 [v0.4 staging 验收手册](staging-v0.4.zh-CN.md)。多用户并发、跨用户隔离和管理员控制面的实机验收属于后续里程碑，不阻塞当前 production 批准。
+不带 `--with-model` 的运行会明确保留订阅模型门槛；`--allow-dirty` 只允许本地开发核对，其 receipt 不能作为发布证据。实机证据必须另行通过 `pnpm staging:receipt -- validate <receipt>`：当前 alpha.17 → alpha.18 使用 `init-patch` 创建的 version-2 补丁记录；全新初始化或从 alpha.16 迁移才使用完整验收路径。具体流程见 [v0.4 staging 验收手册](staging-v0.4.zh-CN.md)。多用户并发、跨用户隔离和管理员控制面的实机验收属于后续里程碑，不阻塞当前 production 批准。
 
 `test:app-server` 需要本机安装发布时的 npm 最新稳定版 Codex；不得用跳过集成测试的方式发布 Codex 适配层变更。若项目声明额外的兼容版本，也应分别运行，但运行时不得仅按版本号拒绝用户已有的 Codex。
 
@@ -66,11 +66,11 @@ pnpm verify:v0.4 -- --with-model --receipt /absolute/private/path/candidate.json
 - 当前变更不新增部署域名或秘密；提交 author 邮箱不在此限制内。已有公开提交即使改写也不能视为完成秘密撤回，发现凭据时必须先轮换；
 - GitHub CI 在目标 commit 上通过。
 - GitHub Codex review 已针对 PR 的最新 head commit 返回；所有 P0/P1 行内线程已修复或有明确的阻断结论。Codex review 尚在异步运行时不得先合并、打 tag 或发布；CI 通过不能替代 review 完成。
-- v0.4 全新初始化、旧 CE 目录隔离、`~/.codex`/app-server 保留和观察窗制品恢复测试通过；
+- 按升级来源完成适用验收：alpha.17 → alpha.18 运行隔离的 schema-2 补丁升级、回退、再激活和部署检查，不隔离或重建生产 CE 状态；全新初始化或 alpha.16 迁移才执行手册附录中的完整流程；
 - Direct 与 Relay 使用同一 Gateway v2 合同测试，未知方法、错误身份、缺失 operation key 和版本不匹配均失败关闭；
 - 390px 手机与桌面 Playwright 核心流程通过，PWA 更新不会刷新 outcome-unknown mutation；
 - Web 首始用户路由 JS gzip 不超过 250 KiB、CSS gzip 不超过 40 KiB；Markdown、KaTeX 与代码高亮保持独立懒加载；
-- candidate receipt 已通过，目标 commit 与 CI commit 相同；staging 保留可验证的 `v0.4.0-alpha.16` 回退制品且一个真实用户已经准备好。单用户 staging 必须消费尚待创建的不可变 Prerelease 制品，因此不是创建候选 tag 的前置条件，而是 production 批准的前置条件；Administrator Controller 可选。
+- candidate receipt 已通过，目标 commit 与 CI commit 相同；staging 保留可验证的 `v0.4.0-alpha.17` 回退制品且一个真实用户已经准备好。单用户 staging 必须消费尚待创建的不可变 Prerelease 制品，因此不是创建候选 tag 的前置条件，而是 production 批准的前置条件；Administrator Controller 可选。
 
 ## 候选 Prerelease 与 staging
 
@@ -78,7 +78,7 @@ v0.4 staging 必须验证 GitHub Release 的原始制品，而 Release workflow 
 
 1. candidate receipt、公开 CI 和人工源码检查通过后，在 `main` 的同一 commit 创建 annotated alpha tag；
 2. Release workflow 生成带 provenance 的 Prerelease，至此只表示“制品已冻结”，不表示允许 production；
-3. staging 下载该 Prerelease，记录 manifest SHA-256，完成旧 CE 状态隔离、v0.4 全新初始化、核心业务验收和制品指针回滚/再激活；
+3. staging 下载该 Prerelease，记录 manifest SHA-256；当前 alpha.17 → alpha.18 按补丁流程完成同库升级/回退/再激活、隔离 Agent/Relay 启动和 Web/PWA 检查，全部通过后再完成 version-2 receipt。仅全新初始化或 alpha.16 迁移使用完整流程，不能对现有生产状态执行无关的目录隔离；
 4. staging receipt 通过后，才批准 production 以该 manifest SHA-256 部署同一组字节；
 5. 不重新构建、不移动 tag，也不把另一 commit 的制品冒充已经 staging 的版本。
 
@@ -105,9 +105,9 @@ git push -u public codex/public-release:main
 确认公开页面、README、许可证识别、安全报告入口、candidate receipt 和目标 commit CI 正常后再创建候选 tag：
 
 ```bash
-git tag -a v0.4.0-alpha.17 main \
-  -m "CodexEverywhere v0.4.0-alpha.17"
-git push public v0.4.0-alpha.17
+git tag -a v0.4.0-alpha.18 main \
+  -m "CodexEverywhere v0.4.0-alpha.18"
+git push public v0.4.0-alpha.18
 ```
 
 Tag 推送后，[Release workflow](../.github/workflows/release.yml) 会重新执行格式、架构、类型、单元测试、Playwright 和构建检查，安装并记录当时 npm 最新稳定版 Codex CLI，再运行真实 app-server contract 集成测试。任何一项失败都不会生成制品。带连字符的版本会自动标记为 prerelease；该状态冻结 staging 输入，但不构成 production 批准。
@@ -134,7 +134,7 @@ SHA256SUMS
 5. 创建并推送 annotated tag；
 6. 检查自动生成的 GitHub Release、安装文档和源代码归档；
 7. 检查 manifest、SHA-256、provenance attestation 的 workflow/tag/commit 身份约束，以及 Release 摘要中记录的 Codex app-server contract 基线；
-8. 由独立 staging 运维环境消费 Prerelease，以一个真实测试用户完成全新安装、重复安装恢复、安装内容漂移拒绝、升级和严格 inventory 回滚演练，并记录获批 `manifest.json` SHA-256；
+8. 由独立 staging 运维环境消费 Prerelease；alpha.17 → alpha.18 按补丁步骤完成隔离升级、回退、再激活及部署检查，以 `init-patch`/`validate` 记录获批 manifest SHA-256。其他升级来源按手册附录使用完整验收，不得混用两个 profile；
 9. staging receipt 验证通过并人工批准后，由 production 安装器以该获批摘要为信任根部署同一组制品，不重新构建。
 
 不要把 GitHub Actions 的生产 SSH 私钥放进公开源码仓库。个人或单集群部署推荐由服务器上的无特权专用账号主动下载 Release，并把真实配置保留在服务器本地；多环境团队才需要私有 ops 仓库或带 Environment 审批的独立部署工作流。公开仓库的 CI 只构建和发布，绝不 SSH 到生产环境。架构边界见[部署与升级](deployment.zh-CN.md)，逐项命令见[操作手册](operator-runbook.zh-CN.md)。

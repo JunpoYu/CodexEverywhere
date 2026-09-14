@@ -55,6 +55,101 @@ describe("v0.4 staging receipt", () => {
     expect(stdout).toContain("Staging receipt passed");
   });
 
+  it("accepts a bounded no-migration alpha.17 to alpha.18 receipt", async () => {
+    const path = await initializeReceipt("init-patch");
+    const initial = JSON.parse(await readFile(path, "utf8"));
+    expect(initial.version).toBe(2);
+    expect(initial.checks["upgrade.schema-1-to-2"]).toBeUndefined();
+    await writePassingReceipt(path);
+    await expect(
+      execFileAsync(process.execPath, [manager, "validate", path]),
+    ).resolves.toMatchObject({
+      stdout: expect.stringContaining("Staging receipt passed"),
+    });
+  });
+
+  it.each([
+    "wrong-source",
+    "wrong-schema",
+    "missing-rollback",
+    "false-rollback",
+    "migration-claim",
+    "failed-deployment",
+  ])("rejects invalid patch evidence: %s", async (failure) => {
+    const path = await initializeReceipt("init-patch");
+    await writePassingReceipt(path);
+    const receipt = JSON.parse(await readFile(path, "utf8"));
+    if (failure === "wrong-source")
+      receipt.upgrade.fromVersion = "0.4.0-alpha.16";
+    if (failure === "wrong-schema") receipt.upgrade.fromSchema = 1;
+    if (failure === "missing-rollback")
+      delete receipt.checks["upgrade.alpha17-rollback"];
+    if (failure === "false-rollback")
+      receipt.checks["upgrade.alpha17-rollback"] = false;
+    if (failure === "migration-claim")
+      receipt.checks["upgrade.schema-1-to-2"] = true;
+    if (failure === "failed-deployment")
+      receipt.checks["deployment.agent-start"] = false;
+    await writeFile(path, JSON.stringify(receipt));
+    await expect(
+      execFileAsync(process.execPath, [manager, "validate", path]),
+    ).rejects.toThrow();
+  });
+
+  it.each(["init-fresh", "init-migration"])(
+    "accepts source-specific evidence for %s",
+    async (command) => {
+      const path = await initializeReceipt(command);
+      const receipt = JSON.parse(await readFile(path, "utf8"));
+      if (command === "init-fresh")
+        expect(receipt.checks["upgrade.schema-1-to-2"]).toBeUndefined();
+      else
+        expect(receipt.checks["cutover.v0.3-state-retained"]).toBeUndefined();
+      await writePassingReceipt(path);
+      await expect(
+        execFileAsync(process.execPath, [manager, "validate", path]),
+      ).resolves.toMatchObject({
+        stdout: expect.stringContaining("Staging receipt passed"),
+      });
+    },
+  );
+
+  it.each(["init-fresh", "init-migration"])(
+    "rejects mixed or wrong-source evidence for %s",
+    async (command) => {
+      const path = await initializeReceipt(command);
+      await writePassingReceipt(path);
+      const receipt = JSON.parse(await readFile(path, "utf8"));
+      const key =
+        command === "init-fresh"
+          ? "upgrade.schema-1-to-2"
+          : "cutover.v0.3-state-retained";
+      receipt.checks[key] = true;
+      await writeFile(path, JSON.stringify(receipt));
+      await expect(
+        execFileAsync(process.execPath, [manager, "validate", path]),
+      ).rejects.toThrow();
+      delete receipt.checks[key];
+      receipt.upgrade.fromVersion = "0.4.0-alpha.17";
+      await writeFile(path, JSON.stringify(receipt));
+      await expect(
+        execFileAsync(process.execPath, [manager, "validate", path]),
+      ).rejects.toThrow();
+    },
+  );
+
+  it("requires the Codex-home protection in migration evidence", async () => {
+    const path = await initializeReceipt("init-migration");
+    await writePassingReceipt(path);
+    const receipt = JSON.parse(await readFile(path, "utf8"));
+    expect(receipt.checks["upgrade.codex-home-untouched"]).toBe(true);
+    receipt.checks["upgrade.codex-home-untouched"] = false;
+    await writeFile(path, JSON.stringify(receipt));
+    await expect(
+      execFileAsync(process.execPath, [manager, "validate", path]),
+    ).rejects.toThrow();
+  });
+
   it("rejects approval without the schema upgrade rollback exercise", async () => {
     const path = await initializeReceipt();
     await writePassingReceipt(path);
@@ -126,11 +221,11 @@ describe("v0.4 staging receipt", () => {
   });
 });
 
-async function initializeReceipt(): Promise<string> {
+async function initializeReceipt(command = "init"): Promise<string> {
   const directory = await mkdtemp(join(tmpdir(), "ce-staging-receipt-"));
   temporaryDirectories.push(directory);
   const path = join(directory, "receipt.json");
-  await execFileAsync(process.execPath, [manager, "--", "init", path]);
+  await execFileAsync(process.execPath, [manager, "--", command, path]);
   return path;
 }
 

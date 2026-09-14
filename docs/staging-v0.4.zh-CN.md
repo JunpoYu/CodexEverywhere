@@ -1,16 +1,47 @@
 # CodexEverywhere v0.4 staging 验收手册
 
-本文把 `v0.4.0-alpha.17` 上线前仍需真实基础设施的单用户门槛转换为可执行流程和严格 receipt。v0.4 采用全新初始化，不进行 v0.3 数据库正向或反向迁移。多用户并发、跨用户隔离和 Administrator Controller 的实机验收延后，不阻塞当前单用户版本。
+本文把 `v0.4.0-alpha.18` 上线前仍需真实基础设施的单用户门槛转换为可执行流程和严格 receipt。v0.4 采用全新初始化，不进行 v0.3 数据库正向或反向迁移。多用户并发、跨用户隔离和 Administrator Controller 的实机验收延后，不阻塞当前单用户版本。
 
-## 1. 安全边界
+## alpha.18 补丁验收范围
+
+alpha.17 → alpha.18 不迁移数据库，用户库保持 schema 2。本次使用 alpha.17 作为回退制品：在隔离的测试用户状态目录中验证同一 schema-2 数据库可依次由 alpha.17、alpha.18、alpha.17、alpha.18 打开，数据与权限不变；记录目标制品 manifest 摘要。手机端验证配置折叠、展开设置和触控发送，部署后检查 Web 静态资源、Service Worker、Relay 与原 app-server 健康状态。下文 schema 1→2 及加密数据库恢复步骤仅适用于仍从 alpha.16 升级的环境；不得为 alpha.18 的无迁移补丁伪造 schema 1→2 检查通过记录。
+
+本路径使用 `pnpm staging:receipt -- init-patch <仓库外 receipt.json>` 创建专用 version-2 补丁记录，再用 `pnpm staging:receipt -- validate <receipt.json>` 验证。它只接受 alpha.17/schema 2 → alpha.18/schema 2，要求制品校验、同库升级/回退/再激活、生产状态未触碰及同一 candidate 的桌面/手机检查证据。补丁演练可由现有用户在独立的 `CE_HOME`、`CE_RUNTIME_DIR`、`CODEX_HOME` 中使用测试数据执行，不启动或连接生产 app-server；它不声称全新账号、Direct 或 schema 1 迁移已完成实机验收。附录环境要求适用于相应的完整验收路径，各来源的检查项不得混填。
+
+## 1. alpha.17 → alpha.18 补丁执行步骤
+
+1. 在目标 main commit 完成 `pnpm verify:v0.4 -- --with-model --receipt <仓库外 candidate.json>`，确认同 commit 的 CI 与代码审查通过，记录 candidate 文件 SHA-256。
+2. 下载该 commit 的不可变 alpha.18 Release，验证 SHA256SUMS、manifest 和 provenance 的 workflow/tag/commit；保留 verified alpha.17 回退制品。检查 CentOS 7、glibc 2.17、Node.js 20 与宿主机时钟。
+3. 创建专用补丁记录：
+
+   ```bash
+   pnpm staging:receipt -- init-patch /absolute/private/staging-alpha18.json
+   ```
+
+4. 在独立 `CE_HOME`、`CE_RUNTIME_DIR`、`CODEX_HOME` 中以 alpha.17 创建测试数据，依次使用 alpha.18、alpha.17、alpha.18 的真实制品打开同一状态目录。每次验证 schema 2、SQLite integrity、所有者、0600 权限、身份及工作区/旁支测试数据不变；不触碰生产状态，不连接生产 app-server。
+5. 在上述隔离目录中部署真实 Agent，并在独立 `CE_RELAY_HOME` 中启动真实 Relay；只监听空闲 loopback 端口，不安装生产 watchdog/cron。验证 Agent 存活和 Gateway 连接、Relay WebSocket，以及独立 Codex app-server 的健康状态。必须显式设置临时 `CODEX_HOME`，不得复制生产凭据；记录并仅清理本次创建的临时进程，确认原生产 app-server PID 未变。用真实 Web 制品验证桌面/手机页面、Service Worker 及 alpha.17 → alpha.18 的等待更新行为。任何组件启动或检查失败，保持记录未通过，停止后续发布。
+6. 将已完成的证据写入补丁记录：`operatorAlias` 使用匿名短名，`environment.testUserCount` 至少 1，`evidence` 填实际 manifest 和 candidate 文件的 SHA-256。仅在步骤 4–5 全部成功后设置对应 `upgrade.*`、`deployment.*` 等检查为 true，填写规范 ISO `completedAt` 和 `status: "passed"`。禁止填写未执行的 schema 1 迁移、公开 Direct 或全新账号验收项。最后验证：
+
+   ```bash
+   chmod 0600 /absolute/private/staging-alpha18.json
+   pnpm staging:receipt -- validate /absolute/private/staging-alpha18.json
+   ```
+
+   通过后才允许 production 按操作手册部署同一组字节，并重复检查 Agent、Relay、Web、Service Worker 和原 app-server 健康；生产失败则停止并回退，不能引用 staging 记录声称 production 成功。需要回退时停止 CE 写入、切回 alpha.17 制品并重启 CE 服务；本路径不恢复数据库。保留回退制品与验收记录。
+
+## 附录：完整初始化与 schema 1 迁移验收
+
+以下 A1–A8 仅用于 v0.3 全新切换或从 alpha.16 开始的 schema 1 迁移，分别使用 `init-fresh`、`init-migration` 创建 version-2 来源专用记录。已经运行 alpha.17 的本次补丁只执行上面的步骤 1–6，不复制附录检查结果到补丁记录。旧 `init` 仅保留为完整兼容性测试套件入口，必须在不同测试目录中同时完成全新切换与迁移两组演练，不能用作单一升级来源的记录。
+
+## A1. 安全边界
 
 - 使用一个非生产测试用户和 staging 专用 Codex 登录，不复制生产数据库。
 - candidate receipt 与 staging receipt 位于源码仓库、Issue、CI artifact 和公开日志之外，权限为 0600。
 - receipt 只保存版本、commit、受限 operator alias、布尔结果和 SHA-256；不保存主机名、Unix 用户名、真实路径、prompt、Queue 文本、恢复码或日志正文。
-- 旧 CE 目录只在对应宿主机改名保留，不导入 v0.4，也不写入 receipt。
+- 全新切换时旧 CE 目录只在对应宿主机改名保留，不导入 v0.4；schema 1 迁移则按 A5 使用同一测试状态目录。目录路径不写入 receipt。
 - `~/.codex`、Codex 登录和 app-server 任务不属于 CE 状态重建范围。
 
-## 2. 真实环境
+## A2. 真实环境
 
 开始前需要：
 
@@ -20,11 +51,11 @@
 4. Direct HTTPS/WSS 入口和无状态 Relay；
 5. 桌面与 390px 移动端浏览器；
 6. staging 专用 Codex 订阅登录；
-7. verified `v0.4.0-alpha.16` 回退制品与目标 `v0.4.0-alpha.17` Release 制品，可原子切换 release 指针。
+7. 目标 `v0.4.0-alpha.18` Release 制品；v0.3 全新切换保留 verified `v0.3.0-alpha.14` 与对应归档状态，schema 1 迁移演练另保留 `v0.4.0-alpha.16`。这两条旧版验收路径与当前 alpha.17 补丁回退不同。
 
 浏览器、Agent 宿主机与 Relay 必须使用健康时间源，任意两者实测 UTC 偏差不超过 30 秒。CentOS 7 检查 `timedatectl status`、`chronyc tracking` 和 `chronyc sources`；不能只依据 `chronyd` 进程存在。
 
-## 3. candidate 自动门禁
+## A3. candidate 自动门禁
 
 在干净 checkout 中运行：
 
@@ -44,11 +75,16 @@ sha256sum "${CE_STAGING_EVIDENCE_DIR}/candidate.json"
 
 该命令依次执行公开仓库检查、格式、架构、本地 listener 能力、类型、unit/protocol、构建、Web bundle 预算、Playwright、真实 app-server contract、部署脚本语法和 diff 检查。`--allow-dirty` 只用于开发核对；生成的 receipt 不能作为发布证据。未使用 `--with-model` 时会保留订阅模型外部门槛。
 
-## 4. staging receipt
+## A4. 完整初始化记录（不适用于本次 alpha.18 补丁路径）
 
 ```bash
-pnpm staging:receipt -- init "${CE_STAGING_EVIDENCE_DIR}/staging.json"
+# v0.3.0-alpha.14 -> v0.4.0-alpha.18: fresh CE state
+pnpm staging:receipt -- init-fresh "${CE_STAGING_EVIDENCE_DIR}/staging-fresh.json"
+# v0.4.0-alpha.16 -> v0.4.0-alpha.18: schema 1 -> 2
+pnpm staging:receipt -- init-migration "${CE_STAGING_EVIDENCE_DIR}/staging-migration.json"
 ```
+
+根据实际来源只执行对应命令。全新切换执行 A5F 和 A7，不执行 A5；数据库迁移执行 A5，不执行 A7。全新记录没有 `upgrade.schema-*` 检查，迁移记录没有 `cutover.*` 检查，校验器拒绝混填。`fromSchema: null` 表示全新创建 CE 数据库，不表示读取或转换 v0.3 数据库。下文 `staging.json` 是所选记录文件的占位名。
 
 填写规则：
 
@@ -58,28 +94,28 @@ pnpm staging:receipt -- init "${CE_STAGING_EVIDENCE_DIR}/staging.json"
 - `candidateReceiptSha256` 来自上一节 candidate receipt；
 - 只有完成对应步骤后才把 `checks` 设为 `true`，不得新增自由文本字段。
 
-## 5. alpha.16 → alpha.17 数据库升级演练（本次必做）
+## A5. alpha.16 → alpha.18 数据库升级演练（仅从 alpha.16 升级时必做）
 
 全新初始化不能替代本节。只使用测试用户自己的 alpha.16 数据库，不复制生产用户状态：
 
 1. 在 alpha.16 创建测试 CE 身份、工作区和 Queue，记录必要的布尔/计数基线及 app-server PID，不输出业务正文或秘密。
 2. 按操作手册暂停该用户 CE watchdog、Agent 与 TUI 写入，保持 app-server 运行。加密备份 schema-1 数据库，验证可解密、SQLite integrity check 与 `user_version = 1`。
-3. 使用已验证的 alpha.17 Release 制品启动同一测试用户、同一个 CE 状态目录，不能隔离旧目录后重新初始化。确认 schema 升级为 2，原身份、工作区和 Queue 保留，创建/收起/删除旁支正常，app-server PID 未变。
+3. 使用已验证的 alpha.18 Release 制品启动同一测试用户、同一个 CE 状态目录，不能隔离旧目录后重新初始化。确认 schema 升级为 2，原身份、工作区和 Queue 保留，创建/收起/删除旁支正常，app-server PID 未变。
 4. 暂停 CE 写入，保留 schema-2 数据库的加密副本；按操作手册原子恢复升级前 schema-1 备份，再切回 alpha.16 制品。验证旧身份、工作区和 Queue 可用。
-5. 再次暂停 CE 写入，保留旧库后原子恢复刚才留存的 schema-2 数据库，切回同一 alpha.17 制品，验证身份、工作区、Queue 和旁支元数据一致。两份数据库不得合并，`~/.codex` 不得恢复或清理。
-6. 分别完成后才能设置 `upgrade.schema-1-backup-verified`、`upgrade.schema-1-to-2`、`upgrade.schema-1-rollback-restored`、`upgrade.schema-2-reactivated` 为 true。receipt 校验器将拒绝缺少或未完成这些检查的记录。
+5. 再次暂停 CE 写入，保留旧库后原子恢复刚才留存的 schema-2 数据库，切回同一 alpha.18 制品，验证身份、工作区、Queue 和旁支元数据一致。两份数据库不得合并，`~/.codex` 不得恢复或清理。
+6. 分别完成后才能设置 `upgrade.schema-1-backup-verified`、`upgrade.schema-1-to-2`、`upgrade.schema-1-rollback-restored`、`upgrade.schema-2-reactivated` 为 true。`init-migration` 记录还必须确认 `upgrade.codex-home-untouched`，明确演练未恢复、清理或改动 `~/.codex`；旧 `init` 兼容性套件使用已有的 `cutover.codex-home-untouched` 记录同一保护。校验器将拒绝对应记录中缺少或未完成的检查。
 
-### 5.1 v0.3 → v0.4 全新初始化演练
+## A5F. v0.3 → v0.4 全新初始化演练
 
 下面保留跨协议代际的全新初始化检查；它不能作为上方 schema 1 → 2 升级的证据。
 
 对测试用户：
 
-1. 在 `v0.4.0-alpha.16` 记录 app-server PID 和健康状态；
+1. 在 `v0.3.0-alpha.14` 记录 app-server PID 和健康状态；
 2. 确认 turn、interaction、Queue delivery、mutation 与登录流程静止；
 3. 停止 Agent，但保持 app-server；
 4. 将完整 `~/.codex-everywhere` 改名为唯一的保留目录；
-5. 切换 v0.4 rootless/privileged release 与 Web；
+5. 切换 v0.4.0-alpha.18 rootless/privileged release 与 Web；
 6. 运行 `ce device pair`，重新注册 Web 身份与恢复码；
 7. 重新添加 Workspace 并启动 Agent；
 8. 确认 app-server PID 未变化，已有任务可从 app-server 重新打开；
@@ -93,7 +129,7 @@ pnpm staging:receipt -- init "${CE_STAGING_EVIDENCE_DIR}/staging.json"
 - `cutover.v0.4-state-fresh`；
 - `cutover.codex-home-untouched`。
 
-## 6. 产品与故障场景
+## A6. 产品与故障场景
 
 同一测试用户依次覆盖 Direct/Relay、桌面/390px 移动端，并完成：
 
@@ -108,21 +144,21 @@ pnpm staging:receipt -- init "${CE_STAGING_EVIDENCE_DIR}/staging.json"
 
 Queue crash window 由同 commit 的确定性测试覆盖；staging 还要在 Queue 工作存在时重启一次 Agent，确认没有静默重复。日志检查只记录“未发现敏感字段”的布尔结论。
 
-## 7. 全新初始化观察窗的制品指针回滚与再激活
+## A7. 全新初始化观察窗的制品指针回滚与再激活
 
-本步骤针对全新初始化观察窗；alpha.16 → alpha.17 的升级回退必须额外完成第 5 节数据库恢复演练，不能只切换指针：
+本步骤仅针对 v0.3 全新初始化观察窗；alpha.16 → alpha.18 的迁移路径跳过本节，使用 A5 中的 schema-1 恢复与 alpha.16 制品回退，不能只切换指针：
 
 1. 停止 v0.4 Agent/Controller；
 2. 将 v0.4 CE 目录改名留存；
-3. 原子恢复对应的 alpha.15 CE 保留目录；
-4. 切回 alpha.15 rootless/privileged/Web 指针并验证旧状态可用；
-5. 再次停止 alpha.15，将旧目录重新归档；
+3. 原子恢复对应的 v0.3.0-alpha.14 CE 保留目录；
+4. 切回 v0.3.0-alpha.14 rootless/privileged/Web 指针并验证旧状态可用；
+5. 再次停止 v0.3.0-alpha.14，将旧目录重新归档；
 6. 恢复之前留存的 v0.4 CE 目录并切回同一 v0.4 Release；
 7. 验证 v0.4 身份、Workspace、任务打开和 Queue 状态仍一致。
 
 两份目录不得合并，任一旧二进制不得打开另一版本数据库。完成后设置 `cutover.artifact-rollback` 与 `cutover.v0.4-reactivation`。
 
-## 8. 验证 receipt
+## A8. 验证 receipt
 
 填写 `completedAt` 和 `status: "passed"` 后运行：
 

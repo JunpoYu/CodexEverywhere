@@ -2043,3 +2043,30 @@ pre {
     transition-duration: 0.01ms !important;
   }
 }
+
+@media (max-width: 760px) {
+  .conversation-main .composer {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 4px;
+  }
+  .conversation-main .composer textarea {
+    height: 48px;
+    min-height: 48px;
+    max-height: 120px;
+    font-size: 16px;
+  }
+  .conversation-main .composer:focus-within textarea,
+  .conversation-main .composer[data-has-draft="true"] textarea {
+    height: 88px;
+  }
+  .conversation-main .composer > div {
+    flex-direction: row;
+    align-items: center;
+  }
+  .conversation-main .composer > div button {
+    min-height: 44px;
+  }
+  .conversation-main .composer > div button:first-child {
+    margin-right: auto;
+  }
+}

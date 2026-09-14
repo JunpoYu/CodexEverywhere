@@ -1,4 +1,4 @@
-import type { CSSProperties } from "react";
+import { useId, useState, type CSSProperties } from "react";
 
 import type { ContextUsagePresentation } from "../../../session-controls.js";
 import { Icon } from "../components/Icon.js";
@@ -18,25 +18,50 @@ export function TaskRuntimeSummary(input: {
   readonly statusLabel: string;
   readonly onEdit: () => void;
 }) {
+  const [expanded, setExpanded] = useState(false);
+  const detailsId = useId();
   const elevatedAccess =
     input.sandboxNeedsAttention && input.approvalNeedsAttention;
+  const permissionWarning = elevatedAccess
+    ? "高权限"
+    : input.sandboxNeedsAttention
+      ? input.sandbox
+      : input.approvalNeedsAttention
+        ? input.approval
+        : undefined;
 
   return (
     <section
       aria-label="任务运行设置摘要"
       className={styles.card}
       data-elevated-access={elevatedAccess || undefined}
+      data-expanded={expanded}
       data-task-runtime-summary
     >
       <header className={styles.header}>
         <div className={styles.heading}>
           <strong>本任务配置</strong>
-          {elevatedAccess ? (
+          <button
+            type="button"
+            className={styles.toggle}
+            data-level={input.contextUsage.level}
+            title={`${input.model} · 上下文 ${input.contextUsage.percentLabel}`}
+            aria-label={`${expanded ? "收起任务配置摘要" : "展开任务配置摘要"}：${input.model}，上下文 ${input.contextUsage.percentLabel}${input.contextUsage.level === "danger" ? "，接近上限" : input.contextUsage.level === "warning" ? "，占用较高" : ""}`}
+            aria-expanded={expanded}
+            aria-controls={detailsId}
+            onClick={() => setExpanded(!expanded)}
+          >
+            <span>
+              {input.model} · {input.contextUsage.percentLabel}
+            </span>
+            <Icon name="chevron-down" />
+          </button>
+          {permissionWarning ? (
             <span
               className={styles.risk}
-              title="当前任务同时使用完全文件访问和从不询问"
+              title={`当前任务：${input.sandbox}；${input.approval}`}
             >
-              高权限
+              {permissionWarning}
             </span>
           ) : null}
           <span className={`${styles.mobileState} state-pill ${input.status}`}>
@@ -55,24 +80,26 @@ export function TaskRuntimeSummary(input: {
           <span>修改</span>
         </button>
       </header>
-      <dl className={styles.values} data-task-context-values>
-        <ContextValue label="模型" value={input.model} />
-        <ContextValue label="推理" value={input.effort} />
-        <ContextValue
-          label="文件"
-          needsAttention={input.sandboxNeedsAttention}
-          value={input.sandbox}
+      <div id={detailsId} className={styles.details}>
+        <dl className={styles.values} data-task-context-values>
+          <ContextValue label="模型" value={input.model} />
+          <ContextValue label="推理" value={input.effort} />
+          <ContextValue
+            label="文件"
+            needsAttention={input.sandboxNeedsAttention}
+            value={input.sandbox}
+          />
+          <ContextValue
+            label="审批"
+            needsAttention={input.approvalNeedsAttention}
+            value={input.approval}
+          />
+        </dl>
+        <ContextUsage
+          compactionCount={input.compactionCount}
+          value={input.contextUsage}
         />
-        <ContextValue
-          label="审批"
-          needsAttention={input.approvalNeedsAttention}
-          value={input.approval}
-        />
-      </dl>
-      <ContextUsage
-        compactionCount={input.compactionCount}
-        value={input.contextUsage}
-      />
+      </div>
     </section>
   );
 }
